@@ -1,0 +1,20 @@
+name: Renovatebot upgrade dependencies
+on:
+  schedule:
+    - cron: "0/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  renovatebot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Self-hosted Renovate
+        uses: renovatebot/github-action@b11417b9eaac3145fe9a8544cee66503724e32b6 # v43.0.8
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          configurationFile: .github/renovate-config.js
+          env-regex: "^(?:RENOVATE_\\w+|LOG_LEVEL|GITHUB_COM_TOKEN)$"

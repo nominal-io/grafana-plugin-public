@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "Nominal-Ds",
+  "id": "nominalinc-nominalds-datasource",
+  "metrics": true,
+  "backend": true,
+  "executable": "gpx_nominal_ds",
+  "info": {
+    "description": "Nominal datasource plugin for Grafana - connect to Nominal's time-series platform for monitoring and visualization",
+    "author": {
+      "name": "Nominal inc"
+    },
+    "keywords": [
+      "datasource"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [],
+    "screenshots": [
+      {
+        "name": "Datasource Configuration",
+        "path": "img/datasource-config.png"
+      },
+      {
+        "name": "Query Editor",
+        "path": "img/query-editor.png"
+      }
+    ],
+    "version": "0.3.4",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=10.4.0",
+    "plugins": []
+  },
+  "routes": [
+    {
+      "path": "test",
+      "method": "GET",
+      "reqRole": "Editor"
+    },
+    {
+      "path": "connection-test",
+      "method": "GET",
+      "reqRole": "Editor"
+    },
+    {
+      "path": "nominal/*",
+      "method": "*",
+      "reqRole": "Editor"
+    }
+  ]
+}

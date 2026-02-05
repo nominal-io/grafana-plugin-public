@@ -1,0 +1,96 @@
+# This GitHub Action automates the process of building Grafana plugins.
+# (For more information, see https://github.com/grafana/plugin-actions/blob/main/build-plugin/README.md)
+#
+# On PRs: Builds plugin to verify it compiles correctly (package-plugin)
+# On tags: Creates a GitHub Release with the plugin ZIP file attached (build-plugin)
+name: Release Plugin
+
+on:
+    push:
+        tags:
+            - "nominal-grafana-plugin@*" # Run on release-please tags, e.g. nominal-grafana-plugin@0.0.14
+    pull_request:
+        branches:
+            - main
+
+permissions:
+    contents: read
+
+jobs:
+    # Build-only job for PRs - verifies plugin compiles correctly
+    build:
+        if: github.event_name == 'pull_request'
+        permissions:
+            contents: read
+        runs-on: depot-ubuntu-24.04-8
+        steps:
+            - name: Checkout
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+            - name: Build plugin
+              uses: grafana/plugin-actions/package-plugin@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # main branch provided by grafana
+              with:
+                  go-version: "1.25"
+
+            - name: Build summary
+              run: |
+                  echo "## Plugin Build Summary" >> $GITHUB_STEP_SUMMARY
+                  echo "- Build: Completed successfully" >> $GITHUB_STEP_SUMMARY
+                  echo "- Plugin ID: nominalinc-nominalds-datasource" >> $GITHUB_STEP_SUMMARY
+
+    # Full release job for tags - builds and creates GitHub Release
+    release:
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        permissions:
+            contents: write
+        runs-on: depot-ubuntu-24.04-8
+        steps:
+            - name: Checkout
+              uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+            - name: Extract version from tag
+              id: extract-version
+              run: |
+                  # Tag format: nominal-grafana-plugin@X.Y.Z
+                  TAG="${GITHUB_REF#refs/tags/}"
+                  VERSION="${TAG#*@}"
+                  echo "version=${VERSION}" >> $GITHUB_OUTPUT
+                  echo "tag=${TAG}" >> $GITHUB_OUTPUT
+                  echo "Extracted version: ${VERSION} from tag: ${TAG}"
+
+            - name: Build and package plugin
+              id: package-plugin
+              uses: grafana/plugin-actions/package-plugin@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f
+              with:
+                  go-version: "1.25"
+                  # Uncomment to enable plugin signing
+                  # policy_token: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+
+            - name: Show package outputs
+              run: |
+                  echo "Plugin ID: ${{ steps.package-plugin.outputs.plugin-id }}"
+                  echo "Plugin Version: ${{ steps.package-plugin.outputs.plugin-version }}"
+                  echo "Archive: ${{ steps.package-plugin.outputs.archive }}"
+                  echo "Archive SHA1: ${{ steps.package-plugin.outputs.archive-sha1sum }}"
+                  ls -la ${{ steps.package-plugin.outputs.archive }}*
+
+            - name: Create release notes
+              run: |
+                  # Extract release notes from CHANGELOG for this version
+                  VERSION="${{ steps.extract-version.outputs.version }}"
+                  awk "/^## \[?${VERSION}/ {found=1; next} /^## / {if(found) exit} found {print}" CHANGELOG.md > release_notes.md
+                  if [ ! -s release_notes.md ]; then
+                    echo "Release ${VERSION}" > release_notes.md
+                  fi
+
+            - name: Create GitHub Release
+              uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+              with:
+                  tag_name: ${{ steps.extract-version.outputs.tag }}
+                  name: v${{ steps.extract-version.outputs.version }}
+                  body_path: release_notes.md
+                  files: |
+                      ${{ steps.package-plugin.outputs.archive }}
+                      ${{ steps.package-plugin.outputs.archive-sha1sum }}
+              # Without signing, clients must set:
+              # GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominalinc-nominalds-datasource

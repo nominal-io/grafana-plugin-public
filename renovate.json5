@@ -1,0 +1,41 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", ":automergeMinor"],
+  includePaths: [
+    "go.mod",
+    "go.sum",
+    ".github/**"
+  ],
+  postUpdateOptions: ["gomodTidy"],
+  packageRules: [
+    {
+      // Prioritize nominal-api-go updates - create PRs immediately
+      matchPackageNames: ["github.com/nominal-io/nominal-api-go"],
+      prCreation: "immediate",
+      reviewers: ["leundai"],
+      labels: ["dependencies", "nominal-api-go"],
+      groupName: "nominal-api-go",
+      groupSlug: "nominal-api-go",
+      automerge: false
+    },
+    {
+      // Group other Go dependency updates
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch"],
+      excludePackageNames: ["github.com/nominal-io/nominal-api-go"],
+      groupName: "go dependencies (non-major)",
+      groupSlug: "go-non-major"
+    },
+    {
+      // Group GitHub Actions updates
+      matchManagers: ["github-actions"],
+      groupName: "github actions",
+      groupSlug: "github-actions",
+      separateMajorMinor: false
+    }
+  ],
+  schedule: ["at any time"],
+  semanticCommits: "enabled",
+  prHourlyLimit: 0,
+  prConcurrentLimit: 0
+}

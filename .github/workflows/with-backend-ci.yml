@@ -1,0 +1,233 @@
+name: With-Backend CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**'
+      - '!archive/**'
+      - '.github/workflows/with-backend-ci.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**'
+      - '!archive/**'
+      - '.github/workflows/with-backend-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, lint and unit tests
+    runs-on: ubuntu-latest
+    env:
+      GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+    outputs:
+      plugin-id: ${{ steps.metadata.outputs.plugin-id }}
+      plugin-version: ${{ steps.metadata.outputs.plugin-version }}
+      has-e2e: ${{ steps.check-for-e2e.outputs.has-e2e }}
+      has-backend: ${{ steps.check-for-backend.outputs.has-backend }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+        with:
+          package_json_file: package.json
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: package.json
+
+      # NOTE: No @nominal-io npm registry auth needed - private package was removed
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Lint
+        run: pnpm run lint
+      - name: Unit tests
+        run: pnpm run test:ci
+      - name: Build frontend
+        run: pnpm run build
+
+      - name: Check for backend
+        id: check-for-backend
+        run: |
+          if [ -f "Magefile.go" ]; then
+            echo "has-backend=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Go
+        if: steps.check-for-backend.outputs.has-backend == 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.25.0'
+          cache: true
+          cache-dependency-path: go.sum
+
+      # NOTE: No SSH auth needed for Go modules - all dependencies are public
+
+      - name: Test backend
+        if: steps.check-for-backend.outputs.has-backend == 'true'
+        uses: magefile/mage-action@6f50bbb8ea47d56e62dee92392788acbc8192d0b # v3.1.0
+        with:
+          version: latest
+          args: test
+          workdir: .
+
+      - name: Build backend
+        if: steps.check-for-backend.outputs.has-backend == 'true'
+        uses: magefile/mage-action@6f50bbb8ea47d56e62dee92392788acbc8192d0b # v3.1.0
+        with:
+          version: latest
+          args: buildAll
+          workdir: .
+
+      - name: Check for E2E
+        id: check-for-e2e
+        run: |
+          if [ -f "playwright.config.ts" ]; then
+            echo "has-e2e=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Sign plugin (optional)
+        if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
+        run: pnpm run sign
+
+      - name: Get plugin metadata
+        id: metadata
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          export GRAFANA_PLUGIN_ID=$(cat dist/plugin.json | jq -r .id)
+          export GRAFANA_PLUGIN_VERSION=$(cat dist/plugin.json | jq -r .info.version)
+          export GRAFANA_PLUGIN_ARTIFACT=${GRAFANA_PLUGIN_ID}-${GRAFANA_PLUGIN_VERSION}.zip
+          echo "plugin-id=${GRAFANA_PLUGIN_ID}" >> $GITHUB_OUTPUT
+          echo "plugin-version=${GRAFANA_PLUGIN_VERSION}" >> $GITHUB_OUTPUT
+          echo "archive=${GRAFANA_PLUGIN_ARTIFACT}" >> $GITHUB_OUTPUT
+
+      - name: Package plugin
+        id: package-plugin
+        env:
+          ARCHIVE: ${{ steps.metadata.outputs.archive }}
+          PLUGIN_ID: ${{ steps.metadata.outputs.plugin-id }}
+        run: |
+          mv dist ${PLUGIN_ID}
+          zip -r ${ARCHIVE} ${PLUGIN_ID}
+
+      - name: Validate plugin.json
+        env:
+          ARCHIVE: ${{ steps.metadata.outputs.archive }}
+        run: |
+          docker run --pull=always \
+            -v $PWD/${ARCHIVE}:/archive.zip \
+            grafana/plugin-validator-cli -analyzer=metadatavalid /archive.zip
+
+      - name: Upload packaged plugin
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.metadata.outputs.plugin-id }}-${{ steps.metadata.outputs.plugin-version }}
+          path: ${{ steps.metadata.outputs.plugin-id }}
+          retention-days: 5
+
+  resolve-versions:
+    name: Resolve e2e images
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ needs.build.outputs.has-e2e == 'true' }}
+    outputs:
+      matrix: ${{ steps.resolve-versions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+      - name: Resolve Grafana E2E versions
+        id: resolve-versions
+        uses: grafana/plugin-actions/e2e-version@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # pinned
+        with:
+          plugin-directory: src
+
+  playwright-tests:
+    needs: [resolve-versions, build]
+    if: ${{ needs.build.outputs.has-e2e == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        GRAFANA_IMAGE: ${{ fromJson(needs.resolve-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Download plugin
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          name: ${{ needs.build.outputs.plugin-id }}-${{ needs.build.outputs.plugin-version }}
+
+      - name: Ensure backend binary is executable
+        if: needs.build.outputs.has-backend == 'true'
+        run: |
+          chmod +x ./dist/gpx_*
+
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+        with:
+          package_json_file: package.json
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: package.json
+
+      # NOTE: No @nominal-io npm registry auth needed - private package was removed
+
+      - name: Install dev dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Start Grafana
+        run: |
+          docker compose pull
+          ANONYMOUS_AUTH_ENABLED=false DEVELOPMENT=false \
+          GRAFANA_VERSION=${{ matrix.GRAFANA_IMAGE.VERSION }} \
+          GRAFANA_IMAGE=${{ matrix.GRAFANA_IMAGE.NAME }} \
+          docker compose up -d
+
+      - name: Wait for Grafana
+        uses: grafana/plugin-actions/wait-for-grafana@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # pinned
+        with:
+          url: http://localhost:3000/login
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run Playwright tests
+        id: run-tests
+        run: pnpm run e2e
+
+      - name: Upload e2e test summary
+        if: ${{ always() && !cancelled() }}
+        uses: grafana/plugin-actions/playwright-gh-pages/upload-report-artifacts@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # pinned
+        with:
+          upload-report: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          test-outcome: ${{ steps.run-tests.outcome }}
+
+      - name: Docker logs (on failure)
+        if: ${{ always() && steps.run-tests.outcome == 'failure' }}
+        run: docker logs nominalinc-nominalds-datasource > grafana-server.log || true
+
+      - name: Stop Grafana
+        run: docker compose down
