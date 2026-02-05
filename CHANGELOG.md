@@ -1,5 +1,7 @@
 # Changelog
 
+> Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
+
 ## [0.3.4](https://github.com/nominal-io/grafana-plugin/compare/nominal-grafana-plugin@0.3.3...nominal-grafana-plugin@0.3.4) (2026-02-02)
 
 

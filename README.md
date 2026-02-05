@@ -80,7 +80,7 @@ If you already have Grafana running (cloud, self-hosted, or on-prem) and just ne
 ```bash
 # Download the latest release (replace VERSION with actual version, e.g., 0.0.13)
 VERSION="0.0.13"
-curl -L "https://github.com/nominal-io/grafana-plugin/releases/download/${VERSION}/nominalinc-nominalds-datasource-${VERSION}.zip" \
+curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominalinc-nominalds-datasource-${VERSION}.zip" \
   -o plugin.zip
 
 # Extract to Grafana plugins directory
