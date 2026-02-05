@@ -74,6 +74,7 @@ docker exec <container-name> ls -la /var/lib/grafana/plugins/nominalinc-nominald
 ## Installing Plugin on Existing Grafana Instances
 
 If you already have Grafana running (cloud, self-hosted, or on-prem) and just need to install the plugin, download the pre-built plugin ZIP from [GitHub Releases](../../releases).
+Releases are cut automatically via release-please when conventional commits land on `main`.
 
 ### Quick Install
 
