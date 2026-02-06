@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.4.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.3.5...nominal-grafana-plugin@0.4.0) (2026-02-06)
+
+
+### Features
+
+* **review:** add reviewer bootstrap dashboard provisioning ([#3](https://github.com/nominal-io/grafana-plugin-public/issues/3)) ([0d1899f](https://github.com/nominal-io/grafana-plugin-public/commit/0d1899f7d0f7bd7cf5a6f352f7277ac34588666e))
+
 ## [0.3.5](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin-v0.3.4...nominal-grafana-plugin@0.3.5) (2026-02-05)
 
 
