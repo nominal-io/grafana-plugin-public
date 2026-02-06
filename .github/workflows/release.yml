@@ -36,7 +36,7 @@ jobs:
               run: |
                   echo "## Plugin Build Summary" >> $GITHUB_STEP_SUMMARY
                   echo "- Build: Completed successfully" >> $GITHUB_STEP_SUMMARY
-                  echo "- Plugin ID: nominalinc-nominalds-datasource" >> $GITHUB_STEP_SUMMARY
+                  echo "- Plugin ID: nominaltest-nominalds-datasource" >> $GITHUB_STEP_SUMMARY
 
     # Full release job for tags - builds and creates GitHub Release
     release:
@@ -93,4 +93,4 @@ jobs:
                       ${{ steps.package-plugin.outputs.archive }}
                       ${{ steps.package-plugin.outputs.archive-sha1sum }}
               # Without signing, clients must set:
-              # GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominalinc-nominalds-datasource
+              # GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominaltest-nominalds-datasource

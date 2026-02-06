@@ -14,6 +14,6 @@ echo "Building frontend (TypeScript)..."
 pnpm run build
 
 echo "Restarting container..."
-docker container restart nominalinc-nominalds-datasource
+docker container restart nominaltest-nominalds-datasource
 
-echo "Rebuild complete! Check logs with: docker logs nominalinc-nominalds-datasource --tail 10" 
+echo "Rebuild complete! Check logs with: docker logs nominaltest-nominalds-datasource --tail 10" 
