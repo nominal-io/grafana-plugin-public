@@ -2,6 +2,7 @@ apiVersion: 1
 
 datasources:
   - name: 'nominal-ds'
+    uid: 'nominal-ds'
     type: 'nominalinc-nominalds-datasource'
     access: proxy
     isDefault: false

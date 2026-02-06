@@ -3,6 +3,7 @@
   - [Quick Start](#quick-start)
     - [Development and E2E testing](#development-and-e2e-testing)
     - [Verify Plugin Installation](#verify-plugin-installation)
+    - [Reviewer bootstrap](#reviewer-bootstrap)
   - [Installing Plugin on Existing Grafana Instances](#installing-plugin-on-existing-grafana-instances)
   - [API Testing](#api-testing)
 - [Docs and other references](#docs-and-other-references)
@@ -68,6 +69,18 @@ docker exec <container-name> ls -la /var/lib/grafana/plugins/nominalinc-nominald
   2. Go to **Configuration > Data sources**
   3. Click **Add data source**
   4. Look for **Nominal Data Source** in the list
+
+### Reviewer bootstrap
+
+For plugin catalog review setup, see:
+
+- [REVIEW.md](./REVIEW.md)
+
+Provisioned resources included in this repo:
+
+- Datasource provisioning: `provisioning/datasources/datasources.yml`
+- Dashboard provisioning provider: `provisioning/dashboards/dashboards.yml`
+- Reviewer dashboard JSON: `provisioning/dashboards/json/nominal-review-dashboard.json`
 
 > **Note**: Internal deployment tooling (Helm/ECR/production Docker build) is maintained in a private audit repository and intentionally omitted here.
 

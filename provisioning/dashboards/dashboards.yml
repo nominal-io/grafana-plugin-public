@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'nominal-review'
+    orgId: 1
+    folder: 'Nominal Review'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
