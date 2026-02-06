@@ -227,7 +227,7 @@ jobs:
 
       - name: Docker logs (on failure)
         if: ${{ always() && steps.run-tests.outcome == 'failure' }}
-        run: docker logs nominalinc-nominalds-datasource > grafana-server.log || true
+        run: docker logs nominaltest-nominalds-datasource > grafana-server.log || true
 
       - name: Stop Grafana
         run: docker compose down

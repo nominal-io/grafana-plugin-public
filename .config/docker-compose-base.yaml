@@ -1,7 +1,7 @@
 services:
   grafana:
     user: root
-    container_name: 'nominalinc-nominalds-datasource'
+    container_name: 'nominaltest-nominalds-datasource'
 
     build:
       context: ..
@@ -20,16 +20,16 @@ services:
     cap_add:
       - SYS_PTRACE
     volumes:
-      - ../dist:/var/lib/grafana/plugins/nominalinc-nominalds-datasource
+      - ../dist:/var/lib/grafana/plugins/nominaltest-nominalds-datasource
       - ../provisioning:/etc/grafana/provisioning
-      - ..:/root/nominalinc-nominalds-datasource
+      - ..:/root/nominaltest-nominalds-datasource
 
     environment:
       NODE_ENV: development
-      GF_LOG_FILTERS: plugin.nominalinc-nominalds-datasource:debug
+      GF_LOG_FILTERS: plugin.nominaltest-nominalds-datasource:debug
       GF_LOG_LEVEL: debug
       GF_DATAPROXY_LOGGING: 1
-      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: nominalinc-nominalds-datasource
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: nominaltest-nominalds-datasource
       # Admin credentials from .env
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}

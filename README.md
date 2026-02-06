@@ -49,7 +49,7 @@ After starting the container, verify the plugin is installed:
 
 ```sh
 # Check if plugin directory exists
-docker exec <container-name> ls -la /var/lib/grafana/plugins/nominalinc-nominalds-datasource/
+docker exec <container-name> ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
 
 # Should show:
 # - module.js (frontend)
@@ -94,7 +94,7 @@ Releases are cut automatically via release-please when conventional commits land
 ```bash
 # Download the latest release (replace VERSION with actual version, e.g., 0.0.13)
 VERSION="0.0.13"
-curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominalinc-nominalds-datasource-${VERSION}.zip" \
+curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominaltest-nominalds-datasource-${VERSION}.zip" \
   -o plugin.zip
 
 # Extract to Grafana plugins directory
@@ -112,17 +112,17 @@ After installation, configure Grafana to allow the unsigned plugin:
 ```ini
 # In grafana.ini or via environment variable
 [plugins]
-allow_loading_unsigned_plugins = nominalinc-nominalds-datasource
+allow_loading_unsigned_plugins = nominaltest-nominalds-datasource
 
 # Or as environment variable:
-# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominalinc-nominalds-datasource
+# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominaltest-nominalds-datasource
 ```
 
 ### Verify Installation
 
 ```bash
 # Check plugin files exist
-ls -la /var/lib/grafana/plugins/nominalinc-nominalds-datasource/
+ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
 
 # Expected files:
 # - module.js (frontend)

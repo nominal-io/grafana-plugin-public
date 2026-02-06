@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # # Create symlink for the plugin executable
-# PLUGIN_DIR="/var/lib/grafana/plugins/nominalinc-nominalds-datasource"
+# PLUGIN_DIR="/var/lib/grafana/plugins/nominaltest-nominalds-datasource"
 # if [ -d "$PLUGIN_DIR" ]; then
 #     cd "$PLUGIN_DIR"
     

@@ -24,12 +24,12 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": null,
+  "id": 2,
   "links": [],
   "panels": [
     {
       "datasource": {
-        "type": "nominalinc-nominalds-datasource",
+        "type": "nominaltest-nominalds-datasource",
         "uid": "nominal-ds"
       },
       "description": "Deterministic backend sanity query. This does not require Nominal API data and is useful to verify plugin wiring.",
@@ -45,6 +45,7 @@
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -61,6 +62,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -76,7 +78,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -102,10 +104,12 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.3.0",
       "targets": [
         {
           "constant": 42,
@@ -118,7 +122,7 @@
     },
     {
       "datasource": {
-        "type": "nominalinc-nominalds-datasource",
+        "type": "nominaltest-nominalds-datasource",
         "uid": "nominal-ds"
       },
       "description": "Replace these fields with a known-good tuple from REVIEW.md after pointing datasource baseUrl to staging.",
@@ -134,6 +138,7 @@
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -150,6 +155,7 @@
               "type": "linear"
             },
             "showPoints": "auto",
+            "showValues": false,
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -165,7 +171,7 @@
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0
               },
               {
                 "color": "red",
@@ -191,16 +197,18 @@
           "showLegend": true
         },
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
+      "pluginVersion": "12.3.0",
       "targets": [
         {
-          "assetRid": "REPLACE_WITH_KNOWN_GOOD_ASSET_RID",
+          "assetRid": "ri.scout.gov-staging.asset.18fbe7fd-de1f-491d-af60-da7f375342d6",
           "buckets": 1000,
-          "channel": "REPLACE_WITH_KNOWN_GOOD_CHANNEL",
-          "dataScopeName": "REPLACE_WITH_KNOWN_GOOD_DATA_SCOPE",
+          "channel": "altitude_m",
+          "dataScopeName": "ref",
           "queryType": "decimation",
           "refId": "A"
         }
@@ -209,6 +217,10 @@
       "type": "timeseries"
     },
     {
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -222,7 +234,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Reviewer notes\n1. Configure datasource `nominal-ds` with API key and set base URL to staging.\n2. Panel A should always return a short line with 2 points.\n3. For Panel B, update asset RID, data scope, and channel using values from `REVIEW.md`.\n4. After setting known-good values, Panel B should return non-empty time series data.",
+        "content": "## Reviewer notes\n1. Configure datasource `nominal-ds` with API key and set base URL to https://api-staging.gov.nominal.io/api.\n2. Panel A should always return a short line with 2 points.\n3. For Panel B, update asset RID, data scope, and channel using values from `REVIEW.md`.\n4. After setting known-good values, Panel B should return non-empty time series data.\n It is recommended to increase the time range since data might be from a week or two ago.",
         "mode": "markdown"
       },
       "pluginVersion": "12.3.0",
@@ -230,8 +242,9 @@
       "type": "text"
     }
   ],
+  "preload": false,
   "refresh": "",
-  "schemaVersion": 41,
+  "schemaVersion": 42,
   "tags": [
     "nominal",
     "review"
@@ -247,6 +260,5 @@
   "timezone": "browser",
   "title": "Nominal Plugin Reviewer - Bootstrap Dashboard",
   "uid": "nominal-review-bootstrap",
-  "version": 1,
-  "weekStart": ""
+  "version": 1
 }
