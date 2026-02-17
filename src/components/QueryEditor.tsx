@@ -1,7 +1,7 @@
 import React, { useState, useEffect, ChangeEvent, useCallback } from 'react';
 import { InlineField, Input, Stack, Select, RadioButtonGroup } from '@grafana/ui';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
-import { getBackendSrv } from '@grafana/runtime';
+import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery } from '../types';
 
@@ -40,6 +40,30 @@ interface Channel {
 
 
 type AssetInputMethod = 'search' | 'direct';
+
+/** Creates a basic asset placeholder when the actual asset can't be found */
+const createBasicAsset = (rid: string, title: string): Asset => ({
+  rid,
+  title,
+  labels: [],
+  dataScopes: [{ dataScopeName: 'dataset', dataSource: { type: 'dataset' } }]
+});
+
+/** Fetches a single asset by its exact RID using the batch lookup endpoint */
+const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
+  // Use the efficient batch lookup endpoint instead of searching all assets
+  const response = await getBackendSrv().post(
+    `${datasourceUrl}/scout/v1/asset/multiple`,
+    [rid]  // API expects an array of RIDs
+  );
+
+  // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
+  const asset = response?.[rid];
+  if (asset?.dataScopes?.length > 0) {
+    return asset;
+  }
+  return null;
+};
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -219,8 +243,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Initialize state from existing query (handles duplicated queries)
   useEffect(() => {
     if (query && query.assetRid && !selectedAsset && !hasManuallySetMethod) {
+      // Resolve template variables if present
+      const resolvedAssetRid = getTemplateSrv().replace(query.assetRid);
+      const isVariable = query.assetRid.includes('$');
+      const searchRid = resolvedAssetRid;
+
+      // If variable couldn't be resolved, skip
+      if (searchRid.includes('$')) {
+        return;
+      }
+
       // Always try search mode first - check if asset exists in search results
-      const asset = assets.find(a => a.rid === query.assetRid);
+      const asset = assets.find(a => a.rid === searchRid);
       if (asset) {
         // Found in search results - use search mode
         setAssetInputMethod('search');
@@ -228,66 +262,26 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       } else if (assets.length > 0) {
         // Assets are loaded but asset not found - must be direct RID input
         setAssetInputMethod('direct');
-        setDirectRID(query.assetRid);
-        // Manually search for the specific asset using the search API
+        setDirectRID(query.assetRid); // Keep original (with variable) for display
+        // Fetch asset by exact RID match
         (async () => {
           try {
-            const response = await getBackendSrv().post(
-              `${datasource.url}/scout/v1/search-assets`,
-              {
-                query: {
-                  searchText: query.assetRid,
-                  type: 'searchText'
-                },
-                sort: {
-                  field: 'CREATED_AT',
-                  isDescending: false
-                },
-                pageSize: 100 // Search more assets to ensure we find the exact RID
-              }
-            );
-            
-            if (response && response.results) {
-              // Find the exact asset by RID
-              const asset = response.results.find((a: Asset) => a.rid === query.assetRid);
-              if (asset && asset.dataScopes && asset.dataScopes.length > 0) {
-                setSelectedAsset(asset);
-                const datasetScopes = asset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
-                const scopeNames = datasetScopes.map((scope: any) => scope.dataScopeName);
-                setDataScopes(scopeNames);
-                loadChannelsForAsset(asset);
-              } else {
-                // Asset not found or no data scopes - create basic asset
-                const basicAsset: Asset = {
-                  rid: query.assetRid || '',
-                  title: 'Asset (Direct RID)',
-                  labels: [],
-                  dataScopes: [{ dataScopeName: 'dataset', dataSource: { type: 'dataset' } }]
-                };
-                setSelectedAsset(basicAsset);
-                setDataScopes(['dataset']);
-                setChannels([]);
-              }
+            const foundAsset = await fetchAssetByRid(datasource.url!, searchRid);
+            if (foundAsset) {
+              setSelectedAsset(foundAsset);
+              const datasetScopes = foundAsset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
+              setDataScopes(datasetScopes.map((scope: any) => scope.dataScopeName));
+              loadChannelsForAsset(foundAsset);
             } else {
-              const basicAsset: Asset = {
-                rid: query.assetRid || '',
-                title: 'Asset (Direct RID)',
-                labels: [],
-                dataScopes: [{ dataScopeName: 'dataset', dataSource: { type: 'dataset' } }]
-              };
-              setSelectedAsset(basicAsset);
+              const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+              setSelectedAsset(createBasicAsset(searchRid, title));
               setDataScopes(['dataset']);
               setChannels([]);
             }
           } catch (error) {
-            console.error('Failed to search for asset by RID:', error);
-            const basicAsset: Asset = {
-              rid: query.assetRid || '',
-              title: 'Asset (Direct RID)',
-              labels: [],
-              dataScopes: [{ dataScopeName: 'dataset', dataSource: { type: 'dataset' } }]
-            };
-            setSelectedAsset(basicAsset);
+            console.error('Failed to fetch asset by RID:', error);
+            const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+            setSelectedAsset(createBasicAsset(searchRid, title));
             setDataScopes(['dataset']);
             setChannels([]);
           }
@@ -406,93 +400,45 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const handleDirectRIDChange = useCallback(async (rid: string) => {
     setDirectRID(rid);
-    if (query && query.assetRid !== rid) {
-      onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
-    }
-    
+
     if (rid.trim()) {
       try {
-        // Search for the asset using the search API
-        const response = await getBackendSrv().post(
-          `${datasource.url}/scout/v1/search-assets`,
-          {
-            query: {
-              searchText: rid,
-              type: 'searchText'
-            },
-            sort: {
-              field: 'CREATED_AT',
-              isDescending: false
-            },
-            pageSize: 100 // Search more assets to ensure we find the exact RID
+        // Resolve template variables (e.g., $asset or ${asset}) to actual RID
+        const resolvedRid = getTemplateSrv().replace(rid);
+        const isVariable = rid.includes('$');
+
+        // If it's still a variable (not resolved), skip the search but still update query
+        if (resolvedRid.includes('$')) {
+          if (query && query.assetRid !== rid) {
+            onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
           }
-        );
-        
-        if (response && response.results) {
-          // Find the exact asset by RID
-          const asset = response.results.find((a: Asset) => a.rid === rid);
-          if (asset && asset.dataScopes && asset.dataScopes.length > 0) {
-            // Use the found asset data
-            setSelectedAsset(asset);
-            
-            // Extract data scope names - only dataset types
-            const datasetScopes = asset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
-            const scopeNames = datasetScopes.map((scope: any) => scope.dataScopeName);
-            setDataScopes(scopeNames);
-            
-            // Load channels using the actual asset data
-            loadChannelsForAsset(asset);
-          } else {
-            // Asset not found or no data scopes - create basic asset
-            const basicAsset: Asset = {
-              rid: rid,
-              title: 'Asset (Direct RID)',
-              labels: [],
-              dataScopes: [
-                {
-                  dataScopeName: 'dataset',
-                  dataSource: { type: 'dataset' }
-                }
-              ]
-            };
-            setSelectedAsset(basicAsset);
-            setDataScopes(['dataset']);
-            setChannels([]); // Clear channels since we can't fetch them properly
-          }
+          return;
+        }
+
+        // Fetch asset by exact RID match
+        const foundAsset = await fetchAssetByRid(datasource.url!, resolvedRid);
+        if (foundAsset) {
+          setSelectedAsset(foundAsset);
+          const datasetScopes = foundAsset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
+          setDataScopes(datasetScopes.map((scope: any) => scope.dataScopeName));
+          loadChannelsForAsset(foundAsset);
+          onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
         } else {
-          // No results from search API
-          const basicAsset: Asset = {
-            rid: rid,
-            title: 'Asset (Direct RID)',
-            labels: [],
-            dataScopes: [
-              {
-                dataScopeName: 'dataset',
-                dataSource: { type: 'dataset' }
-              }
-            ]
-          };
-          setSelectedAsset(basicAsset);
+          // Asset not found - create fallback
+          const title = isVariable ? `Asset (${rid})` : 'Asset (Direct RID)';
+          setSelectedAsset(createBasicAsset(resolvedRid, title));
           setDataScopes(['dataset']);
-          setChannels([]); // Clear channels since we can't fetch them properly
+          setChannels([]);
+          onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
         }
       } catch (error) {
-        console.error('Failed to search for asset by RID:', error);
-        // Fallback to basic asset
-        const basicAsset: Asset = {
-          rid: rid,
-          title: 'Asset (Direct RID)',
-          labels: [],
-          dataScopes: [
-            {
-              dataScopeName: 'dataset',
-              dataSource: { type: 'dataset' }
-            }
-          ]
-        };
-        setSelectedAsset(basicAsset);
+        console.error('Failed to fetch asset by RID:', error);
+        const resolvedRid = getTemplateSrv().replace(rid);
+        const title = rid.includes('$') ? `Asset (${rid})` : 'Asset (Direct RID)';
+        setSelectedAsset(createBasicAsset(resolvedRid.includes('$') ? rid : resolvedRid, title));
         setDataScopes(['dataset']);
-        setChannels([]); // Clear channels since we can't fetch them properly
+        setChannels([]);
+        onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
       }
     } else {
       setSelectedAsset(null);

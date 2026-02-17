@@ -218,7 +218,18 @@ func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, quer
 		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("Query validation failed: %v", err))
 	}
 
-	log.DefaultLogger.Debug("Processing query", "assetRid", qm.AssetRid, "channel", qm.Channel, "queryType", qm.QueryType)
+	log.DefaultLogger.Debug("Processing query",
+		"assetRid", qm.AssetRid,
+		"channel", qm.Channel,
+		"dataScopeName", qm.DataScopeName,
+		"queryType", qm.QueryType,
+		"buckets", qm.Buckets)
+
+	// Check if template variable was not resolved
+	if strings.Contains(qm.AssetRid, "$") {
+		log.DefaultLogger.Error("Template variable not resolved in assetRid", "assetRid", qm.AssetRid)
+		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("Template variable not resolved: %s - make sure the variable has a value selected", qm.AssetRid))
+	}
 
 	// Handle connection test query type
 	if qm.QueryType == "connectionTest" {
@@ -640,6 +651,12 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		return d.handleChannelsSearch(ctx, req, sender)
 	}
 
+	// Handle assets variable endpoint for Grafana template variables
+	if req.Path == "assets" || req.Path == "/assets" {
+		log.DefaultLogger.Debug("Handling assets variable request")
+		return d.handleAssetsVariable(ctx, req, sender)
+	}
+
 	// Handle requests with /nominal prefix - strip it for API calls
 	if strings.HasPrefix(req.Path, "nominal/") {
 		// Remove the /nominal prefix for the actual API call
@@ -872,6 +889,191 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 		return *channel.Description
 	}
 	return fmt.Sprintf("Channel: %s", string(channel.Name))
+}
+
+// handleAssetsVariable handles the assets endpoint for Grafana template variables
+// Returns a list of assets in MetricFindValue format: { text: "Asset Name", value: "ri.scout..." }
+func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	log.DefaultLogger.Debug("Assets variable request", "method", req.Method, "body", string(req.Body))
+
+	// Parse optional request body for search/filter parameters
+	var searchRequest struct {
+		SearchText string `json:"searchText"`
+		MaxResults int    `json:"maxResults"`
+	}
+
+	if req.Body != nil && len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
+			log.DefaultLogger.Debug("Failed to parse request body, using defaults", "error", err)
+		}
+	}
+
+	// Set defaults
+	if searchRequest.MaxResults == 0 {
+		searchRequest.MaxResults = 500
+	}
+
+	// Load settings to get API key
+	config, err := models.LoadPluginSettings(d.settings)
+	if err != nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	// Fetch assets with pagination
+	assetResponses, err := d.fetchAssetsForVariable(ctx, config, searchRequest.SearchText, searchRequest.MaxResults)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to fetch assets", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch assets: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	// Transform to MetricFindValue format: { text: "name", value: "rid" }
+	// Filter to assets with dataset data sources
+	result := make([]map[string]string, 0)
+	for _, resp := range assetResponses {
+		for _, asset := range resp.Results {
+			// Check if asset has dataset data sources
+			hasDataset := false
+			for _, scope := range asset.DataScopes {
+				if scope.DataSource.Type == "dataset" {
+					hasDataset = true
+					break
+				}
+			}
+			if hasDataset {
+				result = append(result, map[string]string{
+					"text":  asset.Title,
+					"value": asset.Rid,
+				})
+				if len(result) >= searchRequest.MaxResults {
+					break
+				}
+			}
+		}
+	}
+
+	responseBytes, err := json.Marshal(result)
+	if err != nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	log.DefaultLogger.Debug("Assets variable request successful", "assetCount", len(result))
+
+	return sender.Send(&backend.CallResourceResponse{
+		Status: http.StatusOK,
+		Headers: map[string][]string{
+			"Content-Type": {"application/json"},
+		},
+		Body: responseBytes,
+	})
+}
+
+// AssetResponse represents the API response for asset search
+type AssetResponse struct {
+	Results []struct {
+		Rid         string `json:"rid"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		DataScopes  []struct {
+			DataScopeName string `json:"dataScopeName"`
+			DataSource    struct {
+				Type string `json:"type"`
+			} `json:"dataSource"`
+		} `json:"dataScopes"`
+	} `json:"results"`
+	NextPageToken string `json:"nextPageToken"`
+}
+
+// fetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls
+func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
+	var allResults []AssetResponse
+	pageToken := ""
+	pageSize := 50
+	totalFetched := 0
+
+	baseURL := config.GetAPIBaseURL()
+	if baseURL == "" {
+		baseURL = "https://api.gov.nominal.io/api"
+	}
+	baseURL = strings.TrimSuffix(baseURL, "/")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	for totalFetched < maxResults {
+		// Build request body matching the format used by QueryEditor
+		requestBody := map[string]interface{}{
+			"query": map[string]interface{}{
+				"searchText": searchText,
+				"type":       "searchText",
+			},
+			"sort": map[string]interface{}{
+				"field":        "CREATED_AT",
+				"isDescending": false,
+			},
+			"pageSize": pageSize,
+		}
+
+		if pageToken != "" {
+			requestBody["nextPageToken"] = pageToken
+		}
+
+		bodyBytes, err := json.Marshal(requestBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		// Make HTTP request
+		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/scout/v1/search-assets", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			errBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(errBody))
+		}
+
+		var assetResp AssetResponse
+		if err := json.NewDecoder(resp.Body).Decode(&assetResp); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+		resp.Body.Close()
+
+		allResults = append(allResults, assetResp)
+		totalFetched += len(assetResp.Results)
+
+		// Check for more pages
+		if assetResp.NextPageToken == "" || len(assetResp.Results) < pageSize {
+			break
+		}
+		pageToken = assetResp.NextPageToken
+	}
+
+	return allResults, nil
 }
 
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection
