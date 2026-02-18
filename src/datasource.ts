@@ -45,13 +45,25 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * Supports query types:
    * - "assets" or empty: Returns all assets with text=title, value=rid
    * - "assets:<search>": Returns assets matching search text
+   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
+   * - "datascopes(${asset})": Returns datascopes for the resolved asset variable
    */
   async metricFindQuery(query: string, options?: any): Promise<MetricFindValue[]> {
-    const trimmedQuery = (query || '').trim().toLowerCase();
+    const trimmedQuery = (query || '').trim();
+    const lowerQuery = trimmedQuery.toLowerCase();
+
+    // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
+    const datascopesMatch = trimmedQuery.match(/^datascopes\((.+)\)$/i);
+    if (datascopesMatch) {
+      const assetRidRaw = datascopesMatch[1].trim();
+      // Resolve any template variables in the asset RID
+      const assetRid = getTemplateSrv().replace(assetRidRaw);
+      return this.fetchDatascopeVariables(assetRid);
+    }
 
     // Default to assets if query is empty or starts with "assets"
-    if (!trimmedQuery || trimmedQuery === 'assets' || trimmedQuery.startsWith('assets:')) {
-      const searchText = trimmedQuery.startsWith('assets:')
+    if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
+      const searchText = lowerQuery.startsWith('assets:')
         ? trimmedQuery.substring(7).trim()
         : '';
 
@@ -90,6 +102,42 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       });
     } catch (error) {
       console.error('Failed to fetch assets for variable:', error);
+      throw error;  // Let Grafana display the error to the user
+    }
+  }
+
+  private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
+    // If asset RID contains unresolved variable, return empty
+    if (!assetRid || assetRid.includes('$')) {
+      return [];
+    }
+
+    try {
+      const response = await getBackendSrv().post(
+        `${this.url}/datascopes`,
+        {
+          assetRid: assetRid,
+        }
+      );
+
+      // Validate response format
+      if (!Array.isArray(response)) {
+        throw new Error('Invalid response: expected array of datascopes');
+      }
+
+      // Validate and transform each item to ensure it has required MetricFindValue fields
+      return response.map((item: unknown, index: number) => {
+        if (typeof item !== 'object' || item === null) {
+          throw new Error(`Invalid datascope at index ${index}: expected object`);
+        }
+        const obj = item as Record<string, unknown>;
+        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
+          throw new Error(`Invalid datascope at index ${index}: missing text or value`);
+        }
+        return { text: obj.text, value: obj.value };
+      });
+    } catch (error) {
+      console.error('Failed to fetch datascopes for variable:', error);
       throw error;  // Let Grafana display the error to the user
     }
   }

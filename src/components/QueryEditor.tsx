@@ -80,10 +80,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [dataScopes, setDataScopes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>('search');
-  const [directRID, setDirectRID] = useState('');
+  // Initialize input method from saved query, defaulting to 'search'
+  const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(
+    query?.assetInputMethod || 'search'
+  );
+  // Initialize directRID from saved query if using direct mode
+  const [directRID, setDirectRID] = useState(
+    query?.assetInputMethod === 'direct' ? (query?.assetRid || '') : ''
+  );
   const [hasManuallySetMethod, setHasManuallySetMethod] = useState(false);
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);
+  // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
+  const [hasUserInteracted, setHasUserInteracted] = useState(false);
   
   const copyToClipboard = async (text: string) => {
     try {
@@ -236,9 +244,47 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
   }, [datasource]);
 
+  // Helper to fetch and initialize asset state by RID
+  const initializeAssetFromRid = useCallback(async (
+    searchRid: string,
+    originalAssetRid: string,
+    isVariable: boolean,
+    isMounted: () => boolean
+  ) => {
+    try {
+      const foundAsset = await fetchAssetByRid(datasource.url!, searchRid);
+      if (!isMounted()) {
+        return;
+      }
+      if (foundAsset) {
+        setSelectedAsset(foundAsset);
+        const validScopes = foundAsset.dataScopes.filter(
+          (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+        );
+        setDataScopes(validScopes.map((scope) => scope.dataScopeName));
+        loadChannelsForAsset(foundAsset);
+      } else {
+        const title = isVariable ? `Asset (${originalAssetRid})` : 'Asset (Direct RID)';
+        setSelectedAsset(createBasicAsset(searchRid, title));
+        setDataScopes(['dataset']);
+        setChannels([]);
+      }
+    } catch (error) {
+      if (!isMounted()) {
+        return;
+      }
+      console.error('Failed to fetch asset by RID:', error);
+      const title = isVariable ? `Asset (${originalAssetRid})` : 'Asset (Direct RID)';
+      setSelectedAsset(createBasicAsset(searchRid, title));
+      setDataScopes(['dataset']);
+      setChannels([]);
+    }
+  }, [datasource.url, loadChannelsForAsset]);
+
   // Initialize state from existing query (handles duplicated queries)
   useEffect(() => {
     let mounted = true;
+    const isMounted = () => mounted;
 
     if (query && query.assetRid && !selectedAsset && !hasManuallySetMethod) {
       // Resolve template variables if present
@@ -248,56 +294,35 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
       // If variable couldn't be resolved, skip
       if (!searchRid.includes('$')) {
-        // Always try search mode first - check if asset exists in search results
-        const asset = assets.find(a => a.rid === searchRid);
-        if (asset) {
-          // Found in search results - use search mode
-          setAssetInputMethod('search');
-          setSelectedAsset(asset);
-        } else if (assets.length > 0) {
-          // Assets are loaded but asset not found - must be direct RID input
-          setAssetInputMethod('direct');
-          setDirectRID(query.assetRid); // Keep original (with variable) for display
-          // Fetch asset by exact RID match
-          (async () => {
-            try {
-              const foundAsset = await fetchAssetByRid(datasource.url!, searchRid);
-              if (!mounted) {
-                return;
-              }
-              if (foundAsset) {
-                setSelectedAsset(foundAsset);
-                const validScopes = foundAsset.dataScopes.filter(
-                  (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-                );
-                setDataScopes(validScopes.map((scope) => scope.dataScopeName));
-                loadChannelsForAsset(foundAsset);
-              } else {
-                const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
-                setSelectedAsset(createBasicAsset(searchRid, title));
-                setDataScopes(['dataset']);
-                setChannels([]);
-              }
-            } catch (error) {
-              if (!mounted) {
-                return;
-              }
-              console.error('Failed to fetch asset by RID:', error);
-              const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
-              setSelectedAsset(createBasicAsset(searchRid, title));
-              setDataScopes(['dataset']);
-              setChannels([]);
-            }
-          })();
+        // If the query has a saved input method, use it directly instead of inferring
+        if (query.assetInputMethod === 'direct') {
+          // Direct RID mode - fetch asset data for display
+          initializeAssetFromRid(searchRid, query.assetRid, isVariable, isMounted);
+        } else {
+          // Search mode or no saved method - try to find asset in search results
+          const asset = assets.find(a => a.rid === searchRid);
+          if (asset) {
+            // Found in search results - use search mode
+            setAssetInputMethod('search');
+            setSelectedAsset(asset);
+          } else if (assets.length > 0 && !query.assetInputMethod) {
+            // Assets loaded but not found, and no saved method - infer direct mode
+            setAssetInputMethod('direct');
+            setDirectRID(query.assetRid); // Keep original (with variable) for display
+            initializeAssetFromRid(searchRid, query.assetRid, isVariable, isMounted);
+          }
         }
       }
     }
 
     return () => { mounted = false; };
-  }, [query, selectedAsset, assets, hasManuallySetMethod, loadChannelsForAsset, datasource]);
+  }, [query, selectedAsset, assets, hasManuallySetMethod, initializeAssetFromRid]);
 
   // Compute resolved asset RID on every render - this changes when template variables change
   const resolvedAssetRid = query?.assetRid ? getTemplateSrv().replace(query.assetRid) : '';
+
+  // Compute resolved datascope name - this changes when template variables change
+  const resolvedDataScopeName = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
 
   // Update dropdown options when the resolved asset RID changes
   useEffect(() => {
@@ -376,16 +401,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       // Fetch channels from API
       loadChannelsForAsset(selectedAsset);
 
-      // Auto-select data scope if only one available
-      if (scopeNames.length === 1 && query?.dataScopeName !== scopeNames[0]) {
-        onChange({ ...query, dataScopeName: scopeNames[0], queryType: 'decimation', buckets: 1000 });
-      }
-      // Update query with selected asset only if it has changed (search mode)
-      else if (assetInputMethod === 'search' && query && query.assetRid !== selectedAsset.rid) {
-        onChange({ ...query, assetRid: selectedAsset.rid });
+      // Only auto-update query if user has interacted with the query builder
+      // This prevents unwanted resets when just editing panel display settings
+      if (hasUserInteracted) {
+        // Auto-select data scope if only one available
+        if (scopeNames.length === 1 && query?.dataScopeName !== scopeNames[0]) {
+          onChange({ ...query, dataScopeName: scopeNames[0], assetInputMethod, queryType: 'decimation', buckets: 1000 });
+        }
+        // Update query with selected asset only if it has changed (search mode)
+        else if (assetInputMethod === 'search' && query && query.assetRid !== selectedAsset.rid) {
+          onChange({ ...query, assetRid: selectedAsset.rid, assetInputMethod: 'search' });
+        }
       }
     }
-  }, [selectedAsset, loadChannelsForAsset, onChange, query, assetInputMethod]);
+  }, [selectedAsset, loadChannelsForAsset, onChange, query, assetInputMethod, hasUserInteracted]);
 
   // Trigger graph update when query is complete
   useEffect(() => {
@@ -396,6 +425,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, [query?.assetRid, query?.channel, query?.dataScopeName, query, onRunQuery]);
 
   const onAssetSelect = (selection: SelectableValue<string>) => {
+    setHasUserInteracted(true);
     const asset = assets.find(a => a.rid === selection.value);
     setSelectedAsset(asset || null);
   };
@@ -422,9 +452,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   });
 
   // Prepare channel options for dropdown - only show channels for the selected data scope
-  const channelOptions: Array<SelectableValue<string>> = query?.dataScopeName
+  // Use resolved datascope name for filtering (handles template variables)
+  const channelOptions: Array<SelectableValue<string>> = resolvedDataScopeName
     ? channels
-        .filter(ch => ch.dataScopeName === query.dataScopeName)
+        .filter(ch => ch.dataScopeName === resolvedDataScopeName)
         .map(ch => ({
           label: ch.name,
           value: ch.name,
@@ -433,12 +464,32 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     : [];
 
   // Prepare data scope options for dropdown
-  const dataScopeOptions: Array<SelectableValue<string>> = dataScopes.map(scope => ({
-    label: scope,
-    value: scope
-  }));
+  // Include template variable option if the current value is a variable
+  const dataScopeOptions: Array<SelectableValue<string>> = (() => {
+    const options = dataScopes.map(scope => ({
+      label: scope,
+      value: scope
+    }));
+
+    // If the current dataScopeName is a template variable, add it as an option
+    const currentValue = query?.dataScopeName || '';
+    if (currentValue.includes('$') && !dataScopes.includes(currentValue)) {
+      // Show both the variable syntax and resolved value if different
+      const resolved = resolvedDataScopeName;
+      const label = resolved && resolved !== currentValue && !resolved.includes('$')
+        ? `${currentValue} → ${resolved}`
+        : currentValue;
+      options.unshift({
+        label: label,
+        value: currentValue
+      });
+    }
+
+    return options;
+  })();
 
   const handleAssetInputMethodChange = (method: AssetInputMethod) => {
+    setHasUserInteracted(true);
     setAssetInputMethod(method);
     setHasManuallySetMethod(true); // Mark as manually set to prevent automatic overrides
     // Clear current selections when switching methods
@@ -446,10 +497,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     setChannels([]);
     setDataScopes([]);
     setDirectRID(''); // Clear direct RID input
-    onChange({ ...query, assetRid: '', channel: '', dataScopeName: '' });
+    onChange({ ...query, assetRid: '', channel: '', dataScopeName: '', assetInputMethod: method });
   };
 
   const handleDirectRIDChange = useCallback(async (rid: string) => {
+    setHasUserInteracted(true);
     setDirectRID(rid);
 
     if (rid.trim()) {
@@ -461,7 +513,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         // If it's still a variable (not resolved), skip the search but still update query
         if (resolvedRid.includes('$')) {
           if (query && query.assetRid !== rid) {
-            onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
+            onChange({ ...query, assetRid: rid, assetInputMethod: 'direct', queryType: 'decimation', buckets: 1000 });
           }
           return;
         }
@@ -475,14 +527,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           );
           setDataScopes(validScopes.map((scope) => scope.dataScopeName));
           loadChannelsForAsset(foundAsset);
-          onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
+          onChange({ ...query, assetRid: rid, assetInputMethod: 'direct', queryType: 'decimation', buckets: 1000 });
         } else {
           // Asset not found - create fallback
           const title = isVariable ? `Asset (${rid})` : 'Asset (Direct RID)';
           setSelectedAsset(createBasicAsset(resolvedRid, title));
           setDataScopes(['dataset']);
           setChannels([]);
-          onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
+          onChange({ ...query, assetRid: rid, assetInputMethod: 'direct', queryType: 'decimation', buckets: 1000 });
         }
       } catch (error) {
         console.error('Failed to fetch asset by RID:', error);
@@ -491,7 +543,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         setSelectedAsset(createBasicAsset(resolvedRid.includes('$') ? rid : resolvedRid, title));
         setDataScopes(['dataset']);
         setChannels([]);
-        onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
+        onChange({ ...query, assetRid: rid, assetInputMethod: 'direct', queryType: 'decimation', buckets: 1000 });
       }
     } else {
       setSelectedAsset(null);
@@ -585,38 +637,47 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               <InlineField label="Data scope" labelWidth={12}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  value={dataScopeOptions.some(opt => opt.value === query?.dataScopeName) ? query?.dataScopeName : ''}
+                  value={query?.dataScopeName || ''}
                   onChange={(value) => {
-                    const newScope = value?.value;
+                    setHasUserInteracted(true);
+                    const newScope = value?.value || '';
+                    // Resolve to check if channel exists - use resolved value for comparison
+                    const resolvedNewScope = newScope.includes('$')
+                      ? getTemplateSrv().replace(newScope)
+                      : newScope;
                     // Check if current channel exists in the new scope
                     const channelExistsInNewScope = channels.some(
-                      ch => ch.dataScopeName === newScope && ch.name === query?.channel
+                      ch => ch.dataScopeName === resolvedNewScope && ch.name === query?.channel
                     );
                     onChange({
                       ...query,
                       dataScopeName: newScope,
                       // Only clear channel if it doesn't exist in the new scope
                       channel: channelExistsInNewScope ? query?.channel : '',
+                      assetInputMethod,
                       queryType: 'decimation',
                       buckets: 1000
                     });
                   }}
                   options={dataScopeOptions}
-                  placeholder="Choose scope..."
-                  width={18}
+                  placeholder="Choose scope or use $variable..."
+                  width={22}
                   isClearable={false}
+                  allowCustomValue={true}
                 />
               </InlineField>
               
               <InlineField label="Channel" labelWidth={8}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  key={`channel-select-${query?.dataScopeName ?? 'none'}-${channelOptions.length}`}
+                  key={`channel-select-${resolvedDataScopeName || 'none'}-${channelOptions.length}`}
                   value={channelOptions.some(opt => opt.value === query?.channel) ? query?.channel : ''}
                   onChange={(value) => {
+                    setHasUserInteracted(true);
                     onChange({
                       ...query,
                       channel: value?.value || '',
+                      assetInputMethod,
                       queryType: 'decimation',
                       buckets: 1000
                     });

@@ -7,6 +7,9 @@ export interface NominalQuery extends DataQuery {
   channel?: string;
   dataScopeName?: string;
 
+  // Query builder mode - remembers how the query was built
+  assetInputMethod?: 'search' | 'direct';
+
   // Query parameters
   buckets?: number;
   queryType?: 'timeShift' | 'decimation' | 'raw';
