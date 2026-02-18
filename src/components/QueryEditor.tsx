@@ -41,6 +41,9 @@ interface Channel {
 
 type AssetInputMethod = 'search' | 'direct';
 
+/** Data source types that support channel queries */
+const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection'];
+
 /** Creates a basic asset placeholder when the actual asset can't be found */
 const createBasicAsset = (rid: string, title: string): Asset => ({
   rid,
@@ -51,6 +54,11 @@ const createBasicAsset = (rid: string, title: string): Asset => ({
 
 /** Fetches a single asset by its exact RID using the batch lookup endpoint */
 const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
+  // Validate RID format - must start with "ri." to be a valid resource identifier
+  if (!rid || !rid.startsWith('ri.')) {
+    return null;
+  }
+
   // Use the efficient batch lookup endpoint instead of searching all assets
   const response = await getBackendSrv().post(
     `${datasourceUrl}/scout/v1/asset/multiple`,
@@ -108,7 +116,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   };
 
   const loadAssets = useCallback(async () => {
-    console.log('🔍 loadAssets called with searchQuery:', searchQuery);
     setIsLoading(true);
     try {
       // Use the backend proxy to search for assets
@@ -128,17 +135,16 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       );
       
       if (response && response.results) {
-        // Filter assets to only include those with dataset data sources
+        // Filter assets to only include those with supported data source types
         const filteredAssets = response.results.filter((asset: Asset) => {
-          return asset.dataScopes && asset.dataScopes.length > 0 && 
-                 asset.dataScopes.some(scope => scope.dataSource.type === 'dataset');
+          return asset.dataScopes && asset.dataScopes.length > 0 &&
+                 asset.dataScopes.some(scope =>
+                   SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+                 );
         });
         
         setAssets(filteredAssets);
-        console.log('Loaded assets:', response.results.length, 'total →', filteredAssets.length, 'with datasets');
-        console.log('First filtered asset:', filteredAssets[0]);
       } else {
-        console.log('No results in response:', response);
         setAssets([]);
       }
     } catch (error) {
@@ -168,80 +174,72 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, [searchQuery, datasource]);
 
   const loadChannelsForAsset = useCallback(async (asset: Asset) => {
-    console.log('🔍 loadChannelsForAsset called for asset:', asset.title);
     try {
-      // Extract data source RIDs from asset's data scopes using actual API-provided RIDs
-      // Prefer dataset data sources for time-series channels; include other supported types when present
+      // Build a map from data source RID to data scope name
+      const dataSourceToScope: Record<string, string> = {};
       const dataSourceRids: string[] = [];
+
       for (const scope of asset.dataScopes || []) {
         const ds = scope.dataSource;
-        if (!ds) {
+        if (!ds || !SUPPORTED_DATA_SOURCE_TYPES.includes(ds.type)) {
           continue;
         }
+        let rid: string | undefined;
         if (ds.type === 'dataset' && ds.dataset) {
-          dataSourceRids.push(ds.dataset);
-        } else if (ds.type === 'connection' && (ds as any).connection) {
-          dataSourceRids.push((ds as any).connection);
-        } else if (ds.type === 'logSet' && (ds as any).logSet) {
-          dataSourceRids.push((ds as any).logSet);
-        } else if (ds.type === 'video' && (ds as any).video) {
-          // Some backends may not return channels for video; include for completeness
-          dataSourceRids.push((ds as any).video);
+          rid = ds.dataset;
+        } else if (ds.type === 'connection' && ds.connection) {
+          rid = ds.connection;
+        }
+        if (rid) {
+          dataSourceRids.push(rid);
+          dataSourceToScope[rid] = scope.dataScopeName;
         }
       }
 
       if (dataSourceRids.length === 0) {
-        console.log('No dataset scopes found for asset');
         setChannels([]);
         return;
       }
-
-      console.log('Searching channels for data source RIDs:', dataSourceRids);
 
       // Call backend channels search endpoint
       const response = await getBackendSrv().post(
         `${datasource.url}/channels`,
         {
           dataSourceRids: dataSourceRids,
-          // Provide empty fuzzy search to fetch as many channels as allowed by default page size
           searchText: ''
         }
       );
 
       if (response && response.channels) {
         // Transform API response to our Channel interface
-        const datasetScopes = (asset.dataScopes || []).filter(scope => scope.dataSource.type === 'dataset');
-        console.log('Available dataset scopes for channels:', datasetScopes);
-        
+        // Map each channel back to its correct data scope using the dataSource RID
         const apiChannels: Channel[] = response.channels.map((ch: any) => {
-          // Try to match channel to appropriate data scope, or use first dataset scope
-          const matchingScope = datasetScopes[0]; // For now, use first dataset scope
-          console.log(`Channel ${ch.name} assigned to data scope:`, matchingScope?.dataScopeName);
-          
+          // ch.dataSource is the RID of the data source this channel belongs to
+          const channelDataSourceRid = ch.dataSource;
+          const matchingScopeName = dataSourceToScope[channelDataSourceRid] || 'dataset';
+
           return {
             name: ch.name,
             type: ch.type || 'numeric',
             description: ch.description || `Channel: ${ch.name}`,
-            dataScopeName: matchingScope?.dataScopeName || 'dataset'
+            dataScopeName: matchingScopeName
           };
         });
 
         setChannels(apiChannels);
-        console.log('Loaded channels from API:', apiChannels.length);
-        console.log('Available channels:', apiChannels);
       } else {
-        console.log('No channels returned from API');
         setChannels([]);
       }
     } catch (error) {
       console.error('Failed to load channels from API:', error);
-      // Fallback to empty channels instead of hardcoded ones
       setChannels([]);
     }
   }, [datasource]);
 
   // Initialize state from existing query (handles duplicated queries)
   useEffect(() => {
+    let mounted = true;
+
     if (query && query.assetRid && !selectedAsset && !hasManuallySetMethod) {
       // Resolve template variables if present
       const resolvedAssetRid = getTemplateSrv().replace(query.assetRid);
@@ -249,46 +247,106 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       const searchRid = resolvedAssetRid;
 
       // If variable couldn't be resolved, skip
-      if (searchRid.includes('$')) {
-        return;
-      }
-
-      // Always try search mode first - check if asset exists in search results
-      const asset = assets.find(a => a.rid === searchRid);
-      if (asset) {
-        // Found in search results - use search mode
-        setAssetInputMethod('search');
-        setSelectedAsset(asset);
-      } else if (assets.length > 0) {
-        // Assets are loaded but asset not found - must be direct RID input
-        setAssetInputMethod('direct');
-        setDirectRID(query.assetRid); // Keep original (with variable) for display
-        // Fetch asset by exact RID match
-        (async () => {
-          try {
-            const foundAsset = await fetchAssetByRid(datasource.url!, searchRid);
-            if (foundAsset) {
-              setSelectedAsset(foundAsset);
-              const datasetScopes = foundAsset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
-              setDataScopes(datasetScopes.map((scope: any) => scope.dataScopeName));
-              loadChannelsForAsset(foundAsset);
-            } else {
+      if (!searchRid.includes('$')) {
+        // Always try search mode first - check if asset exists in search results
+        const asset = assets.find(a => a.rid === searchRid);
+        if (asset) {
+          // Found in search results - use search mode
+          setAssetInputMethod('search');
+          setSelectedAsset(asset);
+        } else if (assets.length > 0) {
+          // Assets are loaded but asset not found - must be direct RID input
+          setAssetInputMethod('direct');
+          setDirectRID(query.assetRid); // Keep original (with variable) for display
+          // Fetch asset by exact RID match
+          (async () => {
+            try {
+              const foundAsset = await fetchAssetByRid(datasource.url!, searchRid);
+              if (!mounted) {
+                return;
+              }
+              if (foundAsset) {
+                setSelectedAsset(foundAsset);
+                const validScopes = foundAsset.dataScopes.filter(
+                  (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+                );
+                setDataScopes(validScopes.map((scope) => scope.dataScopeName));
+                loadChannelsForAsset(foundAsset);
+              } else {
+                const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+                setSelectedAsset(createBasicAsset(searchRid, title));
+                setDataScopes(['dataset']);
+                setChannels([]);
+              }
+            } catch (error) {
+              if (!mounted) {
+                return;
+              }
+              console.error('Failed to fetch asset by RID:', error);
               const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
               setSelectedAsset(createBasicAsset(searchRid, title));
               setDataScopes(['dataset']);
               setChannels([]);
             }
-          } catch (error) {
-            console.error('Failed to fetch asset by RID:', error);
-            const title = isVariable ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
-            setSelectedAsset(createBasicAsset(searchRid, title));
-            setDataScopes(['dataset']);
-            setChannels([]);
-          }
-        })();
+          })();
+        }
       }
     }
+
+    return () => { mounted = false; };
   }, [query, selectedAsset, assets, hasManuallySetMethod, loadChannelsForAsset, datasource]);
+
+  // Compute resolved asset RID on every render - this changes when template variables change
+  const resolvedAssetRid = query?.assetRid ? getTemplateSrv().replace(query.assetRid) : '';
+
+  // Update dropdown options when the resolved asset RID changes
+  useEffect(() => {
+    // Skip if not fully resolved (still contains $) or empty
+    if (!resolvedAssetRid || resolvedAssetRid.includes('$')) {
+      return;
+    }
+
+    // Skip if selectedAsset already matches the resolved RID
+    if (selectedAsset?.rid === resolvedAssetRid) {
+      return;
+    }
+
+    // Resolved RID changed - fetch new asset and update dropdowns
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const foundAsset = await fetchAssetByRid(datasource.url!, resolvedAssetRid);
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (foundAsset) {
+          setSelectedAsset(foundAsset);
+          const validScopes = foundAsset.dataScopes.filter(
+            (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+          );
+          setDataScopes(validScopes.map((scope) => scope.dataScopeName));
+          loadChannelsForAsset(foundAsset);
+        } else {
+          // Asset not found - create basic placeholder
+          const title = query?.assetRid?.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+          setSelectedAsset(createBasicAsset(resolvedAssetRid, title));
+          setDataScopes(['dataset']);
+          setChannels([]);
+        }
+      } catch (error) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        console.error('Failed to fetch asset for variable change:', error);
+        // Set placeholder to prevent infinite retry loop
+        const title = query?.assetRid?.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+        setSelectedAsset(createBasicAsset(resolvedAssetRid, title));
+        setDataScopes(['dataset']);
+        setChannels([]);
+      }
+    })();
+    return () => controller.abort();
+  }, [resolvedAssetRid, selectedAsset?.rid, datasource, loadChannelsForAsset, query?.assetRid]);
 
   // Load assets on component mount and when search query changes
   useEffect(() => {
@@ -308,49 +366,39 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Update dependent fields when asset changes
   useEffect(() => {
     if (selectedAsset) {
-      // Extract data scope names - only dataset types
-      const datasetScopes = selectedAsset.dataScopes.filter(scope => scope.dataSource.type === 'dataset');
-      const scopeNames = datasetScopes.map(scope => scope.dataScopeName);
+      // Extract data scope names from supported data source types
+      const validScopes = selectedAsset.dataScopes.filter(
+        (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+      );
+      const scopeNames = validScopes.map((scope) => scope.dataScopeName);
       setDataScopes(scopeNames);
-      
-      // Fetch channels from API instead of generating hardcoded ones
+
+      // Fetch channels from API
       loadChannelsForAsset(selectedAsset);
-      
-      console.log('Loading channels for asset:', selectedAsset.title);
-      console.log('Data scopes:', scopeNames);
-      console.log('Full asset data scopes:', selectedAsset.dataScopes);
-      console.log('Selected asset details:', selectedAsset);
-      
-      // Update query with selected asset only if it has changed
-      if (query && query.assetRid !== selectedAsset.rid) {
+
+      // Auto-select data scope if only one available
+      if (scopeNames.length === 1 && query?.dataScopeName !== scopeNames[0]) {
+        onChange({ ...query, dataScopeName: scopeNames[0], queryType: 'decimation', buckets: 1000 });
+      }
+      // Update query with selected asset only if it has changed (search mode)
+      else if (assetInputMethod === 'search' && query && query.assetRid !== selectedAsset.rid) {
         onChange({ ...query, assetRid: selectedAsset.rid });
       }
     }
-  }, [selectedAsset, loadChannelsForAsset, onChange, query]);
+  }, [selectedAsset, loadChannelsForAsset, onChange, query, assetInputMethod]);
 
   // Trigger graph update when query is complete
   useEffect(() => {
     const isQueryComplete = query && query.assetRid && query.channel && query.dataScopeName;
     if (isQueryComplete) {
-      console.log('Query is complete, triggering graph update');
-      console.log('Final query configuration:', {
-        assetRid: query.assetRid,
-        channel: query.channel,
-        dataScopeName: query.dataScopeName,
-        queryType: query.queryType,
-        buckets: query.buckets
-      });
       onRunQuery();
     }
   }, [query?.assetRid, query?.channel, query?.dataScopeName, query, onRunQuery]);
 
-
   const onAssetSelect = (selection: SelectableValue<string>) => {
     const asset = assets.find(a => a.rid === selection.value);
     setSelectedAsset(asset || null);
-    console.log('Selected asset:', asset);
   };
-
 
   const onSearchQueryChange = (event: ChangeEvent<HTMLInputElement>) => {
     setSearchQuery(event.target.value);
@@ -373,19 +421,22 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     };
   });
 
-  // Prepare channel options for dropdown
-  const channelOptions: Array<SelectableValue<string>> = channels.map(ch => ({
-    label: ch.name,
-    value: ch.name,
-    description: ch.description
-  }));
+  // Prepare channel options for dropdown - only show channels for the selected data scope
+  const channelOptions: Array<SelectableValue<string>> = query?.dataScopeName
+    ? channels
+        .filter(ch => ch.dataScopeName === query.dataScopeName)
+        .map(ch => ({
+          label: ch.name,
+          value: ch.name,
+          description: ch.description
+        }))
+    : [];
 
   // Prepare data scope options for dropdown
   const dataScopeOptions: Array<SelectableValue<string>> = dataScopes.map(scope => ({
     label: scope,
     value: scope
   }));
-
 
   const handleAssetInputMethodChange = (method: AssetInputMethod) => {
     setAssetInputMethod(method);
@@ -419,8 +470,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         const foundAsset = await fetchAssetByRid(datasource.url!, resolvedRid);
         if (foundAsset) {
           setSelectedAsset(foundAsset);
-          const datasetScopes = foundAsset.dataScopes.filter((scope: any) => scope.dataSource.type === 'dataset');
-          setDataScopes(datasetScopes.map((scope: any) => scope.dataScopeName));
+          const validScopes = foundAsset.dataScopes.filter(
+            (scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
+          );
+          setDataScopes(validScopes.map((scope) => scope.dataScopeName));
           loadChannelsForAsset(foundAsset);
           onChange({ ...query, assetRid: rid, queryType: 'decimation', buckets: 1000 });
         } else {
@@ -448,8 +501,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, [query, onChange, loadChannelsForAsset, datasource]);
 
   // Step completion status
-  const assetSelected = assetInputMethod === 'search' ? selectedAsset !== null : directRID.trim() !== '';
-  const assetComplete = assetSelected;
+  const assetComplete = assetInputMethod === 'search' ? selectedAsset !== null : directRID.trim() !== '';
   const configComplete = assetComplete && query && query.dataScopeName && query.channel;
 
   const singleBoxStyle = {
@@ -504,8 +556,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 <InlineField label="Asset" labelWidth={8}>
                   {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                   <Select
+                    key={`asset-select-${assets.length}`}
                     options={assetOptions}
-                    value={query?.assetRid || ''}
+                    value={assetOptions.some(opt => opt.value === query?.assetRid) ? query?.assetRid : ''}
                     onChange={onAssetSelect}
                     width={25}
                     placeholder="Choose asset..."
@@ -532,8 +585,22 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               <InlineField label="Data scope" labelWidth={12}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  value={query?.dataScopeName || ''}
-                  onChange={(value) => onChange({ ...query, dataScopeName: value?.value, queryType: 'decimation', buckets: 1000 })}
+                  value={dataScopeOptions.some(opt => opt.value === query?.dataScopeName) ? query?.dataScopeName : ''}
+                  onChange={(value) => {
+                    const newScope = value?.value;
+                    // Check if current channel exists in the new scope
+                    const channelExistsInNewScope = channels.some(
+                      ch => ch.dataScopeName === newScope && ch.name === query?.channel
+                    );
+                    onChange({
+                      ...query,
+                      dataScopeName: newScope,
+                      // Only clear channel if it doesn't exist in the new scope
+                      channel: channelExistsInNewScope ? query?.channel : '',
+                      queryType: 'decimation',
+                      buckets: 1000
+                    });
+                  }}
                   options={dataScopeOptions}
                   placeholder="Choose scope..."
                   width={18}
@@ -544,21 +611,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               <InlineField label="Channel" labelWidth={8}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  value={query?.channel || ''}
+                  key={`channel-select-${query?.dataScopeName ?? 'none'}-${channelOptions.length}`}
+                  value={channelOptions.some(opt => opt.value === query?.channel) ? query?.channel : ''}
                   onChange={(value) => {
-                    const selectedChannel = channels.find(ch => ch.name === value?.value);
-                    onChange({ 
-                      ...query, 
+                    onChange({
+                      ...query,
                       channel: value?.value || '',
-                      dataScopeName: selectedChannel?.dataScopeName || query?.dataScopeName,
                       queryType: 'decimation',
                       buckets: 1000
                     });
                   }}
                   options={channelOptions}
                   placeholder="Choose channel..."
-                  width={20}
-                  allowCustomValue
+                  width={40}
                   isClearable={false}
                 />
               </InlineField>
