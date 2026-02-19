@@ -381,7 +381,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // After assets are loaded, check if we need to restore a selected asset (for duplicated queries)
   useEffect(() => {
     if (query && query.assetRid && !selectedAsset && assets.length > 0 && assetInputMethod === 'search') {
-      const asset = assets.find(a => a.rid === query.assetRid);
+      // Resolve template variables to match against actual asset RIDs
+      const resolvedRid = getTemplateSrv().replace(query.assetRid);
+      const asset = assets.find(a => a.rid === resolvedRid);
       if (asset) {
         setSelectedAsset(asset);
       }
@@ -404,17 +406,45 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       // Only auto-update query if user has interacted with the query builder
       // This prevents unwanted resets when just editing panel display settings
       if (hasUserInteracted) {
-        // Auto-select data scope if only one available
+        // Check if current dataScopeName is valid for the new asset
+        const resolvedCurrentScope = query?.dataScopeName
+          ? getTemplateSrv().replace(query.dataScopeName)
+          : '';
+        const scopeIsValid = scopeNames.includes(resolvedCurrentScope);
+
+        // Auto-select data scope if only one available (channel validated separately when channels load)
         if (scopeNames.length === 1 && query?.dataScopeName !== scopeNames[0]) {
           onChange({ ...query, dataScopeName: scopeNames[0], assetInputMethod, queryType: 'decimation', buckets: 1000 });
         }
+        // Clear invalid data scope when asset changes (channel validated separately when channels load)
+        else if (!scopeIsValid && query?.dataScopeName) {
+          onChange({ ...query, dataScopeName: '', assetInputMethod, queryType: 'decimation', buckets: 1000 });
+        }
         // Update query with selected asset only if it has changed (search mode)
-        else if (assetInputMethod === 'search' && query && query.assetRid !== selectedAsset.rid) {
-          onChange({ ...query, assetRid: selectedAsset.rid, assetInputMethod: 'search' });
+        // Compare resolved values to preserve template variables that resolve to the same asset
+        else if (assetInputMethod === 'search' && query) {
+          const resolvedCurrentRid = getTemplateSrv().replace(query.assetRid || '');
+          if (resolvedCurrentRid !== selectedAsset.rid) {
+            onChange({ ...query, assetRid: selectedAsset.rid, assetInputMethod: 'search' });
+          }
         }
       }
     }
   }, [selectedAsset, loadChannelsForAsset, onChange, query, assetInputMethod, hasUserInteracted]);
+
+  // Validate channel when channels are loaded - clear if invalid for current scope
+  useEffect(() => {
+    const currentChannel = query?.channel;
+    if (!hasUserInteracted || !currentChannel || !channels.length) {
+      return;
+    }
+    const channelExistsInScope = channels.some(
+      ch => ch.dataScopeName === resolvedDataScopeName && ch.name === currentChannel
+    );
+    if (!channelExistsInScope) {
+      onChange({ ...query, channel: '' });
+    }
+  }, [channels, query, resolvedDataScopeName, hasUserInteracted, onChange]);
 
   // Trigger graph update when query is complete
   useEffect(() => {
@@ -426,8 +456,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const onAssetSelect = (selection: SelectableValue<string>) => {
     setHasUserInteracted(true);
-    const asset = assets.find(a => a.rid === selection.value);
+    const value = selection.value || '';
+    const isVariable = value.includes('$');
+
+    // Resolve to actual RID for asset lookup (variables need resolution)
+    const ridToFind = isVariable ? getTemplateSrv().replace(value) : value;
+    const asset = assets.find(a => a.rid === ridToFind);
     setSelectedAsset(asset || null);
+
+    // Store variable syntax if variable, otherwise store the asset RID
+    if (isVariable || asset) {
+      onChange({ ...query, assetRid: isVariable ? value : asset!.rid, assetInputMethod: 'search' });
+    }
   };
 
   const onSearchQueryChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -441,15 +481,52 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   };
 
 
-  // Prepare asset options for dropdown
-  const assetOptions: Array<SelectableValue<string>> = assets.map(asset => {
+  // Convert asset to dropdown option
+  const assetToOption = (asset: Asset): SelectableValue<string> => {
     const datasetScopes = asset.dataScopes.filter(scope => scope.dataSource.type === 'dataset');
     return {
       label: asset.title,
       value: asset.rid,
       description: `${asset.labels.join(', ') || 'No labels'} - ${datasetScopes.length} dataset(s)`
     };
-  });
+  };
+
+  // Prepare asset options for dropdown
+  const assetOptions: Array<SelectableValue<string>> = (() => {
+    const options = assets.map(assetToOption);
+
+    // Include the currently selected asset if it's not in the search results
+    // This ensures the dropdown shows the current selection when switching modes
+    if (selectedAsset && !assets.some(a => a.rid === selectedAsset.rid)) {
+      options.unshift(assetToOption(selectedAsset));
+    }
+
+    // If the current assetRid is a template variable, add it as an option
+    const currentValue = query?.assetRid || '';
+    if (currentValue.includes('$') && !options.some(opt => opt.value === currentValue)) {
+      // Show both the variable syntax and resolved asset title if available
+      const resolvedTitle = selectedAsset?.title;
+      const label = resolvedTitle && !resolvedTitle.includes('$')
+        ? `${currentValue} → ${resolvedTitle}`
+        : currentValue;
+      options.unshift({
+        label: label,
+        value: currentValue,
+        description: 'Template variable'
+      });
+    }
+
+    return options;
+  })();
+
+  // Compute asset select value - show variable if set, otherwise match by resolved RID
+  const assetSelectValue = (() => {
+    const currentValue = query?.assetRid || '';
+    if (currentValue.includes('$')) {
+      return currentValue;
+    }
+    return assetOptions.some(opt => opt.value === resolvedAssetRid) ? resolvedAssetRid : '';
+  })();
 
   // Prepare channel options for dropdown - only show channels for the selected data scope
   // Use resolved datascope name for filtering (handles template variables)
@@ -492,12 +569,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     setHasUserInteracted(true);
     setAssetInputMethod(method);
     setHasManuallySetMethod(true); // Mark as manually set to prevent automatic overrides
-    // Clear current selections when switching methods
+    // Clear UI state but preserve query values for restoration
     setSelectedAsset(null);
     setChannels([]);
     setDataScopes([]);
-    setDirectRID(''); // Clear direct RID input
-    onChange({ ...query, assetRid: '', channel: '', dataScopeName: '', assetInputMethod: method });
+    // Populate directRID from existing query when switching to direct mode
+    setDirectRID(method === 'direct' ? (query?.assetRid || '') : '');
+    // Only update input method, preserve other query values (assetRid, channel, dataScopeName)
+    onChange({ ...query, assetInputMethod: method });
   };
 
   const handleDirectRIDChange = useCallback(async (rid: string) => {
@@ -608,14 +687,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 <InlineField label="Asset" labelWidth={8}>
                   {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                   <Select
-                    key={`asset-select-${assets.length}`}
+                    key={`asset-select-${assets.length}-${selectedAsset?.rid || ''}`}
                     options={assetOptions}
-                    value={assetOptions.some(opt => opt.value === query?.assetRid) ? query?.assetRid : ''}
+                    value={assetSelectValue}
                     onChange={onAssetSelect}
                     width={25}
                     placeholder="Choose asset..."
                     isLoading={isLoading}
                     isClearable={false}
+                    allowCustomValue={true}
                   />
                 </InlineField>
               )}
