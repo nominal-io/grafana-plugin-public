@@ -274,7 +274,7 @@ func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, quer
 
 	// Make real API calls to Nominal API instead of returning mock data
 	if qm.AssetRid != "" && qm.Channel != "" {
-		frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
+		frame.Name = qm.Channel
 
 		// Get plugin configuration for API credentials
 		config, err := models.LoadPluginSettings(*pCtx.DataSourceInstanceSettings)
@@ -328,7 +328,7 @@ func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, quer
 	// In a production setup, you might want to implement server-side Nominal API calls here
 	if qm.AssetRid != "" && qm.Channel != "" {
 		// Return mock time series data for Nominal queries
-		frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
+		frame.Name = qm.Channel
 
 		// Generate some sample timestamps
 		timePoints := make([]time.Time, 100)
