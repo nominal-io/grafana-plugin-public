@@ -16,16 +16,16 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
+	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
-	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
-	"github.com/palantir/pkg/rid"
-	"github.com/nominal-io/nominal-api-go/api/rids"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 )
 
@@ -40,6 +40,16 @@ var (
 	_ backend.CallResourceHandler   = (*Datasource)(nil)
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
+
+// sharedHTTPClient is a reusable HTTP client for direct API calls.
+// Reusing a single client enables connection pooling and keep-alive.
+var sharedHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
+// maxBatchComputeSubrequests matches the backend subrequest limit.
+// See scout ComputeResource.SUBREQUEST_LIMIT.
+const maxBatchComputeSubrequests = 300
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -164,20 +174,131 @@ func (d *Datasource) Dispose() {
 // req contains the queries []DataQuery (where each query contains RefID as a unique identifier).
 // The QueryDataResponse contains a map of RefID to the response for each query, and each response
 // contains Frames ([]*Frame).
+//
+// This implementation batches eligible queries (asset+channel) into a single API call for performance.
+// Non-batchable queries (connectionTest, legacy) are handled individually.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	// create response struct
 	response := backend.NewQueryDataResponse()
 
-	// loop over queries and execute them individually.
-	for _, q := range req.Queries {
-		res := d.query(ctx, req.PluginContext, q)
+	// Check if DataSourceInstanceSettings is available
+	if req.PluginContext.DataSourceInstanceSettings == nil {
+		for _, q := range req.Queries {
+			response.Responses[q.RefID] = backend.ErrDataResponse(
+				backend.StatusBadRequest,
+				"DataSource not configured",
+			)
+		}
+		return response, nil
+	}
 
-		// save the response in a hashmap
-		// based on with RefID as identifier
-		response.Responses[q.RefID] = res
+	// Load config once for all queries
+	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to load plugin settings", "error", err)
+		for _, q := range req.Queries {
+			response.Responses[q.RefID] = backend.ErrDataResponse(
+				backend.StatusInternal,
+				fmt.Sprintf("Failed to load settings: %v", err),
+			)
+		}
+		return response, nil
+	}
+
+	// Collect batchable queries
+	var batchableQueries []backend.DataQuery
+	var batchableModels []NominalQueryModel
+
+	for _, q := range req.Queries {
+		// Parse query model
+		var qm NominalQueryModel
+		if err := json.Unmarshal(q.JSON, &qm); err != nil {
+			response.Responses[q.RefID] = backend.ErrDataResponse(
+				backend.StatusBadRequest,
+				fmt.Sprintf("json unmarshal: %v", err),
+			)
+			continue
+		}
+
+		// Apply template variable interpolation
+		d.applyTemplateVariables(&qm)
+
+		// Handle connection test immediately (not batchable)
+		if qm.QueryType == "connectionTest" {
+			response.Responses[q.RefID] = d.handleConnectionTestQuery(ctx, config)
+			continue
+		}
+
+		// Validate query
+		if err := d.validateQuery(qm); err != nil {
+			log.DefaultLogger.Error("Query validation failed", "error", err)
+			response.Responses[q.RefID] = backend.ErrDataResponse(
+				backend.StatusBadRequest,
+				fmt.Sprintf("Query validation failed: %v", err),
+			)
+			continue
+		}
+
+		// Check if this is a batchable query (has asset and channel)
+		if qm.AssetRid != "" && qm.Channel != "" {
+			batchableQueries = append(batchableQueries, q)
+			batchableModels = append(batchableModels, qm)
+		} else {
+			// Legacy query - handle individually
+			response.Responses[q.RefID] = d.handleLegacyQuery(qm, q.TimeRange)
+		}
+	}
+
+	// Execute batch query for all batchable queries
+	if len(batchableQueries) > 0 {
+		log.DefaultLogger.Debug("Executing batch query", "count", len(batchableQueries))
+		batchResults := d.executeBatchQuery(ctx, config, batchableQueries, batchableModels)
+		for refID, res := range batchResults {
+			response.Responses[refID] = res
+		}
 	}
 
 	return response, nil
+}
+
+// handleConnectionTestQuery handles the connectionTest query type
+func (d *Datasource) handleConnectionTestQuery(ctx context.Context, config *models.PluginSettings) backend.DataResponse {
+	var response backend.DataResponse
+
+	log.DefaultLogger.Debug("Processing connectionTest query")
+
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	profile, err := d.authService.GetMyProfile(ctx, bearerToken)
+	if err != nil {
+		log.DefaultLogger.Error("Connection test failed", "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
+	}
+
+	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
+
+	frame := data.NewFrame("connectionTest")
+	frame.Fields = append(frame.Fields,
+		data.NewField("status", nil, []string{"success"}),
+		data.NewField("message", nil, []string{"Successfully connected to Nominal API"}),
+	)
+
+	response.Frames = append(response.Frames, frame)
+	return response
+}
+
+// handleLegacyQuery handles legacy queries that don't have asset/channel
+func (d *Datasource) handleLegacyQuery(qm NominalQueryModel, timeRange backend.TimeRange) backend.DataResponse {
+	var response backend.DataResponse
+
+	log.DefaultLogger.Debug("Using legacy query support")
+
+	frame := data.NewFrame("response")
+	frame.Fields = append(frame.Fields,
+		data.NewField("time", nil, []time.Time{timeRange.From, timeRange.To}),
+		data.NewField("values", nil, []float64{qm.Constant, qm.Constant + 10}),
+	)
+
+	response.Frames = append(response.Frames, frame)
+	return response
 }
 
 // NominalQueryModel represents a query to the Nominal API
@@ -199,170 +320,22 @@ type NominalQueryModel struct {
 	Constant  float64 `json:"constant"`
 }
 
-func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
-	var response backend.DataResponse
-
-	// Unmarshal the JSON into our query model
-	var qm NominalQueryModel
-	err := json.Unmarshal(query.JSON, &qm)
-	if err != nil {
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
-	}
-
-	// Apply template variable interpolation
-	d.applyTemplateVariables(&qm)
-
-	// Validate query parameters
-	if err := d.validateQuery(qm); err != nil {
-		log.DefaultLogger.Error("Query validation failed", "error", err)
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("Query validation failed: %v", err))
-	}
-
-	log.DefaultLogger.Debug("Processing query", "assetRid", qm.AssetRid, "channel", qm.Channel, "queryType", qm.QueryType)
-
-	// Handle connection test query type
-	if qm.QueryType == "connectionTest" {
-		log.DefaultLogger.Debug("Processing connectionTest query")
-
-		// Get plugin configuration for API credentials
-		config, err := models.LoadPluginSettings(*pCtx.DataSourceInstanceSettings)
-		if err != nil {
-			log.DefaultLogger.Error("Failed to load plugin settings for connection test", "error", err)
-			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Failed to load settings: %v", err))
-		}
-
-		// Test connection using conjure client
-		bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-		profile, err := d.authService.GetMyProfile(ctx, bearerToken)
-		if err != nil {
-			log.DefaultLogger.Error("Connection test failed", "error", err)
-			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
-		}
-
-		log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
-
-		// Return success response
-		frame := data.NewFrame("connectionTest")
-		frame.Fields = append(frame.Fields,
-			data.NewField("status", nil, []string{"success"}),
-			data.NewField("message", nil, []string{"Successfully connected to Nominal API"}),
-		)
-
-		response.Frames = append(response.Frames, frame)
-		return response
-	}
-
-	// Create data frame response
-	frame := data.NewFrame("response")
-
-	// Make real API calls to Nominal API instead of returning mock data
-	if qm.AssetRid != "" && qm.Channel != "" {
-		frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
-
-		// Get plugin configuration for API credentials
-		config, err := models.LoadPluginSettings(*pCtx.DataSourceInstanceSettings)
-		if err != nil {
-			log.DefaultLogger.Error("Failed to load plugin settings for query", "error", err)
-			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Failed to load settings: %v", err))
-		}
-
-		// Make API call using the complete conjure client implementation
-		log.DefaultLogger.Info("Using conjure client for compute API",
-			"status", "fully implemented with proper payload building")
-
-		apiResponse, err := d.callNominalComputeWithClient(ctx, config, qm, query.TimeRange)
-		if err != nil {
-			log.DefaultLogger.Error("Conjure compute API call failed", "error", err)
-			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Conjure API call failed: %v", err))
-		}
-
-		// Transform conjure response to Grafana data frame
-		timePoints, values, err := d.transformNominalResponseFromClient(apiResponse)
-		if err != nil {
-			log.DefaultLogger.Error("Failed to transform API response", "error", err)
-			return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Response transformation failed: %v", err))
-		}
-
-		if len(timePoints) > 0 && len(values) > 0 {
-			frame.Fields = append(frame.Fields,
-				data.NewField("time", nil, timePoints),
-				data.NewField("value", nil, values),
-			)
-			log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(timePoints))
-		} else {
-			log.DefaultLogger.Debug("No data returned from API")
-			// Return empty frame instead of error
-			frame.Fields = append(frame.Fields,
-				data.NewField("time", nil, []time.Time{}),
-				data.NewField("value", nil, []float64{}),
-			)
-		}
-	} else {
-		// Legacy query support - keep as mock for now
-		log.DefaultLogger.Debug("Using legacy query support")
-		frame.Fields = append(frame.Fields,
-			data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-			data.NewField("values", nil, []float64{qm.Constant, qm.Constant + 10}),
-		)
-	}
-
-	/* COMMENTED OUT - MOCK DATA IMPLEMENTATION
-	// For now, return mock data since the frontend handles Nominal API calls directly
-	// In a production setup, you might want to implement server-side Nominal API calls here
-	if qm.AssetRid != "" && qm.Channel != "" {
-		// Return mock time series data for Nominal queries
-		frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
-
-		// Generate some sample timestamps
-		timePoints := make([]time.Time, 100)
-		values := make([]float64, 100)
-
-		for i := 0; i < 100; i++ {
-			timePoints[i] = query.TimeRange.From.Add(time.Duration(i) * query.TimeRange.To.Sub(query.TimeRange.From) / 100)
-			values[i] = float64(i*10 + 6) // Mock values
-		}
-
-		frame.Fields = append(frame.Fields,
-			data.NewField("time", nil, timePoints),
-			data.NewField("value", nil, values),
-		)
-	} else {
-		// Legacy query support
-		frame.Fields = append(frame.Fields,
-			data.NewField("time", nil, []time.Time{query.TimeRange.From, query.TimeRange.To}),
-			data.NewField("values", nil, []float64{qm.Constant, qm.Constant + 10}),
-		)
-	}
-	*/
-
-	response.Frames = append(response.Frames, frame)
-	return response
-}
-
-// callNominalComputeWithClient makes API calls using the generated conjure client
-func (d *Datasource) callNominalComputeWithClient(ctx context.Context, config *models.PluginSettings, qm NominalQueryModel, timeRange backend.TimeRange) (computeapi.ComputeNodeResponse, error) {
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-
-	// Convert time range to Nominal timestamps
+// buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
+// This is extracted to enable reuse for both single and batch compute calls.
+func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
-	log.DefaultLogger.Debug("Building conjure compute request",
-		"assetRid", qm.AssetRid,
-		"channel", qm.Channel,
-		"dataScopeName", qm.DataScopeName,
-		"buckets", qm.Buckets)
-
-    // Build the timeShift series with proper conjure types
-    // Use a literal zero duration by default (no shift) unless frontend later adds support
-    timeShiftSeries := computeapi.NumericTimeShiftSeries{
-        Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-        Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
-            Seconds: safelong.SafeLong(0),
-            Nanos:   safelong.SafeLong(0),
-            Picos:   nil,
-        }),
-    }
+	// Build the timeShift series with proper conjure types
+	// Use a literal zero duration by default (no shift) unless frontend later adds support
+	timeShiftSeries := computeapi.NumericTimeShiftSeries{
+		Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+		Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+			Seconds: safelong.SafeLong(0),
+			Nanos:   safelong.SafeLong(0),
+			Picos:   nil,
+		}),
+	}
 
 	// Create numeric series with timeShift
 	numericSeries := computeapi.NewNumericSeriesFromTimeShift(timeShiftSeries)
@@ -378,34 +351,167 @@ func (d *Datasource) callNominalComputeWithClient(ctx context.Context, config *m
 	node := computeapi.NewComputableNodeFromSeries(seriesNode)
 
 	// Build context with variables
-	context := d.buildComputeContext(qm, startSeconds, endSeconds)
+	computeContext := d.buildComputeContext(qm, startSeconds, endSeconds)
 
-	// Build the complete request
-    request := computeapi.ComputeNodeRequest{
-        Start: api.Timestamp{
-            Seconds: safelong.SafeLong(startSeconds),
-            Nanos:   safelong.SafeLong(0),
-            Picos:   nil,
-        },
-        End: api.Timestamp{
-            Seconds: safelong.SafeLong(endSeconds),
-            Nanos:   safelong.SafeLong(0),
-            Picos:   nil,
-        },
-        Node:    node,
-        Context: context,
-    }
+	return computeapi.ComputeNodeRequest{
+		Start: api.Timestamp{
+			Seconds: safelong.SafeLong(startSeconds),
+			Nanos:   safelong.SafeLong(0),
+			Picos:   nil,
+		},
+		End: api.Timestamp{
+			Seconds: safelong.SafeLong(endSeconds),
+			Nanos:   safelong.SafeLong(0),
+			Picos:   nil,
+		},
+		Node:    node,
+		Context: computeContext,
+	}
+}
 
-	log.DefaultLogger.Debug("Making compute API call with conjure client")
+// executeBatchQuery executes multiple queries in a single batch API call.
+// Returns a map of RefID to DataResponse for each query.
+func (d *Datasource) executeBatchQuery(
+	ctx context.Context,
+	config *models.PluginSettings,
+	queries []backend.DataQuery,
+	queryModels []NominalQueryModel,
+) map[string]backend.DataResponse {
+	results := make(map[string]backend.DataResponse)
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 
-	// Make the API call using the generated client
-	response, err := d.computeService.Compute(ctx, bearerToken, request)
-	if err != nil {
-		return computeapi.ComputeNodeResponse{}, fmt.Errorf("conjure compute API call failed: %w", err)
+	if len(queries) != len(queryModels) {
+		for _, q := range queries {
+			results[q.RefID] = backend.ErrDataResponse(
+				backend.StatusInternal,
+				"Batch query internal error: query/model count mismatch",
+			)
+		}
+		return results
 	}
 
-	log.DefaultLogger.Debug("Successfully received conjure compute response")
-	return response, nil
+	for chunkStart := 0; chunkStart < len(queries); chunkStart += maxBatchComputeSubrequests {
+		chunkEnd := chunkStart + maxBatchComputeSubrequests
+		if chunkEnd > len(queries) {
+			chunkEnd = len(queries)
+		}
+
+		chunkQueries := queries[chunkStart:chunkEnd]
+		chunkModels := queryModels[chunkStart:chunkEnd]
+		computeRequests := make([]computeapi.ComputeNodeRequest, len(chunkModels))
+		for i, qm := range chunkModels {
+			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange)
+		}
+
+		batchRequest := computeapi.BatchComputeWithUnitsRequest{
+			Requests: computeRequests,
+		}
+
+		log.DefaultLogger.Debug(
+			"Making batch compute API call",
+			"chunkStart", chunkStart,
+			"chunkEnd", chunkEnd,
+			"queryCount", len(computeRequests),
+		)
+
+		batchResponse, err := d.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+		if err != nil {
+			log.DefaultLogger.Error("Batch compute API call failed", "error", err, "chunkStart", chunkStart, "chunkEnd", chunkEnd)
+			for _, q := range chunkQueries {
+				results[q.RefID] = backend.ErrDataResponse(
+					backend.StatusInternal,
+					fmt.Sprintf("Batch compute failed: %v", err),
+				)
+			}
+			continue
+		}
+
+		log.DefaultLogger.Debug(
+			"Batch compute successful",
+			"chunkStart", chunkStart,
+			"chunkEnd", chunkEnd,
+			"resultCount", len(batchResponse.Results),
+		)
+
+		for i, q := range chunkQueries {
+			if i >= len(batchResponse.Results) {
+				results[q.RefID] = backend.ErrDataResponse(
+					backend.StatusInternal,
+					"Missing result in batch response",
+				)
+				continue
+			}
+
+			results[q.RefID] = d.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+		}
+	}
+
+	return results
+}
+
+// transformBatchResult converts a single batch result to a Grafana DataResponse.
+// Handles both success and error cases from the ComputeNodeResult union type.
+func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
+	var response backend.DataResponse
+
+	// ComputeNodeResult is a union type - use AcceptFuncs to handle success/error
+	err := result.ComputeResult.AcceptFuncs(
+		// successFunc - called when compute succeeded
+		func(computeResponse computeapi.ComputeNodeResponse) error {
+			frame := data.NewFrame("response")
+			frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
+
+			timePoints, values, transformErr := d.transformNominalResponseFromClient(computeResponse)
+			if transformErr != nil {
+				response = backend.ErrDataResponse(
+					backend.StatusInternal,
+					fmt.Sprintf("Transform failed: %v", transformErr),
+				)
+				return nil
+			}
+
+			if len(timePoints) > 0 && len(values) > 0 {
+				frame.Fields = append(frame.Fields,
+					data.NewField("time", nil, timePoints),
+					data.NewField("value", nil, values),
+				)
+				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(timePoints))
+			} else {
+				frame.Fields = append(frame.Fields,
+					data.NewField("time", nil, []time.Time{}),
+					data.NewField("value", nil, []float64{}),
+				)
+			}
+
+			response.Frames = append(response.Frames, frame)
+			return nil
+		},
+		// errorFunc - called when compute failed
+		func(errorResult computeapi.ErrorResult) error {
+			response = backend.ErrDataResponse(
+				backend.StatusInternal,
+				fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code),
+			)
+			return nil
+		},
+		// unknownFunc - called for unknown union variants
+		func(typeName string) error {
+			response = backend.ErrDataResponse(
+				backend.StatusInternal,
+				fmt.Sprintf("Unknown result type: %s", typeName),
+			)
+			return nil
+		},
+	)
+
+	if err != nil {
+		return backend.ErrDataResponse(
+			backend.StatusInternal,
+			fmt.Sprintf("Failed to process result: %v", err),
+		)
+	}
+
+	return response
 }
 
 // buildChannelSeries creates a channel series for the given asset/channel
@@ -428,10 +534,10 @@ func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string)
 
 // buildComputeContext creates the context with variables for the compute request
 func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi.Context {
-    variables := map[computeapi.VariableName]computeapi.VariableValue{
-        // Asset RID variable referenced by the series builder
-        computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
-    }
+	variables := map[computeapi.VariableName]computeapi.VariableValue{
+		// Asset RID variable referenced by the series builder
+		computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
+	}
 
 	// Add template variables if present
 	if qm.TemplateVariables != nil {
@@ -442,10 +548,10 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 		}
 	}
 
-    return computeapi.Context{
-        Variables:         variables,
-        FunctionVariables: nil, // Deprecated field
-    }
+	return computeapi.Context{
+		Variables:         variables,
+		FunctionVariables: nil, // Deprecated field
+	}
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data
@@ -600,7 +706,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 		}
-		
+
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: errorMsg + ": " + err.Error(),
@@ -703,7 +809,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 		// Return more specific error messages
 		errorMsg := "Failed to connect to Nominal API"
 		statusCode := http.StatusServiceUnavailable
-		
+
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
 			errorMsg = "Invalid API key - authentication failed"
 			statusCode = http.StatusUnauthorized
@@ -714,7 +820,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 			statusCode = http.StatusBadGateway
 		}
-		
+
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
@@ -943,7 +1049,7 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 	}
 
 	// Make the request
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := sharedHTTPClient
 	resp, err := client.Do(proxyReq)
 	if err != nil {
 		return fmt.Errorf("proxy request failed: %v", err)
