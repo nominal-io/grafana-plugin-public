@@ -16,16 +16,16 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
+	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
-	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
-	"github.com/palantir/pkg/rid"
-	"github.com/nominal-io/nominal-api-go/api/rids"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 )
 
@@ -46,6 +46,10 @@ var (
 var sharedHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
+
+// maxBatchComputeSubrequests matches the backend subrequest limit.
+// See scout ComputeResource.SUBREQUEST_LIMIT.
+const maxBatchComputeSubrequests = 300
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -376,45 +380,70 @@ func (d *Datasource) executeBatchQuery(
 	results := make(map[string]backend.DataResponse)
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 
-	// Build batch request from all queries
-	computeRequests := make([]computeapi.ComputeNodeRequest, len(queryModels))
-	for i, qm := range queryModels {
-		computeRequests[i] = d.buildComputeRequest(qm, queries[i].TimeRange)
-	}
-
-	batchRequest := computeapi.BatchComputeWithUnitsRequest{
-		Requests: computeRequests,
-	}
-
-	log.DefaultLogger.Debug("Making batch compute API call", "queryCount", len(computeRequests))
-
-	// Single HTTP call for all queries
-	batchResponse, err := d.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
-	if err != nil {
-		log.DefaultLogger.Error("Batch compute API call failed", "error", err)
-		// Return error for all queries in batch
+	if len(queries) != len(queryModels) {
 		for _, q := range queries {
 			results[q.RefID] = backend.ErrDataResponse(
 				backend.StatusInternal,
-				fmt.Sprintf("Batch compute failed: %v", err),
+				"Batch query internal error: query/model count mismatch",
 			)
 		}
 		return results
 	}
 
-	log.DefaultLogger.Debug("Batch compute successful", "resultCount", len(batchResponse.Results))
+	for chunkStart := 0; chunkStart < len(queries); chunkStart += maxBatchComputeSubrequests {
+		chunkEnd := chunkStart + maxBatchComputeSubrequests
+		if chunkEnd > len(queries) {
+			chunkEnd = len(queries)
+		}
 
-	// Map results back to queries by index
-	for i, q := range queries {
-		if i >= len(batchResponse.Results) {
-			results[q.RefID] = backend.ErrDataResponse(
-				backend.StatusInternal,
-				"Missing result in batch response",
-			)
+		chunkQueries := queries[chunkStart:chunkEnd]
+		chunkModels := queryModels[chunkStart:chunkEnd]
+		computeRequests := make([]computeapi.ComputeNodeRequest, len(chunkModels))
+		for i, qm := range chunkModels {
+			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange)
+		}
+
+		batchRequest := computeapi.BatchComputeWithUnitsRequest{
+			Requests: computeRequests,
+		}
+
+		log.DefaultLogger.Debug(
+			"Making batch compute API call",
+			"chunkStart", chunkStart,
+			"chunkEnd", chunkEnd,
+			"queryCount", len(computeRequests),
+		)
+
+		batchResponse, err := d.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+		if err != nil {
+			log.DefaultLogger.Error("Batch compute API call failed", "error", err, "chunkStart", chunkStart, "chunkEnd", chunkEnd)
+			for _, q := range chunkQueries {
+				results[q.RefID] = backend.ErrDataResponse(
+					backend.StatusInternal,
+					fmt.Sprintf("Batch compute failed: %v", err),
+				)
+			}
 			continue
 		}
 
-		results[q.RefID] = d.transformBatchResult(batchResponse.Results[i], queryModels[i])
+		log.DefaultLogger.Debug(
+			"Batch compute successful",
+			"chunkStart", chunkStart,
+			"chunkEnd", chunkEnd,
+			"resultCount", len(batchResponse.Results),
+		)
+
+		for i, q := range chunkQueries {
+			if i >= len(batchResponse.Results) {
+				results[q.RefID] = backend.ErrDataResponse(
+					backend.StatusInternal,
+					"Missing result in batch response",
+				)
+				continue
+			}
+
+			results[q.RefID] = d.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+		}
 	}
 
 	return results
@@ -505,10 +534,10 @@ func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string)
 
 // buildComputeContext creates the context with variables for the compute request
 func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi.Context {
-    variables := map[computeapi.VariableName]computeapi.VariableValue{
-        // Asset RID variable referenced by the series builder
-        computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
-    }
+	variables := map[computeapi.VariableName]computeapi.VariableValue{
+		// Asset RID variable referenced by the series builder
+		computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
+	}
 
 	// Add template variables if present
 	if qm.TemplateVariables != nil {
@@ -519,10 +548,10 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 		}
 	}
 
-    return computeapi.Context{
-        Variables:         variables,
-        FunctionVariables: nil, // Deprecated field
-    }
+	return computeapi.Context{
+		Variables:         variables,
+		FunctionVariables: nil, // Deprecated field
+	}
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data
@@ -677,7 +706,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 		}
-		
+
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: errorMsg + ": " + err.Error(),
@@ -780,7 +809,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 		// Return more specific error messages
 		errorMsg := "Failed to connect to Nominal API"
 		statusCode := http.StatusServiceUnavailable
-		
+
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
 			errorMsg = "Invalid API key - authentication failed"
 			statusCode = http.StatusUnauthorized
@@ -791,7 +820,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 			statusCode = http.StatusBadGateway
 		}
-		
+
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{

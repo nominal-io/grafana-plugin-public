@@ -374,6 +374,26 @@ func mustMarshal(v interface{}) []byte {
 	return data
 }
 
+func makeBatchableQueries(count int, timeRange backend.TimeRange) []backend.DataQuery {
+	queries := make([]backend.DataQuery, count)
+	for i := 0; i < count; i++ {
+		queries[i] = backend.DataQuery{
+			RefID:     fmt.Sprintf("Q%03d", i),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: fmt.Sprintf("ri.nominal.asset.%d", i+1), Channel: fmt.Sprintf("temp%d", i+1), Buckets: 100}),
+			TimeRange: timeRange,
+		}
+	}
+	return queries
+}
+
+func makeBatchComputeWithUnitsResponse(count int) computeapi.BatchComputeWithUnitsResponse {
+	results := make([]computeapi.ComputeWithUnitsResult, count)
+	for i := 0; i < count; i++ {
+		results[i] = createMockComputeResult([]float64{float64(i + 1)})
+	}
+	return computeapi.BatchComputeWithUnitsResponse{Results: results}
+}
+
 func TestBuildComputeRequest(t *testing.T) {
 	ds := &Datasource{}
 
@@ -481,12 +501,15 @@ func TestBuildChannelSeries(t *testing.T) {
 
 // mockComputeService implements computeapi.ComputeServiceClient for testing
 type mockComputeService struct {
-	mu                   sync.Mutex
-	batchComputeCalls    int
-	lastBatchRequest     computeapi.BatchComputeWithUnitsRequest
-	batchComputeResponse computeapi.BatchComputeWithUnitsResponse
-	batchComputeError    error
-	singleComputeCalls   int
+	mu                    sync.Mutex
+	batchComputeCalls     int
+	lastBatchRequest      computeapi.BatchComputeWithUnitsRequest
+	batchRequests         []computeapi.BatchComputeWithUnitsRequest
+	batchComputeResponse  computeapi.BatchComputeWithUnitsResponse
+	batchComputeResponses []computeapi.BatchComputeWithUnitsResponse
+	batchComputeError     error
+	batchComputeErrors    []error
+	singleComputeCalls    int
 }
 
 func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
@@ -509,6 +532,15 @@ func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHead
 	defer m.mu.Unlock()
 	m.batchComputeCalls++
 	m.lastBatchRequest = requestArg
+	m.batchRequests = append(m.batchRequests, requestArg)
+
+	callIndex := m.batchComputeCalls - 1
+	if callIndex < len(m.batchComputeErrors) && m.batchComputeErrors[callIndex] != nil {
+		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeErrors[callIndex]
+	}
+	if callIndex < len(m.batchComputeResponses) {
+		return m.batchComputeResponses[callIndex], nil
+	}
 	if m.batchComputeError != nil {
 		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeError
 	}
@@ -611,6 +643,127 @@ func TestBatchQueryExecution(t *testing.T) {
 		if response.Error != nil {
 			t.Errorf("unexpected error for %s: %v", refID, response.Error)
 		}
+	}
+}
+
+func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponses: []computeapi.BatchComputeWithUnitsResponse{
+			makeBatchComputeWithUnitsResponse(maxBatchComputeSubrequests),
+			makeBatchComputeWithUnitsResponse(1),
+		},
+	}
+
+	ds := &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
+		},
+		computeService: mockService,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	queries := makeBatchableQueries(maxBatchComputeSubrequests+1, timeRange)
+
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: queries,
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockService.batchComputeCalls != 2 {
+		t.Fatalf("expected 2 batch compute calls, got %d", mockService.batchComputeCalls)
+	}
+	if len(mockService.batchRequests) != 2 {
+		t.Fatalf("expected 2 recorded batch requests, got %d", len(mockService.batchRequests))
+	}
+	if len(mockService.batchRequests[0].Requests) != maxBatchComputeSubrequests {
+		t.Fatalf("expected first chunk size %d, got %d", maxBatchComputeSubrequests, len(mockService.batchRequests[0].Requests))
+	}
+	if len(mockService.batchRequests[1].Requests) != 1 {
+		t.Fatalf("expected second chunk size 1, got %d", len(mockService.batchRequests[1].Requests))
+	}
+	if len(resp.Responses) != len(queries) {
+		t.Fatalf("expected %d responses, got %d", len(queries), len(resp.Responses))
+	}
+
+	for _, q := range queries {
+		response := resp.Responses[q.RefID]
+		if response.Error != nil {
+			t.Fatalf("expected no error for %s, got %v", q.RefID, response.Error)
+		}
+	}
+}
+
+func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponses: []computeapi.BatchComputeWithUnitsResponse{
+			makeBatchComputeWithUnitsResponse(maxBatchComputeSubrequests),
+		},
+		batchComputeErrors: []error{
+			nil,
+			fmt.Errorf("API error: service unavailable"),
+		},
+	}
+
+	ds := &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
+		},
+		computeService: mockService,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	queries := makeBatchableQueries(maxBatchComputeSubrequests+1, timeRange)
+
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: queries,
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockService.batchComputeCalls != 2 {
+		t.Fatalf("expected 2 batch compute calls, got %d", mockService.batchComputeCalls)
+	}
+
+	for i := 0; i < maxBatchComputeSubrequests; i++ {
+		refID := fmt.Sprintf("Q%03d", i)
+		response := resp.Responses[refID]
+		if response.Error != nil {
+			t.Fatalf("expected success for %s, got %v", refID, response.Error)
+		}
+	}
+
+	failedChunkRefID := fmt.Sprintf("Q%03d", maxBatchComputeSubrequests)
+	failedChunkResponse := resp.Responses[failedChunkRefID]
+	if failedChunkResponse.Error == nil {
+		t.Fatalf("expected error for %s, got nil", failedChunkRefID)
+	}
+	if !strings.Contains(failedChunkResponse.Error.Error(), "Batch compute failed") {
+		t.Fatalf("expected batch failure message for %s, got %v", failedChunkRefID, failedChunkResponse.Error)
 	}
 }
 
