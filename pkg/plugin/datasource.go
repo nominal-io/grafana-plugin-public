@@ -460,7 +460,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		// successFunc - called when compute succeeded
 		func(computeResponse computeapi.ComputeNodeResponse) error {
 			frame := data.NewFrame("response")
-			frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
+			frame.Name = qm.Channel
 
 			timePoints, values, transformErr := d.transformNominalResponseFromClient(computeResponse)
 			if transformErr != nil {
