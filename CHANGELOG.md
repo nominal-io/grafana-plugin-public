@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.5.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.4.0...nominal-grafana-plugin@0.5.0) (2026-02-20)
+
+
+### Features
+
+* batch queries into single API call for improved performance ([#5](https://github.com/nominal-io/grafana-plugin-public/issues/5)) ([9136453](https://github.com/nominal-io/grafana-plugin-public/commit/9136453b38cc56f30a47a9b429b2347c2c105147))
+
 ## [0.4.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.3.5...nominal-grafana-plugin@0.4.0) (2026-02-06)
 
 
