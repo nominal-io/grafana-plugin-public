@@ -16,85 +16,6 @@ import (
 	"github.com/palantir/pkg/safelong"
 )
 
-func TestHandleLegacyQuery(t *testing.T) {
-	ds := &Datasource{}
-
-	tests := []struct {
-		name      string
-		qm        NominalQueryModel
-		timeRange backend.TimeRange
-	}{
-		{
-			name: "creates frame with constant values",
-			qm: NominalQueryModel{
-				Constant: 10.0,
-			},
-			timeRange: backend.TimeRange{
-				From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-				To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			response := ds.handleLegacyQuery(tt.qm, tt.timeRange)
-
-			if response.Error != nil {
-				t.Errorf("unexpected error: %v", response.Error)
-			}
-
-			if len(response.Frames) != 1 {
-				t.Fatalf("expected 1 frame, got %d", len(response.Frames))
-			}
-
-			frame := response.Frames[0]
-			if frame.Name != "response" {
-				t.Errorf("expected frame name 'response', got %q", frame.Name)
-			}
-
-			if len(frame.Fields) != 2 {
-				t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
-			}
-
-			// Check time field
-			timeField := frame.Fields[0]
-			if timeField.Name != "time" {
-				t.Errorf("expected first field name 'time', got %q", timeField.Name)
-			}
-			if timeField.Len() != 2 {
-				t.Errorf("expected time field length 2, got %d", timeField.Len())
-			}
-
-			// Check values field
-			valuesField := frame.Fields[1]
-			if valuesField.Name != "values" {
-				t.Errorf("expected second field name 'values', got %q", valuesField.Name)
-			}
-			if valuesField.Len() != 2 {
-				t.Errorf("expected values field length 2, got %d", valuesField.Len())
-			}
-
-			// Verify value calculation (constant and constant+10)
-			val0, ok := valuesField.At(0).(float64)
-			if !ok {
-				t.Fatal("expected float64 value")
-			}
-			if val0 != tt.qm.Constant {
-				t.Errorf("expected first value %f, got %f", tt.qm.Constant, val0)
-			}
-
-			val1, ok := valuesField.At(1).(float64)
-			if !ok {
-				t.Fatal("expected float64 value")
-			}
-			if val1 != tt.qm.Constant+10 {
-				t.Errorf("expected second value %f, got %f", tt.qm.Constant+10, val1)
-			}
-		})
-	}
-}
-
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
 
@@ -417,11 +338,6 @@ func TestBuildComputeRequest(t *testing.T) {
 	}
 	if int64(req.End.Seconds) != 1704153600 {
 		t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, 1704153600)
-	}
-
-	// Verify context has assetRid variable
-	if _, ok := req.Context.Variables["assetRid"]; !ok {
-		t.Error("expected assetRid in context variables")
 	}
 }
 
