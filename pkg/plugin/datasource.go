@@ -51,6 +51,8 @@ var sharedHTTPClient = &http.Client{
 // See scout ComputeResource.SUBREQUEST_LIMIT.
 const maxBatchComputeSubrequests = 300
 
+// defaultAPIBaseURL is the fallback base URL when none is configured.
+const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -61,7 +63,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	// Use the base URL as-is since it should already include the full path
 	baseURL = strings.TrimSuffix(baseURL, "/")
@@ -85,11 +87,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 	return ds, nil
 }
 
-// interpolateTemplateVariables replaces ${var} template variables in strings.
-// Only the ${var} syntax is supported on the backend; the bare $var syntax is
-// already resolved by Grafana's frontend template service before queries reach
-// the backend, and naive string replacement of $var is unsafe when one variable
-// name is a prefix of another (e.g. $env vs $environment).
+// interpolateTemplateVariables replaces template variables in strings
 func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
 	if variables == nil {
 		return input
@@ -97,9 +95,16 @@ func interpolateTemplateVariables(input string, variables map[string]interface{}
 
 	result := input
 	for key, value := range variables {
-		pattern := fmt.Sprintf("${%s}", key)
+		// Support both ${var} and $var syntax
+		patterns := []string{
+			fmt.Sprintf("${%s}", key),
+			fmt.Sprintf("$%s", key),
+		}
+
 		valueStr := fmt.Sprintf("%v", value)
-		result = strings.ReplaceAll(result, pattern, valueStr)
+		for _, pattern := range patterns {
+			result = strings.ReplaceAll(result, pattern, valueStr)
+		}
 	}
 
 	return result
@@ -997,7 +1002,15 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 // handleAssetsVariable handles the assets endpoint for Grafana template variables
 // Returns a list of assets in MetricFindValue format: { text: "Asset Name", value: "ri.scout..." }
 func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	log.DefaultLogger.Debug("Assets variable request", "method", req.Method, "body", string(req.Body))
+	if req.Method != "POST" {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusMethodNotAllowed,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte(`{"error": "Method not allowed. Use POST."}`),
+		})
+	}
+
+	log.DefaultLogger.Debug("Assets variable request")
 
 	// Parse optional request body for search/filter parameters
 	var searchRequest struct {
@@ -1042,6 +1055,7 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	// Transform to MetricFindValue format: { text: "name", value: "rid" }
 	// Filter to assets with supported data sources (dataset or connection)
 	result := make([]map[string]string, 0)
+outer:
 	for _, resp := range assetResponses {
 		for _, asset := range resp.Results {
 			hasSupported := false
@@ -1057,7 +1071,7 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 					"value": asset.Rid,
 				})
 				if len(result) >= searchRequest.MaxResults {
-					break
+					break outer
 				}
 			}
 		}
@@ -1378,7 +1392,7 @@ type SingleAssetResponse struct {
 func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
@@ -1448,7 +1462,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 

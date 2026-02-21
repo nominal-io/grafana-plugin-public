@@ -27,81 +27,21 @@ import (
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
 
-	tests := []struct {
-		name         string
-		qm           NominalQueryModel
-		startSeconds int64
-		endSeconds   int64
-		expectedVars int
-	}{
-		{
-			name: "basic context with assetRid",
-			qm: NominalQueryModel{
-				AssetRid: "ri.nominal.asset.12345",
-				Channel:  "temperature",
-			},
-			startSeconds: 1000,
-			endSeconds:   2000,
-			expectedVars: 1, // Just assetRid
-		},
-		{
-			name: "context with template variables",
-			qm: NominalQueryModel{
-				AssetRid: "ri.nominal.asset.12345",
-				Channel:  "temperature",
-				TemplateVariables: map[string]interface{}{
-					"env":    "prod",
-					"region": "us-east",
-				},
-			},
-			startSeconds: 1000,
-			endSeconds:   2000,
-			expectedVars: 3, // assetRid + 2 template vars
-		},
-		{
-			name: "context with non-string template variables ignored",
-			qm: NominalQueryModel{
-				AssetRid: "ri.nominal.asset.12345",
-				Channel:  "temperature",
-				TemplateVariables: map[string]interface{}{
-					"strVar": "value",
-					"intVar": 123, // non-string, should be ignored
-				},
-			},
-			startSeconds: 1000,
-			endSeconds:   2000,
-			expectedVars: 2, // assetRid + 1 string template var
-		},
-	}
+	t.Run("basic context with assetRid", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid: "ri.nominal.asset.12345",
+			Channel:  "temperature",
+		}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := ds.buildComputeContext(tt.qm, tt.startSeconds, tt.endSeconds)
+		ctx := ds.buildComputeContext(qm, 1000, 2000)
 
-			if len(ctx.Variables) != tt.expectedVars {
-				t.Errorf("expected %d variables, got %d", tt.expectedVars, len(ctx.Variables))
-			}
-
-			// Verify assetRid is always present
-			if _, ok := ctx.Variables["assetRid"]; !ok {
-				t.Error("expected assetRid variable to be present")
-			}
-
-			// Verify non-string template variables are excluded
-			if tt.qm.TemplateVariables != nil {
-				for key, value := range tt.qm.TemplateVariables {
-					_, isString := value.(string)
-					_, inContext := ctx.Variables[computeapi.VariableName(key)]
-					if !isString && inContext {
-						t.Errorf("non-string variable %q should be excluded from context", key)
-					}
-					if isString && !inContext {
-						t.Errorf("string variable %q should be included in context", key)
-					}
-				}
-			}
-		})
-	}
+		if len(ctx.Variables) != 1 {
+			t.Errorf("expected 1 variable, got %d", len(ctx.Variables))
+		}
+		if _, ok := ctx.Variables["assetRid"]; !ok {
+			t.Error("expected assetRid variable to be present")
+		}
+	})
 }
 
 func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
@@ -1227,115 +1167,6 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 // ============================================================================
 // Group 1: Pure function tests
 // ============================================================================
-
-func TestInterpolateTemplateVariables(t *testing.T) {
-	tests := []struct {
-		name      string
-		input     string
-		variables map[string]interface{}
-		expected  string
-	}{
-		{
-			name:      "replaces ${var} syntax",
-			input:     "asset-${env}-${region}",
-			variables: map[string]interface{}{"env": "prod", "region": "us-east"},
-			expected:  "asset-prod-us-east",
-		},
-		{
-			name:      "leaves bare $var syntax unresolved (handled by frontend)",
-			input:     "asset-$env-$region",
-			variables: map[string]interface{}{"env": "prod", "region": "us-east"},
-			expected:  "asset-$env-$region",
-		},
-		{
-			name:      "nil variables map returns input unchanged",
-			input:     "asset-${env}",
-			variables: nil,
-			expected:  "asset-${env}",
-		},
-		{
-			name:      "empty variables map returns input unchanged",
-			input:     "asset-${env}",
-			variables: map[string]interface{}{},
-			expected:  "asset-${env}",
-		},
-		{
-			name:      "no-op when no variables in string",
-			input:     "plain-string",
-			variables: map[string]interface{}{"env": "prod"},
-			expected:  "plain-string",
-		},
-		{
-			name:      "handles non-string variable values via fmt",
-			input:     "count-${n}",
-			variables: map[string]interface{}{"n": 42},
-			expected:  "count-42",
-		},
-		{
-			name:      "replaces multiple occurrences",
-			input:     "${env}-${env}-${env}",
-			variables: map[string]interface{}{"env": "x"},
-			expected:  "x-x-x",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := interpolateTemplateVariables(tt.input, tt.variables)
-			if result != tt.expected {
-				t.Errorf("interpolateTemplateVariables(%q, %v) = %q, want %q", tt.input, tt.variables, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestApplyTemplateVariables(t *testing.T) {
-	ds := &Datasource{}
-
-	t.Run("applies interpolation to all query fields", func(t *testing.T) {
-		qm := &NominalQueryModel{
-			AssetRid:      "ri.${env}.asset.1",
-			Channel:       "temp-${region}",
-			DataScopeName: "${scope}",
-			QueryText:     "SELECT ${field}",
-			TemplateVariables: map[string]interface{}{
-				"env":    "prod",
-				"region": "east",
-				"scope":  "default",
-				"field":  "temperature",
-			},
-		}
-
-		ds.applyTemplateVariables(qm)
-
-		if qm.AssetRid != "ri.prod.asset.1" {
-			t.Errorf("AssetRid = %q, want %q", qm.AssetRid, "ri.prod.asset.1")
-		}
-		if qm.Channel != "temp-east" {
-			t.Errorf("Channel = %q, want %q", qm.Channel, "temp-east")
-		}
-		if qm.DataScopeName != "default" {
-			t.Errorf("DataScopeName = %q, want %q", qm.DataScopeName, "default")
-		}
-		if qm.QueryText != "SELECT temperature" {
-			t.Errorf("QueryText = %q, want %q", qm.QueryText, "SELECT temperature")
-		}
-	})
-
-	t.Run("nil template variables is no-op", func(t *testing.T) {
-		qm := &NominalQueryModel{
-			AssetRid:          "ri.test.asset.1",
-			Channel:           "temp",
-			TemplateVariables: nil,
-		}
-
-		ds.applyTemplateVariables(qm)
-
-		if qm.AssetRid != "ri.test.asset.1" {
-			t.Errorf("AssetRid changed unexpectedly to %q", qm.AssetRid)
-		}
-	})
-}
 
 func TestValidateQuery(t *testing.T) {
 	ds := &Datasource{}

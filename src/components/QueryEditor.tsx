@@ -96,8 +96,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      console.log('Copied to clipboard:', text);
-      
+
       // Show ephemeral "copied" message
       setShowCopiedMessage(true);
       setTimeout(() => {
@@ -157,25 +156,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       }
     } catch (error) {
       console.error('Failed to load assets:', error);
-      // Fallback to example assets if API fails
-      setAssets([
-        {
-          rid: 'ri.scout.cerulean-staging.asset.0f4b18c9-7876-44ab-bfde-b6147a3a10f9',
-          title: 'Car Asset Example',
-          description: 'Example car asset with GPS and video data',
-          labels: ['vehicle', 'test'],
-          dataScopes: [
-            {
-              dataScopeName: 'car_driv',
-              dataSource: { type: 'dataset' }
-            },
-            {
-              dataScopeName: 'car_video',
-              dataSource: { type: 'video' }
-            }
-          ]
-        }
-      ]);
+      setAssets([]);
     } finally {
       setIsLoading(false);
     }

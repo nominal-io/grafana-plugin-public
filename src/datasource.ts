@@ -85,113 +85,39 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return [];
   }
 
-  private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
-    try {
-      const response = await getBackendSrv().post(
-        `${this.url}/assets`,
-        {
-          searchText: searchText,
-          maxResults: 500,
-        }
-      );
+  /** Post to a resource endpoint and parse the response as MetricFindValue[]. */
+  private async fetchVariableValues(path: string, body: Record<string, unknown>): Promise<MetricFindValue[]> {
+    const response = await getBackendSrv().post(`${this.url}/${path}`, body);
 
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of assets');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid asset at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid asset at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
-    } catch (error) {
-      console.error('Failed to fetch assets for variable:', error);
-      throw error;  // Let Grafana display the error to the user
+    if (!Array.isArray(response)) {
+      throw new Error(`Invalid response from /${path}: expected array`);
     }
+
+    return response.map((item: any) => ({
+      text: String(item.text ?? ''),
+      value: String(item.value ?? ''),
+    }));
+  }
+
+  private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
+    return this.fetchVariableValues('assets', { searchText, maxResults: 500 });
   }
 
   private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
-    // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
     }
-
-    try {
-      const response = await getBackendSrv().post(
-        `${this.url}/datascopes`,
-        {
-          assetRid: assetRid,
-        }
-      );
-
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of datascopes');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid datascope at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid datascope at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
-    } catch (error) {
-      console.error('Failed to fetch datascopes for variable:', error);
-      throw error;  // Let Grafana display the error to the user
-    }
+    return this.fetchVariableValues('datascopes', { assetRid });
   }
 
   private async fetchChannelVariables(assetRid: string, dataScopeName: string): Promise<MetricFindValue[]> {
-    // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
     }
-    // If dataScopeName contains unresolved variable, return empty
     if (dataScopeName && dataScopeName.includes('$')) {
       return [];
     }
-
-    try {
-      const response = await getBackendSrv().post(
-        `${this.url}/channelvariables`,
-        {
-          assetRid: assetRid,
-          dataScopeName: dataScopeName,
-        }
-      );
-
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of channels');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid channel at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid channel at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
-    } catch (error) {
-      console.error('Failed to fetch channels for variable:', error);
-      throw error;  // Let Grafana display the error to the user
-    }
+    return this.fetchVariableValues('channelvariables', { assetRid, dataScopeName });
   }
 
   // No custom query method - let DataSourceWithBackend handle routing to Go backend
