@@ -1489,57 +1489,26 @@ func TestHandleAssetsVariable(t *testing.T) {
 	t.Run("returns assets with dataset or connection data sources in text/value format", func(t *testing.T) {
 		searchResults := []AssetResponse{
 			{
-				Results: []struct {
-					Rid         string `json:"rid"`
-					Title       string `json:"title"`
-					Description string `json:"description"`
-					DataScopes  []struct {
-						DataScopeName string `json:"dataScopeName"`
-						DataSource    struct {
-							Type string `json:"type"`
-						} `json:"dataSource"`
-					} `json:"dataScopes"`
-				}{
+				Results: []AssetSearchResult{
 					{
 						Rid:   "ri.scout.main.asset.1",
 						Title: "Asset With Dataset",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope1", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "dataset"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope1", DataSource: AssetDataSource{Type: "dataset"}},
 						},
 					},
 					{
 						Rid:   "ri.scout.main.asset.2",
 						Title: "Asset With Connection",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope2", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "connection"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope2", DataSource: AssetDataSource{Type: "connection"}},
 						},
 					},
 					{
 						Rid:   "ri.scout.main.asset.3",
 						Title: "Asset With Video Only",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope3", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "video"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope3", DataSource: AssetDataSource{Type: "video"}},
 						},
 					},
 				},
@@ -1583,40 +1552,13 @@ func TestHandleAssetsVariable(t *testing.T) {
 
 	t.Run("respects maxResults", func(t *testing.T) {
 		// Create search results with multiple dataset assets
-		assets := make([]struct {
-			Rid         string `json:"rid"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			DataScopes  []struct {
-				DataScopeName string `json:"dataScopeName"`
-				DataSource    struct {
-					Type string `json:"type"`
-				} `json:"dataSource"`
-			} `json:"dataScopes"`
-		}, 5)
+		assets := make([]AssetSearchResult, 5)
 		for i := range assets {
-			assets[i] = struct {
-				Rid         string `json:"rid"`
-				Title       string `json:"title"`
-				Description string `json:"description"`
-				DataScopes  []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type string `json:"type"`
-					} `json:"dataSource"`
-				} `json:"dataScopes"`
-			}{
+			assets[i] = AssetSearchResult{
 				Rid:   fmt.Sprintf("ri.scout.main.asset.%d", i),
 				Title: fmt.Sprintf("Asset %d", i),
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type string `json:"type"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "ds", DataSource: struct {
-						Type string `json:"type"`
-					}{Type: "dataset"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "ds", DataSource: AssetDataSource{Type: "dataset"}},
 				},
 			}
 		}
@@ -1673,29 +1615,10 @@ func TestHandleDatascopesVariable(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "dataset-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
-					{DataScopeName: "connection-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "connection", Connection: &connectionRid}},
-					{DataScopeName: "video-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "video"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "dataset-scope", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "connection-scope", DataSource: AssetDataSource{Type: "connection", Connection: &connectionRid}},
+					{DataScopeName: "video-scope", DataSource: AssetDataSource{Type: "video"}},
 				},
 			},
 		}
@@ -1792,19 +1715,8 @@ func TestHandleChannelVariables(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "scope1", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope1", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
 				},
 			},
 		}
@@ -1857,24 +1769,9 @@ func TestHandleChannelVariables(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "scope-a", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
-					{DataScopeName: "scope-b", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: strPtr("ri.scout.main.data-source.ds2")}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "scope-b", DataSource: AssetDataSource{Type: "dataset", Dataset: strPtr("ri.scout.main.data-source.ds2")}},
 				},
 			},
 		}
@@ -1950,19 +1847,8 @@ func TestHandleChannelVariables(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Video Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "video-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "video"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "video-scope", DataSource: AssetDataSource{Type: "video"}},
 				},
 			},
 		}
@@ -2058,10 +1944,6 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 	qm := NominalQueryModel{
 		AssetRid: "ri.nominal.asset.12345",
 		Channel:  "temperature",
-		TemplateVariables: map[string]interface{}{
-			"env":    "prod",
-			"region": "us-east",
-		},
 	}
 
 	b.ResetTimer()

@@ -87,41 +87,6 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 	return ds, nil
 }
 
-// interpolateTemplateVariables replaces template variables in strings
-func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
-	if variables == nil {
-		return input
-	}
-
-	result := input
-	for key, value := range variables {
-		// Support both ${var} and $var syntax
-		patterns := []string{
-			fmt.Sprintf("${%s}", key),
-			fmt.Sprintf("$%s", key),
-		}
-
-		valueStr := fmt.Sprintf("%v", value)
-		for _, pattern := range patterns {
-			result = strings.ReplaceAll(result, pattern, valueStr)
-		}
-	}
-
-	return result
-}
-
-// applyTemplateVariables applies template variable interpolation to query fields
-func (d *Datasource) applyTemplateVariables(qm *NominalQueryModel) {
-	if qm.TemplateVariables == nil {
-		return
-	}
-
-	qm.AssetRid = interpolateTemplateVariables(qm.AssetRid, qm.TemplateVariables)
-	qm.Channel = interpolateTemplateVariables(qm.Channel, qm.TemplateVariables)
-	qm.DataScopeName = interpolateTemplateVariables(qm.DataScopeName, qm.TemplateVariables)
-	qm.QueryText = interpolateTemplateVariables(qm.QueryText, qm.TemplateVariables)
-}
-
 // validateQuery validates query parameters similar to pure-ts implementation
 func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 	// Check if we have either Nominal-specific fields or legacy fields
@@ -222,9 +187,6 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			continue
 		}
 
-		// Apply template variable interpolation
-		d.applyTemplateVariables(&qm)
-
 		// Handle connection test immediately (not batchable)
 		if qm.QueryType == "connectionTest" {
 			response.Responses[q.RefID] = d.handleConnectionTestQuery(ctx, config)
@@ -314,9 +276,6 @@ type NominalQueryModel struct {
 	// Query parameters
 	Buckets   int    `json:"buckets"`
 	QueryType string `json:"queryType"`
-
-	// Template variables support
-	TemplateVariables map[string]interface{} `json:"templateVariables,omitempty"`
 
 	// Legacy support
 	QueryText string  `json:"queryText"`
@@ -540,15 +499,6 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 	variables := map[computeapi.VariableName]computeapi.VariableValue{
 		// Asset RID variable referenced by the series builder
 		computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
-	}
-
-	// Add template variables if present
-	if qm.TemplateVariables != nil {
-		for key, value := range qm.TemplateVariables {
-			if strValue, ok := value.(string); ok {
-				variables[computeapi.VariableName(key)] = computeapi.NewVariableValueFromString(strValue)
-			}
-		}
 	}
 
 	return computeapi.Context{
@@ -1374,18 +1324,24 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	})
 }
 
+// AssetDataSource describes the backing data source for a scope.
+type AssetDataSource struct {
+	Type       string  `json:"type"`
+	Dataset    *string `json:"dataset,omitempty"`
+	Connection *string `json:"connection,omitempty"`
+}
+
+// AssetDataScope pairs a scope name with its data source.
+type AssetDataScope struct {
+	DataScopeName string          `json:"dataScopeName"`
+	DataSource    AssetDataSource `json:"dataSource"`
+}
+
 // SingleAssetResponse represents a single asset from the batch lookup API
 type SingleAssetResponse struct {
-	Rid        string `json:"rid"`
-	Title      string `json:"title"`
-	DataScopes []struct {
-		DataScopeName string `json:"dataScopeName"`
-		DataSource    struct {
-			Type       string  `json:"type"`
-			Dataset    *string `json:"dataset,omitempty"`
-			Connection *string `json:"connection,omitempty"`
-		} `json:"dataSource"`
-	} `json:"dataScopes"`
+	Rid        string           `json:"rid"`
+	Title      string           `json:"title"`
+	DataScopes []AssetDataScope `json:"dataScopes"`
 }
 
 // fetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint
@@ -1437,20 +1393,18 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 	return nil, nil
 }
 
+// AssetSearchResult represents a single asset in a search response.
+type AssetSearchResult struct {
+	Rid         string           `json:"rid"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	DataScopes  []AssetDataScope `json:"dataScopes"`
+}
+
 // AssetResponse represents the API response for asset search
 type AssetResponse struct {
-	Results []struct {
-		Rid         string `json:"rid"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		DataScopes  []struct {
-			DataScopeName string `json:"dataScopeName"`
-			DataSource    struct {
-				Type string `json:"type"`
-			} `json:"dataSource"`
-		} `json:"dataScopes"`
-	} `json:"results"`
-	NextPageToken string `json:"nextPageToken"`
+	Results       []AssetSearchResult `json:"results"`
+	NextPageToken string              `json:"nextPageToken"`
 }
 
 // fetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls
