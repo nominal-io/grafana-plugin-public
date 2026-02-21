@@ -4,15 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/nominal-io/nominal-api-go/api/rids"
+	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
+	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 )
 
@@ -1056,6 +1064,1161 @@ func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult
 	return computeapi.ComputeWithUnitsResult{
 		ComputeResult: computeResult,
 	}
+}
+
+// ============================================================================
+// Mock services for CallResource handler tests
+// ============================================================================
+
+// mockAuthService implements authapi.AuthenticationServiceV2Client for testing
+type mockAuthService struct {
+	getMyProfileResponse authapi.UserV2
+	getMyProfileError    error
+}
+
+func (m *mockAuthService) GetMyProfile(ctx context.Context, authHeader bearertoken.Token) (authapi.UserV2, error) {
+	return m.getMyProfileResponse, m.getMyProfileError
+}
+
+func (m *mockAuthService) UpdateMyProfile(ctx context.Context, authHeader bearertoken.Token, req authapi.UpdateMyProfileRequest) (authapi.UserV2, error) {
+	return authapi.UserV2{}, nil
+}
+
+func (m *mockAuthService) GetMySettings(ctx context.Context, authHeader bearertoken.Token) (authapi.UserSettings, error) {
+	return authapi.UserSettings{}, nil
+}
+
+func (m *mockAuthService) UpdateMySettings(ctx context.Context, authHeader bearertoken.Token, settings authapi.UserSettings) (authapi.UserSettings, error) {
+	return authapi.UserSettings{}, nil
+}
+
+func (m *mockAuthService) GetMyOrgSettings(ctx context.Context, authHeader bearertoken.Token) (authapi.OrgSettings, error) {
+	return authapi.OrgSettings{}, nil
+}
+
+func (m *mockAuthService) UpdateMyOrgSettings(ctx context.Context, authHeader bearertoken.Token, settings authapi.OrgSettings) (authapi.OrgSettings, error) {
+	return authapi.OrgSettings{}, nil
+}
+
+func (m *mockAuthService) SearchUsersV2(ctx context.Context, authHeader bearertoken.Token, req authapi.SearchUsersRequest) (authapi.SearchUsersResponseV2, error) {
+	return authapi.SearchUsersResponseV2{}, nil
+}
+
+func (m *mockAuthService) GetUsers(ctx context.Context, authHeader bearertoken.Token, userRids []authapi.UserRid) ([]authapi.UserV2, error) {
+	return nil, nil
+}
+
+func (m *mockAuthService) GetUser(ctx context.Context, authHeader bearertoken.Token, userRid authapi.UserRid) (authapi.UserV2, error) {
+	return authapi.UserV2{}, nil
+}
+
+// mockDatasourceService implements datasourceservice.DataSourceServiceClient for testing
+type mockDatasourceService struct {
+	searchChannelsResponse datasourceapi.SearchChannelsResponse
+	searchChannelsError    error
+	searchChannelsRequest  datasourceapi.SearchChannelsRequest
+}
+
+func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+	m.searchChannelsRequest = queryArg
+	return m.searchChannelsResponse, m.searchChannelsError
+}
+
+func (m *mockDatasourceService) SearchFilteredChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchFilteredChannelsRequest) (datasourceapi.SearchFilteredChannelsResponse, error) {
+	return datasourceapi.SearchFilteredChannelsResponse{}, nil
+}
+
+func (m *mockDatasourceService) SearchHierarchicalChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchHierarchicalChannelsRequest) (datasourceapi.SearchHierarchicalChannelsResponse, error) {
+	return datasourceapi.SearchHierarchicalChannelsResponse{}, nil
+}
+
+func (m *mockDatasourceService) IndexChannelPrefixTree(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.IndexChannelPrefixTreeRequest) (datasourceapi.ChannelPrefixTree, error) {
+	return datasourceapi.ChannelPrefixTree{}, nil
+}
+
+func (m *mockDatasourceService) BatchGetChannelPrefixTrees(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetChannelPrefixTreeRequest) (datasourceapi.BatchGetChannelPrefixTreeResponse, error) {
+	return datasourceapi.BatchGetChannelPrefixTreeResponse{}, nil
+}
+
+func (m *mockDatasourceService) GetAvailableTagsForChannel(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.GetAvailableTagsForChannelRequest) (datasourceapi.GetAvailableTagsForChannelResponse, error) {
+	return datasourceapi.GetAvailableTagsForChannelResponse{}, nil
+}
+
+func (m *mockDatasourceService) GetDataScopeBounds(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetDataScopeBoundsRequest) (datasourceapi.BatchGetDataScopeBoundsResponse, error) {
+	return datasourceapi.BatchGetDataScopeBoundsResponse{}, nil
+}
+
+func (m *mockDatasourceService) GetTagValuesForDataSource(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetTagValuesForDataSourceRequest) (map[api.TagName][]api.TagValue, error) {
+	return nil, nil
+}
+
+// Verify mock types implement their interfaces at compile time
+var _ authapi.AuthenticationServiceV2Client = (*mockAuthService)(nil)
+var _ datasourceservice.DataSourceServiceClient = (*mockDatasourceService)(nil)
+
+// callResourceAndCapture is a test helper that calls CallResource and captures the response
+func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResourceRequest) *backend.CallResourceResponse {
+	t.Helper()
+	var captured *backend.CallResourceResponse
+	sender := backend.CallResourceResponseSenderFunc(func(resp *backend.CallResourceResponse) error {
+		captured = resp
+		return nil
+	})
+	err := ds.CallResource(context.Background(), req, sender)
+	if err != nil {
+		t.Fatalf("CallResource returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("CallResource did not send a response")
+	}
+	return captured
+}
+
+// newTestAssetServer creates an httptest server that handles asset-related API endpoints.
+// It returns the server (caller must defer Close) and configures:
+//   - POST /scout/v1/asset/multiple — batch asset lookup by RID
+//   - POST /scout/v1/search-assets — paginated asset search
+func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/scout/v1/asset/multiple":
+			var rids []string
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &rids); err != nil {
+				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+				return
+			}
+			result := make(map[string]SingleAssetResponse)
+			for _, rid := range rids {
+				if asset, ok := assets[rid]; ok {
+					result[rid] = asset
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+
+		case "/scout/v1/search-assets":
+			if len(searchResults) > 0 {
+				json.NewEncoder(w).Encode(searchResults[0])
+			} else {
+				json.NewEncoder(w).Encode(AssetResponse{})
+			}
+
+		default:
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		}
+	}))
+}
+
+// newTestDatasource creates a Datasource for testing CallResource handlers.
+func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
+	return &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
+			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
+		},
+		authService:       authSvc,
+		datasourceService: dsSvc,
+	}
+}
+
+// ============================================================================
+// Group 1: Pure function tests
+// ============================================================================
+
+func TestInterpolateTemplateVariables(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		variables map[string]interface{}
+		expected  string
+	}{
+		{
+			name:      "replaces ${var} syntax",
+			input:     "asset-${env}-${region}",
+			variables: map[string]interface{}{"env": "prod", "region": "us-east"},
+			expected:  "asset-prod-us-east",
+		},
+		{
+			name:      "leaves bare $var syntax unresolved (handled by frontend)",
+			input:     "asset-$env-$region",
+			variables: map[string]interface{}{"env": "prod", "region": "us-east"},
+			expected:  "asset-$env-$region",
+		},
+		{
+			name:      "nil variables map returns input unchanged",
+			input:     "asset-${env}",
+			variables: nil,
+			expected:  "asset-${env}",
+		},
+		{
+			name:      "empty variables map returns input unchanged",
+			input:     "asset-${env}",
+			variables: map[string]interface{}{},
+			expected:  "asset-${env}",
+		},
+		{
+			name:      "no-op when no variables in string",
+			input:     "plain-string",
+			variables: map[string]interface{}{"env": "prod"},
+			expected:  "plain-string",
+		},
+		{
+			name:      "handles non-string variable values via fmt",
+			input:     "count-${n}",
+			variables: map[string]interface{}{"n": 42},
+			expected:  "count-42",
+		},
+		{
+			name:      "replaces multiple occurrences",
+			input:     "${env}-${env}-${env}",
+			variables: map[string]interface{}{"env": "x"},
+			expected:  "x-x-x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := interpolateTemplateVariables(tt.input, tt.variables)
+			if result != tt.expected {
+				t.Errorf("interpolateTemplateVariables(%q, %v) = %q, want %q", tt.input, tt.variables, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestApplyTemplateVariables(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("applies interpolation to all query fields", func(t *testing.T) {
+		qm := &NominalQueryModel{
+			AssetRid:      "ri.${env}.asset.1",
+			Channel:       "temp-${region}",
+			DataScopeName: "${scope}",
+			QueryText:     "SELECT ${field}",
+			TemplateVariables: map[string]interface{}{
+				"env":    "prod",
+				"region": "east",
+				"scope":  "default",
+				"field":  "temperature",
+			},
+		}
+
+		ds.applyTemplateVariables(qm)
+
+		if qm.AssetRid != "ri.prod.asset.1" {
+			t.Errorf("AssetRid = %q, want %q", qm.AssetRid, "ri.prod.asset.1")
+		}
+		if qm.Channel != "temp-east" {
+			t.Errorf("Channel = %q, want %q", qm.Channel, "temp-east")
+		}
+		if qm.DataScopeName != "default" {
+			t.Errorf("DataScopeName = %q, want %q", qm.DataScopeName, "default")
+		}
+		if qm.QueryText != "SELECT temperature" {
+			t.Errorf("QueryText = %q, want %q", qm.QueryText, "SELECT temperature")
+		}
+	})
+
+	t.Run("nil template variables is no-op", func(t *testing.T) {
+		qm := &NominalQueryModel{
+			AssetRid:          "ri.test.asset.1",
+			Channel:           "temp",
+			TemplateVariables: nil,
+		}
+
+		ds.applyTemplateVariables(qm)
+
+		if qm.AssetRid != "ri.test.asset.1" {
+			t.Errorf("AssetRid changed unexpectedly to %q", qm.AssetRid)
+		}
+	})
+}
+
+func TestValidateQuery(t *testing.T) {
+	ds := &Datasource{}
+
+	tests := []struct {
+		name    string
+		qm      NominalQueryModel
+		wantErr string
+	}{
+		{
+			name: "valid nominal query",
+			qm:   NominalQueryModel{AssetRid: "ri.test.asset.1", Channel: "temp", Buckets: 100},
+		},
+		{
+			name: "valid legacy query text",
+			qm:   NominalQueryModel{QueryText: "SELECT *"},
+		},
+		{
+			name: "valid constant query",
+			qm:   NominalQueryModel{Constant: 42.0},
+		},
+		{
+			name:    "empty query",
+			qm:      NominalQueryModel{},
+			wantErr: "query must have either",
+		},
+		{
+			name:    "whitespace-only assetRid",
+			qm:      NominalQueryModel{AssetRid: "   ", Channel: "temp"},
+			wantErr: "assetRid cannot be empty",
+		},
+		{
+			name:    "whitespace-only channel",
+			qm:      NominalQueryModel{AssetRid: "ri.test.asset.1", Channel: "   "},
+			wantErr: "channel cannot be empty",
+		},
+		{
+			name:    "negative buckets",
+			qm:      NominalQueryModel{AssetRid: "ri.test.asset.1", Channel: "temp", Buckets: -1},
+			wantErr: "buckets must be non-negative",
+		},
+		{
+			name: "zero buckets is valid",
+			qm:   NominalQueryModel{AssetRid: "ri.test.asset.1", Channel: "temp", Buckets: 0},
+		},
+		{
+			name: "large buckets is valid but warns",
+			qm:   NominalQueryModel{AssetRid: "ri.test.asset.1", Channel: "temp", Buckets: 15000},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ds.validateQuery(tt.qm)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Errorf("expected no error, got: %v", err)
+				}
+			} else {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.wantErr)
+				} else if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+				}
+			}
+		})
+	}
+}
+
+func TestGetChannelMetadataDescription(t *testing.T) {
+	t.Run("returns description when present", func(t *testing.T) {
+		desc := "Temperature sensor reading"
+		channel := datasourceapi.ChannelMetadata{
+			Name:        api.Channel("temperature"),
+			Description: &desc,
+		}
+		result := getChannelMetadataDescription(channel)
+		if result != desc {
+			t.Errorf("got %q, want %q", result, desc)
+		}
+	})
+
+	t.Run("returns fallback when description is nil", func(t *testing.T) {
+		channel := datasourceapi.ChannelMetadata{
+			Name: api.Channel("temperature"),
+		}
+		result := getChannelMetadataDescription(channel)
+		expected := "Channel: temperature"
+		if result != expected {
+			t.Errorf("got %q, want %q", result, expected)
+		}
+	})
+}
+
+// ============================================================================
+// Group 2: CallResource routing tests
+// ============================================================================
+
+func TestCallResourceRouting(t *testing.T) {
+	mockAuth := &mockAuthService{
+		getMyProfileResponse: authapi.UserV2{
+			Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
+			DisplayName: "Test User",
+		},
+	}
+
+	// Create a test server that acts as the Nominal API proxy target
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"proxied": "true", "path": r.URL.Path})
+	}))
+	defer proxyServer.Close()
+
+	ds := newTestDatasource(proxyServer.URL, mockAuth, &mockDatasourceService{})
+
+	tests := []struct {
+		name           string
+		path           string
+		method         string
+		body           []byte
+		expectStatus   int
+		expectContains string
+	}{
+		{
+			name:           "routes /test to handleTestConnection",
+			path:           "test",
+			method:         "GET",
+			expectStatus:   http.StatusOK,
+			expectContains: "success",
+		},
+		{
+			name:           "routes /test with leading slash",
+			path:           "/test",
+			method:         "GET",
+			expectStatus:   http.StatusOK,
+			expectContains: "success",
+		},
+		{
+			name:           "routes connection-test",
+			path:           "connection-test",
+			method:         "GET",
+			expectStatus:   http.StatusOK,
+			expectContains: "success",
+		},
+		{
+			name:         "routes /channels with POST",
+			path:         "channels",
+			method:       "POST",
+			body:         []byte(`{"dataSourceRids":[],"searchText":""}`),
+			expectStatus: http.StatusBadRequest, // No valid RIDs
+		},
+		{
+			name:         "routes /channels rejects GET",
+			path:         "channels",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "routes /assets",
+			path:         "assets",
+			method:       "POST",
+			body:         []byte(`{}`),
+			expectStatus: http.StatusOK,
+		},
+		{
+			name:         "routes /datascopes without assetRid",
+			path:         "datascopes",
+			method:       "POST",
+			body:         []byte(`{}`),
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name:         "routes /channelvariables without assetRid",
+			path:         "channelvariables",
+			method:       "POST",
+			body:         []byte(`{}`),
+			expectStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "unknown path falls through to proxy",
+			path:           "some/api/endpoint",
+			method:         "GET",
+			expectStatus:   http.StatusOK,
+			expectContains: "proxied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &backend.CallResourceRequest{
+				Path:   tt.path,
+				Method: tt.method,
+				Body:   tt.body,
+			}
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != tt.expectStatus {
+				t.Errorf("status = %d, want %d; body = %s", resp.Status, tt.expectStatus, string(resp.Body))
+			}
+			if tt.expectContains != "" && !strings.Contains(string(resp.Body), tt.expectContains) {
+				t.Errorf("body %q does not contain %q", string(resp.Body), tt.expectContains)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Group 3: CallResource handler tests
+// ============================================================================
+
+// --- handleChannelsSearch tests ---
+
+func TestHandleChannelsSearch(t *testing.T) {
+	validRID := "ri.scout.main.data-source.dataset123"
+	desc := "A temperature channel"
+
+	t.Run("returns channels from mock datasource service", func(t *testing.T) {
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:        api.Channel("temperature"),
+						DataSource:  rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+						Description: &desc,
+					},
+					{
+						Name:       api.Channel("pressure"),
+						DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					},
+				},
+			},
+		}
+
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]interface{}{
+			"dataSourceRids": []string{validRID},
+			"searchText":     "temp",
+		})
+		req := &backend.CallResourceRequest{
+			Path:   "channels",
+			Method: "POST",
+			Body:   body,
+		}
+
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		channels, ok := result["channels"].([]interface{})
+		if !ok {
+			t.Fatalf("expected channels array, got %T", result["channels"])
+		}
+		if len(channels) != 2 {
+			t.Errorf("expected 2 channels, got %d", len(channels))
+		}
+
+		// Verify search text was passed through
+		if string(mockDS.searchChannelsRequest.FuzzySearchText) != "temp" {
+			t.Errorf("searchText = %q, want %q", mockDS.searchChannelsRequest.FuzzySearchText, "temp")
+		}
+	})
+
+	t.Run("non-POST returns 405", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "GET"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want 405", resp.Status)
+		}
+	})
+
+	t.Run("invalid body returns 400", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: []byte(`not json`)}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.Status)
+		}
+	})
+
+	t.Run("no valid RIDs returns 400", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		body, _ := json.Marshal(map[string]interface{}{
+			"dataSourceRids": []string{"invalid-rid"},
+			"searchText":     "",
+		})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+
+	t.Run("API error returns 500", func(t *testing.T) {
+		mockDS := &mockDatasourceService{
+			searchChannelsError: fmt.Errorf("service unavailable"),
+		}
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]interface{}{
+			"dataSourceRids": []string{validRID},
+			"searchText":     "",
+		})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", resp.Status)
+		}
+	})
+}
+
+// --- handleAssetsVariable tests ---
+
+func TestHandleAssetsVariable(t *testing.T) {
+	t.Run("returns assets with dataset or connection data sources in text/value format", func(t *testing.T) {
+		searchResults := []AssetResponse{
+			{
+				Results: []struct {
+					Rid         string `json:"rid"`
+					Title       string `json:"title"`
+					Description string `json:"description"`
+					DataScopes  []struct {
+						DataScopeName string `json:"dataScopeName"`
+						DataSource    struct {
+							Type string `json:"type"`
+						} `json:"dataSource"`
+					} `json:"dataScopes"`
+				}{
+					{
+						Rid:   "ri.scout.main.asset.1",
+						Title: "Asset With Dataset",
+						DataScopes: []struct {
+							DataScopeName string `json:"dataScopeName"`
+							DataSource    struct {
+								Type string `json:"type"`
+							} `json:"dataSource"`
+						}{
+							{DataScopeName: "scope1", DataSource: struct {
+								Type string `json:"type"`
+							}{Type: "dataset"}},
+						},
+					},
+					{
+						Rid:   "ri.scout.main.asset.2",
+						Title: "Asset With Connection",
+						DataScopes: []struct {
+							DataScopeName string `json:"dataScopeName"`
+							DataSource    struct {
+								Type string `json:"type"`
+							} `json:"dataSource"`
+						}{
+							{DataScopeName: "scope2", DataSource: struct {
+								Type string `json:"type"`
+							}{Type: "connection"}},
+						},
+					},
+					{
+						Rid:   "ri.scout.main.asset.3",
+						Title: "Asset With Video Only",
+						DataScopes: []struct {
+							DataScopeName string `json:"dataScopeName"`
+							DataSource    struct {
+								Type string `json:"type"`
+							} `json:"dataSource"`
+						}{
+							{DataScopeName: "scope3", DataSource: struct {
+								Type string `json:"type"`
+							}{Type: "video"}},
+						},
+					},
+				},
+			},
+		}
+
+		server := newTestAssetServer(t, nil, searchResults)
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: []byte(`{}`)}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+
+		// Dataset and connection assets should be included, video-only excluded
+		if len(result) != 2 {
+			t.Fatalf("expected 2 assets, got %d: %v", len(result), result)
+		}
+		titles := map[string]bool{}
+		for _, r := range result {
+			titles[r["text"]] = true
+		}
+		if !titles["Asset With Dataset"] {
+			t.Error("expected Asset With Dataset in results")
+		}
+		if !titles["Asset With Connection"] {
+			t.Error("expected Asset With Connection in results")
+		}
+		if titles["Asset With Video Only"] {
+			t.Error("video-only asset should be excluded")
+		}
+	})
+
+	t.Run("respects maxResults", func(t *testing.T) {
+		// Create search results with multiple dataset assets
+		assets := make([]struct {
+			Rid         string `json:"rid"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			DataScopes  []struct {
+				DataScopeName string `json:"dataScopeName"`
+				DataSource    struct {
+					Type string `json:"type"`
+				} `json:"dataSource"`
+			} `json:"dataScopes"`
+		}, 5)
+		for i := range assets {
+			assets[i] = struct {
+				Rid         string `json:"rid"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				DataScopes  []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type string `json:"type"`
+					} `json:"dataSource"`
+				} `json:"dataScopes"`
+			}{
+				Rid:   fmt.Sprintf("ri.scout.main.asset.%d", i),
+				Title: fmt.Sprintf("Asset %d", i),
+				DataScopes: []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type string `json:"type"`
+					} `json:"dataSource"`
+				}{
+					{DataScopeName: "ds", DataSource: struct {
+						Type string `json:"type"`
+					}{Type: "dataset"}},
+				},
+			}
+		}
+		searchResults := []AssetResponse{{Results: assets}}
+
+		server := newTestAssetServer(t, nil, searchResults)
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]interface{}{"maxResults": 2})
+		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		json.Unmarshal(resp.Body, &result)
+		if len(result) != 2 {
+			t.Errorf("expected 2 results (maxResults), got %d", len(result))
+		}
+	})
+
+	t.Run("handles empty body with defaults", func(t *testing.T) {
+		server := newTestAssetServer(t, nil, []AssetResponse{{Results: nil}})
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		req := &backend.CallResourceRequest{Path: "assets", Method: "POST"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		json.Unmarshal(resp.Body, &result)
+		if len(result) != 0 {
+			t.Errorf("expected 0 results, got %d", len(result))
+		}
+	})
+}
+
+// --- handleDatascopesVariable tests ---
+
+func TestHandleDatascopesVariable(t *testing.T) {
+	assetRid := "ri.scout.main.asset.abc123"
+	datasetRid := "ri.scout.main.data-source.ds1"
+	connectionRid := "ri.scout.main.data-source.conn1"
+
+	makeAsset := func() map[string]SingleAssetResponse {
+		return map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Test Asset",
+				DataScopes: []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					} `json:"dataSource"`
+				}{
+					{DataScopeName: "dataset-scope", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "connection-scope", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "connection", Connection: &connectionRid}},
+					{DataScopeName: "video-scope", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "video"}},
+				},
+			},
+		}
+	}
+
+	t.Run("returns datascopes for asset in text/value format", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAsset(), nil)
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "datascopes", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		json.Unmarshal(resp.Body, &result)
+
+		// Should include dataset and connection scopes, but not video
+		if len(result) != 2 {
+			t.Fatalf("expected 2 datascopes, got %d: %v", len(result), result)
+		}
+
+		names := map[string]bool{}
+		for _, r := range result {
+			names[r["text"]] = true
+			if r["text"] != r["value"] {
+				t.Errorf("text and value should match: text=%q, value=%q", r["text"], r["value"])
+			}
+		}
+		if !names["dataset-scope"] {
+			t.Error("expected dataset-scope in results")
+		}
+		if !names["connection-scope"] {
+			t.Error("expected connection-scope in results")
+		}
+	})
+
+	t.Run("missing assetRid returns 400", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{})
+		req := &backend.CallResourceRequest{Path: "datascopes", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+
+	t.Run("unresolved template variable returns empty array 200", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": "$asset"})
+		req := &backend.CallResourceRequest{Path: "datascopes", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("asset not found returns empty array 200", func(t *testing.T) {
+		// Server with empty asset map — asset won't be found
+		server := newTestAssetServer(t, map[string]SingleAssetResponse{}, nil)
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": "ri.scout.main.asset.nonexistent"})
+		req := &backend.CallResourceRequest{Path: "datascopes", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+}
+
+// --- handleChannelVariables tests ---
+
+func TestHandleChannelVariables(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ch123"
+	datasetRid := "ri.scout.main.data-source.ds1"
+
+	makeAssetWithDS := func() map[string]SingleAssetResponse {
+		return map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Test Asset",
+				DataScopes: []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					} `json:"dataSource"`
+				}{
+					{DataScopeName: "scope1", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "dataset", Dataset: &datasetRid}},
+				},
+			},
+		}
+	}
+
+	t.Run("returns deduplicated channel names", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					{Name: api.Channel("pressure"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))}, // duplicate
+				},
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		json.Unmarshal(resp.Body, &result)
+		if len(result) != 2 {
+			t.Fatalf("expected 2 deduplicated channels, got %d: %v", len(result), result)
+		}
+
+		names := map[string]bool{}
+		for _, r := range result {
+			names[r["text"]] = true
+			if r["text"] != r["value"] {
+				t.Errorf("text and value should match: text=%q, value=%q", r["text"], r["value"])
+			}
+		}
+		if !names["temperature"] || !names["pressure"] {
+			t.Errorf("expected temperature and pressure, got %v", names)
+		}
+	})
+
+	t.Run("filters by dataScopeName", func(t *testing.T) {
+		// Asset with two scopes
+		twoScopeAsset := map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Test Asset",
+				DataScopes: []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					} `json:"dataSource"`
+				}{
+					{DataScopeName: "scope-a", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "scope-b", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "dataset", Dataset: strPtr("ri.scout.main.data-source.ds2")}},
+				},
+			},
+		}
+
+		server := newTestAssetServer(t, twoScopeAsset, nil)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+				},
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]interface{}{"assetRid": assetRid, "dataScopeName": "scope-a"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		// Verify only scope-a's datasource RID was sent
+		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
+			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(mockDS.searchChannelsRequest.DataSources))
+		}
+	})
+
+	t.Run("missing assetRid returns 400", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400", resp.Status)
+		}
+	})
+
+	t.Run("unresolved template variable in assetRid returns empty 200", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": "${asset}"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.Status)
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("unresolved template variable in dataScopeName returns empty 200", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "dataScopeName": "$scope"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.Status)
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("no datasource RIDs returns empty 200", func(t *testing.T) {
+		// Asset with only video type scopes (no dataset/connection)
+		videoAsset := map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Video Asset",
+				DataScopes: []struct {
+					DataScopeName string `json:"dataScopeName"`
+					DataSource    struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					} `json:"dataSource"`
+				}{
+					{DataScopeName: "video-scope", DataSource: struct {
+						Type       string  `json:"type"`
+						Dataset    *string `json:"dataset,omitempty"`
+						Connection *string `json:"connection,omitempty"`
+					}{Type: "video"}},
+				},
+			},
+		}
+
+		server := newTestAssetServer(t, videoAsset, nil)
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+}
+
+// --- handleTestConnection tests ---
+
+func TestHandleTestConnection(t *testing.T) {
+	t.Run("success returns 200 with status/message", func(t *testing.T) {
+		mockAuth := &mockAuthService{
+			getMyProfileResponse: authapi.UserV2{
+				Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
+				DisplayName: "Test User",
+			},
+		}
+
+		ds := newTestDatasource("https://api.test.com", mockAuth, &mockDatasourceService{})
+
+		req := &backend.CallResourceRequest{Path: "test", Method: "GET"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result map[string]interface{}
+		json.Unmarshal(resp.Body, &result)
+		if result["status"] != "success" {
+			t.Errorf("status = %v, want %q", result["status"], "success")
+		}
+		if msg, ok := result["message"].(string); !ok || msg == "" {
+			t.Error("expected non-empty message")
+		}
+	})
+
+	t.Run("missing API key returns 400", func(t *testing.T) {
+		ds := &Datasource{
+			settings: backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": ""},
+			},
+			authService: &mockAuthService{},
+		}
+
+		req := &backend.CallResourceRequest{Path: "test", Method: "GET"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+
+	t.Run("auth failure returns error status", func(t *testing.T) {
+		mockAuth := &mockAuthService{
+			getMyProfileError: fmt.Errorf("401 unauthorized"),
+		}
+
+		ds := newTestDatasource("https://api.test.com", mockAuth, &mockDatasourceService{})
+
+		req := &backend.CallResourceRequest{Path: "test", Method: "GET"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status == http.StatusOK {
+			t.Error("expected non-200 status for auth failure")
+		}
+		if !strings.Contains(string(resp.Body), "error") {
+			t.Errorf("expected error in body, got: %s", string(resp.Body))
+		}
+	})
+}
+
+// strPtr is a helper to create a *string
+func strPtr(s string) *string {
+	return &s
 }
 
 // Benchmark for new batch-related function

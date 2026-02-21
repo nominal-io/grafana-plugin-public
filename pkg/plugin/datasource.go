@@ -85,7 +85,11 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 	return ds, nil
 }
 
-// interpolateTemplateVariables replaces template variables in strings
+// interpolateTemplateVariables replaces ${var} template variables in strings.
+// Only the ${var} syntax is supported on the backend; the bare $var syntax is
+// already resolved by Grafana's frontend template service before queries reach
+// the backend, and naive string replacement of $var is unsafe when one variable
+// name is a prefix of another (e.g. $env vs $environment).
 func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
 	if variables == nil {
 		return input
@@ -93,16 +97,9 @@ func interpolateTemplateVariables(input string, variables map[string]interface{}
 
 	result := input
 	for key, value := range variables {
-		// Support both ${var} and $var syntax
-		patterns := []string{
-			fmt.Sprintf("${%s}", key),
-			fmt.Sprintf("$%s", key),
-		}
-
+		pattern := fmt.Sprintf("${%s}", key)
 		valueStr := fmt.Sprintf("%v", value)
-		for _, pattern := range patterns {
-			result = strings.ReplaceAll(result, pattern, valueStr)
-		}
+		result = strings.ReplaceAll(result, pattern, valueStr)
 	}
 
 	return result
@@ -1043,19 +1040,18 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	}
 
 	// Transform to MetricFindValue format: { text: "name", value: "rid" }
-	// Filter to assets with dataset data sources
+	// Filter to assets with supported data sources (dataset or connection)
 	result := make([]map[string]string, 0)
 	for _, resp := range assetResponses {
 		for _, asset := range resp.Results {
-			// Check if asset has dataset data sources
-			hasDataset := false
+			hasSupported := false
 			for _, scope := range asset.DataScopes {
-				if scope.DataSource.Type == "dataset" {
-					hasDataset = true
+				if scope.DataSource.Type == "dataset" || scope.DataSource.Type == "connection" {
+					hasSupported = true
 					break
 				}
 			}
-			if hasDataset {
+			if hasSupported {
 				result = append(result, map[string]string{
 					"text":  asset.Title,
 					"value": asset.Rid,
