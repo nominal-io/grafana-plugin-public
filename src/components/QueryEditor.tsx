@@ -324,6 +324,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Compute resolved datascope name - this changes when template variables change
   const resolvedDataScopeName = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
 
+  // Compute resolved channel name - this changes when template variables change
+  const resolvedChannel = query?.channel ? getTemplateSrv().replace(query.channel) : '';
+
   // Update dropdown options when the resolved asset RID changes
   useEffect(() => {
     // Skip if not fully resolved (still contains $) or empty
@@ -438,6 +441,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     if (!hasUserInteracted || !currentChannel || !channels.length) {
       return;
     }
+    // Don't clear template variables - they are resolved at query time
+    if (currentChannel.includes('$')) {
+      return;
+    }
     const channelExistsInScope = channels.some(
       ch => ch.dataScopeName === resolvedDataScopeName && ch.name === currentChannel
     );
@@ -530,15 +537,32 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   // Prepare channel options for dropdown - only show channels for the selected data scope
   // Use resolved datascope name for filtering (handles template variables)
-  const channelOptions: Array<SelectableValue<string>> = resolvedDataScopeName
-    ? channels
-        .filter(ch => ch.dataScopeName === resolvedDataScopeName)
-        .map(ch => ({
-          label: ch.name,
-          value: ch.name,
-          description: ch.description
-        }))
-    : [];
+  const channelOptions: Array<SelectableValue<string>> = (() => {
+    const options: Array<SelectableValue<string>> = resolvedDataScopeName
+      ? channels
+          .filter(ch => ch.dataScopeName === resolvedDataScopeName)
+          .map(ch => ({
+            label: ch.name,
+            value: ch.name,
+            description: ch.description
+          }))
+      : [];
+
+    // If the current channel is a template variable, add it as an option
+    const currentValue = query?.channel || '';
+    if (currentValue.includes('$') && !options.some(opt => opt.value === currentValue)) {
+      const resolved = resolvedChannel;
+      const label = resolved && resolved !== currentValue && !resolved.includes('$')
+        ? `${currentValue} → ${resolved}`
+        : currentValue;
+      options.unshift({
+        label: label,
+        value: currentValue
+      });
+    }
+
+    return options;
+  })();
 
   // Prepare data scope options for dropdown
   // Include template variable option if the current value is a variable
@@ -751,7 +775,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
                   key={`channel-select-${resolvedDataScopeName || 'none'}-${channelOptions.length}`}
-                  value={channelOptions.some(opt => opt.value === query?.channel) ? query?.channel : ''}
+                  value={(() => {
+                    const currentValue = query?.channel || '';
+                    if (currentValue.includes('$')) {
+                      return currentValue;
+                    }
+                    return channelOptions.some(opt => opt.value === currentValue) ? currentValue : '';
+                  })()}
                   onChange={(value) => {
                     setHasUserInteracted(true);
                     onChange({
@@ -763,9 +793,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     });
                   }}
                   options={channelOptions}
-                  placeholder="Choose channel..."
+                  placeholder="Choose channel or use $variable..."
                   width={40}
                   isClearable={false}
+                  allowCustomValue={true}
                 />
               </InlineField>
             </>

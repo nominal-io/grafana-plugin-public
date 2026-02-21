@@ -758,6 +758,11 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		return d.handleDatascopesVariable(ctx, req, sender)
 	}
 
+	// Handle channel variables endpoint for Grafana template variables
+	if req.Path == "channelvariables" || req.Path == "/channelvariables" {
+		return d.handleChannelVariables(ctx, req, sender)
+	}
+
 	// Handle requests with /nominal prefix - strip it for API calls
 	if strings.HasPrefix(req.Path, "nominal/") {
 		// Remove the /nominal prefix for the actual API call
@@ -1182,6 +1187,173 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	}
 
 	log.DefaultLogger.Debug("Datascopes variable request successful", "datascopeCount", len(result))
+
+	return sender.Send(&backend.CallResourceResponse{
+		Status: http.StatusOK,
+		Headers: map[string][]string{
+			"Content-Type": {"application/json"},
+		},
+		Body: responseBytes,
+	})
+}
+
+// handleChannelVariables handles the channelvariables endpoint for Grafana template variables
+// Returns a list of channel names for a given asset in MetricFindValue format: { text: "channel name", value: "channel name" }
+func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	log.DefaultLogger.Debug("Channel variables request", "method", req.Method, "body", string(req.Body))
+
+	// Parse request body for asset RID and optional datascope filter
+	var searchRequest struct {
+		AssetRid      string `json:"assetRid"`
+		DataScopeName string `json:"dataScopeName"`
+	}
+
+	if req.Body != nil && len(req.Body) > 0 {
+		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
+			log.DefaultLogger.Debug("Failed to parse request body", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body: " + err.Error()})
+			return sender.Send(&backend.CallResourceResponse{
+				Status:  http.StatusBadRequest,
+				Headers: map[string][]string{"Content-Type": {"application/json"}},
+				Body:    errBody,
+			})
+		}
+	}
+
+	// Validate asset RID is provided
+	if searchRequest.AssetRid == "" {
+		errBody, _ := json.Marshal(map[string]string{"error": "assetRid is required"})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusBadRequest,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	// Check if any parameter contains unresolved template variable
+	if strings.Contains(searchRequest.AssetRid, "$") || strings.Contains(searchRequest.DataScopeName, "$") {
+		log.DefaultLogger.Debug("Request contains unresolved template variable", "assetRid", searchRequest.AssetRid, "dataScopeName", searchRequest.DataScopeName)
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte("[]"),
+		})
+	}
+
+	// Load settings to get API key
+	config, err := models.LoadPluginSettings(d.settings)
+	if err != nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	// Fetch asset by RID to get its datascopes and datasource RIDs
+	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	if asset == nil {
+		log.DefaultLogger.Debug("Asset not found", "assetRid", searchRequest.AssetRid)
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte("[]"),
+		})
+	}
+
+	// Extract datasource RIDs from the asset's datascopes, optionally filtered by dataScopeName
+	var dataSourceRids []rids.DataSourceRid
+	for _, scope := range asset.DataScopes {
+		dsType := scope.DataSource.Type
+		if dsType != "dataset" && dsType != "connection" {
+			continue
+		}
+
+		// If a dataScopeName filter is provided, only include matching scopes
+		if searchRequest.DataScopeName != "" && scope.DataScopeName != searchRequest.DataScopeName {
+			continue
+		}
+
+		var ridStr string
+		if dsType == "dataset" && scope.DataSource.Dataset != nil {
+			ridStr = *scope.DataSource.Dataset
+		} else if dsType == "connection" && scope.DataSource.Connection != nil {
+			ridStr = *scope.DataSource.Connection
+		}
+
+		if ridStr != "" {
+			if parsedRid, err := rid.ParseRID(ridStr); err == nil {
+				dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
+			} else {
+				log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
+			}
+		}
+	}
+
+	if len(dataSourceRids) == 0 {
+		log.DefaultLogger.Debug("No data source RIDs found for asset", "assetRid", searchRequest.AssetRid)
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusOK,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte("[]"),
+		})
+	}
+
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+
+	// Search for channels across all datasource RIDs
+	searchChannelsRequest := datasourceapi.SearchChannelsRequest{
+		FuzzySearchText: "",
+		DataSources:     dataSourceRids,
+	}
+
+	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
+	if err != nil {
+		log.DefaultLogger.Error("Channels search API call failed", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	// Deduplicate channel names and return as MetricFindValue format
+	seen := make(map[string]bool)
+	result := make([]map[string]string, 0)
+	for _, channel := range channelsResponse.Results {
+		name := string(channel.Name)
+		if !seen[name] {
+			seen[name] = true
+			result = append(result, map[string]string{
+				"text":  name,
+				"value": name,
+			})
+		}
+	}
+
+	responseBytes, err := json.Marshal(result)
+	if err != nil {
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response: " + err.Error()})
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusInternalServerError,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    errBody,
+		})
+	}
+
+	log.DefaultLogger.Debug("Channel variables request successful", "channelCount", len(result))
 
 	return sender.Send(&backend.CallResourceResponse{
 		Status: http.StatusOK,
