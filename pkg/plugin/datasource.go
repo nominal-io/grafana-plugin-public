@@ -51,6 +51,9 @@ var sharedHTTPClient = &http.Client{
 // See scout ComputeResource.SUBREQUEST_LIMIT.
 const maxBatchComputeSubrequests = 300
 
+// defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
+const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
+
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(settings)
@@ -60,7 +63,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	// Use the base URL as-is since it should already include the full path
 	baseURL = strings.TrimSuffix(baseURL, "/")
@@ -1113,7 +1116,12 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Debug("Failed to parse request body, using defaults", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body: " + err.Error()})
+			return sender.Send(&backend.CallResourceResponse{
+				Status:  http.StatusBadRequest,
+				Headers: map[string][]string{"Content-Type": {"application/json"}},
+				Body:    errBody,
+			})
 		}
 	}
 
@@ -1194,7 +1202,15 @@ outer:
 // handleDatascopesVariable handles the datascopes endpoint for Grafana template variables
 // Returns a list of datascopes for a given asset in MetricFindValue format: { text: "scope name", value: "scope name" }
 func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	log.DefaultLogger.Debug("Datascopes variable request", "method", req.Method, "body", string(req.Body))
+	if req.Method != "POST" {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusMethodNotAllowed,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte(`{"error": "Method not allowed. Use POST."}`),
+		})
+	}
+
+	log.DefaultLogger.Debug("Datascopes variable request")
 
 	// Parse request body for asset RID
 	var searchRequest struct {
@@ -1303,7 +1319,15 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 // handleChannelVariables handles the channelvariables endpoint for Grafana template variables
 // Returns a list of channel names for a given asset in MetricFindValue format: { text: "channel name", value: "channel name" }
 func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	log.DefaultLogger.Debug("Channel variables request", "method", req.Method, "body", string(req.Body))
+	if req.Method != "POST" {
+		return sender.Send(&backend.CallResourceResponse{
+			Status:  http.StatusMethodNotAllowed,
+			Headers: map[string][]string{"Content-Type": {"application/json"}},
+			Body:    []byte(`{"error": "Method not allowed. Use POST."}`),
+		})
+	}
+
+	log.DefaultLogger.Debug("Channel variables request")
 
 	// Parse request body for asset RID and optional datascope filter
 	var searchRequest struct {
@@ -1467,25 +1491,31 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	})
 }
 
-// SingleAssetResponse represents a single asset from the batch lookup API
+// AssetDataSource represents the data source within an asset's data scope.
+type AssetDataSource struct {
+	Type       string  `json:"type"`
+	Dataset    *string `json:"dataset,omitempty"`
+	Connection *string `json:"connection,omitempty"`
+}
+
+// AssetDataScope represents a single data scope entry on an asset.
+type AssetDataScope struct {
+	DataScopeName string          `json:"dataScopeName"`
+	DataSource    AssetDataSource `json:"dataSource"`
+}
+
+// SingleAssetResponse represents a single asset from the batch lookup API.
 type SingleAssetResponse struct {
-	Rid        string `json:"rid"`
-	Title      string `json:"title"`
-	DataScopes []struct {
-		DataScopeName string `json:"dataScopeName"`
-		DataSource    struct {
-			Type       string  `json:"type"`
-			Dataset    *string `json:"dataset,omitempty"`
-			Connection *string `json:"connection,omitempty"`
-		} `json:"dataSource"`
-	} `json:"dataScopes"`
+	Rid        string           `json:"rid"`
+	Title      string           `json:"title"`
+	DataScopes []AssetDataScope `json:"dataScopes"`
 }
 
 // fetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint
 func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
@@ -1530,20 +1560,18 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 	return nil, nil
 }
 
-// AssetResponse represents the API response for asset search
+// AssetSearchResult represents a single asset returned by the search API.
+type AssetSearchResult struct {
+	Rid         string           `json:"rid"`
+	Title       string           `json:"title"`
+	Description string           `json:"description"`
+	DataScopes  []AssetDataScope `json:"dataScopes"`
+}
+
+// AssetResponse represents the API response for asset search.
 type AssetResponse struct {
-	Results []struct {
-		Rid         string `json:"rid"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		DataScopes  []struct {
-			DataScopeName string `json:"dataScopeName"`
-			DataSource    struct {
-				Type string `json:"type"`
-			} `json:"dataSource"`
-		} `json:"dataScopes"`
-	} `json:"results"`
-	NextPageToken string `json:"nextPageToken"`
+	Results       []AssetSearchResult `json:"results"`
+	NextPageToken string              `json:"nextPageToken"`
 }
 
 // fetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls
@@ -1555,7 +1583,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
-		baseURL = "https://api.gov.nominal.io/api"
+		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 

@@ -1292,6 +1292,31 @@ func TestCallResourceRouting(t *testing.T) {
 			body:         []byte(`{}`),
 			expectStatus: http.StatusBadRequest,
 		},
+		{
+			name:         "GET /assets returns 405",
+			path:         "assets",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /datascopes returns 405",
+			path:         "datascopes",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /channelvariables returns 405",
+			path:         "channelvariables",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "POST /assets with invalid body returns 400",
+			path:         "assets",
+			method:       "POST",
+			body:         []byte(`not json`),
+			expectStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1320,57 +1345,26 @@ func TestHandleAssetsVariable(t *testing.T) {
 	t.Run("returns assets with dataset or connection data sources in text/value format", func(t *testing.T) {
 		searchResults := []AssetResponse{
 			{
-				Results: []struct {
-					Rid         string `json:"rid"`
-					Title       string `json:"title"`
-					Description string `json:"description"`
-					DataScopes  []struct {
-						DataScopeName string `json:"dataScopeName"`
-						DataSource    struct {
-							Type string `json:"type"`
-						} `json:"dataSource"`
-					} `json:"dataScopes"`
-				}{
+				Results: []AssetSearchResult{
 					{
 						Rid:   "ri.scout.main.asset.1",
 						Title: "Asset With Dataset",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope1", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "dataset"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope1", DataSource: AssetDataSource{Type: "dataset"}},
 						},
 					},
 					{
 						Rid:   "ri.scout.main.asset.2",
 						Title: "Asset With Connection",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope2", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "connection"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope2", DataSource: AssetDataSource{Type: "connection"}},
 						},
 					},
 					{
 						Rid:   "ri.scout.main.asset.3",
 						Title: "Asset With Video Only",
-						DataScopes: []struct {
-							DataScopeName string `json:"dataScopeName"`
-							DataSource    struct {
-								Type string `json:"type"`
-							} `json:"dataSource"`
-						}{
-							{DataScopeName: "scope3", DataSource: struct {
-								Type string `json:"type"`
-							}{Type: "video"}},
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "scope3", DataSource: AssetDataSource{Type: "video"}},
 						},
 					},
 				},
@@ -1397,57 +1391,33 @@ func TestHandleAssetsVariable(t *testing.T) {
 		if len(result) != 2 {
 			t.Fatalf("expected 2 assets, got %d: %v", len(result), result)
 		}
-		titles := map[string]bool{}
+		resultsByText := map[string]map[string]string{}
 		for _, r := range result {
-			titles[r["text"]] = true
+			resultsByText[r["text"]] = r
 		}
-		if !titles["Asset With Dataset"] {
+		if r, ok := resultsByText["Asset With Dataset"]; !ok {
 			t.Error("expected Asset With Dataset in results")
+		} else if r["value"] != "ri.scout.main.asset.1" {
+			t.Errorf("Asset With Dataset value = %q, want %q", r["value"], "ri.scout.main.asset.1")
 		}
-		if !titles["Asset With Connection"] {
+		if r, ok := resultsByText["Asset With Connection"]; !ok {
 			t.Error("expected Asset With Connection in results")
+		} else if r["value"] != "ri.scout.main.asset.2" {
+			t.Errorf("Asset With Connection value = %q, want %q", r["value"], "ri.scout.main.asset.2")
 		}
-		if titles["Asset With Video Only"] {
+		if _, ok := resultsByText["Asset With Video Only"]; ok {
 			t.Error("video-only asset should be excluded")
 		}
 	})
 
 	t.Run("respects maxResults", func(t *testing.T) {
-		// Create search results with multiple dataset assets
-		assets := make([]struct {
-			Rid         string `json:"rid"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			DataScopes  []struct {
-				DataScopeName string `json:"dataScopeName"`
-				DataSource    struct {
-					Type string `json:"type"`
-				} `json:"dataSource"`
-			} `json:"dataScopes"`
-		}, 5)
+		assets := make([]AssetSearchResult, 5)
 		for i := range assets {
-			assets[i] = struct {
-				Rid         string `json:"rid"`
-				Title       string `json:"title"`
-				Description string `json:"description"`
-				DataScopes  []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type string `json:"type"`
-					} `json:"dataSource"`
-				} `json:"dataScopes"`
-			}{
+			assets[i] = AssetSearchResult{
 				Rid:   fmt.Sprintf("ri.scout.main.asset.%d", i),
 				Title: fmt.Sprintf("Asset %d", i),
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type string `json:"type"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "ds", DataSource: struct {
-						Type string `json:"type"`
-					}{Type: "dataset"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "ds", DataSource: AssetDataSource{Type: "dataset"}},
 				},
 			}
 		}
@@ -1466,7 +1436,9 @@ func TestHandleAssetsVariable(t *testing.T) {
 		}
 
 		var result []map[string]string
-		json.Unmarshal(resp.Body, &result)
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
 		if len(result) != 2 {
 			t.Errorf("expected 2 results (maxResults), got %d", len(result))
 		}
@@ -1485,9 +1457,120 @@ func TestHandleAssetsVariable(t *testing.T) {
 		}
 
 		var result []map[string]string
-		json.Unmarshal(resp.Body, &result)
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
 		if len(result) != 0 {
 			t.Errorf("expected 0 results, got %d", len(result))
+		}
+	})
+}
+
+func TestHandleAssetsVariablePagination(t *testing.T) {
+	t.Run("fetches multiple pages and respects maxResults across pages", func(t *testing.T) {
+		callCount := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			if r.URL.Path != "/scout/v1/search-assets" {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+
+			var reqBody map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&reqBody)
+			callCount++
+
+			// Page 1: return 50 assets with a next page token
+			if reqBody["nextPageToken"] == nil || reqBody["nextPageToken"] == "" {
+				results := make([]AssetSearchResult, 50)
+				for i := range results {
+					results[i] = AssetSearchResult{
+						Rid:   fmt.Sprintf("ri.scout.main.asset.page1-%d", i),
+						Title: fmt.Sprintf("Page1 Asset %d", i),
+						DataScopes: []AssetDataScope{
+							{DataScopeName: "ds", DataSource: AssetDataSource{Type: "dataset"}},
+						},
+					}
+				}
+				json.NewEncoder(w).Encode(AssetResponse{Results: results, NextPageToken: "page2token"})
+				return
+			}
+
+			// Page 2: return 10 more assets with no next page token
+			results := make([]AssetSearchResult, 10)
+			for i := range results {
+				results[i] = AssetSearchResult{
+					Rid:   fmt.Sprintf("ri.scout.main.asset.page2-%d", i),
+					Title: fmt.Sprintf("Page2 Asset %d", i),
+					DataScopes: []AssetDataScope{
+						{DataScopeName: "ds", DataSource: AssetDataSource{Type: "dataset"}},
+					},
+				}
+			}
+			json.NewEncoder(w).Encode(AssetResponse{Results: results})
+		}))
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]interface{}{"maxResults": 100})
+		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+
+		// Should have fetched both pages: 50 + 10 = 60
+		if len(result) != 60 {
+			t.Errorf("expected 60 assets across 2 pages, got %d", len(result))
+		}
+		if callCount != 2 {
+			t.Errorf("expected 2 API calls (2 pages), got %d", callCount)
+		}
+	})
+
+	t.Run("stops pagination when maxResults is reached", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			// Always return a full page with a next token
+			results := make([]AssetSearchResult, 50)
+			for i := range results {
+				results[i] = AssetSearchResult{
+					Rid:   fmt.Sprintf("ri.scout.main.asset.%d", i),
+					Title: fmt.Sprintf("Asset %d", i),
+					DataScopes: []AssetDataScope{
+						{DataScopeName: "ds", DataSource: AssetDataSource{Type: "dataset"}},
+					},
+				}
+			}
+			json.NewEncoder(w).Encode(AssetResponse{Results: results, NextPageToken: "next"})
+		}))
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		// maxResults = 3 should stop after the first page and return only 3
+		body, _ := json.Marshal(map[string]interface{}{"maxResults": 3})
+		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+
+		if len(result) != 3 {
+			t.Errorf("expected 3 results (maxResults cap), got %d", len(result))
 		}
 	})
 }
@@ -1504,29 +1587,10 @@ func TestHandleDatascopesVariable(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "dataset-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
-					{DataScopeName: "connection-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "connection", Connection: &connectionRid}},
-					{DataScopeName: "video-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "video"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "dataset-scope", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "connection-scope", DataSource: AssetDataSource{Type: "connection", Connection: &connectionRid}},
+					{DataScopeName: "video-scope", DataSource: AssetDataSource{Type: "video"}},
 				},
 			},
 		}
@@ -1546,7 +1610,9 @@ func TestHandleDatascopesVariable(t *testing.T) {
 		}
 
 		var result []map[string]string
-		json.Unmarshal(resp.Body, &result)
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
 
 		// Should include dataset and connection scopes, but not video
 		if len(result) != 2 {
@@ -1623,19 +1689,8 @@ func TestHandleChannelVariables(t *testing.T) {
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "scope1", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope1", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
 				},
 			},
 		}
@@ -1665,7 +1720,9 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 
 		var result []map[string]string
-		json.Unmarshal(resp.Body, &result)
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
 		if len(result) != 2 {
 			t.Fatalf("expected 2 deduplicated channels, got %d: %v", len(result), result)
 		}
@@ -1683,29 +1740,13 @@ func TestHandleChannelVariables(t *testing.T) {
 	})
 
 	t.Run("filters by dataScopeName", func(t *testing.T) {
-		// Asset with two scopes
 		twoScopeAsset := map[string]SingleAssetResponse{
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "scope-a", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: &datasetRid}},
-					{DataScopeName: "scope-b", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "dataset", Dataset: strPtr("ri.scout.main.data-source.ds2")}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
+					{DataScopeName: "scope-b", DataSource: AssetDataSource{Type: "dataset", Dataset: strPtr("ri.scout.main.data-source.ds2")}},
 				},
 			},
 		}
@@ -1733,6 +1774,56 @@ func TestHandleChannelVariables(t *testing.T) {
 		// Verify only scope-a's datasource RID was sent
 		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
 			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(mockDS.searchChannelsRequest.DataSources))
+		}
+	})
+
+	t.Run("uses connection datasource RID when type is connection", func(t *testing.T) {
+		connectionRid := "ri.scout.main.data-source.conn1"
+		connAsset := map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Connection Asset",
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "conn-scope", DataSource: AssetDataSource{Type: "connection", Connection: &connectionRid}},
+				},
+			},
+		}
+
+		server := newTestAssetServer(t, connAsset, nil)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("voltage"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "conn1"))},
+				},
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		// Verify the connection RID was sent to SearchChannels
+		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
+			t.Fatalf("expected 1 datasource RID, got %d", len(mockDS.searchChannelsRequest.DataSources))
+		}
+		gotRid := mockDS.searchChannelsRequest.DataSources[0].String()
+		if gotRid != connectionRid {
+			t.Errorf("datasource RID = %q, want %q", gotRid, connectionRid)
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result) != 1 || result[0]["text"] != "voltage" {
+			t.Errorf("expected [{text:voltage, value:voltage}], got %v", result)
 		}
 	})
 
@@ -1776,24 +1867,12 @@ func TestHandleChannelVariables(t *testing.T) {
 	})
 
 	t.Run("no datasource RIDs returns empty 200", func(t *testing.T) {
-		// Asset with only video type scopes (no dataset/connection)
 		videoAsset := map[string]SingleAssetResponse{
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Video Asset",
-				DataScopes: []struct {
-					DataScopeName string `json:"dataScopeName"`
-					DataSource    struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					} `json:"dataSource"`
-				}{
-					{DataScopeName: "video-scope", DataSource: struct {
-						Type       string  `json:"type"`
-						Dataset    *string `json:"dataset,omitempty"`
-						Connection *string `json:"connection,omitempty"`
-					}{Type: "video"}},
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "video-scope", DataSource: AssetDataSource{Type: "video"}},
 				},
 			},
 		}
