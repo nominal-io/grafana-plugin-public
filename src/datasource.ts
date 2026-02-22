@@ -48,8 +48,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   /**
    * Used by Grafana to populate template variables.
    * Supports query types:
-   * - "assets" or empty: Returns all assets with text=title, value=rid
-   * - "assets:<search>": Returns assets matching search text
+   * - "assets", "assets()", or empty: Returns all assets with text=title, value=rid
+   * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
@@ -69,7 +69,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
-    const datascopesMatch = trimmedQuery.match(/^datascopes\((.+)\)$/i);
+    const datascopesMatch = trimmedQuery.match(/^datascopes\(([^,)]+)\)$/i);
     if (datascopesMatch) {
       const assetRidRaw = datascopesMatch[1].trim();
       // Resolve any template variables in the asset RID
@@ -77,7 +77,13 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return this.fetchDatascopeVariables(assetRid);
     }
 
-    // Default to assets if query is empty or starts with "assets"
+    // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
+    const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
+    if (assetsMatch) {
+      const searchText = assetsMatch[1].trim();
+      return this.fetchAssetVariables(searchText);
+    }
+
     if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
       const searchText = lowerQuery.startsWith('assets:')
         ? trimmedQuery.substring(7).trim()
@@ -90,7 +96,32 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return [];
   }
 
+  /**
+   * Validates and transforms a backend response into MetricFindValue[].
+   * All variable endpoints return the same {text, value} format.
+   */
+  private validateMetricFindResponse(response: unknown, entityName: string): MetricFindValue[] {
+    if (!Array.isArray(response)) {
+      throw new Error(`Invalid response: expected array of ${entityName}s`);
+    }
+    return response.map((item: unknown, index: number) => {
+      if (typeof item !== 'object' || item === null) {
+        throw new Error(`Invalid ${entityName} at index ${index}: expected object`);
+      }
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
+        throw new Error(`Invalid ${entityName} at index ${index}: missing text or value`);
+      }
+      return { text: obj.text, value: obj.value };
+    });
+  }
+
   private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
+    // If search text contains unresolved variable, return empty
+    if (searchText && searchText.includes('$')) {
+      return [];
+    }
+
     try {
       const response = await getBackendSrv().post(
         `${this.url}/assets`,
@@ -99,23 +130,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           maxResults: 500,
         }
       );
-
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of assets');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid asset at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid asset at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
+      return this.validateMetricFindResponse(response, 'asset');
     } catch (error) {
       console.error('Failed to fetch assets for variable:', error);
       throw error;  // Let Grafana display the error to the user
@@ -135,23 +150,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           assetRid: assetRid,
         }
       );
-
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of datascopes');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid datascope at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid datascope at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
+      return this.validateMetricFindResponse(response, 'datascope');
     } catch (error) {
       console.error('Failed to fetch datascopes for variable:', error);
       throw error;  // Let Grafana display the error to the user
@@ -176,23 +175,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           dataScopeName: dataScopeName,
         }
       );
-
-      // Validate response format
-      if (!Array.isArray(response)) {
-        throw new Error('Invalid response: expected array of channels');
-      }
-
-      // Validate and transform each item to ensure it has required MetricFindValue fields
-      return response.map((item: unknown, index: number) => {
-        if (typeof item !== 'object' || item === null) {
-          throw new Error(`Invalid channel at index ${index}: expected object`);
-        }
-        const obj = item as Record<string, unknown>;
-        if (typeof obj.text !== 'string' || typeof obj.value !== 'string') {
-          throw new Error(`Invalid channel at index ${index}: missing text or value`);
-        }
-        return { text: obj.text, value: obj.value };
-      });
+      return this.validateMetricFindResponse(response, 'channel');
     } catch (error) {
       console.error('Failed to fetch channels for variable:', error);
       throw error;  // Let Grafana display the error to the user
