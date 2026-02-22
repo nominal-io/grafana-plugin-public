@@ -113,8 +113,12 @@ describe('metricFindQuery template variable resolution', () => {
 
   it('resolves template variables in channels query', async () => {
     mockTemplateSrv.replace.mockImplementation((v: string) => {
-      if (v === '${asset}') return 'ri.scout.main.asset.resolved';
-      if (v === '${scope}') return 'myScope';
+      if (v === '${asset}') {
+        return 'ri.scout.main.asset.resolved';
+      }
+      if (v === '${scope}') {
+        return 'myScope';
+      }
       return v;
     });
     await ds.metricFindQuery('channels(${asset}, ${scope})');
@@ -148,7 +152,9 @@ describe('metricFindQuery unresolved variable short-circuits', () => {
 
   it('channels with unresolved dataScopeName returns empty without backend call', async () => {
     mockTemplateSrv.replace.mockImplementation((v: string) => {
-      if (v === 'ri.scout.main.asset.1') return v;
+      if (v === 'ri.scout.main.asset.1') {
+        return v;
+      }
       return v; // $scope stays unresolved
     });
     const result = await ds.metricFindQuery('channels(ri.scout.main.asset.1, $scope)');
