@@ -17,11 +17,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
-    console.log('DataSource constructor - instanceSettings.url:', instanceSettings.url);
-    console.log('DataSource constructor - instanceSettings.uid:', instanceSettings.uid);
-    console.log('DataSource constructor - this.url:', this.url);
-    // Note: decryptedSecureJsonData is available at runtime but not in types
-    // We'll initialize the client when needed
   }
 
 
@@ -190,21 +185,10 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * But some Grafana versions still call this method
    */
   async testDatasource() {
-    console.log('===== FRONTEND TESTDATASOURCE CALLED =====');
-
-    // Since the backend CheckHealth method is working correctly,
-    // and we see it being called in the logs when Save & Test is clicked,
-    // let's just return success here and let the backend handle the real testing
-
     // The Go backend CheckHealth method does the actual connection test
-    // and we can see from the logs that it works correctly:
-    // "CheckHealth called"
-    // "Testing connection url=https://api.gov.nominal.io/api/authentication/v2/my/profile"
-    // "Health check successful status=200"
-
     return {
       status: 'success',
-      message: 'Connection test completed - see backend logs for details'
+      message: 'Connection test delegated to backend'
     };
   }
 }
