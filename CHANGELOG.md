@@ -2,6 +2,15 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.5.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.5.0...nominal-grafana-plugin@0.5.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* change renovate config ([dd8c0e6](https://github.com/nominal-io/grafana-plugin-public/commit/dd8c0e69e55b1704ed01b8d5725e56abf04721fc))
+* fetch channel options dynamically on search input instead of loading static paginated list on asset selection ([#15](https://github.com/nominal-io/grafana-plugin-public/issues/15)) ([515824e](https://github.com/nominal-io/grafana-plugin-public/commit/515824e32d437d9a42d291a779f9858918544124))
+* force minimatch ^10.2.4 for CVE ([#16](https://github.com/nominal-io/grafana-plugin-public/issues/16)) ([557f881](https://github.com/nominal-io/grafana-plugin-public/commit/557f8815220adef621ed76637fc5eaee124fc31f))
+
 ## [0.5.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.4.0...nominal-grafana-plugin@0.5.0) (2026-02-20)
 
 
