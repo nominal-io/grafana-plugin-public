@@ -8,6 +8,13 @@ import { NominalDataSourceOptions, NominalQuery } from '../types';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
+/** Extensible mapping from Nominal channel dataType to Grafana icon name.
+ *  Add entries here for future types (e.g., log: 'gf-logs'). */
+const DATA_TYPE_ICONS: Record<string, string> = {
+  string: 'font',           // Grafana's standard icon for FieldType.string
+  numeric: 'calculator-alt', // Grafana's standard icon for FieldType.number
+};
+
 interface Asset {
   rid: string;
   title: string;
@@ -163,6 +170,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           label: ch.name,
           value: ch.name,
           description: ch.description || `Channel: ${ch.name}`,
+          dataType: ch.dataType || '',
+          icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
         }));
       }
       return [];
@@ -571,6 +580,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     onChange({
                       ...query,
                       channel: value?.value || '',
+                      channelDataType: value?.dataType || '',
                       dataScopeName: currentDataScopeName,
                       queryType: 'decimation',
                       buckets: 1000

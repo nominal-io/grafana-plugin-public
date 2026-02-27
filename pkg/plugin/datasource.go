@@ -222,6 +222,12 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		// Apply template variable interpolation
 		d.applyTemplateVariables(&qm)
 
+		log.DefaultLogger.Debug("Query model parsed",
+			"refID", q.RefID,
+			"channel", qm.Channel,
+			"channelDataType", qm.ChannelDataType,
+		)
+
 		// Handle connection test immediately (not batchable)
 		if qm.QueryType == "connectionTest" {
 			response.Responses[q.RefID] = d.handleConnectionTestQuery(ctx, config)
@@ -304,9 +310,10 @@ func (d *Datasource) handleLegacyQuery(qm NominalQueryModel, timeRange backend.T
 // NominalQueryModel represents a query to the Nominal API
 type NominalQueryModel struct {
 	// Asset information
-	AssetRid      string `json:"assetRid"`
-	Channel       string `json:"channel"`
-	DataScopeName string `json:"dataScopeName"`
+	AssetRid        string `json:"assetRid"`
+	Channel         string `json:"channel"`
+	DataScopeName   string `json:"dataScopeName"`
+	ChannelDataType string `json:"channelDataType"`
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -322,28 +329,43 @@ type NominalQueryModel struct {
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
+// Branches on ChannelDataType: "string" channels produce enum series, all others produce numeric series.
 func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
-	// Build the timeShift series with proper conjure types
-	// Use a literal zero duration by default (no shift) unless frontend later adds support
-	timeShiftSeries := computeapi.NumericTimeShiftSeries{
-		Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-		Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
-			Seconds: safelong.SafeLong(0),
-			Nanos:   safelong.SafeLong(0),
-			Picos:   nil,
-		}),
+	// Build the series node - branch on channel data type
+	var series computeapi.Series
+	if qm.ChannelDataType == "string" {
+		// Enum path for string channels
+		enumTimeShiftSeries := computeapi.EnumTimeShiftSeries{
+			Input: d.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+				Seconds: safelong.SafeLong(0),
+				Nanos:   safelong.SafeLong(0),
+				Picos:   nil,
+			}),
+		}
+		enumSeries := computeapi.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
+		series = computeapi.NewSeriesFromEnum(enumSeries)
+		log.DefaultLogger.Debug("Building enum compute request", "channel", qm.Channel)
+	} else {
+		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
+		numericTimeShiftSeries := computeapi.NumericTimeShiftSeries{
+			Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+				Seconds: safelong.SafeLong(0),
+				Nanos:   safelong.SafeLong(0),
+				Picos:   nil,
+			}),
+		}
+		numericSeries := computeapi.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
+		series = computeapi.NewSeriesFromNumeric(numericSeries)
 	}
 
-	// Create numeric series with timeShift
-	numericSeries := computeapi.NewNumericSeriesFromTimeShift(timeShiftSeries)
-
-	// Build the series node
 	buckets := int(qm.Buckets)
 	seriesNode := computeapi.SummarizeSeries{
-		Input:   computeapi.NewSeriesFromNumeric(numericSeries),
+		Input:   series,
 		Buckets: &buckets,
 	}
 
@@ -461,7 +483,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 			frame := data.NewFrame("response")
 			frame.Name = fmt.Sprintf("%s (%s)", qm.Channel, qm.AssetRid)
 
-			timePoints, values, transformErr := d.transformNominalResponseFromClient(computeResponse)
+			result, transformErr := d.transformNominalResponseFromClient(computeResponse)
 			if transformErr != nil {
 				response = backend.ErrDataResponse(
 					backend.StatusInternal,
@@ -470,17 +492,38 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
-			if len(timePoints) > 0 && len(values) > 0 {
-				frame.Fields = append(frame.Fields,
-					data.NewField("time", nil, timePoints),
-					data.NewField("value", nil, values),
-				)
-				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(timePoints))
+			if result.IsEnum {
+				// Mark enum frames as table type so panels like Stat can pick up string fields.
+				// Time series frames filter to numeric fields only by default.
+				frame.Meta = &data.FrameMeta{
+					Type:                   data.FrameTypeTable,
+					PreferredVisualization: data.VisTypeTable,
+				}
+				if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
+					frame.Fields = append(frame.Fields,
+						data.NewField("time", nil, result.TimePoints),
+						data.NewField("value", nil, result.StringValues),
+					)
+				} else {
+					frame.Fields = append(frame.Fields,
+						data.NewField("time", nil, []time.Time{}),
+						data.NewField("value", nil, []string{}),
+					)
+				}
+				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
 			} else {
-				frame.Fields = append(frame.Fields,
-					data.NewField("time", nil, []time.Time{}),
-					data.NewField("value", nil, []float64{}),
-				)
+				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
+					frame.Fields = append(frame.Fields,
+						data.NewField("time", nil, result.TimePoints),
+						data.NewField("value", nil, result.NumericValues),
+					)
+				} else {
+					frame.Fields = append(frame.Fields,
+						data.NewField("time", nil, []time.Time{}),
+						data.NewField("value", nil, []float64{}),
+					)
+				}
+				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
 			}
 
 			response.Frames = append(response.Frames, frame)
@@ -488,9 +531,18 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		},
 		// errorFunc - called when compute failed
 		func(errorResult computeapi.ErrorResult) error {
+			errMsg := fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code)
+
+			// Add contextual hint for known string/enum channel error types
+			errType := string(errorResult.ErrorType)
+			if strings.Contains(errType, "ChannelHasWrongType") {
+				errMsg += fmt.Sprintf(". Hint: Channel '%s' may be a string/enum type that requires enum-specific handling. "+
+					"Try re-selecting the channel from the dropdown to update its type metadata.", qm.Channel)
+			}
+
 			response = backend.ErrDataResponse(
 				backend.StatusInternal,
-				fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code),
+				errMsg,
 			)
 			return nil
 		},
@@ -532,6 +584,26 @@ func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string)
 	return computeapi.NewNumericSeriesFromChannel(channelSeries)
 }
 
+// buildEnumChannelSeries creates an enum channel series for the given asset/channel.
+// Mirrors buildChannelSeries but produces EnumSeries instead of NumericSeries.
+// The AssetChannel construction is shared between both paths.
+func (d *Datasource) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi.EnumSeries {
+	// Build asset channel with proper types (same as numeric path)
+	assetChannel := computeapi.AssetChannel{
+		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
+		Channel:        computeapi.NewStringConstantFromLiteral(channel),
+		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
+		AdditionalTags: map[string]computeapi.StringConstant{},
+		TagsToGroupBy:  []string{},
+		GroupByTags:    []computeapi.StringConstant{},
+	}
+
+	// Create channel series from asset (shared between numeric and enum)
+	channelSeries := computeapi.NewChannelSeriesFromAsset(assetChannel)
+
+	return computeapi.NewEnumSeriesFromChannel(channelSeries)
+}
+
 // buildComputeContext creates the context with variables for the compute request
 func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi.Context {
 	variables := map[computeapi.VariableName]computeapi.VariableValue{
@@ -554,13 +626,21 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 	}
 }
 
+// TransformResult holds the output of response transformation.
+// Either NumericValues or StringValues is populated, never both.
+// IsEnum indicates which field to use when building data frames.
+type TransformResult struct {
+	TimePoints    []time.Time
+	NumericValues []float64
+	StringValues  []string
+	IsEnum        bool
+}
+
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data
-func (d *Datasource) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse) ([]time.Time, []float64, error) {
+func (d *Datasource) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
-	var timePoints []time.Time
-	var values []float64
-	var err error
+	var result TransformResult
 
 	// Use the conjure union visitor pattern to handle different response types
 	visitErr := response.AcceptFuncs(
@@ -569,20 +649,60 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		nil, // rangeValueFunc
 		// numericFunc
 		func(numeric computeapi.NumericPlot) error {
-			timePoints, values, err = d.extractNumericDataFromConjure(numeric)
-			return err
+			timePoints, values, err := d.extractNumericDataFromConjure(numeric)
+			if err != nil {
+				return err
+			}
+			result.TimePoints = timePoints
+			result.NumericValues = values
+			result.IsEnum = false
+			return nil
 		},
 		// bucketedNumericFunc
 		func(bucketed computeapi.BucketedNumericPlot) error {
-			timePoints, values, err = d.extractBucketedDataFromConjure(bucketed)
-			return err
+			timePoints, values, err := d.extractBucketedDataFromConjure(bucketed)
+			if err != nil {
+				return err
+			}
+			result.TimePoints = timePoints
+			result.NumericValues = values
+			result.IsEnum = false
+			return nil
 		},
 		nil, // numericPointFunc
 		nil, // arrowNumericFunc
 		nil, // arrowBucketedNumericFunc
-		nil, // enumFunc
-		nil, // enumPointFunc
-		nil, // bucketedEnumFunc
+		// enumFunc - maps integer indices to category strings
+		func(enum computeapi.EnumPlot) error {
+			timePoints, values, err := d.extractEnumDataFromConjure(enum)
+			if err != nil {
+				return err
+			}
+			result.TimePoints = timePoints
+			result.StringValues = values
+			result.IsEnum = true
+			return nil
+		},
+		// enumPointFunc - single-point enum response (value is already a resolved string)
+		func(ep *computeapi.EnumPoint) error {
+			seconds := int64(ep.Timestamp.Seconds)
+			nanos := int64(ep.Timestamp.Nanos)
+			result.TimePoints = []time.Time{time.Unix(seconds, nanos)}
+			result.StringValues = []string{ep.Value}
+			result.IsEnum = true
+			return nil
+		},
+		// bucketedEnumFunc - bucketed enum response (returned by SummarizeSeries with buckets)
+		func(bucketed computeapi.BucketedEnumPlot) error {
+			timePoints, values, err := d.extractBucketedEnumDataFromConjure(bucketed)
+			if err != nil {
+				return err
+			}
+			result.TimePoints = timePoints
+			result.StringValues = values
+			result.IsEnum = true
+			return nil
+		},
 		nil, // arrowEnumFunc
 		nil, // arrowBucketedEnumFunc
 		nil, // pagedLogFunc
@@ -605,10 +725,10 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 	)
 
 	if visitErr != nil {
-		return nil, nil, fmt.Errorf("failed to process response: %w", visitErr)
+		return TransformResult{}, fmt.Errorf("failed to process response: %w", visitErr)
 	}
 
-	return timePoints, values, err
+	return result, nil
 }
 
 // Helper methods for extracting data from conjure types
@@ -653,6 +773,69 @@ func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.Bucketed
 	}
 
 	log.DefaultLogger.Debug("Extracted bucketed data from conjure", "timePoints", len(timePoints), "values", len(values))
+	return timePoints, values, nil
+}
+
+// extractEnumDataFromConjure converts an EnumPlot response to time/string slices.
+// Maps integer indices to category strings with bounds checking.
+// Out-of-bounds indices produce "unknown(N)" rather than panicking.
+func (d *Datasource) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
+	var timePoints []time.Time
+	var values []string
+
+	for i := 0; i < len(enumPlot.Timestamps) && i < len(enumPlot.Values); i++ {
+		timestamp := enumPlot.Timestamps[i]
+		index := enumPlot.Values[i]
+
+		seconds := int64(timestamp.Seconds)
+		nanos := int64(timestamp.Nanos)
+		timePoints = append(timePoints, time.Unix(seconds, nanos))
+
+		// Map index to category string with bounds checking
+		if index >= 0 && index < len(enumPlot.Categories) {
+			values = append(values, enumPlot.Categories[index])
+		} else {
+			values = append(values, fmt.Sprintf("unknown(%d)", index))
+			log.DefaultLogger.Warn("Enum index out of bounds",
+				"index", index,
+				"categoriesLen", len(enumPlot.Categories),
+			)
+		}
+	}
+
+	log.DefaultLogger.Debug("Extracted enum data from conjure", "timePoints", len(timePoints), "values", len(values))
+	return timePoints, values, nil
+}
+
+// extractBucketedEnumDataFromConjure converts a BucketedEnumPlot response to time/string slices.
+// Each bucket's FirstPoint value (an integer index) is mapped to a category string.
+// This parallels extractBucketedDataFromConjure which uses bucket.Mean for numeric data.
+func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
+	var timePoints []time.Time
+	var values []string
+
+	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
+		timestamp := bucketed.Timestamps[i]
+		bucket := bucketed.Buckets[i]
+
+		seconds := int64(timestamp.Seconds)
+		nanos := int64(timestamp.Nanos)
+		timePoints = append(timePoints, time.Unix(seconds, nanos))
+
+		// Use the first point's value index, mapped to category string
+		index := bucket.FirstPoint.Value
+		if index >= 0 && index < len(bucketed.Categories) {
+			values = append(values, bucketed.Categories[index])
+		} else {
+			values = append(values, fmt.Sprintf("unknown(%d)", index))
+			log.DefaultLogger.Warn("Bucketed enum index out of bounds",
+				"index", index,
+				"categoriesLen", len(bucketed.Categories),
+			)
+		}
+	}
+
+	log.DefaultLogger.Debug("Extracted bucketed enum data from conjure", "timePoints", len(timePoints), "values", len(values))
 	return timePoints, values, nil
 }
 
@@ -941,6 +1124,7 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 			"name":        string(channel.Name),
 			"dataSource":  channel.DataSource.String(),
 			"description": getChannelMetadataDescription(channel),
+			"dataType":    getChannelDataType(channel),
 		}
 		channels = append(channels, channelMap)
 	}
@@ -978,6 +1162,21 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 		return *channel.Description
 	}
 	return fmt.Sprintf("Channel: %s", string(channel.Name))
+}
+
+// getChannelDataType normalizes the API's SeriesDataType to a binary string/numeric classification.
+// Returns "string" for STRING and STRING_ARRAY types, "numeric" for all other known types,
+// or empty string if the metadata is not available (treated as numeric for backward compatibility).
+func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
+	if channel.DataType == nil {
+		return ""
+	}
+	switch channel.DataType.Value() {
+	case api.SeriesDataType_STRING, api.SeriesDataType_STRING_ARRAY:
+		return "string"
+	default:
+		return "numeric"
+	}
 }
 
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection
