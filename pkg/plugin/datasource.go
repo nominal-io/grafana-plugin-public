@@ -21,6 +21,7 @@ import (
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
@@ -77,7 +78,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		settings:          settings,
 		httpClient:        httpClient,
 		authService:       authapi.NewAuthenticationServiceV2Client(httpClient),
-		computeService:    computeapi.NewComputeServiceClient(httpClient),
+		computeService:    computeapi1.NewComputeServiceClient(httpClient),
 		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
 	}
 
@@ -159,7 +160,7 @@ type Datasource struct {
 	settings          backend.DataSourceInstanceSettings
 	httpClient        httpclient.Client
 	authService       authapi.AuthenticationServiceV2Client
-	computeService    computeapi.ComputeServiceClient
+	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 }
 
@@ -322,15 +323,15 @@ type NominalQueryModel struct {
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
-func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi.ComputeNodeRequest {
+func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
 	// Build the timeShift series with proper conjure types
 	// Use a literal zero duration by default (no shift) unless frontend later adds support
-	timeShiftSeries := computeapi.NumericTimeShiftSeries{
+	timeShiftSeries := computeapi1.NumericTimeShiftSeries{
 		Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-		Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+		Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 			Seconds: safelong.SafeLong(0),
 			Nanos:   safelong.SafeLong(0),
 			Picos:   nil,
@@ -338,22 +339,22 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	}
 
 	// Create numeric series with timeShift
-	numericSeries := computeapi.NewNumericSeriesFromTimeShift(timeShiftSeries)
+	numericSeries := computeapi1.NewNumericSeriesFromTimeShift(timeShiftSeries)
 
 	// Build the series node
 	buckets := int(qm.Buckets)
-	seriesNode := computeapi.SummarizeSeries{
-		Input:   computeapi.NewSeriesFromNumeric(numericSeries),
+	seriesNode := computeapi1.SummarizeSeries{
+		Input:   computeapi1.NewSeriesFromNumeric(numericSeries),
 		Buckets: &buckets,
 	}
 
 	// Create computable node
-	node := computeapi.NewComputableNodeFromSeries(seriesNode)
+	node := computeapi1.NewComputableNodeFromSeries(seriesNode)
 
 	// Build context with variables
 	computeContext := d.buildComputeContext(qm, startSeconds, endSeconds)
 
-	return computeapi.ComputeNodeRequest{
+	return computeapi1.ComputeNodeRequest{
 		Start: api.Timestamp{
 			Seconds: safelong.SafeLong(startSeconds),
 			Nanos:   safelong.SafeLong(0),
@@ -398,12 +399,12 @@ func (d *Datasource) executeBatchQuery(
 
 		chunkQueries := queries[chunkStart:chunkEnd]
 		chunkModels := queryModels[chunkStart:chunkEnd]
-		computeRequests := make([]computeapi.ComputeNodeRequest, len(chunkModels))
+		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
 			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange)
 		}
 
-		batchRequest := computeapi.BatchComputeWithUnitsRequest{
+		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
 			Requests: computeRequests,
 		}
 
@@ -515,7 +516,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 }
 
 // buildChannelSeries creates a channel series for the given asset/channel
-func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi.NumericSeries {
+func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
 	// Build asset channel with proper types
 	assetChannel := computeapi.AssetChannel{
 		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
@@ -529,28 +530,27 @@ func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string)
 	// Create channel series from asset
 	channelSeries := computeapi.NewChannelSeriesFromAsset(assetChannel)
 
-	return computeapi.NewNumericSeriesFromChannel(channelSeries)
+	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
 }
 
 // buildComputeContext creates the context with variables for the compute request
-func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi.Context {
-	variables := map[computeapi.VariableName]computeapi.VariableValue{
-		// Asset RID variable referenced by the series builder
-		computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
+func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
+	variables := map[computeapi.VariableName]computeapi1.VariableValue{
+		computeapi.VariableName("assetRid"): computeapi1.NewVariableValueFromString(qm.AssetRid),
 	}
 
 	// Add template variables if present
 	if qm.TemplateVariables != nil {
 		for key, value := range qm.TemplateVariables {
 			if strValue, ok := value.(string); ok {
-				variables[computeapi.VariableName(key)] = computeapi.NewVariableValueFromString(strValue)
+				variables[computeapi.VariableName(key)] = computeapi1.NewVariableValueFromString(strValue)
 			}
 		}
 	}
 
-	return computeapi.Context{
+	return computeapi1.Context{
 		Variables:         variables,
-		FunctionVariables: nil, // Deprecated field
+		FunctionVariables: nil,
 	}
 }
 
@@ -564,20 +564,19 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 
 	// Use the conjure union visitor pattern to handle different response types
 	visitErr := response.AcceptFuncs(
-		nil, // range_Func
+		nil, // rangeFunc
 		nil, // rangesSummaryFunc
 		nil, // rangeValueFunc
-		// numericFunc
 		func(numeric computeapi.NumericPlot) error {
 			timePoints, values, err = d.extractNumericDataFromConjure(numeric)
 			return err
 		},
-		// bucketedNumericFunc
 		func(bucketed computeapi.BucketedNumericPlot) error {
 			timePoints, values, err = d.extractBucketedDataFromConjure(bucketed)
 			return err
 		},
 		nil, // numericPointFunc
+		nil, // singlePointFunc
 		nil, // arrowNumericFunc
 		nil, // arrowBucketedNumericFunc
 		nil, // enumFunc
@@ -590,14 +589,16 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		nil, // cartesianFunc
 		nil, // bucketedCartesianFunc
 		nil, // bucketedCartesian3dFunc
-		nil, // bucketedGeoFunc
 		nil, // frequencyDomainFunc
+		nil, // frequencyDomainV2Func
+		nil, // bucketedFrequencyDomainFunc
 		nil, // numericHistogramFunc
 		nil, // enumHistogramFunc
 		nil, // curveFitFunc
 		nil, // groupedFunc
-		nil, // arrayFunc
-		// unknownFunc
+		nil, // arrowArrayFunc
+		nil, // arrowBucketedStructFunc
+		nil, // arrowFullResolutionFunc
 		func(typeName string) error {
 			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
 			return nil

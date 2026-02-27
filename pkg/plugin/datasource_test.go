@@ -12,6 +12,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/safelong"
 )
@@ -415,12 +416,12 @@ func TestBuildChannelSeries(t *testing.T) {
 	}
 }
 
-// mockComputeService implements computeapi.ComputeServiceClient for testing
+// mockComputeService implements computeapi1.ComputeServiceClient for testing
 type mockComputeService struct {
 	mu                    sync.Mutex
 	batchComputeCalls     int
-	lastBatchRequest      computeapi.BatchComputeWithUnitsRequest
-	batchRequests         []computeapi.BatchComputeWithUnitsRequest
+	lastBatchRequest      computeapi1.BatchComputeWithUnitsRequest
+	batchRequests         []computeapi1.BatchComputeWithUnitsRequest
 	batchComputeResponse  computeapi.BatchComputeWithUnitsResponse
 	batchComputeResponses []computeapi.BatchComputeWithUnitsResponse
 	batchComputeError     error
@@ -428,22 +429,22 @@ type mockComputeService struct {
 	singleComputeCalls    int
 }
 
-func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
+func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.singleComputeCalls++
 	return computeapi.ComputeNodeResponse{}, nil
 }
 
-func (m *mockComputeService) ParameterizedCompute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.ParameterizedComputeNodeRequest) (computeapi.ParameterizedComputeNodeResponse, error) {
+func (m *mockComputeService) ParameterizedCompute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ParameterizedComputeNodeRequest) (computeapi.ParameterizedComputeNodeResponse, error) {
 	return computeapi.ParameterizedComputeNodeResponse{}, nil
 }
 
-func (m *mockComputeService) ComputeUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.ComputeUnitsRequest) (computeapi.ComputeUnitResult, error) {
+func (m *mockComputeService) ComputeUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeUnitsRequest) (computeapi.ComputeUnitResult, error) {
 	return computeapi.ComputeUnitResult{}, nil
 }
 
-func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchComputeCalls++
@@ -463,11 +464,11 @@ func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHead
 	return m.batchComputeResponse, nil
 }
 
-func (m *mockComputeService) BatchComputeUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.BatchComputeUnitsRequest) (computeapi.BatchComputeUnitResult, error) {
+func (m *mockComputeService) BatchComputeUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeUnitsRequest) (computeapi.BatchComputeUnitResult, error) {
 	return computeapi.BatchComputeUnitResult{}, nil
 }
 
-func (m *mockComputeService) ComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.ComputeWithUnitsRequest) (computeapi.ComputeWithUnitsResponse, error) {
+func (m *mockComputeService) ComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeWithUnitsRequest) (computeapi.ComputeWithUnitsResponse, error) {
 	return computeapi.ComputeWithUnitsResponse{}, nil
 }
 
