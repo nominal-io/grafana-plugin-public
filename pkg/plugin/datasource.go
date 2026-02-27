@@ -533,11 +533,11 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		func(errorResult computeapi.ErrorResult) error {
 			errMsg := fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code)
 
-			// Add contextual hint for known string/enum channel error types
+			// Add contextual hint only when type metadata is missing (e.g. saved query from before enum support)
 			errType := string(errorResult.ErrorType)
-			if strings.Contains(errType, "ChannelHasWrongType") {
-				errMsg += fmt.Sprintf(". Hint: Channel '%s' may be a string/enum type that requires enum-specific handling. "+
-					"Try re-selecting the channel from the dropdown to update its type metadata.", qm.Channel)
+			if strings.Contains(errType, "ChannelHasWrongType") && qm.ChannelDataType == "" {
+				errMsg += ". Hint: This channel's type metadata is missing (likely a saved query from before enum support). " +
+					"Re-select the channel from the dropdown to update its type."
 			}
 
 			response = backend.ErrDataResponse(
@@ -566,10 +566,9 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 	return response
 }
 
-// buildChannelSeries creates a channel series for the given asset/channel
-func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi.NumericSeries {
-	// Build asset channel with proper types
-	assetChannel := computeapi.AssetChannel{
+// buildAssetChannel constructs the shared AssetChannel used by both numeric and enum series builders.
+func (d *Datasource) buildAssetChannel(assetRid, channel, dataScopeName string) computeapi.AssetChannel {
+	return computeapi.AssetChannel{
 		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
 		Channel:        computeapi.NewStringConstantFromLiteral(channel),
 		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
@@ -577,30 +576,17 @@ func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string)
 		TagsToGroupBy:  []string{},
 		GroupByTags:    []computeapi.StringConstant{},
 	}
+}
 
-	// Create channel series from asset
-	channelSeries := computeapi.NewChannelSeriesFromAsset(assetChannel)
-
+// buildChannelSeries creates a numeric channel series for the given asset/channel.
+func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi.NumericSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
 	return computeapi.NewNumericSeriesFromChannel(channelSeries)
 }
 
 // buildEnumChannelSeries creates an enum channel series for the given asset/channel.
-// Mirrors buildChannelSeries but produces EnumSeries instead of NumericSeries.
-// The AssetChannel construction is shared between both paths.
 func (d *Datasource) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi.EnumSeries {
-	// Build asset channel with proper types (same as numeric path)
-	assetChannel := computeapi.AssetChannel{
-		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
-		Channel:        computeapi.NewStringConstantFromLiteral(channel),
-		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
-		AdditionalTags: map[string]computeapi.StringConstant{},
-		TagsToGroupBy:  []string{},
-		GroupByTags:    []computeapi.StringConstant{},
-	}
-
-	// Create channel series from asset (shared between numeric and enum)
-	channelSeries := computeapi.NewChannelSeriesFromAsset(assetChannel)
-
+	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
 	return computeapi.NewEnumSeriesFromChannel(channelSeries)
 }
 
@@ -685,6 +671,9 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		// enumPointFunc - single-point enum response (value is already a resolved string)
 		func(ep *computeapi.EnumPoint) error {
+			if ep == nil {
+				return nil
+			}
 			seconds := int64(ep.Timestamp.Seconds)
 			nanos := int64(ep.Timestamp.Nanos)
 			result.TimePoints = []time.Time{time.Unix(seconds, nanos)}
@@ -808,8 +797,8 @@ func (d *Datasource) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([
 }
 
 // extractBucketedEnumDataFromConjure converts a BucketedEnumPlot response to time/string slices.
-// Each bucket's FirstPoint value (an integer index) is mapped to a category string.
-// This parallels extractBucketedDataFromConjure which uses bucket.Mean for numeric data.
+// Uses the histogram mode (most frequent category) as the representative value for each bucket,
+// which is the categorical equivalent of the numeric path's Mean aggregate.
 func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
 	var timePoints []time.Time
 	var values []string
@@ -822,14 +811,23 @@ func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.Buck
 		nanos := int64(timestamp.Nanos)
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
 
-		// Use the first point's value index, mapped to category string
-		index := bucket.FirstPoint.Value
-		if index >= 0 && index < len(bucketed.Categories) {
-			values = append(values, bucketed.Categories[index])
+		// Find the mode (most frequent value) from the histogram.
+		// Falls back to FirstPoint if histogram is empty.
+		modeIndex := bucket.FirstPoint.Value
+		maxCount := safelong.SafeLong(0)
+		for idx, count := range bucket.Histogram {
+			if count > maxCount {
+				maxCount = count
+				modeIndex = idx
+			}
+		}
+
+		if modeIndex >= 0 && modeIndex < len(bucketed.Categories) {
+			values = append(values, bucketed.Categories[modeIndex])
 		} else {
-			values = append(values, fmt.Sprintf("unknown(%d)", index))
+			values = append(values, fmt.Sprintf("unknown(%d)", modeIndex))
 			log.DefaultLogger.Warn("Bucketed enum index out of bounds",
-				"index", index,
+				"index", modeIndex,
 				"categoriesLen", len(bucketed.Categories),
 			)
 		}

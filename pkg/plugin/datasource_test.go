@@ -1064,7 +1064,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
-	t.Run("ChannelHasWrongType error includes hint with channel name", func(t *testing.T) {
+	t.Run("ChannelHasWrongType with existing metadata does not include hint", func(t *testing.T) {
 		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
 		qm := NominalQueryModel{
 			Channel:         "status",
@@ -1076,26 +1076,20 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			t.Fatal("expected error response")
 		}
 		errMsg := resp.Error.Error()
-		// Raw error must still be present
 		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
 			t.Errorf("expected raw error in message, got: %s", errMsg)
 		}
-		// Hint must be appended
-		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for string channel error, got: %s", errMsg)
-		}
-		// Channel name must be in hint
-		if !strings.Contains(errMsg, "status") {
-			t.Errorf("expected channel name 'status' in hint, got: %s", errMsg)
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("should not have hint when ChannelDataType is populated, got: %s", errMsg)
 		}
 	})
 
-	t.Run("bare ChannelHasWrongType without namespace also gets hint", func(t *testing.T) {
-		result := createMockErrorResult(400, "ChannelHasWrongType")
+	t.Run("ChannelHasWrongType with empty metadata includes hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
 		qm := NominalQueryModel{
-			Channel:         "mode",
+			Channel:         "status",
 			AssetRid:        "ri.nominal.asset.test",
-			ChannelDataType: "string",
+			ChannelDataType: "",
 		}
 		resp := ds.transformBatchResult(result, qm)
 		if resp.Error == nil {
@@ -1103,10 +1097,24 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 		errMsg := resp.Error.Error()
 		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for bare ChannelHasWrongType, got: %s", errMsg)
+			t.Errorf("expected hint when ChannelDataType is empty, got: %s", errMsg)
 		}
-		if !strings.Contains(errMsg, "mode") {
-			t.Errorf("expected channel name 'mode' in hint, got: %s", errMsg)
+	})
+
+	t.Run("bare ChannelHasWrongType with empty metadata also gets hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "mode",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for bare ChannelHasWrongType with empty metadata, got: %s", errMsg)
 		}
 	})
 }
