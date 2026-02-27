@@ -8,6 +8,16 @@ import { NominalDataSourceOptions, NominalQuery } from '../types';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
+/** Channel option with typed dataType field, extending Grafana's SelectableValue. */
+type ChannelOption = SelectableValue<string> & { dataType?: string };
+
+/** Extensible mapping from Nominal channel dataType to Grafana icon name.
+ *  Add entries here for future types (e.g., log: 'gf-logs'). */
+const DATA_TYPE_ICONS: Record<string, string> = {
+  string: 'font',           // Grafana's standard icon for FieldType.string
+  numeric: 'calculator-alt', // Grafana's standard icon for FieldType.number
+};
+
 interface Asset {
   rid: string;
   title: string;
@@ -137,7 +147,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, [searchQuery, datasource]);
 
   // Dynamically search channels via backend; called by the Select loadOptions prop.
-  const loadChannelOptions = useCallback(async (searchText: string): Promise<Array<SelectableValue<string>>> => {
+  const loadChannelOptions = useCallback(async (searchText: string): Promise<ChannelOption[]> => {
     if (!selectedAsset) {
       return [];
     }
@@ -163,6 +173,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           label: ch.name,
           value: ch.name,
           description: ch.description || `Channel: ${ch.name}`,
+          dataType: ch.dataType || '',
+          icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
         }));
       }
       return [];
@@ -182,12 +194,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // (lodash debounce itself returns undefined, not the inner async result).
   // Superseded Promises are resolved immediately with [] so they never hang.
   type DebouncedChannelLoader = {
-    loadOptions: (searchText: string) => Promise<Array<SelectableValue<string>>>;
+    loadOptions: (searchText: string) => Promise<ChannelOption[]>;
     cancel: () => void;
   };
   const debouncedRef = useRef<DebouncedChannelLoader | null>(null);
   if (debouncedRef.current === null) {
-    let pendingResolve: ((opts: Array<SelectableValue<string>>) => void) | null = null;
+    let pendingResolve: ((opts: ChannelOption[]) => void) | null = null;
     let pendingSearchText = '';
     const debounced = debounce(() => {
       const resolve = pendingResolve;
@@ -567,10 +579,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 <Select
                   key={selectedAsset?.rid || 'no-asset'}
                   value={query?.channel ? { label: query.channel, value: query.channel } : null}
-                  onChange={(value) => {
+                  onChange={(value: ChannelOption) => {
                     onChange({
                       ...query,
                       channel: value?.value || '',
+                      channelDataType: value?.dataType || '',
                       dataScopeName: currentDataScopeName,
                       queryType: 'decimation',
                       buckets: 1000
