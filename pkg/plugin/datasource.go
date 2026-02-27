@@ -21,6 +21,7 @@ import (
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
@@ -77,7 +78,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		settings:          settings,
 		httpClient:        httpClient,
 		authService:       authapi.NewAuthenticationServiceV2Client(httpClient),
-		computeService:    computeapi.NewComputeServiceClient(httpClient),
+		computeService:    computeapi1.NewComputeServiceClient(httpClient),
 		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
 	}
 
@@ -159,7 +160,7 @@ type Datasource struct {
 	settings          backend.DataSourceInstanceSettings
 	httpClient        httpclient.Client
 	authService       authapi.AuthenticationServiceV2Client
-	computeService    computeapi.ComputeServiceClient
+	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 }
 
@@ -324,51 +325,51 @@ type NominalQueryModel struct {
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
 // Branches on ChannelDataType: "string" channels produce enum series, all others produce numeric series.
-func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi.ComputeNodeRequest {
+func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
 	// Build the series node - branch on channel data type
-	var series computeapi.Series
+	var series computeapi1.Series
 	if qm.ChannelDataType == "string" {
 		// Enum path for string channels
-		enumTimeShiftSeries := computeapi.EnumTimeShiftSeries{
+		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
 			Input: d.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-			Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 				Seconds: safelong.SafeLong(0),
 				Nanos:   safelong.SafeLong(0),
 				Picos:   nil,
 			}),
 		}
-		enumSeries := computeapi.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
-		series = computeapi.NewSeriesFromEnum(enumSeries)
+		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
+		series = computeapi1.NewSeriesFromEnum(enumSeries)
 	} else {
 		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
-		numericTimeShiftSeries := computeapi.NumericTimeShiftSeries{
+		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-			Duration: computeapi.NewDurationConstantFromLiteral(runapi.Duration{
+			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 				Seconds: safelong.SafeLong(0),
 				Nanos:   safelong.SafeLong(0),
 				Picos:   nil,
 			}),
 		}
-		numericSeries := computeapi.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
-		series = computeapi.NewSeriesFromNumeric(numericSeries)
+		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
+		series = computeapi1.NewSeriesFromNumeric(numericSeries)
 	}
 
 	buckets := int(qm.Buckets)
-	seriesNode := computeapi.SummarizeSeries{
+	seriesNode := computeapi1.SummarizeSeries{
 		Input:   series,
 		Buckets: &buckets,
 	}
 
 	// Create computable node
-	node := computeapi.NewComputableNodeFromSeries(seriesNode)
+	node := computeapi1.NewComputableNodeFromSeries(seriesNode)
 
 	// Build context with variables
 	computeContext := d.buildComputeContext(qm, startSeconds, endSeconds)
 
-	return computeapi.ComputeNodeRequest{
+	return computeapi1.ComputeNodeRequest{
 		Start: api.Timestamp{
 			Seconds: safelong.SafeLong(startSeconds),
 			Nanos:   safelong.SafeLong(0),
@@ -413,12 +414,12 @@ func (d *Datasource) executeBatchQuery(
 
 		chunkQueries := queries[chunkStart:chunkEnd]
 		chunkModels := queryModels[chunkStart:chunkEnd]
-		computeRequests := make([]computeapi.ComputeNodeRequest, len(chunkModels))
+		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
 			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange)
 		}
 
-		batchRequest := computeapi.BatchComputeWithUnitsRequest{
+		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
 			Requests: computeRequests,
 		}
 
@@ -572,36 +573,35 @@ func (d *Datasource) buildAssetChannel(assetRid, channel, dataScopeName string) 
 }
 
 // buildChannelSeries creates a numeric channel series for the given asset/channel.
-func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi.NumericSeries {
+func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
-	return computeapi.NewNumericSeriesFromChannel(channelSeries)
+	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
 }
 
 // buildEnumChannelSeries creates an enum channel series for the given asset/channel.
-func (d *Datasource) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi.EnumSeries {
+func (d *Datasource) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi1.EnumSeries {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
-	return computeapi.NewEnumSeriesFromChannel(channelSeries)
+	return computeapi1.NewEnumSeriesFromChannel(channelSeries)
 }
 
 // buildComputeContext creates the context with variables for the compute request
-func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi.Context {
-	variables := map[computeapi.VariableName]computeapi.VariableValue{
-		// Asset RID variable referenced by the series builder
-		computeapi.VariableName("assetRid"): computeapi.NewVariableValueFromString(qm.AssetRid),
+func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
+	variables := map[computeapi.VariableName]computeapi1.VariableValue{
+		computeapi.VariableName("assetRid"): computeapi1.NewVariableValueFromString(qm.AssetRid),
 	}
 
 	// Add template variables if present
 	if qm.TemplateVariables != nil {
 		for key, value := range qm.TemplateVariables {
 			if strValue, ok := value.(string); ok {
-				variables[computeapi.VariableName(key)] = computeapi.NewVariableValueFromString(strValue)
+				variables[computeapi.VariableName(key)] = computeapi1.NewVariableValueFromString(strValue)
 			}
 		}
 	}
 
-	return computeapi.Context{
+	return computeapi1.Context{
 		Variables:         variables,
-		FunctionVariables: nil, // Deprecated field
+		FunctionVariables: nil,
 	}
 }
 
@@ -623,10 +623,9 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 
 	// Use the conjure union visitor pattern to handle different response types
 	visitErr := response.AcceptFuncs(
-		nil, // range_Func
+		nil, // rangeFunc
 		nil, // rangesSummaryFunc
 		nil, // rangeValueFunc
-		// numericFunc
 		func(numeric computeapi.NumericPlot) error {
 			timePoints, values, err := d.extractNumericDataFromConjure(numeric)
 			if err != nil {
@@ -637,7 +636,6 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 			result.IsEnum = false
 			return nil
 		},
-		// bucketedNumericFunc
 		func(bucketed computeapi.BucketedNumericPlot) error {
 			timePoints, values, err := d.extractBucketedDataFromConjure(bucketed)
 			if err != nil {
@@ -649,6 +647,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 			return nil
 		},
 		nil, // numericPointFunc
+		nil, // singlePointFunc
 		nil, // arrowNumericFunc
 		nil, // arrowBucketedNumericFunc
 		// enumFunc - maps integer indices to category strings
@@ -692,14 +691,16 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		nil, // cartesianFunc
 		nil, // bucketedCartesianFunc
 		nil, // bucketedCartesian3dFunc
-		nil, // bucketedGeoFunc
 		nil, // frequencyDomainFunc
+		nil, // frequencyDomainV2Func
+		nil, // bucketedFrequencyDomainFunc
 		nil, // numericHistogramFunc
 		nil, // enumHistogramFunc
 		nil, // curveFitFunc
 		nil, // groupedFunc
-		nil, // arrayFunc
-		// unknownFunc
+		nil, // arrowArrayFunc
+		nil, // arrowBucketedStructFunc
+		nil, // arrowFullResolutionFunc
 		func(typeName string) error {
 			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
 			return nil
