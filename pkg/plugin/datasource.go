@@ -222,12 +222,6 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		// Apply template variable interpolation
 		d.applyTemplateVariables(&qm)
 
-		log.DefaultLogger.Debug("Query model parsed",
-			"refID", q.RefID,
-			"channel", qm.Channel,
-			"channelDataType", qm.ChannelDataType,
-		)
-
 		// Handle connection test immediately (not batchable)
 		if qm.QueryType == "connectionTest" {
 			response.Responses[q.RefID] = d.handleConnectionTestQuery(ctx, config)
@@ -348,7 +342,6 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		}
 		enumSeries := computeapi.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
 		series = computeapi.NewSeriesFromEnum(enumSeries)
-		log.DefaultLogger.Debug("Building enum compute request", "channel", qm.Channel)
 	} else {
 		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
 		numericTimeShiftSeries := computeapi.NumericTimeShiftSeries{
