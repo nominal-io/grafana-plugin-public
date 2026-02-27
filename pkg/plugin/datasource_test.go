@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	"github.com/palantir/pkg/bearertoken"
@@ -1020,6 +1021,182 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 	}
 }
 
+func TestErrorMessageFormatPreservation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric channel error retains original format without hint", func(t *testing.T) {
+		result := createMockErrorResult(404, "CHANNEL_NOT_FOUND")
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		// Original format must be preserved exactly
+		if !strings.Contains(errMsg, "Compute error: CHANNEL_NOT_FOUND (code: 404)") {
+			t.Errorf("expected original error format, got: %s", errMsg)
+		}
+		// Numeric errors must NOT have hints
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("numeric channel errors should not have hints, got: %s", errMsg)
+		}
+	})
+
+	t.Run("generic compute error retains original format without hint", func(t *testing.T) {
+		result := createMockErrorResult(500, "Compute:InternalError")
+		qm := NominalQueryModel{
+			Channel:  "pressure",
+			AssetRid: "ri.nominal.asset.test",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Compute error: Compute:InternalError (code: 500)") {
+			t.Errorf("expected original error format, got: %s", errMsg)
+		}
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("generic errors should not have hints, got: %s", errMsg)
+		}
+	})
+
+	t.Run("ChannelHasWrongType with existing metadata does not include hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "status",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "string",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
+			t.Errorf("expected raw error in message, got: %s", errMsg)
+		}
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("should not have hint when ChannelDataType is populated, got: %s", errMsg)
+		}
+	})
+
+	t.Run("ChannelHasWrongType with empty metadata includes hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "status",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint when ChannelDataType is empty, got: %s", errMsg)
+		}
+	})
+
+	t.Run("bare ChannelHasWrongType with empty metadata also gets hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "mode",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "",
+		}
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for bare ChannelHasWrongType with empty metadata, got: %s", errMsg)
+		}
+	})
+}
+
+func TestNumericRegressionAfterPhase3(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric batch result produces float64 value fields", func(t *testing.T) {
+		values := []float64{1.5, 2.5, 3.5, 4.5}
+		result := createMockComputeResult(values)
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		// Must have time + value fields
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+		// Value field must be float64
+		valueField := frame.Fields[1]
+		if valueField.Len() != len(values) {
+			t.Fatalf("expected %d values, got %d", len(values), valueField.Len())
+		}
+		for i := 0; i < valueField.Len(); i++ {
+			v, ok := valueField.At(i).(float64)
+			if !ok {
+				t.Errorf("value at index %d is not float64, got %T", i, valueField.At(i))
+			}
+			if v != values[i] {
+				t.Errorf("value at index %d: expected %f, got %f", i, values[i], v)
+			}
+		}
+	})
+
+	t.Run("numeric frame does not have table type metadata", func(t *testing.T) {
+		values := []float64{10.0, 20.0}
+		result := createMockComputeResult(values)
+		qm := NominalQueryModel{
+			Channel:  "pressure",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		// Numeric frames should NOT have FrameTypeTable metadata (that's for enum frames)
+		if frame.Meta != nil && frame.Meta.Type == data.FrameTypeTable {
+			t.Error("numeric frame should not have FrameTypeTable metadata")
+		}
+	})
+
+	t.Run("numeric frame name includes channel name", func(t *testing.T) {
+		values := []float64{5.0}
+		result := createMockComputeResult(values)
+		qm := NominalQueryModel{
+			Channel:  "velocity",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		if !strings.Contains(frame.Name, "velocity") {
+			t.Errorf("expected frame name to contain 'velocity', got: %s", frame.Name)
+		}
+	})
+}
+
 // createMockErrorResult creates a mock ComputeWithUnitsResult with an error
 func createMockErrorResult(code int, errorType string) computeapi.ComputeWithUnitsResult {
 	errorResult := computeapi.ErrorResult{
@@ -1056,6 +1233,405 @@ func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult
 	return computeapi.ComputeWithUnitsResult{
 		ComputeResult: computeResult,
 	}
+}
+
+// createMockEnumComputeResult creates a mock ComputeWithUnitsResult with enum data
+func createMockEnumComputeResult(categories []string, indices []int) computeapi.ComputeWithUnitsResult {
+	timestamps := make([]api.Timestamp, len(indices))
+	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
+	for i := range timestamps {
+		timestamps[i] = api.Timestamp{
+			Seconds: safelong.SafeLong(baseTime + int64(i*60)),
+			Nanos:   safelong.SafeLong(0),
+		}
+	}
+
+	enumPlot := computeapi.EnumPlot{
+		Timestamps: timestamps,
+		Values:     indices,
+		Categories: categories,
+	}
+
+	computeResponse := computeapi.NewComputeNodeResponseFromEnum(enumPlot)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createMockEnumPointComputeResult creates a mock ComputeWithUnitsResult with a single enum point
+func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsResult {
+	enumPoint := computeapi.EnumPoint{
+		Timestamp: api.Timestamp{
+			Seconds: safelong.SafeLong(1704067200),
+			Nanos:   safelong.SafeLong(0),
+		},
+		Value: value,
+	}
+
+	computeResponse := computeapi.NewComputeNodeResponseFromEnumPoint(&enumPoint)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+func TestEnumPlotTransformation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("maps indices to category strings", func(t *testing.T) {
+		categories := []string{"on", "off", "standby"}
+		indices := []int{0, 2, 1, 0}
+
+		result := createMockEnumComputeResult(categories, indices)
+		qm := NominalQueryModel{
+			Channel:  "status",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+
+		// Verify value field is string type
+		valueField := frame.Fields[1]
+		if valueField.Name != "value" {
+			t.Errorf("expected field name 'value', got %q", valueField.Name)
+		}
+
+		// Check resolved string values
+		if valueField.Len() != 4 {
+			t.Fatalf("expected 4 values, got %d", valueField.Len())
+		}
+		expectedValues := []string{"on", "standby", "off", "on"}
+		for i, expected := range expectedValues {
+			actual, ok := valueField.At(i).(string)
+			if !ok {
+				t.Fatalf("value at index %d is not a string", i)
+			}
+			if actual != expected {
+				t.Errorf("value at index %d: expected %q, got %q", i, expected, actual)
+			}
+		}
+	})
+
+	t.Run("handles out-of-bounds indices gracefully", func(t *testing.T) {
+		categories := []string{"on", "off"}
+		indices := []int{0, 5, 1} // index 5 is out of bounds
+
+		result := createMockEnumComputeResult(categories, indices)
+		qm := NominalQueryModel{
+			Channel:  "status",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		valueField := frame.Fields[1]
+		if valueField.Len() != 3 {
+			t.Fatalf("expected 3 values, got %d", valueField.Len())
+		}
+		if v := valueField.At(0).(string); v != "on" {
+			t.Errorf("index 0: expected %q, got %q", "on", v)
+		}
+		if v := valueField.At(1).(string); v != "unknown(5)" {
+			t.Errorf("index 1: expected %q, got %q", "unknown(5)", v)
+		}
+		if v := valueField.At(2).(string); v != "off" {
+			t.Errorf("index 2: expected %q, got %q", "off", v)
+		}
+	})
+
+	t.Run("handles empty enum response", func(t *testing.T) {
+		categories := []string{"on", "off"}
+		indices := []int{}
+
+		result := createMockEnumComputeResult(categories, indices)
+		qm := NominalQueryModel{
+			Channel:  "status",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+
+		// Empty enum should have []string{} not []float64{}
+		valueField := frame.Fields[1]
+		if valueField.Len() != 0 {
+			t.Errorf("expected 0 values for empty enum, got %d", valueField.Len())
+		}
+	})
+}
+
+func TestEnumPointTransformation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("passes through resolved string value directly", func(t *testing.T) {
+		result := createMockEnumPointComputeResult("active")
+		qm := NominalQueryModel{
+			Channel:  "status",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+
+		valueField := frame.Fields[1]
+		if valueField.Len() != 1 {
+			t.Fatalf("expected 1 value, got %d", valueField.Len())
+		}
+		if v := valueField.At(0).(string); v != "active" {
+			t.Errorf("expected %q, got %q", "active", v)
+		}
+	})
+}
+
+func TestNumericPathUnchangedAfterRefactor(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric results still produce float64 frames", func(t *testing.T) {
+		result := createMockComputeResult([]float64{1.5, 2.5, 3.5})
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+
+		valueField := frame.Fields[1]
+		if valueField.Name != "value" {
+			t.Errorf("expected field name 'value', got %q", valueField.Name)
+		}
+		if valueField.Len() != 3 {
+			t.Fatalf("expected 3 values, got %d", valueField.Len())
+		}
+		expectedValues := []float64{1.5, 2.5, 3.5}
+		for i, expected := range expectedValues {
+			actual, ok := valueField.At(i).(float64)
+			if !ok {
+				t.Fatalf("value at index %d is not a float64", i)
+			}
+			if actual != expected {
+				t.Errorf("value at index %d: expected %v, got %v", i, expected, actual)
+			}
+		}
+	})
+}
+
+func TestBuildComputeRequestBranching(t *testing.T) {
+	ds := &Datasource{}
+
+	baseQM := NominalQueryModel{
+		AssetRid:      "ri.nominal.asset.test",
+		Channel:       "temperature",
+		DataScopeName: "default",
+		Buckets:       1000,
+	}
+
+	baseTimeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	t.Run("string ChannelDataType produces enum series", func(t *testing.T) {
+		qm := baseQM
+		qm.ChannelDataType = "string"
+		req := ds.buildComputeRequest(qm, baseTimeRange)
+
+		// The request should have a valid node
+		if req.Node == (computeapi.ComputableNode{}) {
+			t.Fatal("expected non-zero ComputableNode for enum request")
+		}
+		// Verify the timestamps are set
+		if int64(req.Start.Seconds) != baseTimeRange.From.Unix() {
+			t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, baseTimeRange.From.Unix())
+		}
+		if int64(req.End.Seconds) != baseTimeRange.To.Unix() {
+			t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, baseTimeRange.To.Unix())
+		}
+
+		// Serialize the node to JSON and verify it contains enum-specific types
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal ComputableNode: %v", err)
+		}
+		jsonStr := string(jsonBytes)
+
+		// Enum path should contain "enum" type markers in the serialized structure
+		if !strings.Contains(jsonStr, `"type":"enum"`) {
+			t.Errorf("expected enum series type in JSON for string ChannelDataType, got: %s", jsonStr)
+		}
+		// Should NOT contain numeric series type at the top level
+		if strings.Contains(jsonStr, `"type":"numeric"`) {
+			t.Errorf("expected no numeric series type in JSON for string ChannelDataType, got: %s", jsonStr)
+		}
+	})
+
+	t.Run("numeric ChannelDataType produces numeric series", func(t *testing.T) {
+		qm := baseQM
+		qm.ChannelDataType = "numeric"
+		req := ds.buildComputeRequest(qm, baseTimeRange)
+
+		if req.Node == (computeapi.ComputableNode{}) {
+			t.Fatal("expected non-zero ComputableNode for numeric request")
+		}
+		if int64(req.Start.Seconds) != baseTimeRange.From.Unix() {
+			t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, baseTimeRange.From.Unix())
+		}
+
+		// Serialize and verify it contains numeric-specific types
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal ComputableNode: %v", err)
+		}
+		jsonStr := string(jsonBytes)
+
+		if !strings.Contains(jsonStr, `"type":"numeric"`) {
+			t.Errorf("expected numeric series type in JSON for numeric ChannelDataType, got: %s", jsonStr)
+		}
+	})
+
+	t.Run("empty ChannelDataType defaults to numeric series", func(t *testing.T) {
+		qm := baseQM
+		qm.ChannelDataType = ""
+		req := ds.buildComputeRequest(qm, baseTimeRange)
+
+		if req.Node == (computeapi.ComputableNode{}) {
+			t.Fatal("expected non-zero ComputableNode for default request")
+		}
+		if int64(req.Start.Seconds) != baseTimeRange.From.Unix() {
+			t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, baseTimeRange.From.Unix())
+		}
+
+		// Default should be numeric
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal ComputableNode: %v", err)
+		}
+		jsonStr := string(jsonBytes)
+
+		if !strings.Contains(jsonStr, `"type":"numeric"`) {
+			t.Errorf("expected numeric series type in JSON for empty ChannelDataType, got: %s", jsonStr)
+		}
+		if strings.Contains(jsonStr, `"type":"enum"`) {
+			t.Errorf("expected no enum series type in JSON for empty ChannelDataType, got: %s", jsonStr)
+		}
+	})
+
+	t.Run("missing ChannelDataType defaults to numeric series", func(t *testing.T) {
+		qm := baseQM
+		// ChannelDataType is zero-value ""
+		req := ds.buildComputeRequest(qm, baseTimeRange)
+
+		if req.Node == (computeapi.ComputableNode{}) {
+			t.Fatal("expected non-zero ComputableNode for missing ChannelDataType request")
+		}
+	})
+
+	t.Run("string and numeric produce structurally different requests", func(t *testing.T) {
+		stringQM := baseQM
+		stringQM.ChannelDataType = "string"
+		stringReq := ds.buildComputeRequest(stringQM, baseTimeRange)
+
+		numericQM := baseQM
+		numericQM.ChannelDataType = "numeric"
+		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange)
+
+		stringJSON, _ := json.Marshal(stringReq.Node)
+		numericJSON, _ := json.Marshal(numericReq.Node)
+
+		if string(stringJSON) == string(numericJSON) {
+			t.Error("expected different JSON for string vs numeric ChannelDataType, but they are identical")
+		}
+	})
+}
+
+func TestBuildEnumChannelSeries(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("returns non-nil enum series", func(t *testing.T) {
+		enumSeries := ds.buildEnumChannelSeries("ri.nominal.asset.test", "status", "default")
+		// Serialize to JSON to verify the structure
+		jsonBytes, err := json.Marshal(enumSeries)
+		if err != nil {
+			t.Fatalf("failed to marshal EnumSeries: %v", err)
+		}
+		jsonStr := string(jsonBytes)
+
+		// Should contain channel type (same as numeric path)
+		if !strings.Contains(jsonStr, `"type":"channel"`) {
+			t.Errorf("expected channel series type in JSON, got: %s", jsonStr)
+		}
+		if !strings.Contains(jsonStr, `"type":"asset"`) {
+			t.Errorf("expected asset channel type in JSON, got: %s", jsonStr)
+		}
+		// Verify channel name is present
+		if !strings.Contains(jsonStr, `"channel":{"type":"literal","literal":"status"}`) {
+			t.Errorf("expected channel literal 'status' in JSON, got: %s", jsonStr)
+		}
+	})
+
+	t.Run("mirrors buildChannelSeries asset channel structure", func(t *testing.T) {
+		// Both builders should produce the same AssetChannel structure;
+		// verify by checking the channel and dataScopeName appear identically.
+		enumSeries := ds.buildEnumChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
+		numericSeries := ds.buildChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
+
+		enumJSON, _ := json.Marshal(enumSeries)
+		numericJSON, _ := json.Marshal(numericSeries)
+
+		// Both should contain the same channel literal
+		expectedChannel := `"channel":{"type":"literal","literal":"sensor1"}`
+		if !strings.Contains(string(enumJSON), expectedChannel) {
+			t.Errorf("enum series missing expected channel literal, got: %s", string(enumJSON))
+		}
+		if !strings.Contains(string(numericJSON), expectedChannel) {
+			t.Errorf("numeric series missing expected channel literal, got: %s", string(numericJSON))
+		}
+
+		// Both should contain the same dataScopeName literal
+		expectedScope := `"dataScopeName":{"type":"literal","literal":"scope1"}`
+		if !strings.Contains(string(enumJSON), expectedScope) {
+			t.Errorf("enum series missing expected dataScopeName literal, got: %s", string(enumJSON))
+		}
+		if !strings.Contains(string(numericJSON), expectedScope) {
+			t.Errorf("numeric series missing expected dataScopeName literal, got: %s", string(numericJSON))
+		}
+	})
 }
 
 // Benchmark for new batch-related function

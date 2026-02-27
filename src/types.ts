@@ -6,6 +6,7 @@ export interface NominalQuery extends DataQuery {
   assetRid?: string;
   channel?: string;
   dataScopeName?: string;
+  channelDataType?: string;
 
   // Query parameters
   buckets?: number;
