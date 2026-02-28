@@ -2,6 +2,20 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.6.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.5.1...nominal-grafana-plugin@0.6.0) (2026-02-28)
+
+
+### Features
+
+* add string/enum channel support ([#17](https://github.com/nominal-io/grafana-plugin-public/issues/17)) ([e74505d](https://github.com/nominal-io/grafana-plugin-public/commit/e74505de0f1e07c8c5dec4ae6a67527f4415c544))
+* add template variable support for assets, data scopes, and channels; drop RID from series name ([#8](https://github.com/nominal-io/grafana-plugin-public/issues/8)) ([0039a1e](https://github.com/nominal-io/grafana-plugin-public/commit/0039a1ee1f67b311f39dec3914b58fd7961cc6ea))
+
+
+### Bug Fixes
+
+* **deps:** update github.com/nominal-io/nominal-api-go digest to 89e4ad6 ([#11](https://github.com/nominal-io/grafana-plugin-public/issues/11)) ([52e17d2](https://github.com/nominal-io/grafana-plugin-public/commit/52e17d2d94ec32b8492fffb488b0b0d624c82377))
+* update compute API imports from scout/compute/api to scout/compute/api1 ([#19](https://github.com/nominal-io/grafana-plugin-public/issues/19)) ([5bb74df](https://github.com/nominal-io/grafana-plugin-public/commit/5bb74dfb7ebfc8d6d8e1c5e8e947d9a514856e3a))
+
 ## [0.5.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.5.0...nominal-grafana-plugin@0.5.1) (2026-02-26)
 
 
