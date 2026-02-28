@@ -1707,6 +1707,30 @@ func (m *mockAuthService) GetUser(ctx context.Context, authHeader bearertoken.To
 	return authapi.UserV2{}, nil
 }
 
+func (m *mockAuthService) DismissMyCoachmark(ctx context.Context, authHeader bearertoken.Token, requestArg authapi.DismissCoachmarkRequest) (authapi.CoachmarkDismissal, error) {
+	return authapi.CoachmarkDismissal{}, nil
+}
+
+func (m *mockAuthService) IsMyCoachmarkDismissed(ctx context.Context, authHeader bearertoken.Token, coachmarkIdArg string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockAuthService) GetJwks(ctx context.Context) (authapi.Jwks, error) {
+	return authapi.Jwks{}, nil
+}
+
+func (m *mockAuthService) GenerateMediaMtxToken(ctx context.Context, authHeader bearertoken.Token, requestArg authapi.GenerateMediaMtxTokenRequest) (authapi.GenerateMediaMtxTokenResponse, error) {
+	return authapi.GenerateMediaMtxTokenResponse{}, nil
+}
+
+func (m *mockAuthService) GetMyCoachmarkDismissals(ctx context.Context, authHeader bearertoken.Token, requestArg authapi.GetCoachmarkDismissalsRequest) (authapi.GetCoachmarkDismissalsResponse, error) {
+	return authapi.GetCoachmarkDismissalsResponse{}, nil
+}
+
+func (m *mockAuthService) ResetMyCoachmarkDismissal(ctx context.Context, authHeader bearertoken.Token, coachmarkIdArg string) error {
+	return nil
+}
+
 // mockDatasourceService implements datasourceservice.DataSourceServiceClient for testing
 type mockDatasourceService struct {
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
@@ -1745,6 +1769,14 @@ func (m *mockDatasourceService) GetDataScopeBounds(ctx context.Context, authHead
 
 func (m *mockDatasourceService) GetTagValuesForDataSource(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetTagValuesForDataSourceRequest) (map[api.TagName][]api.TagValue, error) {
 	return nil, nil
+}
+
+func (m *mockDatasourceService) GetAvailableTagKeys(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetAvailableTagKeysRequest) (datasourceapi.GetAvailableTagKeysResponse, error) {
+	return datasourceapi.GetAvailableTagKeysResponse{}, nil
+}
+
+func (m *mockDatasourceService) GetAvailableTagValues(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetAvailableTagValuesRequest) (datasourceapi.GetAvailableTagValuesResponse, error) {
+	return datasourceapi.GetAvailableTagValuesResponse{}, nil
 }
 
 // Verify mock types implement their interfaces at compile time
