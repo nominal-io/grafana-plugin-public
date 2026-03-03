@@ -738,7 +738,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   loadOptions={debouncedLoadChannelOptions}
                   defaultOptions
                   placeholder="Search for channel..."
-                  width={40}
+                  width={50}
                   allowCustomValue
                   isClearable={false}
                 />
