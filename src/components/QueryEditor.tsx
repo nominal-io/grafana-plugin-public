@@ -427,7 +427,17 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     // Resolve to actual RID for asset lookup (variables need resolution)
     const ridToFind = isVariable ? getTemplateSrv().replace(value) : value;
     const asset = assets.find(a => a.rid === ridToFind);
-    setSelectedAsset(asset || null);
+
+    if (asset) {
+      setSelectedAsset(asset);
+    } else if (ridToFind && !ridToFind.includes('$')) {
+      // Asset not in search results — fetch it directly instead of nulling selectedAsset.
+      // This avoids a UI flash where channel/scope selectors unmount during the fetch.
+      const displayLabel = isVariable ? `Asset (${value})` : 'Asset (Direct RID)';
+      applyAssetFromRid(ridToFind, displayLabel);
+    } else {
+      setSelectedAsset(null);
+    }
 
     // Store variable syntax if variable, otherwise store the asset RID
     if (isVariable || asset) {
@@ -582,7 +592,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   }, []);
 
   // Step completion status
-  const assetComplete = assetInputMethod === 'search' ? selectedAsset !== null : directRID.trim() !== '';
+  const assetComplete = assetInputMethod === 'search'
+    ? (resolvedAssetRid !== '' && !resolvedAssetRid.includes('$'))
+    : directRID.trim() !== '';
   const configComplete = assetComplete && query && query.dataScopeName && query.channel;
   const hasChannelSearch = selectedAsset?.dataScopes?.some(scope => {
     const ds = scope.dataSource;
@@ -691,13 +703,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   width={22}
                   isClearable={false}
                   allowCustomValue={true}
+                  isLoading={!selectedAsset && assetComplete}
                 />
               </InlineField>
 
               {hasChannelSearch && <InlineField label="Channel" labelWidth={8}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  key={selectedAsset?.rid || 'no-asset'}
+                  key={resolvedAssetRid || 'no-asset'}
                   value={query?.channel ? {
                     label: query.channel.includes('$') && resolvedChannel && resolvedChannel !== query.channel && !resolvedChannel.includes('$')
                       ? `${query.channel} → ${resolvedChannel}`
