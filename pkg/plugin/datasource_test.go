@@ -1736,10 +1736,16 @@ type mockDatasourceService struct {
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
+	// searchChannelsFunc, when non-nil, overrides searchChannelsResponse/searchChannelsError.
+	// This allows tests to return different responses on successive calls (e.g. pagination).
+	searchChannelsFunc func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error)
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
 	m.searchChannelsRequest = queryArg
+	if m.searchChannelsFunc != nil {
+		return m.searchChannelsFunc(ctx, authHeader, queryArg)
+	}
 	return m.searchChannelsResponse, m.searchChannelsError
 }
 
@@ -2499,6 +2505,177 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 		if string(resp.Body) != "[]" {
 			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("paginates across multiple pages", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		callCount := 0
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				callCount++
+				if callCount == 1 {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				// Second call: verify token was passed, return final page
+				if req.NextPageToken == nil || *req.NextPageToken != pageToken {
+					return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("expected page token %q on second call", pageToken)
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("ch4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result) != 5 {
+			t.Fatalf("expected 5 channels across 2 pages, got %d: %v", len(result), result)
+		}
+		if callCount != 2 {
+			t.Errorf("expected 2 SearchChannels calls, got %d", callCount)
+		}
+	})
+
+	t.Run("stops at safety cap", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("next")
+		callCount := 0
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				callCount++
+				// Always return 1000 channels with a next page token
+				channels := make([]datasourceapi.ChannelMetadata, 1000)
+				for i := range channels {
+					channels[i] = datasourceapi.ChannelMetadata{
+						Name:       api.Channel(fmt.Sprintf("ch-%d-%d", callCount, i)),
+						DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					}
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results:       channels,
+					NextPageToken: &pageToken,
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		// 5 pages of 1000 = 5000, which hits the maxChannelVariables cap
+		if len(result) != 5000 {
+			t.Fatalf("expected 5000 channels (safety cap), got %d", len(result))
+		}
+		if callCount != 5 {
+			t.Errorf("expected 5 SearchChannels calls before cap, got %d", callCount)
+		}
+	})
+
+	t.Run("deduplicates across pages", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				if req.NextPageToken == nil {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("a"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("b"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("b"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("c"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result) != 3 {
+			t.Fatalf("expected 3 unique channels after cross-page dedup, got %d: %v", len(result), result)
+		}
+	})
+
+	t.Run("error on second page returns error", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				if req.NextPageToken == nil {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("network error on page 2")
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", resp.Status, string(resp.Body))
 		}
 	})
 }

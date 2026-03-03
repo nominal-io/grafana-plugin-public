@@ -1630,27 +1630,44 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 
-	// Search for channels across all datasource RIDs
-	searchChannelsRequest := datasourceapi.SearchChannelsRequest{
-		FuzzySearchText: "",
-		DataSources:     dataSourceRids,
-	}
+	// Paginate through all channels. The SearchChannels API caps at 1000 per call,
+	// so we loop with NextPageToken to fetch the complete list for template variables.
+	const maxChannelVariables = 5000
+	pageSize := 1000
+	var allChannelResults []datasourceapi.ChannelMetadata
+	var nextPageToken *api.Token
 
-	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
-	if err != nil {
-		log.DefaultLogger.Error("Channels search API call failed", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed: " + err.Error()})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+	for {
+		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
+			FuzzySearchText: "",
+			DataSources:     dataSourceRids,
+			PageSize:        &pageSize,
+			NextPageToken:   nextPageToken,
+		}
+
+		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
+		if err != nil {
+			log.DefaultLogger.Error("Channels search API call failed", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed: " + err.Error()})
+			return sender.Send(&backend.CallResourceResponse{
+				Status:  http.StatusInternalServerError,
+				Headers: map[string][]string{"Content-Type": {"application/json"}},
+				Body:    errBody,
+			})
+		}
+
+		allChannelResults = append(allChannelResults, channelsResponse.Results...)
+
+		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables {
+			break
+		}
+		nextPageToken = channelsResponse.NextPageToken
 	}
 
 	// Deduplicate channel names and return as MetricFindValue format
 	seen := make(map[string]bool)
 	result := make([]map[string]string, 0)
-	for _, channel := range channelsResponse.Results {
+	for _, channel := range allChannelResults {
 		name := string(channel.Name)
 		if !seen[name] {
 			seen[name] = true
