@@ -71,11 +71,11 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 
   // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
   const asset = response?.[rid];
-  if (asset?.dataScopes?.length > 0) {
+  if (asset) {
     return asset;
   }
   // Log to help diagnose asset lookup failures (e.g. unexpected response format)
-  console.warn('fetchAssetByRid: asset not found or has no dataScopes', { rid, responseKeys: Object.keys(response || {}), asset });
+  console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
   return null;
 };
 
@@ -177,8 +177,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     if (!selectedAsset) {
       return [];
     }
+    const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
+    const scopes = (selectedAsset.dataScopes || []).filter(
+      (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
+    );
     const dataSourceRids: string[] = [];
-    for (const scope of selectedAsset.dataScopes || []) {
+    for (const scope of scopes) {
       const ds = scope.dataSource;
       if (!ds) { continue; }
       if (ds.type === 'dataset' && ds.dataset) { dataSourceRids.push(ds.dataset); }
@@ -208,7 +212,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       console.error('Failed to load channel options:', error);
       return [];
     }
-  }, [selectedAsset, datasource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAsset, datasource, query?.dataScopeName]);
 
   // Keep a ref so the stable debounce below always calls the latest closure without
   // needing to be recreated (and without leaving stale pending timeouts behind).
@@ -323,7 +328,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return () => controller.abort();
-  }, [query, selectedAsset, assets, hasManuallySetMethod, applyAssetFromRid]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assets, hasManuallySetMethod, applyAssetFromRid]);
 
   // Compute resolved asset RID on every render - this changes when template variables change
   const resolvedAssetRid = query?.assetRid ? getTemplateSrv().replace(query.assetRid) : '';
