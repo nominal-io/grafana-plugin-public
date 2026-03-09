@@ -71,7 +71,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 
   // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
   const asset = response?.[rid];
-  if (asset) {
+  if (asset && asset.dataScopes?.length > 0) {
     return asset;
   }
   // Log to help diagnose asset lookup failures (e.g. unexpected response format)
