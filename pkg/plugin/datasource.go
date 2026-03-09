@@ -489,6 +489,10 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
+			valueConfig := &data.FieldConfig{
+				DisplayNameFromDS: qm.Channel,
+			}
+
 			if result.IsEnum {
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
 				// Time series frames filter to numeric fields only by default.
@@ -497,27 +501,35 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					PreferredVisualization: data.VisTypeTable,
 				}
 				if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
+					valueField := data.NewField("value", nil, result.StringValues)
+					valueField.Config = valueConfig
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
-						data.NewField("value", nil, result.StringValues),
+						valueField,
 					)
 				} else {
+					valueField := data.NewField("value", nil, []string{})
+					valueField.Config = valueConfig
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
-						data.NewField("value", nil, []string{}),
+						valueField,
 					)
 				}
 				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
 			} else {
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
+					valueField := data.NewField("value", nil, result.NumericValues)
+					valueField.Config = valueConfig
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
-						data.NewField("value", nil, result.NumericValues),
+						valueField,
 					)
 				} else {
+					valueField := data.NewField("value", nil, []float64{})
+					valueField.Config = valueConfig
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
-						data.NewField("value", nil, []float64{}),
+						valueField,
 					)
 				}
 				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
