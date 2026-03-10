@@ -304,16 +304,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Restore UI state from a saved query on mount / duplication.
   //
   // Decision tree:
-  //  1. Skip if no assetRid, asset already selected, or user manually switched modes.
-  //  2. Resolve template variables — skip if unresolvable (still contains '$').
-  //  3. If saved method is 'direct' → fetch asset by RID.
-  //  4. Else (search mode or no saved method):
+  //  1. Skip if no assetRid or asset already selected.
+  //  2. Skip if user manually switched modes UNLESS the saved method is 'direct'
+  //     (direct-mode queries initialize hasManuallySetMethod=true from the saved value,
+  //     so we must still allow them through here for the initial asset fetch to happen).
+  //  3. Resolve template variables — skip if unresolvable (still contains '$').
+  //  4. If saved method is 'direct' → fetch asset by RID.
+  //  5. Else (search mode or no saved method):
   //     a. If asset is in current search results → select it in search mode.
   //     b. If assets are loaded but not found, and no saved method → infer direct mode.
   useEffect(() => {
     const controller = new AbortController();
 
-    if (query && query.assetRid && !selectedAsset && !hasManuallySetMethod) {
+    if (query && query.assetRid && !selectedAsset && (!hasManuallySetMethod || query.assetInputMethod === 'direct')) {
       const resolved = getTemplateSrv().replace(query.assetRid);
       const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
 
@@ -607,6 +610,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     if (!rid.trim()) {
       setSelectedAsset(null);
       setDataScopes([]);
+      onChange({ ...queryRef.current, assetRid: '', assetInputMethod: 'direct' });
       return;
     }
 
