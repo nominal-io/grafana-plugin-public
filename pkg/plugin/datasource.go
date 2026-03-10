@@ -1665,7 +1665,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	var allChannelResults []datasourceapi.ChannelMetadata
 	var nextPageToken *api.Token
 
-	for {
+	for page := 0; ; page++ {
 		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
 			FuzzySearchText: "",
 			DataSources:     dataSourceRids,
@@ -1686,15 +1686,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 		allChannelResults = append(allChannelResults, channelsResponse.Results...)
 
-		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables {
-			if len(allChannelResults) >= maxChannelVariables && channelsResponse.NextPageToken != nil {
-				// NOTE: Reached the maxChannelVariables cap before exhausting all pages.
-				// The response is silently truncated — no indication is returned to the
-				// Grafana UI. If a channel variable is not appearing, the asset may have
-				// more than 5000 channels. This is a known limitation.
-				log.DefaultLogger.Warn("Channel variables cap reached; response may be truncated",
-					"cap", maxChannelVariables, "fetched", len(allChannelResults))
-			}
+		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables || len(channelsResponse.Results) == 0 {
 			break
 		}
 		nextPageToken = channelsResponse.NextPageToken
