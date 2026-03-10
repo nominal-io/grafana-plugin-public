@@ -321,7 +321,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       // template variable syntax) regardless of whether the variable is currently resolved.
       // This prevents a blank input when reloading a panel with a $variable-based direct RID.
       if (query.assetInputMethod === 'direct') {
-        setDirectRID(prev => prev || query.assetRid);
+        setDirectRID(prev => prev || query.assetRid || '');
       }
 
       if (!resolved.includes('$')) {
