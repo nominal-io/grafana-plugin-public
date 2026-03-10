@@ -758,7 +758,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               {hasChannelSearch && <InlineField label="Channel" labelWidth={8}>
                 {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
                 <Select
-                  key={resolvedAssetRid || 'no-asset'}
+                  key={`${resolvedAssetRid || 'no-asset'}-${resolvedDataScopeName}`}
                   value={query?.channel ? {
                     label: query.channel.includes('$') && resolvedChannel && resolvedChannel !== query.channel && !resolvedChannel.includes('$')
                       ? `${query.channel} → ${resolvedChannel}`
