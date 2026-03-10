@@ -565,8 +565,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     const currentValue = query?.dataScopeName || '';
     if (currentValue.includes('$') && !dataScopes.includes(currentValue)) {
       // Show both the variable syntax and resolved value if different
+      // Only show resolution if it's valid for the current asset's scopes
       const resolved = resolvedDataScopeName;
-      const label = resolved && resolved !== currentValue && !resolved.includes('$')
+      const resolvedIsValid = resolved && resolved !== currentValue && !resolved.includes('$')
+        && (!dataScopes.length || dataScopes.includes(resolved));
+      const label = resolvedIsValid
         ? `${currentValue} → ${resolved}`
         : currentValue;
       options.unshift({
