@@ -310,7 +310,7 @@ func makeBatchableQueries(count int, timeRange backend.TimeRange) []backend.Data
 	for i := 0; i < count; i++ {
 		queries[i] = backend.DataQuery{
 			RefID:     fmt.Sprintf("Q%03d", i),
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: fmt.Sprintf("ri.nominal.asset.%d", i+1), Channel: fmt.Sprintf("temp%d", i+1), Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: fmt.Sprintf("ri.nominal.asset.%d", i+1), Channel: fmt.Sprintf("temp%d", i+1), DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		}
 	}
@@ -510,17 +510,17 @@ func TestBatchQueryExecution(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 	}
@@ -721,7 +721,7 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
@@ -731,7 +731,7 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 	}
@@ -798,12 +798,12 @@ func TestBatchQueryError(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 	}
@@ -868,17 +868,17 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "nonexistent", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "nonexistent", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 	}
@@ -968,17 +968,17 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
 			TimeRange: timeRange,
 		},
 	}
@@ -1073,7 +1073,9 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
-	t.Run("ChannelHasWrongType with existing metadata does not include hint", func(t *testing.T) {
+	t.Run("ChannelHasWrongType always includes hint regardless of ChannelDataType", func(t *testing.T) {
+		// The hint fires for any ChannelHasWrongType error — the stored type and the
+		// API's actual type disagree regardless of whether ChannelDataType is set.
 		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
 		qm := NominalQueryModel{
 			Channel:         "status",
@@ -1088,8 +1090,8 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
 			t.Errorf("expected raw error in message, got: %s", errMsg)
 		}
-		if strings.Contains(errMsg, "Hint:") {
-			t.Errorf("should not have hint when ChannelDataType is populated, got: %s", errMsg)
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for ChannelHasWrongType even when ChannelDataType is populated, got: %s", errMsg)
 		}
 	})
 
@@ -1110,7 +1112,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
-	t.Run("bare ChannelHasWrongType with empty metadata also gets hint", func(t *testing.T) {
+	t.Run("bare ChannelHasWrongType also gets hint", func(t *testing.T) {
 		result := createMockErrorResult(400, "ChannelHasWrongType")
 		qm := NominalQueryModel{
 			Channel:         "mode",
@@ -1123,7 +1125,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 		errMsg := resp.Error.Error()
 		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for bare ChannelHasWrongType with empty metadata, got: %s", errMsg)
+			t.Errorf("expected hint for bare ChannelHasWrongType, got: %s", errMsg)
 		}
 	})
 }
@@ -1461,6 +1463,110 @@ func TestNumericPathUnchangedAfterRefactor(t *testing.T) {
 	})
 }
 
+func TestDisplayNameFromDS(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		values := []float64{1.0, 2.0}
+		result := createMockComputeResult(values)
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		frame := resp.Frames[0]
+		// Fields: [time, value]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "temperature" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "temperature")
+		}
+	})
+
+	t.Run("numeric path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		result := createMockComputeResult([]float64{})
+		qm := NominalQueryModel{
+			Channel:  "pressure",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "pressure" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "pressure")
+		}
+	})
+
+	t.Run("enum path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		categories := []string{"on", "off"}
+		indices := []int{0, 1}
+		result := createMockEnumComputeResult(categories, indices)
+		qm := NominalQueryModel{
+			Channel:  "mode",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "mode" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "mode")
+		}
+	})
+
+	t.Run("enum path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
+		qm := NominalQueryModel{
+			Channel:  "state",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "state" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "state")
+		}
+	})
+}
+
 func TestBuildComputeRequestBranching(t *testing.T) {
 	ds := &Datasource{}
 
@@ -1736,10 +1842,16 @@ type mockDatasourceService struct {
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
+	// searchChannelsFunc, when non-nil, overrides searchChannelsResponse/searchChannelsError.
+	// This allows tests to return different responses on successive calls (e.g. pagination).
+	searchChannelsFunc func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error)
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
 	m.searchChannelsRequest = queryArg
+	if m.searchChannelsFunc != nil {
+		return m.searchChannelsFunc(ctx, authHeader, queryArg)
+	}
 	return m.searchChannelsResponse, m.searchChannelsError
 }
 
@@ -2499,6 +2611,177 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 		if string(resp.Body) != "[]" {
 			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("paginates across multiple pages", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		callCount := 0
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				callCount++
+				if callCount == 1 {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				// Second call: verify token was passed, return final page
+				if req.NextPageToken == nil || *req.NextPageToken != pageToken {
+					return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("expected page token %q on second call", pageToken)
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("ch4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result) != 5 {
+			t.Fatalf("expected 5 channels across 2 pages, got %d: %v", len(result), result)
+		}
+		if callCount != 2 {
+			t.Errorf("expected 2 SearchChannels calls, got %d", callCount)
+		}
+	})
+
+	t.Run("stops at safety cap", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("next")
+		callCount := 0
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				callCount++
+				// Always return 1000 channels with a next page token
+				channels := make([]datasourceapi.ChannelMetadata, 1000)
+				for i := range channels {
+					channels[i] = datasourceapi.ChannelMetadata{
+						Name:       api.Channel(fmt.Sprintf("ch-%d-%d", callCount, i)),
+						DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					}
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results:       channels,
+					NextPageToken: &pageToken,
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		// 5 pages of 1000 = 5000, which hits the maxChannelVariables cap
+		if len(result) != 5000 {
+			t.Fatalf("expected 5000 channels (safety cap), got %d", len(result))
+		}
+		if callCount != 5 {
+			t.Errorf("expected 5 SearchChannels calls before cap, got %d", callCount)
+		}
+	})
+
+	t.Run("deduplicates across pages", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				if req.NextPageToken == nil {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("a"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("b"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("b"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("c"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
+				}, nil
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result []map[string]string
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result) != 3 {
+			t.Fatalf("expected 3 unique channels after cross-page dedup, got %d: %v", len(result), result)
+		}
+	})
+
+	t.Run("error on second page returns error", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		pageToken := api.Token("page2")
+		mockDS := &mockDatasourceService{
+			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+				if req.NextPageToken == nil {
+					return datasourceapi.SearchChannelsResponse{
+						Results: []datasourceapi.ChannelMetadata{
+							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						},
+						NextPageToken: &pageToken,
+					}, nil
+				}
+				return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("network error on page 2")
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", resp.Status, string(resp.Body))
 		}
 	})
 }

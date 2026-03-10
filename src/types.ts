@@ -8,6 +8,9 @@ export interface NominalQuery extends DataQuery {
   dataScopeName?: string;
   channelDataType?: string;
 
+  // Query builder mode - remembers how the query was built
+  assetInputMethod?: 'search' | 'direct';
+
   // Query parameters
   buckets?: number;
   queryType?: 'timeShift' | 'decimation' | 'raw';
@@ -23,7 +26,6 @@ export interface NominalQuery extends DataQuery {
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: 'timeShift',
   buckets: 1000,
-  dataScopeName: 'car_driv',
   constant: 6.5,
 };
 
