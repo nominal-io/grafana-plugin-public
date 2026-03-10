@@ -368,7 +368,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
-    if (queryRef.current?.assetInputMethod === 'direct') {
+    if (queryRef.current?.assetInputMethod === 'direct' && !queryRef.current?.assetRid?.includes('$')) {
       return;
     }
     const displayLabel = queryRef.current?.assetRid?.includes('$') ? `Asset (${queryRef.current.assetRid})` : 'Asset (Direct RID)';
@@ -421,8 +421,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           : '';
         const scopeIsValid = scopeNames.includes(resolvedCurrentScope);
 
+        // Preserve template variables — don't overwrite $variable with resolved scope
+        if (q?.dataScopeName?.includes('$')) {
+          // skip — variable will be resolved at query time
+        }
         // Auto-select data scope if only one available
-        if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
+        else if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
           onChange({ ...q, dataScopeName: scopeNames[0], assetInputMethod, queryType: 'decimation', buckets: 1000 });
         }
         // Clear invalid data scope when asset changes
@@ -430,8 +434,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           onChange({ ...q, dataScopeName: '', assetInputMethod, queryType: 'decimation', buckets: 1000 });
         }
         // Update query with selected asset only if it has changed (search mode)
-        // Compare resolved values to preserve template variables that resolve to the same asset
-        else if (assetInputMethod === 'search') {
+        // Preserve template variables — don't overwrite $variable with resolved RID
+        else if (assetInputMethod === 'search' && !q?.assetRid?.includes('$')) {
           const resolvedCurrentRid = getTemplateSrv().replace(q?.assetRid || '');
           if (resolvedCurrentRid !== selectedAsset.rid) {
             onChange({ ...q, assetRid: selectedAsset.rid, assetInputMethod: 'search' });
