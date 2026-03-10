@@ -159,9 +159,10 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 		if strings.TrimSpace(qm.Channel) == "" {
 			return fmt.Errorf("channel cannot be empty")
 		}
-		// DataScopeName is optional but should be validated if provided
-		if qm.DataScopeName != "" && strings.TrimSpace(qm.DataScopeName) == "" {
-			return fmt.Errorf("dataScopeName cannot be empty when provided")
+		// DataScopeName is required — the compute API needs it to locate the channel.
+		// The frontend filterQuery also enforces this; this is defense-in-depth.
+		if strings.TrimSpace(qm.DataScopeName) == "" {
+			return fmt.Errorf("dataScopeName is required for asset/channel queries")
 		}
 		// Validate bucket count
 		if qm.Buckets < 0 {
