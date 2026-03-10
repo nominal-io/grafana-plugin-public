@@ -476,9 +476,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       setSelectedAsset(null);
     }
 
-    // Store variable syntax if variable, otherwise store the asset RID
-    if (isVariable || asset) {
-      onChange({ ...query, assetRid: isVariable ? value : asset!.rid, assetInputMethod: 'search' });
+    // Store variable syntax if variable, resolved RID if fetched directly, or asset RID from search
+    if (isVariable) {
+      onChange({ ...query, assetRid: value, assetInputMethod: 'search' });
+    } else if (asset) {
+      onChange({ ...query, assetRid: asset.rid, assetInputMethod: 'search' });
+    } else if (ridToFind && !ridToFind.includes('$')) {
+      onChange({ ...query, assetRid: ridToFind, assetInputMethod: 'search' });
     }
   };
 
