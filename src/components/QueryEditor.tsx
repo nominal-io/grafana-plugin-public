@@ -708,7 +708,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     options={assetOptions}
                     value={assetSelectValue}
                     onChange={onAssetSelect}
-                    width={25}
+                    width={30}
                     placeholder="Choose asset..."
                     isLoading={isLoading}
                     isClearable={false}
@@ -748,7 +748,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   }}
                   options={dataScopeOptions}
                   placeholder="Choose scope or use $variable..."
-                  width={22}
+                  width={30}
                   isClearable={false}
                   allowCustomValue={true}
                   isLoading={!selectedAsset && assetComplete}
