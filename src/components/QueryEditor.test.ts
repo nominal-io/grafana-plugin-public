@@ -1,5 +1,5 @@
 import { getBackendSrv } from '@grafana/runtime';
-import { fetchAssetByRid } from './QueryEditor';
+import { fetchAssetByRid } from '../utils/api';
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
