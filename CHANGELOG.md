@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.7.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.6.0...nominal-grafana-plugin@0.7.0) (2026-03-10)
+
+
+### Features
+
+* improve query build UX ([#9](https://github.com/nominal-io/grafana-plugin-public/issues/9)) ([261c27a](https://github.com/nominal-io/grafana-plugin-public/commit/261c27a38628a39a29e72f235c901a1c1b5bfad1))
+
 ## [0.6.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.5.1...nominal-grafana-plugin@0.6.0) (2026-02-28)
 
 
