@@ -1073,7 +1073,9 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
-	t.Run("ChannelHasWrongType with existing metadata does not include hint", func(t *testing.T) {
+	t.Run("ChannelHasWrongType always includes hint regardless of ChannelDataType", func(t *testing.T) {
+		// The hint fires for any ChannelHasWrongType error — the stored type and the
+		// API's actual type disagree regardless of whether ChannelDataType is set.
 		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
 		qm := NominalQueryModel{
 			Channel:         "status",
@@ -1088,8 +1090,8 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
 			t.Errorf("expected raw error in message, got: %s", errMsg)
 		}
-		if strings.Contains(errMsg, "Hint:") {
-			t.Errorf("should not have hint when ChannelDataType is populated, got: %s", errMsg)
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for ChannelHasWrongType even when ChannelDataType is populated, got: %s", errMsg)
 		}
 	})
 
@@ -1110,7 +1112,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
-	t.Run("bare ChannelHasWrongType with empty metadata also gets hint", func(t *testing.T) {
+	t.Run("bare ChannelHasWrongType also gets hint", func(t *testing.T) {
 		result := createMockErrorResult(400, "ChannelHasWrongType")
 		qm := NominalQueryModel{
 			Channel:         "mode",
@@ -1123,7 +1125,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 		errMsg := resp.Error.Error()
 		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for bare ChannelHasWrongType with empty metadata, got: %s", errMsg)
+			t.Errorf("expected hint for bare ChannelHasWrongType, got: %s", errMsg)
 		}
 	})
 }
@@ -1457,6 +1459,110 @@ func TestNumericPathUnchangedAfterRefactor(t *testing.T) {
 			if actual != expected {
 				t.Errorf("value at index %d: expected %v, got %v", i, expected, actual)
 			}
+		}
+	})
+}
+
+func TestDisplayNameFromDS(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		values := []float64{1.0, 2.0}
+		result := createMockComputeResult(values)
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		frame := resp.Frames[0]
+		// Fields: [time, value]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "temperature" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "temperature")
+		}
+	})
+
+	t.Run("numeric path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		result := createMockComputeResult([]float64{})
+		qm := NominalQueryModel{
+			Channel:  "pressure",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "pressure" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "pressure")
+		}
+	})
+
+	t.Run("enum path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		categories := []string{"on", "off"}
+		indices := []int{0, 1}
+		result := createMockEnumComputeResult(categories, indices)
+		qm := NominalQueryModel{
+			Channel:  "mode",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		frame := resp.Frames[0]
+		if len(frame.Fields) != 2 {
+			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
+		}
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "mode" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "mode")
+		}
+	})
+
+	t.Run("enum path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
+		qm := NominalQueryModel{
+			Channel:  "state",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		valueField := frame.Fields[1]
+		if valueField.Config == nil {
+			t.Fatal("expected non-nil Config on value field")
+		}
+		if valueField.Config.DisplayNameFromDS != "state" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "state")
 		}
 	})
 }

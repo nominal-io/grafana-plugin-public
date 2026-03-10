@@ -37,7 +37,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
   filterQuery(query: NominalQuery): boolean {
     // Allow queries with either legacy queryText or new Nominal parameters
-    return !!(query.queryText || (query.assetRid && query.channel));
+    // All three fields (assetRid, channel, dataScopeName) are required for a valid query
+    return !!(query.queryText || (query.assetRid && query.channel && query.dataScopeName));
   }
 
   /**

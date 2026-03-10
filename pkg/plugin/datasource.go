@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -88,7 +89,12 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 	return ds, nil
 }
 
-// interpolateTemplateVariables replaces template variables in strings
+// interpolateTemplateVariables replaces template variables in strings.
+// It supports both ${var} and $var syntax. The ${var} form is processed first
+// so that a bare $var replacement cannot accidentally corrupt a ${othervar}
+// token that happens to share a prefix (e.g. key "o" must not match inside
+// "${othervar}"). The bare $var form uses a word-boundary regex so it only
+// matches when the key name ends at a non-word character (or end-of-string).
 func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
 	if variables == nil {
 		return input
@@ -96,22 +102,33 @@ func interpolateTemplateVariables(input string, variables map[string]interface{}
 
 	result := input
 	for key, value := range variables {
-		// Support both ${var} and $var syntax
-		patterns := []string{
-			fmt.Sprintf("${%s}", key),
-			fmt.Sprintf("$%s", key),
-		}
-
 		valueStr := fmt.Sprintf("%v", value)
-		for _, pattern := range patterns {
-			result = strings.ReplaceAll(result, pattern, valueStr)
-		}
+
+		// Replace ${var} form first (unambiguous).
+		result = strings.ReplaceAll(result, fmt.Sprintf("${%s}", key), valueStr)
+
+		// Replace bare $var form only as a whole token: must not be immediately
+		// followed by a word character so that $foo does not match inside $foobar.
+		bareRe := regexp.MustCompile(`\$` + regexp.QuoteMeta(key) + `(\W|$)`)
+		result = bareRe.ReplaceAllStringFunc(result, func(match string) string {
+			// Preserve any trailing non-word character that was part of the match.
+			suffix := match[len("$"+key):]
+			return valueStr + suffix
+		})
 	}
 
 	return result
 }
 
-// applyTemplateVariables applies template variable interpolation to query fields
+// applyTemplateVariables applies template variable interpolation to query fields.
+//
+// Defense-in-depth: Grafana's SDK resolves dashboard template variables before
+// the query JSON reaches the backend in most panel flows, so by the time
+// QueryData is called the variables in qm.AssetRid / qm.Channel etc. are
+// usually already substituted. However, variables passed explicitly via the
+// TemplateVariables field of the query model (populated by the frontend for
+// variable-panel queries and programmatic calls) are NOT resolved by the SDK,
+// so this server-side pass is still needed for those paths.
 func (d *Datasource) applyTemplateVariables(qm *NominalQueryModel) {
 	if qm.TemplateVariables == nil {
 		return
@@ -489,10 +506,6 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
-			valueConfig := &data.FieldConfig{
-				DisplayNameFromDS: qm.Channel,
-			}
-
 			if result.IsEnum {
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
 				// Time series frames filter to numeric fields only by default.
@@ -502,14 +515,14 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				}
 				if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
 					valueField := data.NewField("value", nil, result.StringValues)
-					valueField.Config = valueConfig
+					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []string{})
-					valueField.Config = valueConfig
+					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -519,14 +532,14 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 			} else {
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = valueConfig
+					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []float64{})
-					valueField.Config = valueConfig
+					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -542,10 +555,12 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		func(errorResult computeapi.ErrorResult) error {
 			errMsg := fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code)
 
-			// Add contextual hint only when type metadata is missing (e.g. saved query from before enum support)
+			// Add a hint for any ChannelHasWrongType error: the query's type setting
+			// and the channel's actual type don't agree. Re-selecting the channel in
+			// the editor refreshes the stored type metadata.
 			errType := string(errorResult.ErrorType)
-			if strings.Contains(errType, "ChannelHasWrongType") && qm.ChannelDataType == "" {
-				errMsg += ". Hint: This channel's type metadata is missing (likely a saved query from before enum support). " +
+			if strings.Contains(errType, "ChannelHasWrongType") {
+				errMsg += ". Hint: The channel type in this query doesn't match what the API expects. " +
 					"Re-select the channel from the dropdown to update its type."
 			}
 
@@ -1027,12 +1042,13 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			statusCode = http.StatusBadGateway
 		}
 
+		errBody, _ := json.Marshal(map[string]string{"error": errorMsg + ": " + err.Error()})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "` + errorMsg + `: ` + err.Error() + `"}`),
+			Body: errBody,
 		})
 	}
 
@@ -1671,9 +1687,23 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 		allChannelResults = append(allChannelResults, channelsResponse.Results...)
 
 		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables {
+			if len(allChannelResults) >= maxChannelVariables && channelsResponse.NextPageToken != nil {
+				// NOTE: Reached the maxChannelVariables cap before exhausting all pages.
+				// The response is silently truncated — no indication is returned to the
+				// Grafana UI. If a channel variable is not appearing, the asset may have
+				// more than 5000 channels. This is a known limitation.
+				log.DefaultLogger.Warn("Channel variables cap reached; response may be truncated",
+					"cap", maxChannelVariables, "fetched", len(allChannelResults))
+			}
 			break
 		}
 		nextPageToken = channelsResponse.NextPageToken
+	}
+
+	// Hard cap: a page append could overshoot if maxChannelVariables is not a
+	// multiple of the page size, so truncate any excess here.
+	if len(allChannelResults) > maxChannelVariables {
+		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 
 	// Deduplicate channel names and return as MetricFindValue format

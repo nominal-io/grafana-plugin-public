@@ -93,7 +93,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [directRID, setDirectRID] = useState(
     query?.assetInputMethod === 'direct' ? (query?.assetRid || '') : ''
   );
-  const [hasManuallySetMethod, setHasManuallySetMethod] = useState(false);
+  // Derive whether user has ever saved an explicit input method (persisted in query model).
+  // Initialising from query rather than defaulting to false prevents the restore effect
+  // from running unnecessary branches after a panel reload.
+  const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
@@ -103,13 +106,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const queryRef = useRef(query);
   queryRef.current = query;
 
+  // Ref for the "copied" tooltip hide-timer so it can be cleared on unmount.
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
   const copyToClipboard = async (text: string) => {
+    // Clear any existing hide-timer before starting a new one
+    clearTimeout(copiedTimerRef.current);
     try {
       await navigator.clipboard.writeText(text);
 
       // Show ephemeral "copied" message
       setShowCopiedMessage(true);
-      setTimeout(() => {
+      copiedTimerRef.current = setTimeout(() => {
         setShowCopiedMessage(false);
       }, 2000); // Hide after 2 seconds
 
@@ -126,7 +134,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
       // Show ephemeral "copied" message for fallback too
       setShowCopiedMessage(true);
-      setTimeout(() => {
+      copiedTimerRef.current = setTimeout(() => {
         setShowCopiedMessage(false);
       }, 2000);
     }
@@ -185,10 +193,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     for (const scope of scopes) {
       const ds = scope.dataSource;
       if (!ds) { continue; }
+      // Only collect RIDs for supported data source types (dataset, connection)
       if (ds.type === 'dataset' && ds.dataset) { dataSourceRids.push(ds.dataset); }
       else if (ds.type === 'connection' && (ds as any).connection) { dataSourceRids.push((ds as any).connection); }
-      else if (ds.type === 'logSet' && (ds as any).logSet) { dataSourceRids.push((ds as any).logSet); }
-      else if (ds.type === 'video' && (ds as any).video) { dataSourceRids.push((ds as any).video); }
     }
     if (dataSourceRids.length === 0) {
       return [];
@@ -310,6 +317,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       const resolved = getTemplateSrv().replace(query.assetRid);
       const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
 
+      // For direct mode, always ensure the input field shows the saved RID (including
+      // template variable syntax) regardless of whether the variable is currently resolved.
+      // This prevents a blank input when reloading a panel with a $variable-based direct RID.
+      if (query.assetInputMethod === 'direct') {
+        setDirectRID(prev => prev || query.assetRid);
+      }
+
       if (!resolved.includes('$')) {
         if (query.assetInputMethod === 'direct') {
           applyAssetFromRid(resolved, displayLabel, controller.signal);
@@ -340,12 +354,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Compute resolved channel name - this changes when template variables change
   const resolvedChannel = query?.channel ? getTemplateSrv().replace(query.channel) : '';
 
-  // Update dropdown options when the resolved asset RID changes (e.g. template variable changed)
+  // Update dropdown options when the resolved asset RID changes (e.g. template variable changed).
+  // Skipped in direct mode because handleDirectRIDChange manages its own debounced fetch —
+  // running both would cause two concurrent requests racing to update selectedAsset.
   useEffect(() => {
     if (!resolvedAssetRid || resolvedAssetRid.includes('$')) {
       return;
     }
     if (selectedAsset?.rid === resolvedAssetRid) {
+      return;
+    }
+    // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
+    if (queryRef.current?.assetInputMethod === 'direct') {
       return;
     }
     const displayLabel = queryRef.current?.assetRid?.includes('$') ? `Asset (${queryRef.current.assetRid})` : 'Asset (Direct RID)';
@@ -362,9 +382,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     loadAssets();
   }, [loadAssets]);
 
-  // After assets are loaded, check if we need to restore a selected asset (for duplicated queries)
+  // After assets are loaded, restore a selected asset for search-mode queries when the user
+  // has already confirmed their input method (hasManuallySetMethod). This covers the case
+  // where the asset list loads after the restore effect has already run and found nothing.
+  // Guarded by hasManuallySetMethod to avoid overlapping with the restore effect above
+  // when both are eligible to set selectedAsset simultaneously (React 18 strict mode concern).
   useEffect(() => {
-    if (query && query.assetRid && !selectedAsset && assets.length > 0 && assetInputMethod === 'search') {
+    if (query && query.assetRid && !selectedAsset && assets.length > 0 && assetInputMethod === 'search' && hasManuallySetMethod) {
       // Resolve template variables to match against actual asset RIDs
       const resolvedRid = getTemplateSrv().replace(query.assetRid);
       const asset = assets.find(a => a.rid === resolvedRid);
@@ -372,7 +396,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         setSelectedAsset(asset);
       }
     }
-  }, [query, selectedAsset, assets, assetInputMethod]);
+  }, [query, selectedAsset, assets, assetInputMethod, hasManuallySetMethod]);
 
   // Update dependent fields when asset changes
   useEffect(() => {
@@ -435,13 +459,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     const asset = assets.find(a => a.rid === ridToFind);
 
     if (asset) {
+      // Abort any in-flight search-mode fetch from a previous selection
+      assetSelectControllerRef.current?.abort();
       setSelectedAsset(asset);
     } else if (ridToFind && !ridToFind.includes('$')) {
       // Asset not in search results — fetch it directly instead of nulling selectedAsset.
       // This avoids a UI flash where channel/scope selectors unmount during the fetch.
+      // Abort any previous in-flight fetch before starting a new one.
+      assetSelectControllerRef.current?.abort();
+      const controller = new AbortController();
+      assetSelectControllerRef.current = controller;
       const displayLabel = isVariable ? `Asset (${value})` : 'Asset (Direct RID)';
-      applyAssetFromRid(ridToFind, displayLabel);
+      applyAssetFromRid(ridToFind, displayLabel, controller.signal);
     } else {
+      assetSelectControllerRef.current?.abort();
       setSelectedAsset(null);
     }
 
@@ -549,6 +580,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onChange({ ...query, assetInputMethod: method });
   };
 
+  // AbortController for search-mode asset selection — cancels in-flight fetch on rapid re-selection
+  const assetSelectControllerRef = useRef<AbortController>(undefined);
+
   // Debounced asset lookup for direct RID input — fires after user stops typing
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const directRidControllerRef = useRef<AbortController>(undefined);
@@ -589,11 +623,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onChange, applyAssetFromRid]);
 
-  // Clean up debounce timer on unmount
+  // Clean up timers and in-flight fetches on unmount
   useEffect(() => {
     return () => {
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
+      assetSelectControllerRef.current?.abort();
+      clearTimeout(copiedTimerRef.current);
     };
   }, []);
 
@@ -602,13 +638,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     ? (resolvedAssetRid !== '' && !resolvedAssetRid.includes('$'))
     : directRID.trim() !== '';
   const configComplete = assetComplete && query && query.dataScopeName && query.channel;
-  const hasChannelSearch = selectedAsset?.dataScopes?.some(scope => {
-    const ds = scope.dataSource;
-    return (ds.type === 'dataset' && ds.dataset) ||
-           (ds.type === 'connection' && (ds as any).connection) ||
-           (ds.type === 'logSet' && (ds as any).logSet) ||
-           (ds.type === 'video' && (ds as any).video);
-  }) ?? false;
+  // Show the channel selector whenever an asset is selected (even if dataScopes is empty).
+  // With empty dataScopes, loadChannelOptions returns [] — the user can still type a channel
+  // name manually via allowCustomValue. Previously, empty dataScopes from createBasicAsset
+  // (used when the asset fetch fails) would silently hide the channel selector entirely.
+  const hasChannelSearch = selectedAsset !== null;
 
   const singleBoxStyle = {
     padding: '8px 12px',
@@ -725,6 +759,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   } : null}
                   onChange={(value: ChannelOption) => {
                     setHasUserInteracted(true);
+                    // NOTE: channelDataType is captured at selection time from the dropdown option.
+                    // If channel is later overridden by a template variable that resolves to a
+                    // different channel, the stored channelDataType may be stale. The backend will
+                    // fall back to numeric for an unknown type, but mismatches can cause query errors.
+                    // Mitigation: the backend error message hints the user to re-select the channel.
                     onChange({
                       ...query,
                       channel: value?.value || '',

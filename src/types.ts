@@ -26,7 +26,6 @@ export interface NominalQuery extends DataQuery {
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: 'timeShift',
   buckets: 1000,
-  dataScopeName: 'car_driv',
   constant: 6.5,
 };
 
