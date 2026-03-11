@@ -797,7 +797,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   }}
                   options={channelOptions}
                   onInputChange={(_text, action) => { if (action.action === 'input-change') { debouncedChannelSearch(_text); } }}
-                  onOpenMenu={() => { if (channelResults.length === 0) { debouncedChannelSearch(''); } }}
+                  onOpenMenu={() => { debouncedChannelSearch(''); }}
                   isLoading={channelsLoading}
                   placeholder="Search for channel..."
                   width={50}
