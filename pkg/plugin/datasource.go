@@ -176,6 +176,85 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 	return nil
 }
 
+// inferMissingChannelDataType backfills channelDataType for queries built from
+// Grafana template variables or custom channel values. Those paths only submit
+// the resolved channel name, so the hidden type metadata is often empty even
+// though the backend can still look up the exact channel and recover it.
+func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
+	if qm == nil || d.datasourceService == nil {
+		return
+	}
+	if qm.ChannelDataType == "string" || qm.ChannelDataType == "numeric" {
+		return
+	}
+	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
+		return
+	}
+
+	asset, err := d.fetchAssetByRid(ctx, config, qm.AssetRid)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to fetch asset for channel type inference", "assetRid", qm.AssetRid, "error", err)
+		return
+	}
+	if asset == nil {
+		return
+	}
+
+	var dataSourceRids []rids.DataSourceRid
+	for _, scope := range asset.DataScopes {
+		if scope.DataScopeName != qm.DataScopeName {
+			continue
+		}
+
+		var ridStr string
+		switch scope.DataSource.Type {
+		case "dataset":
+			if scope.DataSource.Dataset != nil {
+				ridStr = *scope.DataSource.Dataset
+			}
+		case "connection":
+			if scope.DataSource.Connection != nil {
+				ridStr = *scope.DataSource.Connection
+			}
+		}
+
+		if ridStr == "" {
+			continue
+		}
+
+		parsedRid, err := rid.ParseRID(ridStr)
+		if err != nil {
+			log.DefaultLogger.Warn("Failed to parse datasource RID for channel type inference", "rid", ridStr, "error", err)
+			continue
+		}
+		dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
+	}
+	if len(dataSourceRids) == 0 {
+		return
+	}
+
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	searchRequest := datasourceapi.SearchChannelsRequest{
+		ExactMatch:  []string{qm.Channel},
+		DataSources: dataSourceRids,
+	}
+	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to search channels for channel type inference", "assetRid", qm.AssetRid, "dataScopeName", qm.DataScopeName, "channel", qm.Channel, "error", err)
+		return
+	}
+
+	for _, channel := range channelsResponse.Results {
+		if string(channel.Name) != qm.Channel {
+			continue
+		}
+		if inferredType := getChannelDataType(channel); inferredType != "" {
+			qm.ChannelDataType = inferredType
+			return
+		}
+	}
+}
+
 // Datasource is the Nominal datasource implementation
 type Datasource struct {
 	settings          backend.DataSourceInstanceSettings
@@ -259,6 +338,8 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			)
 			continue
 		}
+
+		d.inferMissingChannelDataType(ctx, config, &qm)
 
 		// Check if this is a batchable query (has asset and channel)
 		if qm.AssetRid != "" && qm.Channel != "" {
