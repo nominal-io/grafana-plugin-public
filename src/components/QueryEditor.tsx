@@ -250,6 +250,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // underlying asset/datascope changes (mirrors the old defaultOptions behaviour).
   useEffect(() => {
     if (selectedAsset) {
+      setChannelResults([]);
+      setChannelsLoading(true);
       debouncedChannelSearch('');
     }
   }, [selectedAsset, query?.dataScopeName, debouncedChannelSearch]);
