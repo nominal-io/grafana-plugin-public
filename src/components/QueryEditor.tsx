@@ -98,6 +98,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // from running unnecessary branches after a panel reload.
   const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);
+  const [channelResults, setChannelResults] = useState<ChannelOption[]>([]);
+  const [channelsLoading, setChannelsLoading] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
 
@@ -227,44 +229,30 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const loadChannelOptionsRef = useRef(loadChannelOptions);
   loadChannelOptionsRef.current = loadChannelOptions;
 
-  // Lazily initialized ref — created once on first render with no side effects.
-  // Wraps the debounce in a Promise so loadOptions always returns a Promise
-  // (lodash debounce itself returns undefined, not the inner async result).
-  // Superseded Promises are resolved immediately with [] so they never hang.
-  type DebouncedChannelLoader = {
-    loadOptions: (searchText: string) => Promise<ChannelOption[]>;
-    cancel: () => void;
-  };
-  const debouncedRef = useRef<DebouncedChannelLoader | null>(null);
-  if (debouncedRef.current === null) {
-    let pendingResolve: ((opts: ChannelOption[]) => void) | null = null;
-    let pendingSearchText = '';
-    const debounced = debounce(() => {
-      const resolve = pendingResolve;
-      pendingResolve = null;
-      if (resolve) {
-        loadChannelOptionsRef.current(pendingSearchText).then(resolve).catch(() => resolve([]));
-      }
-    }, 300);
-    debouncedRef.current = {
-      loadOptions: (searchText: string) => {
-        pendingResolve?.([]);
-        pendingSearchText = searchText;
-        return new Promise(resolve => {
-          pendingResolve = resolve;
-          debounced();
-        });
-      },
-      cancel: () => {
-        debounced.cancel();
-        pendingResolve?.([]);
-        pendingResolve = null;
-      },
-    };
-  }
-  const debouncedLoadChannelOptions = debouncedRef.current.loadOptions;
+  // Debounced channel search that populates state (synchronous options) instead of
+  // returning a Promise. This allows allowCustomValue to work on the Select.
+  // The counter guard discards late responses so a slow earlier request can't overwrite newer results.
+  const channelSearchId = useRef(0);
+  const debouncedChannelSearch = useRef(
+    debounce((searchText: string) => {
+      const id = ++channelSearchId.current;
+      setChannelsLoading(true);
+      loadChannelOptionsRef.current(searchText)
+        .then((results) => { if (channelSearchId.current === id) setChannelResults(results); })
+        .catch(() => { if (channelSearchId.current === id) setChannelResults([]); })
+        .finally(() => { if (channelSearchId.current === id) setChannelsLoading(false); });
+    }, 300)
+  ).current;
 
-  useEffect(() => () => debouncedRef.current!.cancel(), []);
+  useEffect(() => () => debouncedChannelSearch.cancel(), [debouncedChannelSearch]);
+
+  // Pre-load channel options when the channel dropdown becomes visible or the
+  // underlying asset/datascope changes (mirrors the old defaultOptions behaviour).
+  useEffect(() => {
+    if (selectedAsset) {
+      debouncedChannelSearch('');
+    }
+  }, [selectedAsset, query?.dataScopeName, debouncedChannelSearch]);
 
   /** Fetch an asset by resolved RID and update selectedAsset/dataScopes state.
    *  Returns early without updating state if `signal` is aborted. */
@@ -581,6 +569,22 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     return options;
   })();
 
+  // Prepare channel options for dropdown
+  // Include template variable option if the current value is a variable
+  const channelOptions: ChannelOption[] = (() => {
+    const options = [...channelResults];
+    const currentValue = query?.channel || '';
+    if (currentValue.includes('$') && !options.some(o => o.value === currentValue)) {
+      const resolved = resolvedChannel;
+      const resolvedIsValid = resolved && resolved !== currentValue && !resolved.includes('$');
+      const label = resolvedIsValid
+        ? `${currentValue} → ${resolved}`
+        : currentValue;
+      options.unshift({ label, value: currentValue });
+    }
+    return options;
+  })();
+
   const handleAssetInputMethodChange = (method: AssetInputMethod) => {
     setHasUserInteracted(true);
     setAssetInputMethod(method);
@@ -789,8 +793,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       buckets: 1000
                     });
                   }}
-                  loadOptions={debouncedLoadChannelOptions}
-                  defaultOptions
+                  options={channelOptions}
+                  onInputChange={(_text, action) => { if (action.action === 'input-change') { debouncedChannelSearch(_text); } }}
+                  onOpenMenu={() => { if (channelResults.length === 0) { debouncedChannelSearch(''); } }}
+                  isLoading={channelsLoading}
                   placeholder="Search for channel..."
                   width={50}
                   allowCustomValue
