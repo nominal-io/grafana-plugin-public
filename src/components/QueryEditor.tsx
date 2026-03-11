@@ -238,9 +238,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       const id = ++channelSearchId.current;
       setChannelsLoading(true);
       loadChannelOptionsRef.current(searchText)
-        .then((results) => { if (channelSearchId.current === id) setChannelResults(results); })
-        .catch(() => { if (channelSearchId.current === id) setChannelResults([]); })
-        .finally(() => { if (channelSearchId.current === id) setChannelsLoading(false); });
+        .then((results) => { if (channelSearchId.current === id) { setChannelResults(results); } })
+        .catch(() => { if (channelSearchId.current === id) { setChannelResults([]); } })
+        .finally(() => { if (channelSearchId.current === id) { setChannelsLoading(false); } });
     }, 300)
   ).current;
 
