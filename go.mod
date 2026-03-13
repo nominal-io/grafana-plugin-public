@@ -1,11 +1,12 @@
 module github.com/nominal-inc/nominal-ds
 
-go 1.25.5
+go 1.26.0
 
 require (
 	github.com/grafana/grafana-plugin-sdk-go v0.286.0
 	github.com/nominal-io/nominal-api-go v0.0.0-20260223132649-89e4ad674328
-	github.com/palantir/conjure-go-runtime/v2 v2.99.0
+	github.com/palantir/conjure-go-runtime/v2 v2.97.0
+	github.com/palantir/conjure-go-runtime/v3 v3.6.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
@@ -56,17 +57,17 @@ require (
 	github.com/palantir/pkg v1.1.0 // indirect
 	github.com/palantir/pkg/bytesbuffers v1.3.0 // indirect
 	github.com/palantir/pkg/datetime v1.3.0 // indirect
-	github.com/palantir/pkg/metrics v1.9.0 // indirect
+	github.com/palantir/pkg/metrics v1.10.1 // indirect
 	github.com/palantir/pkg/refreshable v1.6.0 // indirect
-	github.com/palantir/pkg/refreshable/v2 v2.2.0 // indirect
+	github.com/palantir/pkg/refreshable/v2 v2.7.1 // indirect
 	github.com/palantir/pkg/retry v1.3.0 // indirect
 	github.com/palantir/pkg/safejson v1.2.0 // indirect
 	github.com/palantir/pkg/safeyaml v1.2.0 // indirect
-	github.com/palantir/pkg/tlsconfig v1.4.0 // indirect
+	github.com/palantir/pkg/tlsconfig v1.5.0 // indirect
 	github.com/palantir/pkg/transform v1.2.0 // indirect
 	github.com/palantir/pkg/uuid v1.3.0 // indirect
 	github.com/palantir/witchcraft-go-error v1.42.0 // indirect
-	github.com/palantir/witchcraft-go-logging v1.63.0 // indirect
+	github.com/palantir/witchcraft-go-logging v1.65.0 // indirect
 	github.com/palantir/witchcraft-go-params v1.39.0 // indirect
 	github.com/palantir/witchcraft-go-tracing v1.41.0 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
@@ -97,13 +98,13 @@ require (
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9 // indirect
-	golang.org/x/mod v0.30.0 // indirect
-	golang.org/x/net v0.48.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
+	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/telemetry v0.0.0-20251111182119-bc8e575c7b54 // indirect
-	golang.org/x/text v0.32.0 // indirect
-	golang.org/x/tools v0.39.0 // indirect
+	golang.org/x/telemetry v0.0.0-20260209163413-e7419c687ee4 // indirect
+	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/tools v0.42.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/genproto v0.0.0-20210630183607-d20f26d13c79 // indirect
 	google.golang.org/grpc v1.78.0 // indirect
