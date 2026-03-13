@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.7.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.7.0...nominal-grafana-plugin@0.7.1) (2026-03-13)
+
+
+### Bug Fixes
+
+* infer string channel types for templated queries ([#27](https://github.com/nominal-io/grafana-plugin-public/issues/27)) ([76aea57](https://github.com/nominal-io/grafana-plugin-public/commit/76aea57688fff1876d46eb4960e5df10d1460bfb))
+
 ## [0.7.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.6.0...nominal-grafana-plugin@0.7.0) (2026-03-10)
 
 
