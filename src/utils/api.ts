@@ -1,6 +1,6 @@
 import { getBackendSrv } from '@grafana/runtime';
 
-interface Asset {
+export interface Asset {
   rid: string;
   title: string;
   description?: string;

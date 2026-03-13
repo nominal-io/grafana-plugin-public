@@ -6,7 +6,7 @@
 }
 
 .rid-click-target:hover {
-  background-color: var(--rid-hover-bg, rgba(49, 46, 129, 0.125));
+  background-color: var(--rid-hover-bg, rgba(128, 128, 128, 0.125));
   border-radius: 2px;
   padding: 1px 3px;
 }
