@@ -1,0 +1,12 @@
+@keyframes fadeInOut {
+  0% { opacity: 0; transform: translateY(5px); }
+  20% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-5px); }
+}
+
+.rid-click-target:hover {
+  background-color: var(--rid-hover-bg, rgba(128, 128, 128, 0.125));
+  border-radius: 2px;
+  padding: 1px 3px;
+}
