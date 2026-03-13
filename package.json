@@ -11,7 +11,8 @@
     "lint:fix": "pnpm run lint --fix && prettier --write --list-different .",
     "e2e": "playwright test",
     "server": "docker compose up --build",
-    "sign": "npx --yes @grafana/sign-plugin@latest"
+    "sign": "npx --yes @grafana/sign-plugin@latest",
+    "postinstall": "find node_modules -name '*.go' -delete 2>/dev/null || true"
   },
   "author": "Nominal inc",
   "license": "Apache-2.0",
