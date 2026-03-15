@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/grafana/grafana-plugin-sdk-go v0.286.0
-	github.com/nominal-io/nominal-api-go v0.0.0-20260223132649-89e4ad674328
+	github.com/nominal-io/nominal-api-go v0.0.0-20260305142031-04f7ad80add4
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
