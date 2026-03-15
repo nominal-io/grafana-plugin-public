@@ -10,6 +10,6 @@ datasources:
     version: 1
     editable: true
     jsonData:
-      baseUrl: 'https://api.gov.nominal.io/api'
+      baseUrl: ${NOMINAL_BASE_URL:-https://api-staging.gov.nominal.io/api}
     secureJsonData:
       apiKey: ''

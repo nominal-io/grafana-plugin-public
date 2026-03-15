@@ -35,3 +35,4 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       # Enable both anonymous and basic auth for flexibility
       GF_AUTH_BASIC_ENABLED: "true"
+      NOMINAL_BASE_URL: ${NOMINAL_BASE_URL:-https://api-staging.gov.nominal.io/api}
