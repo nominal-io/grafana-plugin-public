@@ -667,8 +667,9 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	}
 
 	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
 	}
 
 	timeRange := backend.TimeRange{
@@ -2134,8 +2135,9 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
 			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
 		},
-		authService:       authSvc,
-		datasourceService: dsSvc,
+		authService:        authSvc,
+		datasourceService:  dsSvc,
+		resourceHTTPClient: &http.Client{},
 	}
 }
 
