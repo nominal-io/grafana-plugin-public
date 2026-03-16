@@ -11,7 +11,7 @@ overrides:
   qs: ^6.14.1
   serialize-javascript: ^7.0.4
   immutable: '>=5.1.5'
-  flatted: '>=3.3.4'
+  flatted: '>=3.4.0'
 
 importers:
 
