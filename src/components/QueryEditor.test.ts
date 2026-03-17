@@ -1,5 +1,5 @@
 import { getBackendSrv } from '@grafana/runtime';
-import { fetchAssetByRid } from './QueryEditor';
+import { fetchAssetByRid, clearAssetCache } from './QueryEditor';
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
@@ -11,6 +11,7 @@ const mockBackendSrv = { post: jest.fn() };
 
 beforeEach(() => {
   jest.clearAllMocks();
+  clearAssetCache();
   (getBackendSrv as jest.Mock).mockReturnValue(mockBackendSrv);
 });
 
@@ -72,5 +73,46 @@ describe('fetchAssetByRid', () => {
     mockBackendSrv.post.mockRejectedValue(new Error('Network error'));
 
     await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
+  });
+
+  it('deduplicates concurrent requests for the same RID', async () => {
+    const asset = {
+      rid: VALID_RID,
+      title: 'Test Asset',
+      labels: [],
+      dataScopes: [{ dataScopeName: 'ds1', dataSource: { type: 'dataset' } }],
+    };
+    mockBackendSrv.post.mockResolvedValue({ [VALID_RID]: asset });
+
+    // Simulate 70 panels all requesting the same asset concurrently
+    const results = await Promise.all(
+      Array.from({ length: 70 }, () => fetchAssetByRid(DATASOURCE_URL, VALID_RID))
+    );
+
+    // All 70 should get the same result
+    for (const result of results) {
+      expect(result).toEqual(asset);
+    }
+    // But only 1 HTTP call should have been made
+    expect(mockBackendSrv.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries after a failed request', async () => {
+    mockBackendSrv.post.mockRejectedValueOnce(new Error('Network error'));
+
+    await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
+
+    // Cache entry should be evicted on failure — next call should retry
+    const asset = {
+      rid: VALID_RID,
+      title: 'Test Asset',
+      labels: [],
+      dataScopes: [{ dataScopeName: 'ds1', dataSource: { type: 'dataset' } }],
+    };
+    mockBackendSrv.post.mockResolvedValue({ [VALID_RID]: asset });
+
+    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
+    expect(result).toEqual(asset);
+    expect(mockBackendSrv.post).toHaveBeenCalledTimes(2);
   });
 });

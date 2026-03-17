@@ -56,27 +56,52 @@ const createBasicAsset = (rid: string, title: string): Asset => ({
   dataScopes: []
 });
 
-/** Fetches a single asset by its exact RID using the batch lookup endpoint */
+/** TTL cache for fetchAssetByRid — collapses concurrent requests for the same RID
+ *  (e.g. 70 panels rendering simultaneously) into a single API call. */
+const assetCache = new Map<string, { promise: Promise<Asset | null>; expiresAt: number }>();
+const ASSET_CACHE_TTL_MS = 30_000; // 30 seconds
+
+/** Clears the asset cache. Exported for testing only. */
+export const clearAssetCache = () => assetCache.clear();
+
+/** Fetches a single asset by its exact RID using the batch lookup endpoint.
+ *  Results are cached for 30s so that multiple panels sharing the same asset
+ *  (common with template variables) don't each trigger a separate HTTP request. */
 export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
   // Validate RID format - must start with "ri." to be a valid resource identifier
   if (!rid || !rid.startsWith('ri.')) {
     return null;
   }
 
+  const cacheKey = `${datasourceUrl}|${rid}`;
+  const cached = assetCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.promise;
+  }
+
   // Use the efficient batch lookup endpoint instead of searching all assets
-  const response = await getBackendSrv().post(
+  const promise = getBackendSrv().post(
     `${datasourceUrl}/scout/v1/asset/multiple`,
     [rid]  // API expects an array of RIDs
-  );
+  ).then((response): Asset | null => {
+    // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
+    const asset = response?.[rid];
+    if (asset && asset.dataScopes?.length > 0) {
+      return asset;
+    }
+    // Log to help diagnose asset lookup failures (e.g. unexpected response format)
+    console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
+    return null;
+  });
 
-  // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
-  const asset = response?.[rid];
-  if (asset && asset.dataScopes?.length > 0) {
-    return asset;
-  }
-  // Log to help diagnose asset lookup failures (e.g. unexpected response format)
-  console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
-  return null;
+  assetCache.set(cacheKey, { promise, expiresAt: Date.now() + ASSET_CACHE_TTL_MS });
+
+  // On failure, evict so the next call retries immediately
+  promise.catch(() => {
+    assetCache.delete(cacheKey);
+  });
+
+  return promise;
 };
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
