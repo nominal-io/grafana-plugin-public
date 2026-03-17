@@ -462,7 +462,7 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	}
 
 	buckets := int(qm.Buckets)
-	if maxDataPoints > 0 && int(maxDataPoints) < buckets {
+	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
 		buckets = int(maxDataPoints)
 	}
 	seriesNode := computeapi1.SummarizeSeries{
