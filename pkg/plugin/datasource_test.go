@@ -1788,6 +1788,87 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	})
 }
 
+func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
+	ds := &Datasource{}
+
+	baseTimeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	extractBuckets := func(t *testing.T, req computeapi1.ComputeNodeRequest) int {
+		t.Helper()
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal node: %v", err)
+		}
+		var node struct {
+			Series struct {
+				Buckets *int `json:"buckets"`
+			} `json:"series"`
+		}
+		if err := json.Unmarshal(jsonBytes, &node); err != nil {
+			t.Fatalf("failed to unmarshal node: %v", err)
+		}
+		if node.Series.Buckets == nil {
+			return 0
+		}
+		return *node.Series.Buckets
+	}
+
+	t.Run("maxDataPoints caps buckets when smaller", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       1000,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 500)
+		if got := extractBuckets(t, req); got != 500 {
+			t.Errorf("buckets = %d, want 500", got)
+		}
+	})
+
+	t.Run("maxDataPoints does not increase buckets", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       500,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 1000)
+		if got := extractBuckets(t, req); got != 500 {
+			t.Errorf("buckets = %d, want 500", got)
+		}
+	})
+
+	t.Run("maxDataPoints used when buckets is zero", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       0,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 800)
+		if got := extractBuckets(t, req); got != 800 {
+			t.Errorf("buckets = %d, want 800", got)
+		}
+	})
+
+	t.Run("zero maxDataPoints uses saved buckets", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       1000,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		if got := extractBuckets(t, req); got != 1000 {
+			t.Errorf("buckets = %d, want 1000", got)
+		}
+	})
+}
+
 func TestBuildEnumChannelSeries(t *testing.T) {
 	ds := &Datasource{}
 
