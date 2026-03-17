@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -56,6 +57,15 @@ const maxBatchComputeSubrequests = 300
 // defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
 
+// assetCacheTTL controls how long fetched asset metadata is cached.
+const assetCacheTTL = 2 * time.Minute
+
+// assetCacheEntry holds a cached asset response with its fetch time.
+type assetCacheEntry struct {
+	asset     *SingleAssetResponse
+	fetchedAt time.Time
+}
+
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(settings)
@@ -84,6 +94,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		authService:       authapi.NewAuthenticationServiceV2Client(httpClient),
 		computeService:    computeapi1.NewComputeServiceClient(httpClient),
 		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
+		assetCache:        make(map[string]assetCacheEntry),
 	}
 
 	return ds, nil
@@ -180,7 +191,11 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 // Grafana template variables or custom channel values. Those paths only submit
 // the resolved channel name, so the hidden type metadata is often empty even
 // though the backend can still look up the exact channel and recover it.
-func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
+//
+// channelTypeCache is a request-scoped map that deduplicates SearchChannels
+// calls within a single QueryData invocation. It is keyed by
+// "assetRid|dataScopeName|channel" and maps to the inferred type string.
+func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel, channelTypeCache map[string]string) {
 	if qm == nil || d.datasourceService == nil {
 		return
 	}
@@ -188,6 +203,15 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 		return
 	}
 	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
+		return
+	}
+
+	// Check request-scoped cache first.
+	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
+	if cached, ok := channelTypeCache[cacheKey]; ok {
+		if cached != "" {
+			qm.ChannelDataType = cached
+		}
 		return
 	}
 
@@ -250,9 +274,13 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 		}
 		if inferredType := getChannelDataType(channel); inferredType != "" {
 			qm.ChannelDataType = inferredType
+			channelTypeCache[cacheKey] = inferredType
 			return
 		}
 	}
+
+	// Cache the miss so we don't re-search for the same combo.
+	channelTypeCache[cacheKey] = ""
 }
 
 // Datasource is the Nominal datasource implementation
@@ -262,6 +290,11 @@ type Datasource struct {
 	authService       authapi.AuthenticationServiceV2Client
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
+
+	// assetCache caches fetchAssetByRid results with a TTL to avoid
+	// redundant HTTP calls across queries and dashboard refreshes.
+	assetCacheMu sync.Mutex
+	assetCache   map[string]assetCacheEntry
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -305,6 +338,10 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		return response, nil
 	}
 
+	// channelTypeCache deduplicates SearchChannels calls within a single
+	// QueryData invocation. Keyed by "assetRid|dataScopeName|channel".
+	channelTypeCache := make(map[string]string)
+
 	// Collect batchable queries
 	var batchableQueries []backend.DataQuery
 	var batchableModels []NominalQueryModel
@@ -339,7 +376,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			continue
 		}
 
-		d.inferMissingChannelDataType(ctx, config, &qm)
+		d.inferMissingChannelDataType(ctx, config, &qm, channelTypeCache)
 
 		// Check if this is a batchable query (has asset and channel)
 		if qm.AssetRid != "" && qm.Channel != "" {
@@ -1842,6 +1879,29 @@ type SingleAssetResponse struct {
 
 // fetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint
 func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	d.assetCacheMu.Lock()
+	if d.assetCache == nil {
+		d.assetCache = make(map[string]assetCacheEntry)
+	}
+	if entry, ok := d.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		d.assetCacheMu.Unlock()
+		return entry.asset, nil
+	}
+	d.assetCacheMu.Unlock()
+
+	asset, err := d.fetchAssetByRidUncached(ctx, config, assetRid)
+	if err != nil {
+		return nil, err
+	}
+
+	d.assetCacheMu.Lock()
+	d.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	d.assetCacheMu.Unlock()
+
+	return asset, nil
+}
+
+func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
