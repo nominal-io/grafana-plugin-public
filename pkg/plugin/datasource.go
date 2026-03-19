@@ -427,7 +427,9 @@ type NominalQueryModel struct {
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
 // Branches on ChannelDataType: "string" channels produce enum series, all others produce numeric series.
-func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
+// maxDataPoints from Grafana reflects the panel's pixel width; when positive it overrides qm.Buckets
+// so the compute API only returns as many points as the panel can actually display.
+func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
@@ -460,6 +462,9 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	}
 
 	buckets := int(qm.Buckets)
+	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
+		buckets = int(maxDataPoints)
+	}
 	seriesNode := computeapi1.SummarizeSeries{
 		Input:   series,
 		Buckets: &buckets,
@@ -518,7 +523,7 @@ func (d *Datasource) executeBatchQuery(
 		chunkModels := queryModels[chunkStart:chunkEnd]
 		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
-			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange)
+			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
 		}
 
 		batchRequest := computeapi1.BatchComputeWithUnitsRequest{

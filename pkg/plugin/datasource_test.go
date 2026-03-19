@@ -340,7 +340,7 @@ func TestBuildComputeRequest(t *testing.T) {
 		To:   time.Unix(1704153600, 0), // 2024-01-02 00:00:00 UTC
 	}
 
-	req := ds.buildComputeRequest(qm, timeRange)
+	req := ds.buildComputeRequest(qm, timeRange, 0)
 
 	// Verify start and end times
 	if int64(req.Start.Seconds) != 1704067200 {
@@ -1678,7 +1678,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("string ChannelDataType produces enum series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = "string"
-		req := ds.buildComputeRequest(qm, baseTimeRange)
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
 		// The request should have a valid node
 		if req.Node == (computeapi1.ComputableNode{}) {
@@ -1712,7 +1712,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("numeric ChannelDataType produces numeric series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = "numeric"
-		req := ds.buildComputeRequest(qm, baseTimeRange)
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for numeric request")
@@ -1736,7 +1736,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("empty ChannelDataType defaults to numeric series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = ""
-		req := ds.buildComputeRequest(qm, baseTimeRange)
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for default request")
@@ -1763,7 +1763,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("missing ChannelDataType defaults to numeric series", func(t *testing.T) {
 		qm := baseQM
 		// ChannelDataType is zero-value ""
-		req := ds.buildComputeRequest(qm, baseTimeRange)
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for missing ChannelDataType request")
@@ -1773,17 +1773,98 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("string and numeric produce structurally different requests", func(t *testing.T) {
 		stringQM := baseQM
 		stringQM.ChannelDataType = "string"
-		stringReq := ds.buildComputeRequest(stringQM, baseTimeRange)
+		stringReq := ds.buildComputeRequest(stringQM, baseTimeRange, 0)
 
 		numericQM := baseQM
 		numericQM.ChannelDataType = "numeric"
-		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange)
+		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange, 0)
 
 		stringJSON, _ := json.Marshal(stringReq.Node)
 		numericJSON, _ := json.Marshal(numericReq.Node)
 
 		if string(stringJSON) == string(numericJSON) {
 			t.Error("expected different JSON for string vs numeric ChannelDataType, but they are identical")
+		}
+	})
+}
+
+func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
+	ds := &Datasource{}
+
+	baseTimeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	extractBuckets := func(t *testing.T, req computeapi1.ComputeNodeRequest) int {
+		t.Helper()
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal node: %v", err)
+		}
+		var node struct {
+			Series struct {
+				Buckets *int `json:"buckets"`
+			} `json:"series"`
+		}
+		if err := json.Unmarshal(jsonBytes, &node); err != nil {
+			t.Fatalf("failed to unmarshal node: %v", err)
+		}
+		if node.Series.Buckets == nil {
+			return 0
+		}
+		return *node.Series.Buckets
+	}
+
+	t.Run("maxDataPoints caps buckets when smaller", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       1000,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 500)
+		if got := extractBuckets(t, req); got != 500 {
+			t.Errorf("buckets = %d, want 500", got)
+		}
+	})
+
+	t.Run("maxDataPoints does not increase buckets", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       500,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 1000)
+		if got := extractBuckets(t, req); got != 500 {
+			t.Errorf("buckets = %d, want 500", got)
+		}
+	})
+
+	t.Run("maxDataPoints used when buckets is zero", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       0,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 800)
+		if got := extractBuckets(t, req); got != 800 {
+			t.Errorf("buckets = %d, want 800", got)
+		}
+	})
+
+	t.Run("zero maxDataPoints uses saved buckets", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:      "ri.nominal.asset.test",
+			Channel:       "temperature",
+			DataScopeName: "default",
+			Buckets:       1000,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		if got := extractBuckets(t, req); got != 1000 {
+			t.Errorf("buckets = %d, want 1000", got)
 		}
 	})
 }
