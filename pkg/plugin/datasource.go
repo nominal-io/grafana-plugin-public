@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -26,7 +27,7 @@ import (
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
-	"github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
+	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
@@ -44,9 +45,7 @@ var (
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
-// sharedHTTPClient is a reusable HTTP client for direct API calls.
-// Reusing a single client enables connection pooling and keep-alive.
-var sharedHTTPClient = &http.Client{
+var fallbackResourceHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
@@ -72,9 +71,8 @@ type channelTypeCacheEntry struct {
 	fetchedAt   time.Time
 }
 
-
 // NewDatasource creates a new datasource instance.
-func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
+func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(settings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plugin settings: %v", err)
@@ -87,22 +85,35 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 	// Use the base URL as-is since it should already include the full path
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	// Create HTTP client
-	httpClient, err := httpclient.NewClient(
-		httpclient.WithBaseURLs([]string{baseURL}),
+	// Use Grafana's SDK-managed HTTP client for direct HTTP requests from the plugin.
+	httpClientOpts, err := settings.HTTPClientOptions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build HTTP client options: %v", err)
+	}
+
+	resourceHTTPClient, err := sdkhttpclient.New(httpClientOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource HTTP client: %v", err)
+	}
+	resourceHTTPClient.Timeout = 30 * time.Second
+
+	// Generated Conjure clients still require their own client type, so keep this
+	// wrapper for those service integrations.
+	conjureClient, err := conjurehttpclient.NewClient(
+		conjurehttpclient.WithBaseURLs([]string{baseURL}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %v", err)
+		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
 	}
 
 	ds := &Datasource{
-		settings:          settings,
-		httpClient:        httpClient,
-		authService:       authapi.NewAuthenticationServiceV2Client(httpClient),
-		computeService:    computeapi1.NewComputeServiceClient(httpClient),
-		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
-		assetCache:        make(map[string]assetCacheEntry),
-		channelTypeCache:  make(map[string]channelTypeCacheEntry),
+		settings:           settings,
+		resourceHTTPClient: resourceHTTPClient,
+		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
+		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
+		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
+		assetCache:         make(map[string]assetCacheEntry),
+		channelTypeCache:   make(map[string]channelTypeCacheEntry),
 	}
 
 	return ds, nil
@@ -199,7 +210,6 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 // Grafana template variables or custom channel values. Those paths only submit
 // the resolved channel name, so the hidden type metadata is often empty even
 // though the backend can still look up the exact channel and recover it.
-//
 func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
 	if qm == nil || d.datasourceService == nil {
 		return
@@ -302,7 +312,6 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 // Datasource is the Nominal datasource implementation
 type Datasource struct {
 	settings          backend.DataSourceInstanceSettings
-	httpClient        httpclient.Client
 	authService       authapi.AuthenticationServiceV2Client
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
@@ -316,13 +325,24 @@ type Datasource struct {
 	// redundant HTTP calls across queries and dashboard refreshes.
 	channelTypeCacheMu sync.Mutex
 	channelTypeCache   map[string]channelTypeCacheEntry
+
+	resourceHTTPClient *http.Client
+}
+
+func (d *Datasource) getResourceHTTPClient() *http.Client {
+	if d != nil && d.resourceHTTPClient != nil {
+		return d.resourceHTTPClient
+	}
+	return fallbackResourceHTTPClient
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewSampleDatasource factory function.
 func (d *Datasource) Dispose() {
-	// Clean up datasource instance resources.
+	if d.resourceHTTPClient != nil {
+		d.resourceHTTPClient.CloseIdleConnections()
+	}
 }
 
 // QueryData handles multiple queries and returns multiple responses.
@@ -1428,8 +1448,7 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 	}
 
 	// Make the request
-	client := sharedHTTPClient
-	resp, err := client.Do(proxyReq)
+	resp, err := d.getResourceHTTPClient().Do(proxyReq)
 	if err != nil {
 		return fmt.Errorf("proxy request failed: %v", err)
 	}
@@ -1925,8 +1944,6 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	client := sharedHTTPClient
-
 	// Use the batch lookup endpoint with a single RID
 	bodyBytes, err := json.Marshal([]string{assetRid})
 	if err != nil {
@@ -1941,7 +1958,7 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
+	resp, err := d.getResourceHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -1993,8 +2010,6 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	client := sharedHTTPClient
-
 	for totalFetched < maxResults {
 		// Build request body matching the format used by QueryEditor
 		requestBody := map[string]interface{}{
@@ -2027,7 +2042,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 		req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := client.Do(req)
+		resp, err := d.getResourceHTTPClient().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("request failed: %w", err)
 		}
