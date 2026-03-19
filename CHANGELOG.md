@@ -2,6 +2,26 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.8.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.7.0...nominal-grafana-plugin@0.8.0) (2026-03-19)
+
+
+### Features
+
+* enable front end template variable support for channel select ([#28](https://github.com/nominal-io/grafana-plugin-public/issues/28)) ([48517e5](https://github.com/nominal-io/grafana-plugin-public/commit/48517e55eb67fbf5f6a92d86b2ca21da0802cb38))
+
+
+### Bug Fixes
+
+* cache asset and channel lookups in inferMissingChannelDataType (backend) ([#34](https://github.com/nominal-io/grafana-plugin-public/issues/34)) ([beae629](https://github.com/nominal-io/grafana-plugin-public/commit/beae6297d50bd0420f71158c6b92e897ec95f9cd))
+* CVE-2026-32141 ([#30](https://github.com/nominal-io/grafana-plugin-public/issues/30)) ([a813b82](https://github.com/nominal-io/grafana-plugin-public/commit/a813b8241216b78a5041f9004b77c363abb62e89))
+* infer string channel types for templated queries ([#27](https://github.com/nominal-io/grafana-plugin-public/issues/27)) ([76aea57](https://github.com/nominal-io/grafana-plugin-public/commit/76aea57688fff1876d46eb4960e5df10d1460bfb))
+* use grafana's maxDataPoints to improve query performance ([#33](https://github.com/nominal-io/grafana-plugin-public/issues/33)) ([dd2c1e1](https://github.com/nominal-io/grafana-plugin-public/commit/dd2c1e12364c760b21d2a14436ee75b5f973f89d))
+
+
+### Chores
+
+* **deps:** bump google.golang.org/grpc from 1.78.0 to 1.79.3 ([#36](https://github.com/nominal-io/grafana-plugin-public/issues/36)) ([825fcf3](https://github.com/nominal-io/grafana-plugin-public/commit/825fcf3b6f6b5affd5bd2744f2b53df8d14625ef))
+
 ## [0.7.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.6.0...nominal-grafana-plugin@0.7.0) (2026-03-10)
 
 
