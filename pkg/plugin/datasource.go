@@ -66,6 +66,13 @@ type assetCacheEntry struct {
 	fetchedAt time.Time
 }
 
+// channelTypeCacheEntry holds a cached channel type inference result with its fetch time.
+type channelTypeCacheEntry struct {
+	channelType string // "string", "numeric", or "" for searched-but-not-found
+	fetchedAt   time.Time
+}
+
+
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(settings)
@@ -95,6 +102,7 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		computeService:    computeapi1.NewComputeServiceClient(httpClient),
 		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
 		assetCache:        make(map[string]assetCacheEntry),
+		channelTypeCache:  make(map[string]channelTypeCacheEntry),
 	}
 
 	return ds, nil
@@ -192,10 +200,7 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 // the resolved channel name, so the hidden type metadata is often empty even
 // though the backend can still look up the exact channel and recover it.
 //
-// channelTypeCache is a request-scoped map that deduplicates SearchChannels
-// calls within a single QueryData invocation. It is keyed by
-// "assetRid|dataScopeName|channel" and maps to the inferred type string.
-func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel, channelTypeCache map[string]string) {
+func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
 	if qm == nil || d.datasourceService == nil {
 		return
 	}
@@ -206,14 +211,21 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 		return
 	}
 
-	// Check request-scoped cache first.
 	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
-	if cached, ok := channelTypeCache[cacheKey]; ok {
-		if cached != "" {
-			qm.ChannelDataType = cached
+
+	// Check instance-level TTL cache.
+	d.channelTypeCacheMu.Lock()
+	if d.channelTypeCache == nil {
+		d.channelTypeCache = make(map[string]channelTypeCacheEntry)
+	}
+	if entry, ok := d.channelTypeCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		d.channelTypeCacheMu.Unlock()
+		if entry.channelType != "" {
+			qm.ChannelDataType = entry.channelType
 		}
 		return
 	}
+	d.channelTypeCacheMu.Unlock()
 
 	asset, err := d.fetchAssetByRid(ctx, config, qm.AssetRid)
 	if err != nil {
@@ -274,13 +286,17 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 		}
 		if inferredType := getChannelDataType(channel); inferredType != "" {
 			qm.ChannelDataType = inferredType
-			channelTypeCache[cacheKey] = inferredType
+			d.channelTypeCacheMu.Lock()
+			d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: inferredType, fetchedAt: time.Now()}
+			d.channelTypeCacheMu.Unlock()
 			return
 		}
 	}
 
 	// Cache the miss so we don't re-search for the same combo.
-	channelTypeCache[cacheKey] = ""
+	d.channelTypeCacheMu.Lock()
+	d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: "", fetchedAt: time.Now()}
+	d.channelTypeCacheMu.Unlock()
 }
 
 // Datasource is the Nominal datasource implementation
@@ -295,6 +311,11 @@ type Datasource struct {
 	// redundant HTTP calls across queries and dashboard refreshes.
 	assetCacheMu sync.Mutex
 	assetCache   map[string]assetCacheEntry
+
+	// channelTypeCache caches SearchChannels inference results with a TTL to avoid
+	// redundant HTTP calls across queries and dashboard refreshes.
+	channelTypeCacheMu sync.Mutex
+	channelTypeCache   map[string]channelTypeCacheEntry
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -338,10 +359,6 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		return response, nil
 	}
 
-	// channelTypeCache deduplicates SearchChannels calls within a single
-	// QueryData invocation. Keyed by "assetRid|dataScopeName|channel".
-	channelTypeCache := make(map[string]string)
-
 	// Collect batchable queries
 	var batchableQueries []backend.DataQuery
 	var batchableModels []NominalQueryModel
@@ -376,7 +393,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			continue
 		}
 
-		d.inferMissingChannelDataType(ctx, config, &qm, channelTypeCache)
+		d.inferMissingChannelDataType(ctx, config, &qm)
 
 		// Check if this is a batchable query (has asset and channel)
 		if qm.AssetRid != "" && qm.Channel != "" {

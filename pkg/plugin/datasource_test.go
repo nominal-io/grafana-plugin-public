@@ -3138,6 +3138,78 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	}
 }
 
+func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ttl2"
+	dataSourceRid := "ri.scout.main.data-source.ds2"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds2")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	makeReq := func() *backend.QueryDataRequest {
+		return &backend.QueryDataRequest{
+			PluginContext: backend.PluginContext{
+				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+					JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+					DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+				},
+			},
+			Queries: []backend.DataQuery{
+				{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			},
+		}
+	}
+
+	// Two separate QueryData calls should reuse the cached channel type.
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if mockDS.searchChannelsCalls != 1 {
+		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", mockDS.searchChannelsCalls)
+	}
+}
+
 // strPtr is a helper to create a *string
 func strPtr(s string) *string {
 	return &s
