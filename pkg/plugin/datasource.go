@@ -45,6 +45,10 @@ var (
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
+var fallbackResourceHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
 // maxBatchComputeSubrequests matches the backend subrequest limit.
 // See scout ComputeResource.SUBREQUEST_LIMIT.
 const maxBatchComputeSubrequests = 300
@@ -323,6 +327,13 @@ type Datasource struct {
 	channelTypeCache   map[string]channelTypeCacheEntry
 
 	resourceHTTPClient *http.Client
+}
+
+func (d *Datasource) getResourceHTTPClient() *http.Client {
+	if d != nil && d.resourceHTTPClient != nil {
+		return d.resourceHTTPClient
+	}
+	return fallbackResourceHTTPClient
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -1437,7 +1448,7 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 	}
 
 	// Make the request
-	resp, err := d.resourceHTTPClient.Do(proxyReq)
+	resp, err := d.getResourceHTTPClient().Do(proxyReq)
 	if err != nil {
 		return fmt.Errorf("proxy request failed: %v", err)
 	}
@@ -1947,7 +1958,7 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := d.resourceHTTPClient.Do(req)
+	resp, err := d.getResourceHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -2031,7 +2042,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 		req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 		req.Header.Set("Content-Type", "application/json")
 
-		resp, err := d.resourceHTTPClient.Do(req)
+		resp, err := d.getResourceHTTPClient().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("request failed: %w", err)
 		}
