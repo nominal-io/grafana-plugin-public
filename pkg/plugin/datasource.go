@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -56,6 +57,22 @@ const maxBatchComputeSubrequests = 300
 // defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
 
+// assetCacheTTL controls how long fetched asset metadata is cached.
+const assetCacheTTL = 2 * time.Minute
+
+// assetCacheEntry holds a cached asset response with its fetch time.
+type assetCacheEntry struct {
+	asset     *SingleAssetResponse
+	fetchedAt time.Time
+}
+
+// channelTypeCacheEntry holds a cached channel type inference result with its fetch time.
+type channelTypeCacheEntry struct {
+	channelType string // "string", "numeric", or "" for searched-but-not-found
+	fetchedAt   time.Time
+}
+
+
 // NewDatasource creates a new datasource instance.
 func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(settings)
@@ -84,6 +101,8 @@ func NewDatasource(_ context.Context, settings backend.DataSourceInstanceSetting
 		authService:       authapi.NewAuthenticationServiceV2Client(httpClient),
 		computeService:    computeapi1.NewComputeServiceClient(httpClient),
 		datasourceService: datasourceservice.NewDataSourceServiceClient(httpClient),
+		assetCache:        make(map[string]assetCacheEntry),
+		channelTypeCache:  make(map[string]channelTypeCacheEntry),
 	}
 
 	return ds, nil
@@ -180,6 +199,7 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 // Grafana template variables or custom channel values. Those paths only submit
 // the resolved channel name, so the hidden type metadata is often empty even
 // though the backend can still look up the exact channel and recover it.
+//
 func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
 	if qm == nil || d.datasourceService == nil {
 		return
@@ -190,6 +210,22 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
 		return
 	}
+
+	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
+
+	// Check instance-level TTL cache.
+	d.channelTypeCacheMu.Lock()
+	if d.channelTypeCache == nil {
+		d.channelTypeCache = make(map[string]channelTypeCacheEntry)
+	}
+	if entry, ok := d.channelTypeCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		d.channelTypeCacheMu.Unlock()
+		if entry.channelType != "" {
+			qm.ChannelDataType = entry.channelType
+		}
+		return
+	}
+	d.channelTypeCacheMu.Unlock()
 
 	asset, err := d.fetchAssetByRid(ctx, config, qm.AssetRid)
 	if err != nil {
@@ -250,9 +286,17 @@ func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *mo
 		}
 		if inferredType := getChannelDataType(channel); inferredType != "" {
 			qm.ChannelDataType = inferredType
+			d.channelTypeCacheMu.Lock()
+			d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: inferredType, fetchedAt: time.Now()}
+			d.channelTypeCacheMu.Unlock()
 			return
 		}
 	}
+
+	// Cache the miss so we don't re-search for the same combo.
+	d.channelTypeCacheMu.Lock()
+	d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: "", fetchedAt: time.Now()}
+	d.channelTypeCacheMu.Unlock()
 }
 
 // Datasource is the Nominal datasource implementation
@@ -262,6 +306,16 @@ type Datasource struct {
 	authService       authapi.AuthenticationServiceV2Client
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
+
+	// assetCache caches fetchAssetByRid results with a TTL to avoid
+	// redundant HTTP calls across queries and dashboard refreshes.
+	assetCacheMu sync.Mutex
+	assetCache   map[string]assetCacheEntry
+
+	// channelTypeCache caches SearchChannels inference results with a TTL to avoid
+	// redundant HTTP calls across queries and dashboard refreshes.
+	channelTypeCacheMu sync.Mutex
+	channelTypeCache   map[string]channelTypeCacheEntry
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -1842,6 +1896,29 @@ type SingleAssetResponse struct {
 
 // fetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint
 func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	d.assetCacheMu.Lock()
+	if d.assetCache == nil {
+		d.assetCache = make(map[string]assetCacheEntry)
+	}
+	if entry, ok := d.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		d.assetCacheMu.Unlock()
+		return entry.asset, nil
+	}
+	d.assetCacheMu.Unlock()
+
+	asset, err := d.fetchAssetByRidUncached(ctx, config, assetRid)
+	if err != nil {
+		return nil, err
+	}
+
+	d.assetCacheMu.Lock()
+	d.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	d.assetCacheMu.Unlock()
+
+	return asset, nil
+}
+
+func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL

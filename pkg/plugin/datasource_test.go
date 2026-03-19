@@ -2016,12 +2016,14 @@ type mockDatasourceService struct {
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
+	searchChannelsCalls    int
 	// searchChannelsFunc, when non-nil, overrides searchChannelsResponse/searchChannelsError.
 	// This allows tests to return different responses on successive calls (e.g. pagination).
 	searchChannelsFunc func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error)
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+	m.searchChannelsCalls++
 	m.searchChannelsRequest = queryArg
 	if m.searchChannelsFunc != nil {
 		return m.searchChannelsFunc(ctx, authHeader, queryArg)
@@ -2958,6 +2960,254 @@ func TestHandleChannelVariables(t *testing.T) {
 			t.Fatalf("status = %d, want 500; body = %s", resp.Status, string(resp.Body))
 		}
 	})
+}
+
+// newCountingAssetServer is like newTestAssetServer but also counts requests
+// to the /scout/v1/asset/multiple endpoint.
+func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/scout/v1/asset/multiple" {
+			*fetchCount++
+			var rids []string
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &rids); err != nil {
+				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+				return
+			}
+			result := make(map[string]SingleAssetResponse)
+			for _, rid := range rids {
+				if asset, ok := assets[rid]; ok {
+					result[rid] = asset
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+		} else {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		}
+	}))
+}
+
+func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
+	assetRid := "ri.scout.main.asset.dedup1"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult([]string{"b"}, []int{1}),
+				createMockEnumComputeResult([]string{"c"}, []int{2}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+
+	// 3 queries for the same asset+scope+channel — should only make 1 asset
+	// fetch and 1 SearchChannels call.
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		},
+	}
+
+	_, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if assetFetchCount != 1 {
+		t.Errorf("expected 1 asset fetch call (cached), got %d", assetFetchCount)
+	}
+	if mockDS.searchChannelsCalls != 1 {
+		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
+	}
+}
+
+func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ttl1"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	makeReq := func() *backend.QueryDataRequest {
+		return &backend.QueryDataRequest{
+			PluginContext: backend.PluginContext{
+				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+					JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+					DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+				},
+			},
+			Queries: []backend.DataQuery{
+				{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			},
+		}
+	}
+
+	// Two separate QueryData calls should reuse the cached asset.
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if assetFetchCount != 1 {
+		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", assetFetchCount)
+	}
+}
+
+func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ttl2"
+	dataSourceRid := "ri.scout.main.data-source.ds2"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds2")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	makeReq := func() *backend.QueryDataRequest {
+		return &backend.QueryDataRequest{
+			PluginContext: backend.PluginContext{
+				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+					JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+					DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+				},
+			},
+			Queries: []backend.DataQuery{
+				{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			},
+		}
+	}
+
+	// Two separate QueryData calls should reuse the cached channel type.
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if mockDS.searchChannelsCalls != 1 {
+		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", mockDS.searchChannelsCalls)
+	}
 }
 
 // strPtr is a helper to create a *string
