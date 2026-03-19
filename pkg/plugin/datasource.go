@@ -50,6 +50,14 @@ var sharedHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
+// proxyAllowedHeaders is the set of request headers forwarded to the upstream
+// Nominal API. All other headers (Cookie, Authorization, etc.) are stripped
+// to prevent session/credential leakage through the proxy.
+var proxyAllowedHeaders = map[string]bool{
+	"Content-Type": true,
+	"Accept":       true,
+}
+
 // maxBatchComputeSubrequests matches the backend subrequest limit.
 // See scout ComputeResource.SUBREQUEST_LIMIT.
 const maxBatchComputeSubrequests = 300
@@ -1409,14 +1417,17 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 		proxyReq.Host = parsedURL.Host
 	}
 
-	// Copy headers from original request
+	// Only forward safe headers — prevents Cookie/session header leakage
 	for key, values := range req.Headers {
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
+		if proxyAllowedHeaders[http.CanonicalHeaderKey(key)] {
+			for _, value := range values {
+				proxyReq.Header.Add(key, value)
+			}
 		}
 	}
 
-	// Add authentication header
+	// Add authentication header — Set (not Add) intentionally overwrites any
+	// Authorization value that might have been forwarded by the allowlist loop above.
 	proxyReq.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 
 	proxyReq.Header.Set("User-Agent", "grafana-nominal-plugin/1.0.0")

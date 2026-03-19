@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, ChangeEvent, useCallback } from 'react';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup } from '@grafana/ui';
+import { InlineField, Input, Stack, Select, RadioButtonGroup, useTheme2 } from '@grafana/ui';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery } from '../types';
+import { fetchAssetByRid, type Asset } from '../utils/api';
+import './QueryEditor.css';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -17,30 +19,6 @@ const DATA_TYPE_ICONS: Record<string, string> = {
   string: 'font',           // Grafana's standard icon for FieldType.string
   numeric: 'calculator-alt', // Grafana's standard icon for FieldType.number
 };
-
-interface Asset {
-  rid: string;
-  title: string;
-  description?: string;
-  labels: string[];
-  dataScopes: Array<{
-    dataScopeName: string;
-    dataSource: {
-      type: string;
-      dataset?: string;
-      video?: string;
-      connection?: string;
-      logSet?: string;
-    };
-    offset?: any;
-    timestampType?: string;
-    seriesTags?: Record<string, any>;
-  }>;
-  properties?: Record<string, any>;
-  createdBy?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
 
 type AssetInputMethod = 'search' | 'direct';
 
@@ -56,30 +34,20 @@ const createBasicAsset = (rid: string, title: string): Asset => ({
   dataScopes: []
 });
 
-/** Fetches a single asset by its exact RID using the batch lookup endpoint */
-export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
-  // Validate RID format - must start with "ri." to be a valid resource identifier
-  if (!rid || !rid.startsWith('ri.')) {
-    return null;
-  }
-
-  // Use the efficient batch lookup endpoint instead of searching all assets
-  const response = await getBackendSrv().post(
-    `${datasourceUrl}/scout/v1/asset/multiple`,
-    [rid]  // API expects an array of RIDs
+/** Convert asset to dropdown option */
+const assetToOption = (asset: Asset): SelectableValue<string> => {
+  const supportedScopes = asset.dataScopes.filter(scope =>
+    SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
   );
-
-  // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
-  const asset = response?.[rid];
-  if (asset && asset.dataScopes?.length > 0) {
-    return asset;
-  }
-  // Log to help diagnose asset lookup failures (e.g. unexpected response format)
-  console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
-  return null;
+  return {
+    label: asset.title,
+    value: asset.rid,
+    description: `${asset.labels.join(', ') || 'No labels'} - ${supportedScopes.length} data scope(s)`
+  };
 };
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const theme = useTheme2();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [dataScopes, setDataScopes] = useState<string[]>([]);
@@ -197,7 +165,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       if (!ds) { continue; }
       // Only collect RIDs for supported data source types (dataset, connection)
       if (ds.type === 'dataset' && ds.dataset) { dataSourceRids.push(ds.dataset); }
-      else if (ds.type === 'connection' && (ds as any).connection) { dataSourceRids.push((ds as any).connection); }
+      else if (ds.type === 'connection' && ds.connection) { dataSourceRids.push(ds.connection); }
     }
     if (dataSourceRids.length === 0) {
       return [];
@@ -494,20 +462,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   };
 
 
-  // Convert asset to dropdown option
-  const assetToOption = (asset: Asset): SelectableValue<string> => {
-    const supportedScopes = asset.dataScopes.filter(scope =>
-      SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-    );
-    return {
-      label: asset.title,
-      value: asset.rid,
-      description: `${asset.labels.join(', ') || 'No labels'} - ${supportedScopes.length} data scope(s)`
-    };
-  };
-
   // Prepare asset options for dropdown
-  const assetOptions: Array<SelectableValue<string>> = (() => {
+  const assetOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = assets.map(assetToOption);
 
     // Include the currently selected asset if it's not in the search results
@@ -532,20 +488,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [assets, selectedAsset, query?.assetRid]);
 
   // Compute asset select value - show variable if set, otherwise match by resolved RID
-  const assetSelectValue = (() => {
+  const assetSelectValue = useMemo(() => {
     const currentValue = query?.assetRid || '';
     if (currentValue.includes('$')) {
       return currentValue;
     }
     return assetOptions.some(opt => opt.value === resolvedAssetRid) ? resolvedAssetRid : '';
-  })();
+  }, [query?.assetRid, assetOptions, resolvedAssetRid]);
 
   // Prepare data scope options for dropdown
   // Include template variable option if the current value is a variable
-  const dataScopeOptions: Array<SelectableValue<string>> = (() => {
+  const dataScopeOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = dataScopes.map(scope => ({
       label: scope,
       value: scope
@@ -569,7 +525,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [dataScopes, query?.dataScopeName, resolvedDataScopeName]);
 
   // Prepare channel options for dropdown
   // Include template variable option if the current value is a variable
@@ -667,23 +623,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const singleBoxStyle = {
     padding: '8px 12px',
-    backgroundColor: configComplete ? '#0d2818' : '#1f1f1f',
+    backgroundColor: configComplete
+      ? theme.colors.success.transparent
+      : theme.colors.background.secondary,
     borderRadius: '4px',
-    border: configComplete ? '1px solid #28a745' : '1px solid #333',
+    border: configComplete
+      ? `1px solid ${theme.colors.success.border}`
+      : `1px solid ${theme.colors.border.weak}`,
     marginBottom: '4px',
     width: '100%'
   };
 
   return (
     <>
-      <style>{`
-        @keyframes fadeInOut {
-          0% { opacity: 0; transform: translateY(5px); }
-          20% { opacity: 1; transform: translateY(0); }
-          80% { opacity: 1; transform: translateY(0); }
-          100% { opacity: 0; transform: translateY(-5px); }
-        }
-      `}</style>
       <div style={{ width: '100%', padding: '4px' }}>
         <div style={singleBoxStyle}>
         <Stack gap={1} direction="row" wrap alignItems="center">
@@ -814,18 +766,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           <div style={{
             marginTop: '6px',
             padding: '6px 10px',
-            backgroundColor: '#1f2937',
+            backgroundColor: theme.colors.background.secondary,
             borderRadius: '4px',
             fontSize: '11px',
-            border: '1px solid #374151',
-            color: '#e5e7eb',
-            lineHeight: '1.4'
+            border: `1px solid ${theme.colors.border.weak}`,
+            color: theme.colors.text.primary,
+            lineHeight: '1.4',
+            ['--rid-hover-bg' as string]: theme.colors.action.hover
           }}>
-            <span style={{ color: '#9ca3af' }}>Asset:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Asset:</span>
             <span style={{
-              fontFamily: 'Monaco, "Lucida Console", monospace',
-              color: '#d1d5db',
-              backgroundColor: '#374151',
+              fontFamily: theme.typography.fontFamilyMonospace,
+              color: theme.colors.text.primary,
+              backgroundColor: theme.colors.background.secondary,
               padding: '2px 5px',
               borderRadius: '3px',
               marginLeft: '6px',
@@ -833,31 +786,23 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             }}>
               {selectedAsset.title}
             </span>
-            <span style={{ color: '#9ca3af' }}>RID:</span>
+            <span style={{ color: theme.colors.text.secondary }}>RID:</span>
             <span style={{ position: 'relative', display: 'inline-block' }}>
               <span
                 onClick={() => copyToClipboard(selectedAsset.rid)}
                 title="Click to copy RID"
+                className="rid-click-target"
                 style={{
-                  fontFamily: 'Monaco, "Lucida Console", monospace',
-                  color: '#a78bfa',
+                  fontFamily: theme.typography.fontFamilyMonospace,
+                  color: theme.colors.text.link,
                   cursor: 'pointer',
                   textDecoration: 'underline',
                   textDecorationStyle: 'dotted',
-                  textDecorationColor: '#6b46c1',
+                  textDecorationColor: theme.colors.text.link,
                   marginLeft: '6px',
                   marginRight: '8px',
                   fontSize: '10px',
                   transition: 'background-color 0.15s ease, padding 0.15s ease'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#312e8120';
-                  e.currentTarget.style.borderRadius = '2px';
-                  e.currentTarget.style.padding = '1px 3px';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.padding = '0';
                 }}
               >
                 {selectedAsset.rid}
@@ -867,13 +812,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   position: 'absolute',
                   top: '-25px',
                   left: '6px',
-                  backgroundColor: '#065f46',
-                  color: '#a7f3d0',
+                  backgroundColor: theme.colors.success.main,
+                  color: theme.colors.success.contrastText,
                   padding: '2px 6px',
                   borderRadius: '3px',
                   fontSize: '9px',
                   whiteSpace: 'nowrap',
-                  border: '1px solid #047857',
+                  border: `1px solid ${theme.colors.success.border}`,
                   zIndex: 1000,
                   animation: showCopiedMessage ? 'fadeInOut 2s ease-in-out' : 'none'
                 }}>
@@ -881,9 +826,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </span>
               )}
             </span>
-            <span style={{ color: '#9ca3af' }}>Dataset Scopes:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Dataset Scopes:</span>
             <span style={{
-              color: '#34d399',
+              color: theme.colors.success.text,
               fontWeight: '600',
               marginLeft: '4px'
             }}>
