@@ -6,12 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
@@ -539,9 +544,31 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
 		buckets = int(maxDataPoints)
 	}
-	seriesNode := computeapi1.SummarizeSeries{
-		Input:   series,
-		Buckets: &buckets,
+	var seriesNode computeapi1.SummarizeSeries
+	if qm.ChannelDataType == "string" {
+		// Enum path: no OutputFormat or NumericOutputFields
+		seriesNode = computeapi1.SummarizeSeries{
+			Input:   series,
+			Buckets: &buckets,
+		}
+	} else {
+		// Numeric path: Arrow with mean-only filtering.
+		// Currently we only request MEAN for bucketed numeric visualization.
+		// The full set of available fields is: MEAN, MIN, MAX, COUNT, VARIANCE,
+		// FIRST_POINT, LAST_POINT. Future plugin features (e.g. min/max band
+		// overlays, variance shading, point count display) can request additional
+		// fields by expanding this slice. The Arrow response schema adjusts
+		// automatically based on which fields are requested here.
+		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
+		meanOnly := []computeapi.NumericOutputField{
+			computeapi.New_NumericOutputField(computeapi.NumericOutputField_MEAN),
+		}
+		seriesNode = computeapi1.SummarizeSeries{
+			Input:               series,
+			Buckets:             &buckets,
+			OutputFormat:        &arrowFormat,
+			NumericOutputFields: &meanOnly,
+		}
 	}
 
 	// Create computable node
@@ -839,8 +866,25 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		nil, // numericPointFunc
 		nil, // singlePointFunc
-		nil, // arrowNumericFunc
-		nil, // arrowBucketedNumericFunc
+		// arrowNumericFunc - Not reachable from SummarizeSeries with Buckets.
+		// Returns a clear error rather than speculative parsing of an unverified schema.
+		func(arrowNumeric computeapi.ArrowNumericPlot) error {
+			return fmt.Errorf("received ArrowNumericPlot unexpectedly; " +
+				"this response type is not supported by the plugin")
+		},
+		// arrowBucketedNumericFunc - Arrow format bucketed numeric response.
+		// Primary Arrow path. The request sets NumericOutputFields to [MEAN] so
+		// the response contains only "mean" and "end_bucket_timestamp" columns.
+		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {
+			timePoints, values, err := d.extractArrowBucketedNumericData(arrowBucketed)
+			if err != nil {
+				return err
+			}
+			result.TimePoints = timePoints
+			result.NumericValues = values
+			result.IsEnum = false
+			return nil
+		},
 		// enumFunc - maps integer indices to category strings
 		func(enum computeapi.EnumPlot) error {
 			timePoints, values, err := d.extractEnumDataFromConjure(enum)
@@ -2071,4 +2115,66 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	}
 
 	return allResults, nil
+}
+
+// extractArrowBucketedNumericData parses an Arrow IPC stream containing bucketed
+// numeric data. It extracts the "mean" and "end_bucket_timestamp" columns.
+//
+// The Arrow schema depends on which NumericOutputFields were requested. Currently
+// we request only MEAN, yielding 2 columns. If future features request additional
+// fields (MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT), this function
+// would need to be extended to extract those columns as well.
+func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowBucketedNumericPlot) ([]time.Time, []float64, error) {
+	buf := bytes.NewReader(arrowPlot.ArrowBinary)
+	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create Arrow IPC reader: %w", err)
+	}
+	defer reader.Release()
+
+	// Locate columns by name from the schema (column order is not guaranteed stable)
+	schema := reader.Schema()
+	tsIdx := schema.FieldIndices("end_bucket_timestamp")
+	meanIdx := schema.FieldIndices("mean")
+	if len(tsIdx) == 0 || len(meanIdx) == 0 {
+		return nil, nil, fmt.Errorf("Arrow schema missing required columns: have %v", schema.Fields())
+	}
+
+	// The Nominal server may split responses into multiple record batches
+	// (ArrowWriter.java flushes at 1 MB). Append across all batches.
+	var timePoints []time.Time
+	var values []float64
+
+	for reader.Next() {
+		rec := reader.Record()
+		nRows := int(rec.NumRows())
+
+		// Extract timestamps: Int64 column (nanoseconds since epoch)
+		tsCol, ok := rec.Column(tsIdx[0]).(*array.Int64)
+		if !ok {
+			return nil, nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(tsIdx[0]))
+		}
+		for i := 0; i < nRows; i++ {
+			timePoints = append(timePoints, time.Unix(0, tsCol.Value(i)))
+		}
+
+		// Extract mean: Float64 column (nullable -- empty buckets have null mean)
+		meanCol, ok := rec.Column(meanIdx[0]).(*array.Float64)
+		if !ok {
+			return nil, nil, fmt.Errorf("expected Float64 for mean, got %T", rec.Column(meanIdx[0]))
+		}
+		for i := 0; i < nRows; i++ {
+			if meanCol.IsNull(i) {
+				values = append(values, math.NaN())
+			} else {
+				values = append(values, meanCol.Value(i))
+			}
+		}
+	}
+
+	if err := reader.Err(); err != nil {
+		return nil, nil, fmt.Errorf("Arrow IPC read error: %w", err)
+	}
+
+	return timePoints, values, nil
 }

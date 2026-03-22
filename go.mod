@@ -3,6 +3,7 @@ module github.com/nominal-inc/nominal-ds
 go 1.25.5
 
 require (
+	github.com/apache/arrow-go/v18 v18.5.0
 	github.com/grafana/grafana-plugin-sdk-go v0.286.0
 	github.com/nominal-io/nominal-api-go v0.0.0-20260223132649-89e4ad674328
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
@@ -13,7 +14,6 @@ require (
 
 require (
 	github.com/BurntSushi/toml v1.5.0 // indirect
-	github.com/apache/arrow-go/v18 v18.5.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
