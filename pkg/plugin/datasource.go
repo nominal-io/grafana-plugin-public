@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -726,7 +725,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 						valueField,
 					)
 				} else {
-					valueField := data.NewField("value", nil, []float64{})
+					valueField := data.NewField("value", nil, []*float64{})
 					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
@@ -828,7 +827,7 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 // IsEnum indicates which field to use when building data frames.
 type TransformResult struct {
 	TimePoints    []time.Time
-	NumericValues []float64
+	NumericValues []*float64
 	StringValues  []string
 	IsEnum        bool
 }
@@ -950,9 +949,9 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 }
 
 // Helper methods for extracting data from conjure types
-func (d *Datasource) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []float64, error) {
+func (d *Datasource) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []*float64, error) {
 	var timePoints []time.Time
-	var values []float64
+	var values []*float64
 
 	// Access the fields directly from the conjure struct
 	for i := 0; i < len(numeric.Timestamps) && i < len(numeric.Values); i++ {
@@ -964,16 +963,16 @@ func (d *Datasource) extractNumericDataFromConjure(numeric computeapi.NumericPlo
 		seconds := int64(timestamp.Seconds)
 		nanos := int64(timestamp.Nanos)
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
-		values = append(values, value)
+		values = append(values, &value)
 	}
 
 	log.DefaultLogger.Debug("Extracted numeric data from conjure", "timePoints", len(timePoints), "values", len(values))
 	return timePoints, values, nil
 }
 
-func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []float64, error) {
+func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []*float64, error) {
 	var timePoints []time.Time
-	var values []float64
+	var values []*float64
 
 	// Access the fields directly from the conjure struct
 	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
@@ -987,7 +986,8 @@ func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.Bucketed
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
 
 		// Use mean value from bucket (it's a direct float64, not pointer)
-		values = append(values, bucket.Mean)
+		mean := bucket.Mean
+		values = append(values, &mean)
 	}
 
 	log.DefaultLogger.Debug("Extracted bucketed data from conjure", "timePoints", len(timePoints), "values", len(values))
@@ -2124,7 +2124,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 // we request only MEAN, yielding 2 columns. If future features request additional
 // fields (MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT), this function
 // would need to be extended to extract those columns as well.
-func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowBucketedNumericPlot) ([]time.Time, []float64, error) {
+func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowBucketedNumericPlot) ([]time.Time, []*float64, error) {
 	buf := bytes.NewReader(arrowPlot.ArrowBinary)
 	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
 	if err != nil {
@@ -2143,7 +2143,7 @@ func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowB
 	// The Nominal server may split responses into multiple record batches
 	// (ArrowWriter.java flushes at 1 MB). Append across all batches.
 	var timePoints []time.Time
-	var values []float64
+	var values []*float64
 
 	for reader.Next() {
 		rec := reader.Record()
@@ -2152,7 +2152,7 @@ func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowB
 		// Pre-allocate on first batch to avoid repeated slice growth.
 		if timePoints == nil {
 			timePoints = make([]time.Time, 0, nRows)
-			values = make([]float64, 0, nRows)
+			values = make([]*float64, 0, nRows)
 		}
 
 		// Extract timestamps: Int64 column (nanoseconds since epoch)
@@ -2171,9 +2171,10 @@ func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowB
 		}
 		for i := 0; i < nRows; i++ {
 			if meanCol.IsNull(i) {
-				values = append(values, math.NaN())
+				values = append(values, nil)
 			} else {
-				values = append(values, meanCol.Value(i))
+				v := meanCol.Value(i)
+				values = append(values, &v)
 			}
 		}
 	}

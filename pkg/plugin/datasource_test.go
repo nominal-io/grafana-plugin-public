@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1254,18 +1253,18 @@ func TestNumericRegressionAfterPhase3(t *testing.T) {
 		if len(frame.Fields) != 2 {
 			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
 		}
-		// Value field must be float64
+		// Value field must be *float64 (nullable)
 		valueField := frame.Fields[1]
 		if valueField.Len() != len(values) {
 			t.Fatalf("expected %d values, got %d", len(values), valueField.Len())
 		}
 		for i := 0; i < valueField.Len(); i++ {
-			v, ok := valueField.At(i).(float64)
+			v, ok := valueField.At(i).(*float64)
 			if !ok {
-				t.Errorf("value at index %d is not float64, got %T", i, valueField.At(i))
+				t.Errorf("value at index %d is not *float64, got %T", i, valueField.At(i))
 			}
-			if v != values[i] {
-				t.Errorf("value at index %d: expected %f, got %f", i, values[i], v)
+			if v == nil || *v != values[i] {
+				t.Errorf("value at index %d: expected %f, got %v", i, values[i], v)
 			}
 		}
 	})
@@ -1552,12 +1551,12 @@ func TestNumericPathUnchangedAfterRefactor(t *testing.T) {
 		}
 		expectedValues := []float64{1.5, 2.5, 3.5}
 		for i, expected := range expectedValues {
-			actual, ok := valueField.At(i).(float64)
-			if !ok {
-				t.Fatalf("value at index %d is not a float64", i)
+			actual, ok := valueField.At(i).(*float64)
+			if !ok || actual == nil {
+				t.Fatalf("value at index %d is not a *float64 or is nil", i)
 			}
-			if actual != expected {
-				t.Errorf("value at index %d: expected %v, got %v", i, expected, actual)
+			if *actual != expected {
+				t.Errorf("value at index %d: expected %v, got %v", i, expected, *actual)
 			}
 		}
 	})
@@ -3287,8 +3286,8 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 			}
 		}
 		for i, m := range means {
-			if values[i] != m {
-				t.Errorf("values[%d] = %f, want %f", i, values[i], m)
+			if values[i] == nil || *values[i] != m {
+				t.Errorf("values[%d] = %v, want %f", i, values[i], m)
 			}
 		}
 	})
@@ -3307,14 +3306,14 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 		if len(values) != 3 {
 			t.Fatalf("expected 3 values, got %d", len(values))
 		}
-		if values[0] != 1.5 {
-			t.Errorf("values[0] = %f, want 1.5", values[0])
+		if values[0] == nil || *values[0] != 1.5 {
+			t.Errorf("values[0] = %v, want 1.5", values[0])
 		}
-		if !math.IsNaN(values[1]) {
-			t.Errorf("values[1] = %f, want NaN", values[1])
+		if values[1] != nil {
+			t.Errorf("values[1] = %v, want nil", values[1])
 		}
-		if values[2] != 3.5 {
-			t.Errorf("values[2] = %f, want 3.5", values[2])
+		if values[2] == nil || *values[2] != 3.5 {
+			t.Errorf("values[2] = %v, want 3.5", values[2])
 		}
 		if len(timePoints) != 3 {
 			t.Fatalf("expected 3 time points, got %d", len(timePoints))
@@ -3352,8 +3351,8 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 		if len(timePoints) != 1 || len(values) != 1 {
 			t.Fatalf("expected 1 row, got %d timePoints and %d values", len(timePoints), len(values))
 		}
-		if values[0] != 42.0 {
-			t.Errorf("values[0] = %f, want 42.0", values[0])
+		if values[0] == nil || *values[0] != 42.0 {
+			t.Errorf("values[0] = %v, want 42.0", values[0])
 		}
 	})
 
@@ -3464,8 +3463,8 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 		if len(timePoints) != 100 || len(values) != 100 {
 			t.Fatalf("expected 100 rows, got %d timePoints and %d values", len(timePoints), len(values))
 		}
-		if values[50] != 5.0 {
-			t.Errorf("values[50] = %f, want 5.0", values[50])
+		if values[50] == nil || *values[50] != 5.0 {
+			t.Errorf("values[50] = %v, want 5.0", values[50])
 		}
 	})
 
@@ -3520,8 +3519,8 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 				t.Errorf("timePoints[%d] = %d ns, want %d ns", i, gotTs, wantTs)
 			}
 			wantVal := float64(i) * 1.1
-			if values[i] != wantVal {
-				t.Errorf("values[%d] = %f, want %f", i, values[i], wantVal)
+			if values[i] == nil || *values[i] != wantVal {
+				t.Errorf("values[%d] = %v, want %f", i, values[i], wantVal)
 			}
 		}
 	})
@@ -3550,11 +3549,11 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 	if len(result.NumericValues) != 3 {
 		t.Fatalf("expected 3 numeric values, got %d", len(result.NumericValues))
 	}
-	if result.NumericValues[0] != 1.5 {
-		t.Errorf("NumericValues[0] = %f, want 1.5", result.NumericValues[0])
+	if result.NumericValues[0] == nil || *result.NumericValues[0] != 1.5 {
+		t.Errorf("NumericValues[0] = %v, want 1.5", result.NumericValues[0])
 	}
-	if result.NumericValues[2] != 3.5 {
-		t.Errorf("NumericValues[2] = %f, want 3.5", result.NumericValues[2])
+	if result.NumericValues[2] == nil || *result.NumericValues[2] != 3.5 {
+		t.Errorf("NumericValues[2] = %v, want 3.5", result.NumericValues[2])
 	}
 }
 
