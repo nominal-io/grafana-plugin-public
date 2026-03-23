@@ -3468,6 +3468,63 @@ func TestExtractArrowBucketedNumericData(t *testing.T) {
 			t.Errorf("values[50] = %f, want 5.0", values[50])
 		}
 	})
+
+	t.Run("multi-batch stream is concatenated", func(t *testing.T) {
+		pool := memory.DefaultAllocator
+		schema := arrow.NewSchema([]arrow.Field{
+			{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "mean", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		}, nil)
+
+		var buf bytes.Buffer
+		writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+
+		// Write two separate record batches to simulate server flush at 1 MB.
+		for batch := 0; batch < 2; batch++ {
+			tsBuilder := array.NewInt64Builder(pool)
+			meanBuilder := array.NewFloat64Builder(pool)
+			for i := 0; i < 3; i++ {
+				tsBuilder.Append(int64(batch*3+i) * 1000000000)
+				meanBuilder.Append(float64(batch*3+i) * 1.1)
+			}
+			tsArr := tsBuilder.NewArray()
+			meanArr := meanBuilder.NewArray()
+			rec := array.NewRecord(schema, []arrow.Array{tsArr, meanArr}, 3)
+			if err := writer.Write(rec); err != nil {
+				t.Fatalf("failed to write batch %d: %v", batch, err)
+			}
+			rec.Release()
+			tsArr.Release()
+			meanArr.Release()
+			tsBuilder.Release()
+			meanBuilder.Release()
+		}
+		writer.Close()
+
+		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		timePoints, values, err := ds.extractArrowBucketedNumericData(arrowPlot)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(timePoints) != 6 {
+			t.Fatalf("expected 6 timePoints from 2 batches, got %d", len(timePoints))
+		}
+		if len(values) != 6 {
+			t.Fatalf("expected 6 values from 2 batches, got %d", len(values))
+		}
+		// Verify data spans both batches: first batch [0,1,2], second batch [3,4,5]
+		for i := 0; i < 6; i++ {
+			wantTs := int64(i) * 1000000000
+			gotTs := timePoints[i].UnixNano()
+			if gotTs != wantTs {
+				t.Errorf("timePoints[%d] = %d ns, want %d ns", i, gotTs, wantTs)
+			}
+			wantVal := float64(i) * 1.1
+			if values[i] != wantVal {
+				t.Errorf("values[%d] = %f, want %f", i, values[i], wantVal)
+			}
+		}
+	})
 }
 
 func TestTransformArrowBucketedNumericResponse(t *testing.T) {

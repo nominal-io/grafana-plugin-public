@@ -2149,6 +2149,12 @@ func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowB
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
 
+		// Pre-allocate on first batch to avoid repeated slice growth.
+		if timePoints == nil {
+			timePoints = make([]time.Time, 0, nRows)
+			values = make([]float64, 0, nRows)
+		}
+
 		// Extract timestamps: Int64 column (nanoseconds since epoch)
 		tsCol, ok := rec.Column(tsIdx[0]).(*array.Int64)
 		if !ok {
