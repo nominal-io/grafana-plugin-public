@@ -53,6 +53,14 @@ var fallbackResourceHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
+// proxyAllowedHeaders is the set of safe request headers forwarded to the
+// upstream Nominal API. Sensitive caller context like Cookie and
+// Authorization must never be relayed.
+var proxyAllowedHeaders = map[string]bool{
+	"Content-Type": true,
+	"Accept":       true,
+}
+
 // maxBatchComputeSubrequests matches the backend subrequest limit.
 // See scout ComputeResource.SUBREQUEST_LIMIT.
 const maxBatchComputeSubrequests = 300
@@ -1136,7 +1144,6 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 	// Debug logging to see what requests are coming in
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
-	log.DefaultLogger.Debug("Request headers", "headers", req.Headers)
 
 	// Handle test endpoint for frontend connection testing
 	if req.Path == "test" || req.Path == "/test" {
@@ -1473,14 +1480,17 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 		proxyReq.Host = parsedURL.Host
 	}
 
-	// Copy headers from original request
+	// Forward only the small allowlist of headers the upstream needs.
 	for key, values := range req.Headers {
+		if !proxyAllowedHeaders[http.CanonicalHeaderKey(key)] {
+			continue
+		}
 		for _, value := range values {
 			proxyReq.Header.Add(key, value)
 		}
 	}
 
-	// Add authentication header
+	// Use the datasource API key for all proxied upstream requests.
 	proxyReq.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 
 	proxyReq.Header.Set("User-Agent", "grafana-nominal-plugin/1.0.0")

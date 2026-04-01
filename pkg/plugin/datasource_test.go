@@ -2241,6 +2241,66 @@ func TestCallResourceRouting(t *testing.T) {
 	}
 }
 
+func TestProxyHeaderFiltering(t *testing.T) {
+	mockAuth := &mockAuthService{
+		getMyProfileResponse: authapi.UserV2{
+			Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
+			DisplayName: "Test User",
+		},
+	}
+
+	var receivedHeaders http.Header
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok": true}`))
+	}))
+	defer proxyServer.Close()
+
+	ds := newTestDatasource(proxyServer.URL, mockAuth, &mockDatasourceService{})
+
+	req := &backend.CallResourceRequest{
+		Path:   "scout/v1/some-endpoint",
+		Method: "POST",
+		Body:   []byte(`{}`),
+		Headers: map[string][]string{
+			"Content-Type":    {"application/json"},
+			"Accept":          {"application/json"},
+			"Cookie":          {"session=secret"},
+			"Authorization":   {"Bearer user-token"},
+			"X-Forwarded-For": {"192.168.1.1"},
+			"X-Custom-Header": {"should-be-stripped"},
+		},
+	}
+
+	resp := callResourceAndCapture(t, ds, req)
+	if resp.Status != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body = %s", resp.Status, string(resp.Body))
+	}
+
+	if receivedHeaders.Get("Content-Type") != "application/json" {
+		t.Errorf("Content-Type not forwarded: got %q", receivedHeaders.Get("Content-Type"))
+	}
+	if receivedHeaders.Get("Accept") != "application/json" {
+		t.Errorf("Accept not forwarded: got %q", receivedHeaders.Get("Accept"))
+	}
+
+	if receivedHeaders.Get("Cookie") != "" {
+		t.Errorf("Cookie header leaked through proxy: %q", receivedHeaders.Get("Cookie"))
+	}
+	if receivedHeaders.Get("X-Forwarded-For") != "" {
+		t.Errorf("X-Forwarded-For header leaked through proxy: %q", receivedHeaders.Get("X-Forwarded-For"))
+	}
+	if receivedHeaders.Get("X-Custom-Header") != "" {
+		t.Errorf("X-Custom-Header leaked through proxy: %q", receivedHeaders.Get("X-Custom-Header"))
+	}
+
+	authHeader := receivedHeaders.Get("Authorization")
+	if authHeader != "Bearer test-api-key" {
+		t.Errorf("Authorization header = %q, want %q", authHeader, "Bearer test-api-key")
+	}
+}
+
 // ============================================================================
 // CallResource handler tests
 // ============================================================================
