@@ -2,6 +2,20 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.9.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.8.0...nominal-grafana-plugin@0.9.0) (2026-04-02)
+
+
+### Features
+
+* arrow support for bucketed numeric series ([#38](https://github.com/nominal-io/grafana-plugin-public/issues/38)) ([713c50c](https://github.com/nominal-io/grafana-plugin-public/commit/713c50c8cd9fba21f484b0c7915f3abae756e6eb))
+
+
+### Bug Fixes
+
+* pin flatted to &gt;= 3.4.2 to resolve CVE-2026-33228 ([#39](https://github.com/nominal-io/grafana-plugin-public/issues/39)) ([8131185](https://github.com/nominal-io/grafana-plugin-public/commit/81311859e1d39f72f7f7c82d7b547a4f9c3f8620))
+* scope QueryEditor animation styles and switch direct backend HTTP calls to the SDK client ([#32](https://github.com/nominal-io/grafana-plugin-public/issues/32)) ([4ebfa0e](https://github.com/nominal-io/grafana-plugin-public/commit/4ebfa0ebeeec3bf9168bbddd31b226fda64347b7))
+* stop leaking caller headers through proxy ([#31](https://github.com/nominal-io/grafana-plugin-public/issues/31)) ([a9f8827](https://github.com/nominal-io/grafana-plugin-public/commit/a9f8827dbc27d1827964ce1157a2905b583162d8))
+
 ## [0.8.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.7.0...nominal-grafana-plugin@0.8.0) (2026-03-19)
 
 
