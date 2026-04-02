@@ -125,7 +125,7 @@
         "type": "nominaltest-nominalds-datasource",
         "uid": "nominal-ds"
       },
-      "description": "Replace these fields with a known-good tuple from REVIEW.md after pointing datasource baseUrl to staging.",
+      "description": "Live staging query — pre-configured with a continuously updated dataset. Should render non-empty series at any time.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -213,7 +213,7 @@
           "refId": "A"
         }
       ],
-      "title": "Panel B: Staging Known-Good Query (Replace Fields)",
+      "title": "Panel B: Live Staging Query",
       "type": "timeseries"
     },
     {
@@ -234,7 +234,7 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Reviewer notes\n1. Configure datasource `nominal-ds` with API key and set base URL to https://api-staging.gov.nominal.io/api.\n2. Panel A should always return a short line with 2 points.\n3. For Panel B, update asset RID, data scope, and channel using values from `REVIEW.md`.\n4. After setting known-good values, Panel B should return non-empty time series data.\n It is recommended to increase the time range since data might be from a week or two ago.",
+        "content": "## Reviewer notes\n1. Configure datasource `nominal-ds` with API key and set base URL to `https://api-staging.gov.nominal.io/api`.\n2. Panel A should always return a short line with 2 points (no API data needed).\n3. Panel B is pre-configured with a live staging dataset — it should render non-empty series without any manual changes.\n4. If Panel B is empty, verify the datasource Base URL and API key are set correctly.",
         "mode": "markdown"
       },
       "pluginVersion": "12.3.0",
@@ -253,7 +253,7 @@
     "list": []
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-6h",
     "to": "now"
   },
   "timepicker": {},

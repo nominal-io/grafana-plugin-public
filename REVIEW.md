@@ -24,7 +24,7 @@ pnpm run server
 
 ![Nominal Data Source Settings](./assets/review-datasource-example.png)
 
-- Set `Base URL` to staging for reviewer access.
+- Set `Base URL` to `https://api-staging.gov.nominal.io/api`.
 - Set API key from shared reviewer credentials.
 - Click `Save & test` and expect success.
 
@@ -35,21 +35,16 @@ pnpm run server
 
 Panel mapping in provisioned dashboard:
 
-- Panel A: deterministic sanity query (no Nominal data dependency).
-- Panel B: real staging query using the tuple above.
+- **Panel A**: deterministic sanity query (no Nominal data dependency — always renders).
+- **Panel B**: live staging query. This panel queries a continuously updated dataset
+  on staging, so it should render non-empty series at any time. Use the default
+  "Last 6 hours" time range or any recent window.
 
-## CSV fixture for creating review data
+  If Panel B appears empty, verify the data source Base URL is set to
+  `https://api-staging.gov.nominal.io/api` and the API key is configured.
 
-If you need deterministic test data, ingest:
+## Documentation reference
 
-- `review/fixtures/nominal-review-seed.csv`
-
-Suggested channel names from this file:
-
-- `speed_mps`
-- `battery_pct`
-- `temperature_c`
-- `altitude_m`
-
-A good reference for ingestion of data is [docs.nominal.io](https://docs.nominal.io/).
-Please login using the provided reviewer credentials and grafana email.
+For general Nominal platform documentation, visit
+[docs-staging.gov.nominal.io](https://docs-staging.gov.nominal.io/).
+Login with the provided reviewer credentials and the email `grafana-plugin@allnominal.com`.
