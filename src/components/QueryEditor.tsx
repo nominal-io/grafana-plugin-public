@@ -111,11 +111,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
 
-  // Ref holding the latest aggregation selection so onBlur can read it without a stale-props race.
-  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
+  // Tracks the aggregation value from the last query execution (or initial load).
+  // onBlur compares the current selection against this to decide whether to re-run.
+  const committedAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
   // Sync ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
   useEffect(() => {
-    pendingAggRef.current = query.aggregations?.length ? query.aggregations : ['MEAN'];
+    committedAggRef.current = query.aggregations?.length ? query.aggregations : ['MEAN'];
   }, [query.aggregations]);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
@@ -861,13 +862,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       onChange={(selected) => {
                         const values = selected.map(s => s.value).filter((v): v is string => v != null);
                         const aggs = values.length > 0 ? values : ['MEAN'];
-                        pendingAggRef.current = aggs;
                         onChange({ ...query, aggregations: aggs });
                       }}
                       onBlur={() => {
                         const current = query.aggregations?.length ? query.aggregations : ['MEAN'];
-                        if (JSON.stringify(pendingAggRef.current) !== JSON.stringify(current)) {
-                          onChange({ ...query, aggregations: pendingAggRef.current });
+                        if (JSON.stringify(current) !== JSON.stringify(committedAggRef.current)) {
+                          committedAggRef.current = current;
                           onRunQuery();
                         }
                       }}
