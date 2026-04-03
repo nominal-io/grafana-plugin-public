@@ -427,9 +427,9 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
 		// For enum channels, aggregations are not used — skip validation.
-		explicitAggregations := len(qm.Aggregations) > 0
+		qm.ExplicitAggregations = len(qm.Aggregations) > 0
 		if qm.ChannelDataType != "string" {
-			if !explicitAggregations {
+			if !qm.ExplicitAggregations {
 				qm.Aggregations = []string{"MEAN"}
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
 				response.Responses[q.RefID] = backend.ErrDataResponse(
@@ -515,7 +515,8 @@ type NominalQueryModel struct {
 
 	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
 	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
-	Aggregations []string `json:"aggregations,omitempty"`
+	Aggregations            []string `json:"aggregations,omitempty"`
+	ExplicitAggregations    bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -737,7 +738,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
-				if explicitAggregations {
+				if qm.ExplicitAggregations {
 					displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
 				}
 					frame.Name = displayName
