@@ -738,9 +738,9 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
-				if qm.ExplicitAggregations {
-					displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
-				}
+					if qm.ExplicitAggregations {
+						displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+					}
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
 						valueField := data.NewField("value", nil, agg.Values)
