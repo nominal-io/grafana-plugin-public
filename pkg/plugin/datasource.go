@@ -728,9 +728,8 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
-					frame.Name = qm.Channel
-
 					displayName := fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
 						valueField := data.NewField("value", nil, agg.Values)
 						valueField.Config = &data.FieldConfig{DisplayNameFromDS: displayName}
