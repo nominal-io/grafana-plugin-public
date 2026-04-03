@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
+import { InlineField, Input, Stack, Select, MultiSelect, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
 import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
@@ -123,6 +123,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [channelsLoading, setChannelsLoading] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
+
+  // Ref holding the latest aggregation selection so onBlur can read it without a stale-props race.
+  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange→query→effect cycles)
@@ -705,6 +708,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // (used when the asset fetch fails) would silently hide the channel selector entirely.
   const hasChannelSearch = selectedAsset !== null;
 
+  // Aggregation options by channel type
+  const numericAggOptions = [
+    { label: 'Mean', value: 'MEAN' },
+    { label: 'Min', value: 'MIN' },
+    { label: 'Max', value: 'MAX' },
+  ];
+
+
   const singleBoxStyle = {
     padding: theme.spacing(1, 1.5),
     backgroundColor: theme.colors.background.primary,
@@ -844,6 +855,33 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     allowCustomValue
                     isClearable={false}
                   />
+                </InlineField>
+              )}
+
+              {/* Aggregation selector - shown when a channel is selected */}
+              {query?.channel && (
+                <InlineField label="Aggregation" tooltip="Aggregation functions to apply per time bucket">
+                  {query?.channelDataType === 'string' ? (
+                    <Input value="Mode" disabled width={10} />
+                  ) : (
+                    <MultiSelect
+                      options={numericAggOptions}
+                      value={query.aggregations?.length ? query.aggregations : ['MEAN']}
+                      onChange={(selected) => {
+                        const values = selected.map(s => s.value).filter((v): v is string => v != null);
+                        const aggs = values.length > 0 ? values : ['MEAN'];
+                        pendingAggRef.current = aggs;
+                        onChange({ ...query, aggregations: aggs });
+                      }}
+                      onBlur={() => {
+                        onChange({ ...query, aggregations: pendingAggRef.current });
+                        onRunQuery();
+                      }}
+                      closeMenuOnSelect={false}
+                      placeholder="Select aggregations..."
+                      width={30}
+                    />
+                  )}
                 </InlineField>
               )}
             </>
