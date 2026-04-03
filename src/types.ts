@@ -8,6 +8,11 @@ export interface NominalQuery extends DataQuery {
   dataScopeName?: string;
   channelDataType?: string;
 
+  // Aggregation functions to request for numeric channels.
+  // Options: "MEAN", "MIN", "MAX" (v1). Empty/missing defaults to ["MEAN"].
+  // For enum/string channels, this field is ignored — the backend uses Mode.
+  aggregations?: string[];
+
   // Query builder mode - remembers how the query was built
   assetInputMethod?: 'search' | 'direct';
 

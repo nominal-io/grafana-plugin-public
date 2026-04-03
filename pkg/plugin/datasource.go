@@ -218,15 +218,13 @@ func (d *Datasource) validateQuery(qm NominalQueryModel) error {
 	return nil
 }
 
-// inferMissingChannelDataType backfills channelDataType for queries built from
-// Grafana template variables or custom channel values. Those paths only submit
-// the resolved channel name, so the hidden type metadata is often empty even
-// though the backend can still look up the exact channel and recover it.
-func (d *Datasource) inferMissingChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
+// inferChannelDataType verifies (or backfills) channelDataType against the
+// actual channel metadata from the API. The frontend-supplied type may be stale
+// when a multi-select template variable expands $channel to a mix of numeric
+// and string channels — every expanded query inherits the same saved type.
+// The instance-level cache keeps repeated lookups cheap.
+func (d *Datasource) inferChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
 	if qm == nil || d.datasourceService == nil {
-		return
-	}
-	if qm.ChannelDataType == "string" || qm.ChannelDataType == "numeric" {
 		return
 	}
 	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
@@ -425,7 +423,23 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			continue
 		}
 
-		d.inferMissingChannelDataType(ctx, config, &qm)
+		d.inferChannelDataType(ctx, config, &qm)
+
+		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
+		// For enum channels, aggregations are not used — skip validation.
+		if qm.ChannelDataType != "string" {
+			if len(qm.Aggregations) == 0 {
+				qm.Aggregations = []string{"MEAN"}
+			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
+				response.Responses[q.RefID] = backend.ErrDataResponse(
+					backend.StatusBadRequest,
+					fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX", badAgg),
+				)
+				continue
+			} else {
+				qm.Aggregations = deduped
+			}
+		}
 
 		// Check if this is a batchable query (has asset and channel)
 		if qm.AssetRid != "" && qm.Channel != "" {
@@ -498,6 +512,10 @@ type NominalQueryModel struct {
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
 
+	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
+	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
+	Aggregations []string `json:"aggregations,omitempty"`
+
 	// Query parameters
 	Buckets   int    `json:"buckets"`
 	QueryType string `json:"queryType"`
@@ -508,6 +526,24 @@ type NominalQueryModel struct {
 	// Legacy support
 	QueryText string  `json:"queryText"`
 	Constant  float64 `json:"constant"`
+}
+
+// validateAndDedup returns the deduplicated aggregation list and the first invalid name (or "").
+func validateAndDedup(aggs []string) ([]string, string) {
+	seen := make(map[string]bool, len(aggs))
+	deduped := make([]string, 0, len(aggs))
+	for _, a := range aggs {
+		switch a {
+		case "MEAN", "MIN", "MAX":
+			if !seen[a] {
+				seen[a] = true
+				deduped = append(deduped, a)
+			}
+		default:
+			return nil, a
+		}
+	}
+	return deduped, ""
 }
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
@@ -559,22 +595,19 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 			Buckets: &buckets,
 		}
 	} else {
-		// Numeric path: Arrow with mean-only filtering.
-		// Currently we only request MEAN for bucketed numeric visualization.
-		// The full set of available fields is: MEAN, MIN, MAX, COUNT, VARIANCE,
-		// FIRST_POINT, LAST_POINT. Future plugin features (e.g. min/max band
-		// overlays, variance shading, point count display) can request additional
-		// fields by expanding this slice. The Arrow response schema adjusts
-		// automatically based on which fields are requested here.
+		// Numeric path: Arrow format with user-selected aggregation fields.
 		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-		meanOnly := []computeapi.NumericOutputField{
-			computeapi.New_NumericOutputField(computeapi.NumericOutputField_MEAN),
+		var outputFields []computeapi.NumericOutputField
+		for _, agg := range qm.Aggregations {
+			outputFields = append(outputFields, computeapi.New_NumericOutputField(
+				computeapi.NumericOutputField_Value(agg),
+			))
 		}
 		seriesNode = computeapi1.SummarizeSeries{
 			Input:               series,
 			Buckets:             &buckets,
 			OutputFormat:        &arrowFormat,
-			NumericOutputFields: &meanOnly,
+			NumericOutputFields: &outputFields,
 		}
 	}
 
@@ -689,10 +722,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 	err := result.ComputeResult.AcceptFuncs(
 		// successFunc - called when compute succeeded
 		func(computeResponse computeapi.ComputeNodeResponse) error {
-			frame := data.NewFrame("response")
-			frame.Name = qm.Channel
-
-			result, transformErr := d.transformNominalResponseFromClient(computeResponse)
+			result, transformErr := d.transformNominalResponseFromClient(computeResponse, qm)
 			if transformErr != nil {
 				response = backend.ErrDataResponse(
 					backend.StatusInternal,
@@ -701,7 +731,41 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
-			if result.IsEnum {
+			if len(result.AggSeries) > 0 {
+				// Multi-aggregation Arrow path: one frame per series
+				for _, agg := range result.AggSeries {
+					frame := data.NewFrame("response")
+					frame.Name = qm.Channel
+
+					displayName := fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
+						valueField := data.NewField("value", nil, agg.Values)
+						valueField.Config = &data.FieldConfig{DisplayNameFromDS: displayName}
+						frame.Fields = append(frame.Fields,
+							data.NewField("time", nil, agg.TimePoints),
+							valueField,
+						)
+					} else {
+						valueField := data.NewField("value", nil, []*float64{})
+						valueField.Config = &data.FieldConfig{DisplayNameFromDS: displayName}
+						frame.Fields = append(frame.Fields,
+							data.NewField("time", nil, []time.Time{}),
+							valueField,
+						)
+					}
+					response.Frames = append(response.Frames, frame)
+				}
+				log.DefaultLogger.Debug("Successfully processed multi-agg query",
+					"series", len(result.AggSeries),
+					"dataPoints", func() int {
+						if len(result.AggSeries) > 0 {
+							return len(result.AggSeries[0].TimePoints)
+						}
+						return 0
+					}())
+			} else if result.IsEnum {
+				frame := data.NewFrame("response")
+				frame.Name = qm.Channel
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
 				// Time series frames filter to numeric fields only by default.
 				frame.Meta = &data.FrameMeta{
@@ -724,7 +788,11 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					)
 				}
 				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
+				response.Frames = append(response.Frames, frame)
 			} else {
+				// Legacy numeric path (BucketedNumericPlot, NumericPlot)
+				frame := data.NewFrame("response")
+				frame.Name = qm.Channel
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
 					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
@@ -741,9 +809,9 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					)
 				}
 				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
+				response.Frames = append(response.Frames, frame)
 			}
 
-			response.Frames = append(response.Frames, frame)
 			return nil
 		},
 		// errorFunc - called when compute failed
@@ -833,15 +901,31 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 // TransformResult holds the output of response transformation.
 // Either NumericValues or StringValues is populated, never both.
 // IsEnum indicates which field to use when building data frames.
-type TransformResult struct {
-	TimePoints    []time.Time
-	NumericValues []*float64
-	StringValues  []string
-	IsEnum        bool
+// AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
+// Each series carries its own timestamps to support FIRST_POINT/LAST_POINT
+// in a future version, where the event timestamps differ from bucket boundaries.
+type AggregationSeries struct {
+	Name       string      // Arrow column name: "mean", "min", "max"
+	TimePoints []time.Time
+	Values     []*float64
 }
 
-// transformNominalResponseFromClient converts conjure client response to Grafana time series data
-func (d *Datasource) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse) (TransformResult, error) {
+type TransformResult struct {
+	// Numeric aggregation series (Arrow bucketed path, one entry per requested field)
+	AggSeries []AggregationSeries
+
+	// Legacy numeric path (non-Arrow) — single series only
+	TimePoints    []time.Time
+	NumericValues []*float64
+
+	// Enum path
+	StringValues []string
+	IsEnum       bool
+}
+
+// transformNominalResponseFromClient converts conjure client response to Grafana time series data.
+// qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
+func (d *Datasource) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
 	var result TransformResult
@@ -880,15 +964,20 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				"this response type is not supported by the plugin")
 		},
 		// arrowBucketedNumericFunc - Arrow format bucketed numeric response.
-		// Primary Arrow path. The request sets NumericOutputFields to [MEAN] so
-		// the response contains only "mean" and "end_bucket_timestamp" columns.
+		// Extracts one AggregationSeries per requested aggregation field.
 		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {
-			timePoints, values, err := d.extractArrowBucketedNumericData(arrowBucketed)
+			var colNames []string
+			for _, agg := range qm.Aggregations {
+				colNames = append(colNames, strings.ToLower(agg))
+			}
+			if len(colNames) == 0 {
+				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
+			}
+			series, err := d.extractArrowBucketedNumericSeries(arrowBucketed, colNames)
 			if err != nil {
 				return err
 			}
-			result.TimePoints = timePoints
-			result.NumericValues = values
+			result.AggSeries = series
 			result.IsEnum = false
 			return nil
 		},
@@ -2127,71 +2216,84 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	return allResults, nil
 }
 
-// extractArrowBucketedNumericData parses an Arrow IPC stream containing bucketed
-// numeric data. It extracts the "mean" and "end_bucket_timestamp" columns.
-//
-// The Arrow schema depends on which NumericOutputFields were requested. Currently
-// we request only MEAN, yielding 2 columns. If future features request additional
-// fields (MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT), this function
-// would need to be extended to extract those columns as well.
-func (d *Datasource) extractArrowBucketedNumericData(arrowPlot computeapi.ArrowBucketedNumericPlot) ([]time.Time, []*float64, error) {
+// extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
+// multiple named numeric columns, returning one AggregationSeries per field.
+// All series share the end_bucket_timestamp column as their time axis.
+func (d *Datasource) extractArrowBucketedNumericSeries(
+	arrowPlot computeapi.ArrowBucketedNumericPlot,
+	requestedFields []string,
+) ([]AggregationSeries, error) {
 	buf := bytes.NewReader(arrowPlot.ArrowBinary)
 	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create Arrow IPC reader: %w", err)
+		return nil, fmt.Errorf("failed to create Arrow IPC reader: %w", err)
 	}
 	defer reader.Release()
 
-	// Locate columns by name from the schema (column order is not guaranteed stable)
 	schema := reader.Schema()
+
+	// Locate the timestamp column
 	tsIdx := schema.FieldIndices("end_bucket_timestamp")
-	meanIdx := schema.FieldIndices("mean")
-	if len(tsIdx) == 0 || len(meanIdx) == 0 {
-		return nil, nil, fmt.Errorf("Arrow schema missing required columns: have %v", schema.Fields())
+	if len(tsIdx) == 0 {
+		return nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
 	}
 
-	// The Nominal server may split responses into multiple record batches
-	// (ArrowWriter.java flushes at 1 MB). Append across all batches.
-	var timePoints []time.Time
-	var values []*float64
+	// Locate each requested field column
+	fieldIndices := make([]int, len(requestedFields))
+	for i, name := range requestedFields {
+		idx := schema.FieldIndices(name)
+		if len(idx) == 0 {
+			return nil, fmt.Errorf("Arrow schema missing requested column %q: have %v", name, schema.Fields())
+		}
+		fieldIndices[i] = idx[0]
+	}
+
+	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
+	seriesData := make([]AggregationSeries, len(requestedFields))
+	for i, name := range requestedFields {
+		seriesData[i].Name = name
+		seriesData[i].Values = []*float64{}
+	}
+	sharedTimePoints := []time.Time{}
 
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
 
-		// Pre-allocate on first batch to avoid repeated slice growth.
-		if timePoints == nil {
-			timePoints = make([]time.Time, 0, nRows)
-			values = make([]*float64, 0, nRows)
-		}
-
-		// Extract timestamps: Int64 column (nanoseconds since epoch)
+		// Extract timestamps
 		tsCol, ok := rec.Column(tsIdx[0]).(*array.Int64)
 		if !ok {
-			return nil, nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(tsIdx[0]))
+			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(tsIdx[0]))
 		}
 		for i := 0; i < nRows; i++ {
-			timePoints = append(timePoints, time.Unix(0, tsCol.Value(i)))
+			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
 		}
 
-		// Extract mean: Float64 column (nullable -- empty buckets have null mean)
-		meanCol, ok := rec.Column(meanIdx[0]).(*array.Float64)
-		if !ok {
-			return nil, nil, fmt.Errorf("expected Float64 for mean, got %T", rec.Column(meanIdx[0]))
-		}
-		for i := 0; i < nRows; i++ {
-			if meanCol.IsNull(i) {
-				values = append(values, nil)
-			} else {
-				v := meanCol.Value(i)
-				values = append(values, &v)
+		// Extract each field's values
+		for fi, colIdx := range fieldIndices {
+			col, ok := rec.Column(colIdx).(*array.Float64)
+			if !ok {
+				return nil, fmt.Errorf("expected Float64 for %s, got %T", requestedFields[fi], rec.Column(colIdx))
+			}
+			for i := 0; i < nRows; i++ {
+				if col.IsNull(i) {
+					seriesData[fi].Values = append(seriesData[fi].Values, nil)
+				} else {
+					v := col.Value(i)
+					seriesData[fi].Values = append(seriesData[fi].Values, &v)
+				}
 			}
 		}
 	}
 
 	if err := reader.Err(); err != nil {
-		return nil, nil, fmt.Errorf("Arrow IPC read error: %w", err)
+		return nil, fmt.Errorf("Arrow IPC read error: %w", err)
 	}
 
-	return timePoints, values, nil
+	// Share the timestamp slice across all series — do not mutate after assignment.
+	for i := range seriesData {
+		seriesData[i].TimePoints = sharedTimePoints
+	}
+
+	return seriesData, nil
 }
