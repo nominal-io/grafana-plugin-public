@@ -420,8 +420,9 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
 		// For enum channels, aggregations are not used — skip validation.
+		explicitAggregations := len(qm.Aggregations) > 0
 		if qm.ChannelDataType != "string" {
-			if len(qm.Aggregations) == 0 {
+			if !explicitAggregations {
 				qm.Aggregations = []string{"MEAN"}
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
 				response.Responses[q.RefID] = backend.ErrDataResponse(
@@ -728,7 +729,10 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
-					displayName := fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+					displayName := qm.Channel
+				if explicitAggregations {
+					displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+				}
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
 						valueField := data.NewField("value", nil, agg.Values)
