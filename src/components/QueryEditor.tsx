@@ -113,6 +113,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   // Ref holding the latest aggregation selection so onBlur can read it without a stale-props race.
   const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
+  // Sync ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
+  useEffect(() => {
+    pendingAggRef.current = query.aggregations?.length ? query.aggregations : ['MEAN'];
+  }, [query.aggregations]);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange→query→effect cycles)
@@ -861,8 +865,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                         onChange({ ...query, aggregations: aggs });
                       }}
                       onBlur={() => {
-                        onChange({ ...query, aggregations: pendingAggRef.current });
-                        onRunQuery();
+                        const current = query.aggregations?.length ? query.aggregations : ['MEAN'];
+                        if (JSON.stringify(pendingAggRef.current) !== JSON.stringify(current)) {
+                          onChange({ ...query, aggregations: pendingAggRef.current });
+                          onRunQuery();
+                        }
                       }}
                       closeMenuOnSelect={false}
                       placeholder="Select aggregations..."

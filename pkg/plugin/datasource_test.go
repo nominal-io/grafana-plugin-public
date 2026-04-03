@@ -3804,6 +3804,7 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 			ChannelDataType: "numeric",
 			DataScopeName:   "default",
 			Buckets:         1000,
+			Aggregations:    []string{"MEAN"},
 		}
 		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
@@ -3827,6 +3828,7 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 			Channel:       "temperature",
 			DataScopeName: "default",
 			Buckets:       1000,
+			Aggregations:  []string{"MEAN"},
 		}
 		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
 
