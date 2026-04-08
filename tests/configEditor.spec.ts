@@ -16,8 +16,8 @@ test('"Save & test" should fail when configuration has invalid API key', async (
   
   const ds = await readProvisionedDataSource<MyDataSourceOptions, MySecureJsonData>({ fileName: 'datasources.yml' });
   const configPage = await createDataSourceConfigPage({ type: ds.type });
-  await page.getByRole('textbox', { name: 'Base URL' }).fill(ds.jsonData.baseUrl ?? 'https://api.gov.nominal.io');
-  await page.getByRole('textbox', { name: 'API Key' }).fill('invalid-test-api-key');
+  await page.getByLabel('Base URL').fill(ds.jsonData.baseUrl ?? 'https://api.gov.nominal.io');
+  await page.getByLabel('API Key').fill('invalid-test-api-key');
   
   // Since we're using an invalid API key, this should fail quickly with better error handling
   const result = configPage.saveAndTest();
@@ -40,7 +40,7 @@ test('"Save & test" should fail when configuration is missing API key', async ({
   
   const ds = await readProvisionedDataSource<MyDataSourceOptions, MySecureJsonData>({ fileName: 'datasources.yml' });
   const configPage = await createDataSourceConfigPage({ type: ds.type });
-  await page.getByRole('textbox', { name: 'Base URL' }).fill(ds.jsonData.baseUrl ?? 'https://api.gov.nominal.io');
+  await page.getByLabel('Base URL').fill(ds.jsonData.baseUrl ?? 'https://api.gov.nominal.io');
   // Don't fill API Key to test failure case - should fail fast now
   const result = configPage.saveAndTest();
   await expect(result).not.toBeOK();
