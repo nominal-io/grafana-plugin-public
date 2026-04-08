@@ -55,6 +55,7 @@ export function ConfigEditor(props: Props) {
       >
         <Input
           id="config-editor-base-url"
+          aria-label="Base URL"
           onChange={onBaseUrlChange}
           value={jsonData.baseUrl || ''}
           placeholder="https://api.gov.nominal.io/api"
@@ -72,6 +73,7 @@ export function ConfigEditor(props: Props) {
         <SecretInput
           required
           id="config-editor-api-key"
+          aria-label="API Key"
           isConfigured={secureJsonFields?.apiKey || false}
           value={apiKey}
           placeholder="Enter your Nominal API key"
