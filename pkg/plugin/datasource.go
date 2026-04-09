@@ -536,7 +536,7 @@ func validateAndDedup(aggs []string) ([]string, string) {
 	deduped := make([]string, 0, len(aggs))
 	for _, a := range aggs {
 		switch a {
-		case "MEAN", "MIN", "MAX":
+		case "MEAN", "MIN", "MAX", "COUNT", "VARIANCE":
 			if !seen[a] {
 				seen[a] = true
 				deduped = append(deduped, a)
