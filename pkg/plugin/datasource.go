@@ -2276,19 +2276,31 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
 		}
 
-		// Extract each field's values
+		// Extract each field's values.
+		// Most aggregation columns are Float64, but COUNT is Uint32 in the API's Arrow schema.
 		for fi, colIdx := range fieldIndices {
-			col, ok := rec.Column(colIdx).(*array.Float64)
-			if !ok {
-				return nil, fmt.Errorf("expected Float64 for %s, got %T", requestedFields[fi], rec.Column(colIdx))
-			}
-			for i := 0; i < nRows; i++ {
-				if col.IsNull(i) {
-					seriesData[fi].Values = append(seriesData[fi].Values, nil)
-				} else {
-					v := col.Value(i)
-					seriesData[fi].Values = append(seriesData[fi].Values, &v)
+			rawCol := rec.Column(colIdx)
+			switch col := rawCol.(type) {
+			case *array.Float64:
+				for i := 0; i < nRows; i++ {
+					if col.IsNull(i) {
+						seriesData[fi].Values = append(seriesData[fi].Values, nil)
+					} else {
+						v := col.Value(i)
+						seriesData[fi].Values = append(seriesData[fi].Values, &v)
+					}
 				}
+			case *array.Uint32:
+				for i := 0; i < nRows; i++ {
+					if col.IsNull(i) {
+						seriesData[fi].Values = append(seriesData[fi].Values, nil)
+					} else {
+						v := float64(col.Value(i))
+						seriesData[fi].Values = append(seriesData[fi].Values, &v)
+					}
+				}
+			default:
+				return nil, fmt.Errorf("unsupported column type for %s: %T (expected Float64 or Uint32)", requestedFields[fi], rawCol)
 			}
 		}
 	}
