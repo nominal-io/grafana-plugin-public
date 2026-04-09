@@ -34,7 +34,14 @@ async function createDashboardWithPanel(request: any) {
   return body.uid as string;
 }
 
-function getQueryEditorRow(page: any) {
+async function getQueryEditorRow(panelEditPage: any, page: any) {
+  const builtInRow = panelEditPage.getQueryEditorRow('A');
+  const builtInSearchRadio = builtInRow.getByRole('radio', { name: 'Asset Search' });
+
+  if (await builtInSearchRadio.isVisible().catch(() => false)) {
+    return builtInRow;
+  }
+
   return page
     .locator('div')
     .filter({ has: page.getByRole('button', { name: /^A$/ }) })
@@ -54,7 +61,8 @@ test('smoke: should render query editor', async ({ gotoPanelEditPage, page, requ
   const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await expect(getQueryEditorRow(page).getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
 });
 
 test('should trigger new query when search field is changed', async ({
@@ -68,7 +76,7 @@ test('should trigger new query when search field is changed', async ({
   const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  const queryRow = getQueryEditorRow(page);
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
 
   await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
   await queryRow.getByRole('radio', { name: 'Asset Search' }).check();
@@ -87,7 +95,7 @@ test('data query should work with asset and channel selection', async ({
   const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  const queryRow = getQueryEditorRow(page);
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
 
   await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
   await queryRow.getByRole('radio', { name: 'Asset RID' }).check();
