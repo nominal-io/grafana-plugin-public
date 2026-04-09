@@ -29,7 +29,7 @@
         "path": "img/query-editor.png"
       }
     ],
-    "version": "0.9.0",
+    "version": "0.9.1",
     "updated": "%TODAY%"
   },
   "dependencies": {
