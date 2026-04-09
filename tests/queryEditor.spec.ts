@@ -9,15 +9,11 @@ async function dismissWhatsNewModal(page: any) {
   }
 }
 
-async function createDashboardWithPanel(page: any) {
-  const result = await page.evaluate(async () => {
-    const payload = {
+async function createDashboardWithPanel(request: any) {
+  const response = await request.post('/api/dashboards/db', {
+    data: {
       dashboard: {
-        id: null,
-        uid: null,
         title: `Nominal E2E ${Date.now()}`,
-        schemaVersion: 41,
-        version: 0,
         panels: [
           {
             id: 1,
@@ -25,85 +21,77 @@ async function createDashboardWithPanel(page: any) {
             type: 'timeseries',
             gridPos: { h: 8, w: 12, x: 0, y: 0 },
             targets: [{}],
-            datasource: null,
           },
         ],
       },
       overwrite: false,
       folderId: 0,
-    };
-
-    const response = await fetch('/api/dashboards/db', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    return {
-      ok: response.ok,
-      status: response.status,
-      body: await response.text(),
-    };
+    },
   });
 
-  expect(result.ok, `Failed to create dashboard: ${result.status} ${result.body}`).toBeTruthy();
-  const body = JSON.parse(result.body);
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
   return body.uid as string;
 }
 
-async function openPanelEditPage(page: any, gotoPanelEditPage: any) {
-  const uid = await createDashboardWithPanel(page);
+function getQueryEditorRow(page: any) {
+  return page
+    .locator('div')
+    .filter({ has: page.getByRole('button', { name: /^A$/ }) })
+    .filter({ has: page.getByRole('button', { name: /collapse query row|expand query row/i }) })
+    .first();
+}
+
+async function openPanelEditPage(page: any, request: any, gotoPanelEditPage: any) {
+  const uid = await createDashboardWithPanel(request);
   const panelEditPage = await gotoPanelEditPage({ dashboard: { uid }, id: '1' });
   await dismissWhatsNewModal(page);
   await expect(page.getByTestId('data-testid Select a data source')).toBeVisible({ timeout: 15000 });
   return panelEditPage;
 }
 
-test('smoke: should render query editor', async ({ gotoPanelEditPage, page, readProvisionedDataSource }) => {
-  const panelEditPage = await openPanelEditPage(page, gotoPanelEditPage);
+test('smoke: should render query editor', async ({ gotoPanelEditPage, page, request, readProvisionedDataSource }) => {
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await expect(page.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await expect(getQueryEditorRow(page).getByRole('radio', { name: 'Asset Search' })).toBeVisible();
 });
 
 test('should trigger new query when search field is changed', async ({
   gotoPanelEditPage,
   page,
+  request,
   readProvisionedDataSource,
 }) => {
   test.setTimeout(20000);
 
-  const panelEditPage = await openPanelEditPage(page, gotoPanelEditPage);
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
+  const queryRow = getQueryEditorRow(page);
 
-  await expect(page.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-
-  try {
-    const searchRadio = page.getByRole('radio', { name: 'Asset Search' });
-    if (await searchRadio.isVisible()) {
-      await searchRadio.check();
-    }
-
-    await page.getByPlaceholder('Search assets').fill('drone');
-    await setTimeout(1000);
-    await expect(page.getByDisplayValue('drone')).toBeVisible();
-  } catch (error) {
-    expect(error).toBeDefined();
-  }
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await queryRow.getByRole('radio', { name: 'Asset Search' }).check();
+  const searchInput = queryRow.getByPlaceholder('Search assets');
+  await searchInput.fill('drone');
+  await setTimeout(1000);
+  await expect(searchInput).toHaveValue('drone');
 });
 
 test('data query should work with asset and channel selection', async ({
   gotoPanelEditPage,
   page,
+  request,
   readProvisionedDataSource,
 }) => {
-  const panelEditPage = await openPanelEditPage(page, gotoPanelEditPage);
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await expect(page.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-  await page.getByRole('radio', { name: 'Asset RID' }).check();
-  const ridInput = page.getByPlaceholder('ri.scout.cerulean-staging.asset...');
+  const queryRow = getQueryEditorRow(page);
+
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await queryRow.getByRole('radio', { name: 'Asset RID' }).check();
+  const ridInput = queryRow.getByPlaceholder('ri.scout.cerulean-staging.asset...');
   await ridInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
   await expect(ridInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
 });
