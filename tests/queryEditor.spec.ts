@@ -1,81 +1,105 @@
 import { test, expect } from '@grafana/plugin-e2e';
 import { setTimeout } from 'node:timers/promises';
 
-test('smoke: should render query editor', async ({ panelEditPage, readProvisionedDataSource }) => {
+async function dismissWhatsNewModal(page: any) {
+  const dialog = page.getByRole('dialog', { name: /what's new in grafana/i });
+  if (await dialog.isVisible().catch(() => false)) {
+    await dialog.getByRole('button', { name: /^close$/i }).click();
+    await expect(dialog).toBeHidden({ timeout: 10000 });
+  }
+}
+
+async function createDashboardWithPanel(request: any) {
+  const response = await request.post('/api/dashboards/db', {
+    data: {
+      dashboard: {
+        title: `Nominal E2E ${Date.now()}`,
+        panels: [
+          {
+            id: 1,
+            title: 'Panel 1',
+            type: 'timeseries',
+            gridPos: { h: 8, w: 12, x: 0, y: 0 },
+            targets: [{}],
+          },
+        ],
+      },
+      overwrite: false,
+      folderId: 0,
+    },
+  });
+
+  expect(response.ok()).toBeTruthy();
+  const body = await response.json();
+  return body.uid as string;
+}
+
+async function getQueryEditorRow(panelEditPage: any, page: any) {
+  const builtInRow = panelEditPage.getQueryEditorRow('A');
+  const builtInSearchRadio = builtInRow.getByRole('radio', { name: 'Asset Search' });
+
+  if (await builtInSearchRadio.isVisible().catch(() => false)) {
+    return builtInRow;
+  }
+
+  return page
+    .locator('div')
+    .filter({ has: page.getByRole('button', { name: /^A$/ }) })
+    .filter({ has: page.getByRole('button', { name: /collapse query row|expand query row/i }) })
+    .first();
+}
+
+async function openPanelEditPage(page: any, request: any, gotoPanelEditPage: any) {
+  const uid = await createDashboardWithPanel(request);
+  const panelEditPage = await gotoPanelEditPage({ dashboard: { uid }, id: '1' });
+  await dismissWhatsNewModal(page);
+  await expect(page.getByTestId('data-testid Select a data source')).toBeVisible({ timeout: 15000 });
+  return panelEditPage;
+}
+
+test('smoke: should render query editor', async ({ gotoPanelEditPage, page, request, readProvisionedDataSource }) => {
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  await expect(panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
 });
 
 test('should trigger new query when search field is changed', async ({
-  panelEditPage,
+  gotoPanelEditPage,
+  page,
+  request,
   readProvisionedDataSource,
 }) => {
-  test.setTimeout(20000); // Increase timeout for this more complex test
-  
+  test.setTimeout(20000);
+
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  
-  // First wait for the query editor to load
-  await expect(panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-  
-  try {
-    // Select 'search' method (it should be default)
-    const searchRadio = panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' });
-    if (await searchRadio.isVisible()) {
-      await searchRadio.check();
-    }
-    
-    // Fill search field
-    await panelEditPage.getQueryEditorRow('A').getByPlaceholder('Search assets').fill('drone');
-    
-    // Search field interaction should trigger UI updates
-    await setTimeout(1000);
-    
-    // Check that the search input is working
-    await expect(panelEditPage.getQueryEditorRow('A').getByDisplayValue('drone')).toBeVisible();
-    
-  } catch (error) {
-    // If the test fails due to missing API configuration, that's expected in test environment
-    // This tests the UI behavior even if API calls fail
-    expect(error).toBeDefined(); // Just ensure we caught an error
-  }
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
+
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await queryRow.getByRole('radio', { name: 'Asset Search' }).check();
+  const searchInput = queryRow.getByPlaceholder('Search assets');
+  await searchInput.fill('drone');
+  await setTimeout(1000);
+  await expect(searchInput).toHaveValue('drone');
 });
 
-test('data query should work with asset and channel selection', async ({ panelEditPage, readProvisionedDataSource }) => {
-  test.setTimeout(20000); // Increase timeout for this more complex test
-  
+test('data query should work with asset and channel selection', async ({
+  gotoPanelEditPage,
+  page,
+  request,
+  readProvisionedDataSource,
+}) => {
+  const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
-  
-  try {
-    // Wait for query editor to load
-    await expect(panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-    
-    // Select 'direct' method to enter RID directly
-    const directRadio = panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset RID' });
-    if (await directRadio.isVisible()) {
-      await directRadio.check();
-      
-      // Enter a test RID
-      const ridInput = panelEditPage.getQueryEditorRow('A').getByPlaceholder('ri.scout.cerulean-staging.asset...');
-      await ridInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
-    }
-    
-    await panelEditPage.setVisualization('Table');
-    
-    // Test that UI components are rendered correctly
-    await expect(panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-    
-    // The refresh might fail due to API configuration, but that's expected in test environment
-    // We're primarily testing UI functionality here
-    
-  } catch (error) {
-    // In test environment without proper API keys, this is expected
-    // Test that the UI components are at least rendered correctly
-    await expect(panelEditPage.getQueryEditorRow('A').getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-    
-    // Ensure we have an error (which is expected)
-    expect(error).toBeDefined();
-  }
+  const queryRow = await getQueryEditorRow(panelEditPage, page);
+
+  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await queryRow.getByRole('radio', { name: 'Asset RID' }).check();
+  const ridInput = queryRow.getByPlaceholder('ri.scout.cerulean-staging.asset...');
+  await ridInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
+  await expect(ridInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
 });

@@ -30,7 +30,8 @@ jobs:
             - name: Build plugin
               uses: grafana/plugin-actions/package-plugin@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # main branch provided by grafana
               with:
-                  go-version: "1.25"
+                  go-version: "1.25.7"
+                  node-version: "22"
 
             - name: Build summary
               run: |
@@ -62,7 +63,8 @@ jobs:
               id: package-plugin
               uses: grafana/plugin-actions/package-plugin@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f
               with:
-                  go-version: "1.25"
+                  go-version: "1.25.7"
+                  node-version: "22"
                   # Uncomment to enable plugin signing
                   # policy_token: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
 
