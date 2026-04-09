@@ -3496,8 +3496,55 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for wrong column type, got nil")
 		}
-		if !strings.Contains(err.Error(), "expected Float64 for mean") {
-			t.Errorf("error should mention expected Float64, got: %v", err)
+		if !strings.Contains(err.Error(), "unsupported column type for mean") {
+			t.Errorf("error should mention unsupported column type, got: %v", err)
+		}
+	})
+
+	t.Run("Uint32 count column is converted to float64", func(t *testing.T) {
+		pool := memory.DefaultAllocator
+		schema := arrow.NewSchema([]arrow.Field{
+			{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "count", Type: arrow.PrimitiveTypes.Uint32},
+		}, nil)
+		tsBuilder := array.NewInt64Builder(pool)
+		countBuilder := array.NewUint32Builder(pool)
+		tsBuilder.Append(1773975408000000000)
+		tsBuilder.Append(1773975414000000000)
+		countBuilder.Append(5)
+		countBuilder.Append(12)
+		tsArr := tsBuilder.NewArray()
+		countArr := countBuilder.NewArray()
+		defer tsBuilder.Release()
+		defer countBuilder.Release()
+		defer tsArr.Release()
+		defer countArr.Release()
+
+		rec := array.NewRecord(schema, []arrow.Array{tsArr, countArr}, 2)
+		defer rec.Release()
+
+		var buf bytes.Buffer
+		writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+		writer.Write(rec)
+		writer.Close()
+
+		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		series, err := ds.extractArrowBucketedNumericSeries(arrowPlot, []string{"count"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(series) != 1 {
+			t.Fatalf("expected 1 series, got %d", len(series))
+		}
+		s := series[0]
+		if len(s.Values) != 2 {
+			t.Fatalf("expected 2 values, got %d", len(s.Values))
+		}
+		if *s.Values[0] != 5.0 {
+			t.Errorf("values[0] = %v, want 5.0", *s.Values[0])
+		}
+		if *s.Values[1] != 12.0 {
+			t.Errorf("values[1] = %v, want 12.0", *s.Values[1])
 		}
 	})
 
