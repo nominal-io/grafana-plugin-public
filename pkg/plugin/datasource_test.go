@@ -3740,18 +3740,18 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 
 func TestValidateAndDedup(t *testing.T) {
 	// All valid, no duplicates
-	deduped, bad := validateAndDedup([]string{"MEAN", "MIN", "MAX"})
+	deduped, bad := validateAndDedup([]string{"MEAN", "MIN", "MAX", "COUNT", "VARIANCE"})
 	if bad != "" {
 		t.Errorf("expected valid, got bad=%q", bad)
 	}
-	if len(deduped) != 3 {
-		t.Errorf("expected 3, got %d", len(deduped))
+	if len(deduped) != 5 {
+		t.Errorf("expected 5, got %d", len(deduped))
 	}
 
 	// Invalid entry
-	_, bad = validateAndDedup([]string{"MEAN", "VARIANCE"})
-	if bad != "VARIANCE" {
-		t.Errorf("expected VARIANCE, got bad=%q", bad)
+	_, bad = validateAndDedup([]string{"MEAN", "BOGUS"})
+	if bad != "BOGUS" {
+		t.Errorf("expected BOGUS, got bad=%q", bad)
 	}
 
 	// Empty input
