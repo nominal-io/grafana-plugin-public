@@ -718,6 +718,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     { label: 'Mean', value: 'MEAN' },
     { label: 'Min', value: 'MIN' },
     { label: 'Max', value: 'MAX' },
+    { label: 'Count', value: 'COUNT' },
+    { label: 'Variance', value: 'VARIANCE' },
   ];
 
 
