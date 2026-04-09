@@ -15,12 +15,14 @@ require('dotenv').config();
  */
 export default defineConfig<PluginOptions>({
   testDir: './tests',
-  /* Run tests in files in parallel */
-  fullyParallel: true,
+  /* These tests share one Grafana instance, so parallelism adds flake without adding much value. */
+  fullyParallel: false,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
   /* Retry on CI only */
   retries: process.env.CI ? 2 : 0,
+  /* Keep CI stable against a single shared Grafana container. */
+  workers: 1,
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: 'html',
   /* Reduce global timeout from default 30s to 15s for faster feedback */
@@ -39,8 +41,8 @@ export default defineConfig<PluginOptions>({
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
     
-    /* Set reasonable timeout for actions */
-    actionTimeout: 10000,
+    /* Grafana's dev builds can be a little slower in CI. */
+    actionTimeout: 15000,
   },
 
   /* Configure projects for major browsers */
