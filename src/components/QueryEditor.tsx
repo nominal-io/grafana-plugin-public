@@ -35,8 +35,8 @@ const getStyles = (theme: GrafanaTheme2) => ({
     transition: 'background-color 0.15s ease, padding 0.15s ease',
     '&:hover': {
       backgroundColor: theme.colors.action.hover,
-      borderRadius: '2px',
-      padding: '1px 3px',
+      borderRadius: theme.shape.radius.default,
+      padding: theme.spacing(0.125, 0.375),
     },
   }),
 });
@@ -706,20 +706,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const hasChannelSearch = selectedAsset !== null;
 
   const singleBoxStyle = {
-    padding: '8px 12px',
+    padding: theme.spacing(1, 1.5),
     backgroundColor: configComplete ? theme.colors.success.shade : theme.colors.background.primary,
-    borderRadius: '4px',
+    borderRadius: theme.shape.radius.default,
     border: configComplete ? `1px solid ${theme.colors.success.main}` : `1px solid ${theme.colors.border.weak}`,
-    marginBottom: '4px',
+    marginBottom: theme.spacing(0.5),
     width: '100%',
   };
 
   return (
-    <div style={{ width: '100%', padding: '4px' }}>
+    <div style={{ width: '100%', padding: theme.spacing(0.5) }}>
       <div style={singleBoxStyle}>
         <Stack gap={1} direction="row" wrap alignItems="center">
           {/* Asset Input Method */}
-          <div style={{ marginRight: '8px' }}>
+          <div style={{ marginRight: theme.spacing(1) }}>
             <RadioButtonGroup
               options={[
                 { label: 'Asset Search', value: 'search' },
@@ -854,26 +854,26 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         {selectedAsset && (
           <div
             style={{
-              marginTop: '6px',
-              padding: '6px 10px',
+              marginTop: theme.spacing(0.75),
+              padding: theme.spacing(0.75, 1.25),
               backgroundColor: theme.colors.background.secondary,
-              borderRadius: '4px',
-              fontSize: '11px',
+              borderRadius: theme.shape.radius.default,
+              fontSize: theme.typography.bodySmall.fontSize,
               border: `1px solid ${theme.colors.border.medium}`,
               color: theme.colors.text.maxContrast,
-              lineHeight: '1.4',
+              lineHeight: theme.typography.bodySmall.lineHeight,
             }}
           >
             <span style={{ color: theme.colors.text.secondary }}>Asset:</span>
             <span
               style={{
-                fontFamily: 'Monaco, "Lucida Console", monospace',
+                fontFamily: theme.typography.fontFamilyMonospace,
                 color: theme.colors.text.primary,
                 backgroundColor: theme.colors.background.canvas,
-                padding: '2px 5px',
-                borderRadius: '3px',
-                marginLeft: '6px',
-                marginRight: '8px',
+                padding: theme.spacing(0.25, 0.625),
+                borderRadius: theme.shape.radius.default,
+                marginLeft: theme.spacing(0.75),
+                marginRight: theme.spacing(1),
               }}
             >
               {selectedAsset.title}
@@ -885,15 +885,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 title="Click to copy RID"
                 className={styles.ridClickTarget}
                 style={{
-                  fontFamily: 'Monaco, "Lucida Console", monospace',
+                  fontFamily: theme.typography.fontFamilyMonospace,
                   color: theme.colors.primary.text,
                   cursor: 'pointer',
                   textDecoration: 'underline',
                   textDecorationStyle: 'dotted',
                   textDecorationColor: theme.colors.primary.shade,
-                  marginLeft: '6px',
-                  marginRight: '8px',
-                  fontSize: '10px',
+                  marginLeft: theme.spacing(0.75),
+                  marginRight: theme.spacing(1),
+                  fontSize: theme.typography.size.xs,
                 }}
               >
                 {selectedAsset.rid}
@@ -903,13 +903,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   className={copiedMessageClassName}
                   style={{
                     position: 'absolute',
-                    top: '-25px',
-                    left: '6px',
+                    top: theme.spacing(-3),
+                    left: theme.spacing(0.75),
                     backgroundColor: theme.colors.success.shade,
                     color: theme.colors.success.text,
-                    padding: '2px 6px',
-                    borderRadius: '3px',
-                    fontSize: '9px',
+                    padding: theme.spacing(0.25, 0.75),
+                    borderRadius: theme.shape.radius.default,
+                    fontSize: theme.typography.size.xs,
                     whiteSpace: 'nowrap',
                     border: `1px solid ${theme.colors.success.border}`,
                     zIndex: 1000,
@@ -923,8 +923,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             <span
               style={{
                 color: theme.colors.success.text,
-                fontWeight: '600',
-                marginLeft: '4px',
+                fontWeight: theme.typography.fontWeightMedium,
+                marginLeft: theme.spacing(0.5),
               }}
             >
               {selectedAsset.dataScopes.filter((s) => s.dataSource.type === 'dataset').length}

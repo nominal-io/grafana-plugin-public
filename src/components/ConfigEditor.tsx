@@ -83,9 +83,9 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
 
-      <div style={{ marginTop: '16px', padding: '12px', backgroundColor: theme.colors.background.secondary, borderRadius: '4px' }}>
-        <h4 style={{ margin: '0 0 8px 0', fontSize: '14px', color: theme.colors.text.primary }}>Quick Setup Guide:</h4>
-        <ol style={{ margin: '0', paddingLeft: '20px', fontSize: '12px', lineHeight: '1.4', color: theme.colors.text.primary }}>
+      <div style={{ marginTop: theme.spacing(2), padding: theme.spacing(1.5), backgroundColor: theme.colors.background.secondary, borderRadius: theme.shape.radius.default }}>
+        <h4 style={{ margin: `0 0 ${theme.spacing(1)} 0`, fontSize: theme.typography.size.md, color: theme.colors.text.primary }}>Quick Setup Guide:</h4>
+        <ol style={{ margin: '0', paddingLeft: theme.spacing(2.5), fontSize: theme.typography.size.sm, lineHeight: theme.typography.body.lineHeight, color: theme.colors.text.primary }}>
           <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
           <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
