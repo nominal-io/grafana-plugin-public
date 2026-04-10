@@ -899,7 +899,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       }}
                       closeMenuOnSelect={false}
                       placeholder="Select aggregations..."
-                      width={30}
+                      width={35}
                     />
                   )}
                 </InlineField>
