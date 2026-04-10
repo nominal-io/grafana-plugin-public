@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup, useTheme2 } from '@grafana/ui';
-import { QueryEditorProps, SelectableValue } from '@grafana/data';
+import { InlineField, Input, Stack, Select, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
+import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery } from '../types';
@@ -30,13 +30,15 @@ const copiedMessageClassName = css({
   animation: `${fadeInOut} 2s ease-in-out`,
 });
 
-const ridClickTargetClassName = css({
-  transition: 'background-color 0.15s ease, padding 0.15s ease',
-  '&:hover': {
-    backgroundColor: 'rgba(49, 46, 129, 0.125)',
-    borderRadius: '2px',
-    padding: '1px 3px',
-  },
+const getStyles = (theme: GrafanaTheme2) => ({
+  ridClickTarget: css({
+    transition: 'background-color 0.15s ease, padding 0.15s ease',
+    '&:hover': {
+      backgroundColor: theme.colors.action.hover,
+      borderRadius: '2px',
+      padding: '1px 3px',
+    },
+  }),
 });
 
 interface Asset {
@@ -102,6 +104,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const theme = useTheme2();
+  const styles = useStyles2(getStyles);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [dataScopes, setDataScopes] = useState<string[]>([]);
@@ -880,7 +883,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               <span
                 onClick={() => copyToClipboard(selectedAsset.rid)}
                 title="Click to copy RID"
-                className={ridClickTargetClassName}
+                className={styles.ridClickTarget}
                 style={{
                   fontFamily: 'Monaco, "Lucida Console", monospace',
                   color: theme.colors.primary.text,
