@@ -56,6 +56,14 @@ interface Asset {
 
 type AssetInputMethod = 'search' | 'direct';
 
+const NUMERIC_AGG_OPTIONS = [
+  { label: 'Mean', value: 'MEAN' },
+  { label: 'Min', value: 'MIN' },
+  { label: 'Max', value: 'MAX' },
+  { label: 'Count', value: 'COUNT' },
+  { label: 'Variance', value: 'VARIANCE' },
+];
+
 /** Data source types that support channel queries */
 const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection'];
 
@@ -706,15 +714,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // (used when the asset fetch fails) would silently hide the channel selector entirely.
   const hasChannelSearch = selectedAsset !== null;
 
-  // Aggregation options by channel type
-  const numericAggOptions = [
-    { label: 'Mean', value: 'MEAN' },
-    { label: 'Min', value: 'MIN' },
-    { label: 'Max', value: 'MAX' },
-    { label: 'Count', value: 'COUNT' },
-    { label: 'Variance', value: 'VARIANCE' },
-  ];
-
 
   const singleBoxStyle = {
     padding: '8px 12px',
@@ -870,7 +869,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     <Input value="Mode" disabled width={10} />
                   ) : (
                     <MultiSelect
-                      options={numericAggOptions}
+                      options={NUMERIC_AGG_OPTIONS}
                       value={query.aggregations?.length ? query.aggregations : ['MEAN']}
                       onChange={(selected) => {
                         const values = selected.map(s => s.value).filter((v): v is string => v != null);
