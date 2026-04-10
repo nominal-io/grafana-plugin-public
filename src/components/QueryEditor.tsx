@@ -707,7 +707,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const singleBoxStyle = {
     padding: theme.spacing(1, 1.5),
-    backgroundColor: configComplete ? theme.colors.success.shade : theme.colors.background.primary,
+    backgroundColor: theme.colors.background.primary,
     borderRadius: theme.shape.radius.default,
     border: configComplete ? `1px solid ${theme.colors.success.main}` : `1px solid ${theme.colors.border.weak}`,
     marginBottom: theme.spacing(0.5),
