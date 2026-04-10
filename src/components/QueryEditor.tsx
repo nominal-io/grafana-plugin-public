@@ -114,9 +114,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Tracks the aggregation value from the last query execution (or initial load).
   // onBlur compares the current selection against this to decide whether to re-run.
   const committedAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
-  // Sync ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
+  // Tracks the current (possibly uncommitted) selection synchronously.
+  // onChange updates this immediately so onBlur can read the latest value
+  // without waiting for React to re-render query.aggregations.
+  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : ['MEAN']);
+  // Sync pending ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
+  // Do NOT sync committedAggRef here — it should only update when onBlur actually fires a query.
+  // Otherwise the effect runs between onChange and onBlur, making them equal before the comparison.
   useEffect(() => {
-    committedAggRef.current = query.aggregations?.length ? query.aggregations : ['MEAN'];
+    pendingAggRef.current = query.aggregations?.length ? query.aggregations : ['MEAN'];
   }, [query.aggregations]);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
@@ -864,10 +870,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       onChange={(selected) => {
                         const values = selected.map(s => s.value).filter((v): v is string => v != null);
                         const aggs = values.length > 0 ? values : ['MEAN'];
+                        pendingAggRef.current = aggs;
                         onChange({ ...query, aggregations: aggs });
                       }}
                       onBlur={() => {
-                        const current = query.aggregations?.length ? query.aggregations : ['MEAN'];
+                        const current = pendingAggRef.current;
                         if (JSON.stringify(current) !== JSON.stringify(committedAggRef.current)) {
                           committedAggRef.current = current;
                           onRunQuery();
