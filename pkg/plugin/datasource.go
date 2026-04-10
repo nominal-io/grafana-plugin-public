@@ -49,10 +49,6 @@ var (
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
-var fallbackResourceHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
-}
-
 // proxyAllowedHeaders is the set of safe request headers forwarded to the
 // upstream Nominal API. Sensitive caller context like Cookie and
 // Authorization must never be relayed.
@@ -342,10 +338,7 @@ type Datasource struct {
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
-	if d != nil && d.resourceHTTPClient != nil {
-		return d.resourceHTTPClient
-	}
-	return fallbackResourceHTTPClient
+	return d.resourceHTTPClient
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -1087,7 +1080,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		log.DefaultLogger.Error("Failed to load plugin settings", "error", err)
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: "Unable to load settings: " + err.Error(),
+			Message: "Unable to load settings",
 		}, nil
 	}
 
@@ -1127,7 +1120,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: errorMsg + ": " + err.Error(),
+			Message: errorMsg,
 		}, nil
 	}
 
@@ -1206,7 +1199,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Failed to load settings: ` + err.Error() + `"}`),
+			Body: []byte(`{"error": "Failed to load settings"}`),
 		})
 	}
 
@@ -1254,7 +1247,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			statusCode = http.StatusBadGateway
 		}
 
-		errBody, _ := json.Marshal(map[string]string{"error": errorMsg + ": " + err.Error()})
+		errBody, _ := json.Marshal(map[string]string{"error": errorMsg})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
@@ -1302,24 +1295,26 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	}
 
 	if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
+		log.DefaultLogger.Error("Failed to parse channels search request body", "error", err)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusBadRequest,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Invalid request body: ` + err.Error() + `"}`),
+			Body: []byte(`{"error": "Invalid request body"}`),
 		})
 	}
 
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
+		log.DefaultLogger.Error("Failed to load settings for channels search", "error", err)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Failed to load settings: ` + err.Error() + `"}`),
+			Body: []byte(`{"error": "Failed to load settings"}`),
 		})
 	}
 
@@ -1364,7 +1359,7 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Channels search failed: ` + err.Error() + `"}`),
+			Body: []byte(`{"error": "Channels search failed"}`),
 		})
 	}
 
@@ -1387,12 +1382,13 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	// Convert response to JSON
 	responseBytes, err := json.Marshal(apiResponse)
 	if err != nil {
+		log.DefaultLogger.Error("Failed to marshal channels search response", "error", err)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Failed to marshal response: ` + err.Error() + `"}`),
+			Body: []byte(`{"error": "Failed to marshal response"}`),
 		})
 	}
 
@@ -1549,7 +1545,8 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body: " + err.Error()})
+			log.DefaultLogger.Error("Failed to parse assets variable request body", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusBadRequest,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1566,7 +1563,8 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings: " + err.Error()})
+		log.DefaultLogger.Error("Failed to load settings for assets variable", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1578,7 +1576,7 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	assetResponses, err := d.fetchAssetsForVariable(ctx, config, searchRequest.SearchText, searchRequest.MaxResults)
 	if err != nil {
 		log.DefaultLogger.Error("Failed to fetch assets", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch assets: " + err.Error()})
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch assets"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1613,7 +1611,8 @@ outer:
 
 	responseBytes, err := json.Marshal(result)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response: " + err.Error()})
+		log.DefaultLogger.Error("Failed to marshal assets variable response", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1652,8 +1651,8 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Debug("Failed to parse request body", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body: " + err.Error()})
+			log.DefaultLogger.Error("Failed to parse datascopes request body", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusBadRequest,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1686,7 +1685,8 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings: " + err.Error()})
+		log.DefaultLogger.Error("Failed to load settings for datascopes variable", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1698,7 +1698,7 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
 		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset: " + err.Error()})
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1730,7 +1730,8 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 
 	responseBytes, err := json.Marshal(result)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response: " + err.Error()})
+		log.DefaultLogger.Error("Failed to marshal datascopes response", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1770,8 +1771,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Debug("Failed to parse request body", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body: " + err.Error()})
+			log.DefaultLogger.Error("Failed to parse channel variables request body", "error", err)
+			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusBadRequest,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1803,7 +1804,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings: " + err.Error()})
+		log.DefaultLogger.Error("Failed to load settings for channel variables", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1815,7 +1817,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
 		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset: " + err.Error()})
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1890,7 +1892,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 		if err != nil {
 			log.DefaultLogger.Error("Channels search API call failed", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed: " + err.Error()})
+			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1928,7 +1930,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 	responseBytes, err := json.Marshal(result)
 	if err != nil {
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response: " + err.Error()})
+		log.DefaultLogger.Error("Failed to marshal channel variables response", "error", err)
+		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},

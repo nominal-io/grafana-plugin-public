@@ -3095,8 +3095,9 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	}
 
 	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
 	}
 
 	timeRange := backend.TimeRange{
@@ -3192,6 +3193,8 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		}
 	}
 
+	ds.resourceHTTPClient = server.Client()
+
 	// Two separate QueryData calls should reuse the cached asset.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
 		t.Fatalf("first call: %v", err)
@@ -3263,6 +3266,8 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 			},
 		}
 	}
+
+	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached channel type.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
