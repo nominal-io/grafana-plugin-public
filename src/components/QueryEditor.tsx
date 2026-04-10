@@ -873,7 +873,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
               {/* Aggregation selector - shown when a channel is selected */}
               {query?.channel && (
-                <InlineField label="Aggregation" tooltip="Aggregation functions to apply per time bucket">
+                <InlineField
+                  label="Aggregation(s)"
+                  tooltip={query?.channelDataType === 'string'
+                    ? "String channels only support Mode (most frequent value per time bucket)"
+                    : "Aggregation functions to apply per time bucket"}
+                >
                   {query?.channelDataType === 'string' ? (
                     <Input value="Mode" disabled width={10} />
                   ) : (
