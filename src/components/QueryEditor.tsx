@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup } from '@grafana/ui';
+import { InlineField, Input, Stack, Select, RadioButtonGroup, useTheme2 } from '@grafana/ui';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
@@ -28,6 +28,15 @@ const fadeInOut = keyframes({
 
 const copiedMessageClassName = css({
   animation: `${fadeInOut} 2s ease-in-out`,
+});
+
+const ridClickTargetClassName = css({
+  transition: 'background-color 0.15s ease, padding 0.15s ease',
+  '&:hover': {
+    backgroundColor: 'rgba(49, 46, 129, 0.125)',
+    borderRadius: '2px',
+    padding: '1px 3px',
+  },
 });
 
 interface Asset {
@@ -92,6 +101,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 };
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const theme = useTheme2();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [dataScopes, setDataScopes] = useState<string[]>([]);
@@ -694,9 +704,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const singleBoxStyle = {
     padding: '8px 12px',
-    backgroundColor: configComplete ? '#0d2818' : '#1f1f1f',
+    backgroundColor: configComplete ? theme.colors.success.shade : theme.colors.background.primary,
     borderRadius: '4px',
-    border: configComplete ? '1px solid #28a745' : '1px solid #333',
+    border: configComplete ? `1px solid ${theme.colors.success.main}` : `1px solid ${theme.colors.border.weak}`,
     marginBottom: '4px',
     width: '100%',
   };
@@ -843,20 +853,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             style={{
               marginTop: '6px',
               padding: '6px 10px',
-              backgroundColor: '#1f2937',
+              backgroundColor: theme.colors.background.secondary,
               borderRadius: '4px',
               fontSize: '11px',
-              border: '1px solid #374151',
-              color: '#e5e7eb',
+              border: `1px solid ${theme.colors.border.medium}`,
+              color: theme.colors.text.maxContrast,
               lineHeight: '1.4',
             }}
           >
-            <span style={{ color: '#9ca3af' }}>Asset:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Asset:</span>
             <span
               style={{
                 fontFamily: 'Monaco, "Lucida Console", monospace',
-                color: '#d1d5db',
-                backgroundColor: '#374151',
+                color: theme.colors.text.primary,
+                backgroundColor: theme.colors.background.canvas,
                 padding: '2px 5px',
                 borderRadius: '3px',
                 marginLeft: '6px',
@@ -865,31 +875,22 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             >
               {selectedAsset.title}
             </span>
-            <span style={{ color: '#9ca3af' }}>RID:</span>
+            <span style={{ color: theme.colors.text.secondary }}>RID:</span>
             <span style={{ position: 'relative', display: 'inline-block' }}>
               <span
                 onClick={() => copyToClipboard(selectedAsset.rid)}
                 title="Click to copy RID"
+                className={ridClickTargetClassName}
                 style={{
                   fontFamily: 'Monaco, "Lucida Console", monospace',
-                  color: '#a78bfa',
+                  color: theme.colors.primary.text,
                   cursor: 'pointer',
                   textDecoration: 'underline',
                   textDecorationStyle: 'dotted',
-                  textDecorationColor: '#6b46c1',
+                  textDecorationColor: theme.colors.primary.shade,
                   marginLeft: '6px',
                   marginRight: '8px',
                   fontSize: '10px',
-                  transition: 'background-color 0.15s ease, padding 0.15s ease',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#312e8120';
-                  e.currentTarget.style.borderRadius = '2px';
-                  e.currentTarget.style.padding = '1px 3px';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.padding = '0';
                 }}
               >
                 {selectedAsset.rid}
@@ -901,13 +902,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     position: 'absolute',
                     top: '-25px',
                     left: '6px',
-                    backgroundColor: '#065f46',
-                    color: '#a7f3d0',
+                    backgroundColor: theme.colors.success.shade,
+                    color: theme.colors.success.text,
                     padding: '2px 6px',
                     borderRadius: '3px',
                     fontSize: '9px',
                     whiteSpace: 'nowrap',
-                    border: '1px solid #047857',
+                    border: `1px solid ${theme.colors.success.border}`,
                     zIndex: 1000,
                   }}
                 >
@@ -915,10 +916,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </span>
               )}
             </span>
-            <span style={{ color: '#9ca3af' }}>Dataset Scopes:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Dataset Scopes:</span>
             <span
               style={{
-                color: '#34d399',
+                color: theme.colors.success.text,
                 fontWeight: '600',
                 marginLeft: '4px',
               }}
