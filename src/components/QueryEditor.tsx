@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup } from '@grafana/ui';
-import { QueryEditorProps, SelectableValue } from '@grafana/data';
+import { InlineField, Input, Stack, Select, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
+import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery } from '../types';
@@ -28,6 +28,17 @@ const fadeInOut = keyframes({
 
 const copiedMessageClassName = css({
   animation: `${fadeInOut} 2s ease-in-out`,
+});
+
+const getStyles = (theme: GrafanaTheme2) => ({
+  ridClickTarget: css({
+    transition: 'background-color 0.15s ease, padding 0.15s ease',
+    '&:hover': {
+      backgroundColor: theme.colors.action.hover,
+      borderRadius: theme.shape.radius.default,
+      padding: theme.spacing(0.125, 0.375),
+    },
+  }),
 });
 
 interface Asset {
@@ -92,6 +103,8 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 };
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const theme = useTheme2();
+  const styles = useStyles2(getStyles);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [dataScopes, setDataScopes] = useState<string[]>([]);
@@ -693,20 +706,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const hasChannelSearch = selectedAsset !== null;
 
   const singleBoxStyle = {
-    padding: '8px 12px',
-    backgroundColor: configComplete ? '#0d2818' : '#1f1f1f',
-    borderRadius: '4px',
-    border: configComplete ? '1px solid #28a745' : '1px solid #333',
-    marginBottom: '4px',
+    padding: theme.spacing(1, 1.5),
+    backgroundColor: theme.colors.background.primary,
+    borderRadius: theme.shape.radius.default,
+    border: configComplete ? `1px solid ${theme.colors.success.main}` : `1px solid ${theme.colors.border.weak}`,
+    marginBottom: theme.spacing(0.5),
     width: '100%',
   };
 
   return (
-    <div style={{ width: '100%', padding: '4px' }}>
+    <div style={{ width: '100%', padding: theme.spacing(0.5) }}>
       <div style={singleBoxStyle}>
         <Stack gap={1} direction="row" wrap alignItems="center">
           {/* Asset Input Method */}
-          <div style={{ marginRight: '8px' }}>
+          <div style={{ marginRight: theme.spacing(1) }}>
             <RadioButtonGroup
               options={[
                 { label: 'Asset Search', value: 'search' },
@@ -841,55 +854,46 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         {selectedAsset && (
           <div
             style={{
-              marginTop: '6px',
-              padding: '6px 10px',
-              backgroundColor: '#1f2937',
-              borderRadius: '4px',
-              fontSize: '11px',
-              border: '1px solid #374151',
-              color: '#e5e7eb',
-              lineHeight: '1.4',
+              marginTop: theme.spacing(0.75),
+              padding: theme.spacing(0.75, 1.25),
+              backgroundColor: theme.colors.background.secondary,
+              borderRadius: theme.shape.radius.default,
+              fontSize: theme.typography.bodySmall.fontSize,
+              border: `1px solid ${theme.colors.border.medium}`,
+              color: theme.colors.text.maxContrast,
+              lineHeight: theme.typography.bodySmall.lineHeight,
             }}
           >
-            <span style={{ color: '#9ca3af' }}>Asset:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Asset:</span>
             <span
               style={{
-                fontFamily: 'Monaco, "Lucida Console", monospace',
-                color: '#d1d5db',
-                backgroundColor: '#374151',
-                padding: '2px 5px',
-                borderRadius: '3px',
-                marginLeft: '6px',
-                marginRight: '8px',
+                fontFamily: theme.typography.fontFamilyMonospace,
+                color: theme.colors.text.primary,
+                backgroundColor: theme.colors.background.canvas,
+                padding: theme.spacing(0.25, 0.625),
+                borderRadius: theme.shape.radius.default,
+                marginLeft: theme.spacing(0.75),
+                marginRight: theme.spacing(1),
               }}
             >
               {selectedAsset.title}
             </span>
-            <span style={{ color: '#9ca3af' }}>RID:</span>
+            <span style={{ color: theme.colors.text.secondary }}>RID:</span>
             <span style={{ position: 'relative', display: 'inline-block' }}>
               <span
                 onClick={() => copyToClipboard(selectedAsset.rid)}
                 title="Click to copy RID"
+                className={styles.ridClickTarget}
                 style={{
-                  fontFamily: 'Monaco, "Lucida Console", monospace',
-                  color: '#a78bfa',
+                  fontFamily: theme.typography.fontFamilyMonospace,
+                  color: theme.colors.primary.text,
                   cursor: 'pointer',
                   textDecoration: 'underline',
                   textDecorationStyle: 'dotted',
-                  textDecorationColor: '#6b46c1',
-                  marginLeft: '6px',
-                  marginRight: '8px',
-                  fontSize: '10px',
-                  transition: 'background-color 0.15s ease, padding 0.15s ease',
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#312e8120';
-                  e.currentTarget.style.borderRadius = '2px';
-                  e.currentTarget.style.padding = '1px 3px';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.padding = '0';
+                  textDecorationColor: theme.colors.primary.shade,
+                  marginLeft: theme.spacing(0.75),
+                  marginRight: theme.spacing(1),
+                  fontSize: theme.typography.size.xs,
                 }}
               >
                 {selectedAsset.rid}
@@ -899,15 +903,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   className={copiedMessageClassName}
                   style={{
                     position: 'absolute',
-                    top: '-25px',
-                    left: '6px',
-                    backgroundColor: '#065f46',
-                    color: '#a7f3d0',
-                    padding: '2px 6px',
-                    borderRadius: '3px',
-                    fontSize: '9px',
+                    top: theme.spacing(-3),
+                    left: theme.spacing(0.75),
+                    backgroundColor: theme.colors.success.shade,
+                    color: theme.colors.success.text,
+                    padding: theme.spacing(0.25, 0.75),
+                    borderRadius: theme.shape.radius.default,
+                    fontSize: theme.typography.size.xs,
                     whiteSpace: 'nowrap',
-                    border: '1px solid #047857',
+                    border: `1px solid ${theme.colors.success.border}`,
                     zIndex: 1000,
                   }}
                 >
@@ -915,12 +919,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </span>
               )}
             </span>
-            <span style={{ color: '#9ca3af' }}>Dataset Scopes:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Dataset Scopes:</span>
             <span
               style={{
-                color: '#34d399',
-                fontWeight: '600',
-                marginLeft: '4px',
+                color: theme.colors.success.text,
+                fontWeight: theme.typography.fontWeightMedium,
+                marginLeft: theme.spacing(0.5),
               }}
             >
               {selectedAsset.dataScopes.filter((s) => s.dataSource.type === 'dataset').length}
