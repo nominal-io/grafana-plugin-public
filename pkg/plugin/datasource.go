@@ -434,7 +434,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
 				response.Responses[q.RefID] = backend.ErrDataResponse(
 					backend.StatusBadRequest,
-					fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE", badAgg),
+					fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
 				)
 				continue
 			} else {
