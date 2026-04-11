@@ -945,11 +945,6 @@ func aggColumnSpecFromEnum(agg string) aggColumnSpec {
 	}
 }
 
-// isNullTsRow returns true if the given row index has a null per-series timestamp.
-// For specs that use shared timestamps (nullTsRows entry is nil), always returns false.
-func isNullTsRow(nullRows []bool, idx int) bool {
-	return nullRows != nil && idx < len(nullRows) && nullRows[idx]
-}
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
@@ -2311,15 +2306,19 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 	// Per-series timestamps for specs that have their own timestamp column.
 	// Indexed by spec position; nil for specs using shared timestamps.
 	perSeriesTime := make([][]time.Time, len(specs))
-	// nullTsRows tracks rows where the per-series timestamp is null, so we can
-	// force the corresponding value to nil (a null timestamp means there was no
-	// point in that bucket, so plotting a value at epoch-zero would be wrong).
-	nullTsRows := make([][]bool, len(specs))
 	for i, spec := range specs {
 		if spec.TimestampCol != "" {
 			perSeriesTime[i] = []time.Time{}
 		}
 	}
+	// rowOffset tracks how many Arrow rows we've seen per spec across records,
+	// used to index into perSeriesValid which is built across all records.
+	rowOffset := make([]int, len(specs))
+	// perSeriesValid tracks which Arrow rows have non-null per-series timestamps.
+	// Rows with null timestamps (empty buckets) are dropped entirely from that
+	// series so that no zero-time entries appear in table panels. nil for specs
+	// that use the shared timestamp.
+	perSeriesValid := make([][]bool, len(specs))
 
 	for reader.Next() {
 		rec := reader.Record()
@@ -2335,8 +2334,8 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 		}
 
 		// Extract per-series timestamps for FIRST_POINT/LAST_POINT.
-		// When a timestamp is null (empty bucket), record a zero time and mark the
-		// row so the value extraction below forces the value to nil.
+		// Rows with null timestamps (empty buckets) are skipped entirely so the
+		// series has fewer rows rather than containing zero-time placeholders.
 		for si, rs := range resolved {
 			if rs.tsIdx < 0 {
 				continue
@@ -2346,27 +2345,27 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
 			for i := 0; i < nRows; i++ {
-				if perTsCol.IsNull(i) {
-					perSeriesTime[si] = append(perSeriesTime[si], time.Time{})
-					nullTsRows[si] = append(nullTsRows[si], true)
-				} else {
+				valid := !perTsCol.IsNull(i)
+				perSeriesValid[si] = append(perSeriesValid[si], valid)
+				if valid {
 					perSeriesTime[si] = append(perSeriesTime[si], time.Unix(0, perTsCol.Value(i)))
-					nullTsRows[si] = append(nullTsRows[si], false)
 				}
 			}
 		}
 
 		// Extract each field's values.
 		// Most aggregation columns are Float64, but COUNT is Uint32 in the API's Arrow schema.
-		// For series with per-row timestamp columns, a null timestamp forces the value to nil
-		// regardless of the value column content.
+		// For series with per-series timestamps, rows where the timestamp was null are
+		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
 			rawCol := rec.Column(rs.valueIdx)
-			baseIdx := len(seriesData[fi].Values) // offset for nullTsRows lookup
 			switch col := rawCol.(type) {
 			case *array.Float64:
 				for i := 0; i < nRows; i++ {
-					if col.IsNull(i) || isNullTsRow(nullTsRows[fi], baseIdx+i) {
+					if perSeriesValid[fi] != nil && !perSeriesValid[fi][rowOffset[fi]+i] {
+						continue
+					}
+					if col.IsNull(i) {
 						seriesData[fi].Values = append(seriesData[fi].Values, nil)
 					} else {
 						v := col.Value(i)
@@ -2375,7 +2374,10 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 				}
 			case *array.Uint32:
 				for i := 0; i < nRows; i++ {
-					if col.IsNull(i) || isNullTsRow(nullTsRows[fi], baseIdx+i) {
+					if perSeriesValid[fi] != nil && !perSeriesValid[fi][rowOffset[fi]+i] {
+						continue
+					}
+					if col.IsNull(i) {
 						seriesData[fi].Values = append(seriesData[fi].Values, nil)
 					} else {
 						v := float64(col.Value(i))
@@ -2384,6 +2386,9 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 				}
 			default:
 				return nil, fmt.Errorf("unsupported column type for %s: %T (expected Float64 or Uint32)", specs[fi].ValueCol, rawCol)
+			}
+			if perSeriesValid[fi] != nil {
+				rowOffset[fi] += nRows
 			}
 		}
 	}

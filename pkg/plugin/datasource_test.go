@@ -4091,38 +4091,46 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	first := series[0]
 	last := series[1]
 
-	// Bucket 0: first has data, last has null timestamp → value forced to nil
+	// first: buckets 0 and 2 have data, bucket 1 has null timestamp and is dropped.
+	if len(first.Values) != 2 {
+		t.Fatalf("first: expected 2 values (null-ts row dropped), got %d", len(first.Values))
+	}
+	if len(first.TimePoints) != 2 {
+		t.Fatalf("first: expected 2 timepoints, got %d", len(first.TimePoints))
+	}
 	if first.Values[0] == nil || *first.Values[0] != 10.0 {
 		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
 	}
-	if last.Values[0] != nil {
-		t.Errorf("last.Values[0] = %v, want nil (null timestamp should force nil value)", last.Values[0])
+	if first.Values[1] == nil || *first.Values[1] != 30.0 {
+		t.Errorf("first.Values[1] = %v, want 30.0", first.Values[1])
 	}
-
-	// Bucket 1: first has null timestamp → value forced to nil even though value column might have data
-	if first.Values[1] != nil {
-		t.Errorf("first.Values[1] = %v, want nil (null timestamp should force nil value)", first.Values[1])
-	}
-	// last has data in bucket 1
-	if last.Values[1] == nil || *last.Values[1] != 25.0 {
-		t.Errorf("last.Values[1] = %v, want 25.0", last.Values[1])
-	}
-
-	// Bucket 2: both have data
-	if first.Values[2] == nil || *first.Values[2] != 30.0 {
-		t.Errorf("first.Values[2] = %v, want 30.0", first.Values[2])
-	}
-	if last.Values[2] == nil || *last.Values[2] != 35.0 {
-		t.Errorf("last.Values[2] = %v, want 35.0", last.Values[2])
-	}
-
-	// Verify non-null timestamps are correct
 	if first.TimePoints[0] != time.Unix(0, 900000000000) {
 		t.Errorf("first.TimePoints[0] = %v, want %v", first.TimePoints[0], time.Unix(0, 900000000000))
 	}
-	if last.TimePoints[1] != time.Unix(0, 1999000000000) {
-		t.Errorf("last.TimePoints[1] = %v, want %v", last.TimePoints[1], time.Unix(0, 1999000000000))
+	if first.TimePoints[1] != time.Unix(0, 2900000000000) {
+		t.Errorf("first.TimePoints[1] = %v, want %v", first.TimePoints[1], time.Unix(0, 2900000000000))
 	}
+
+	// last: bucket 0 has null timestamp and is dropped, buckets 1 and 2 have data.
+	if len(last.Values) != 2 {
+		t.Fatalf("last: expected 2 values (null-ts row dropped), got %d", len(last.Values))
+	}
+	if len(last.TimePoints) != 2 {
+		t.Fatalf("last: expected 2 timepoints, got %d", len(last.TimePoints))
+	}
+	if last.Values[0] == nil || *last.Values[0] != 25.0 {
+		t.Errorf("last.Values[0] = %v, want 25.0", last.Values[0])
+	}
+	if last.Values[1] == nil || *last.Values[1] != 35.0 {
+		t.Errorf("last.Values[1] = %v, want 35.0", last.Values[1])
+	}
+	if last.TimePoints[0] != time.Unix(0, 1999000000000) {
+		t.Errorf("last.TimePoints[0] = %v, want %v", last.TimePoints[0], time.Unix(0, 1999000000000))
+	}
+	if last.TimePoints[1] != time.Unix(0, 2999000000000) {
+		t.Errorf("last.TimePoints[1] = %v, want %v", last.TimePoints[1], time.Unix(0, 2999000000000))
+	}
+
 }
 
 func TestValidateAndDedup(t *testing.T) {
