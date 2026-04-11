@@ -2,6 +2,14 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.9.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.9.1...nominal-grafana-plugin@0.9.2) (2026-04-11)
+
+
+### Bug Fixes
+
+* replace hardcoded styles with Grafana useTheme2() design tokens ([#48](https://github.com/nominal-io/grafana-plugin-public/issues/48)) ([82fa1a2](https://github.com/nominal-io/grafana-plugin-public/commit/82fa1a2a7c7a480f096dd2a47ab62a8bdffe1c0e))
+* sanitize error responses and remove fallback HTTP client ([#49](https://github.com/nominal-io/grafana-plugin-public/issues/49)) ([d7ca9cf](https://github.com/nominal-io/grafana-plugin-public/commit/d7ca9cfac488ef052c4cf84dd106b99d8254acfc))
+
 ## [0.9.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.9.0...nominal-grafana-plugin@0.9.1) (2026-04-09)
 
 
