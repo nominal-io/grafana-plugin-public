@@ -536,7 +536,7 @@ func validateAndDedup(aggs []string) ([]string, string) {
 	deduped := make([]string, 0, len(aggs))
 	for _, a := range aggs {
 		switch a {
-		case "MEAN", "MIN", "MAX", "COUNT", "VARIANCE":
+		case "MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT":
 			if !seen[a] {
 				seen[a] = true
 				deduped = append(deduped, a)
@@ -906,12 +906,21 @@ func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, end
 // Either NumericValues or StringValues is populated, never both.
 // IsEnum indicates which field to use when building data frames.
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
-// Each series carries its own timestamps to support FIRST_POINT/LAST_POINT
-// in a future version, where the event timestamps differ from bucket boundaries.
+// Each series carries its own timestamps. Most aggregations share end_bucket_timestamp,
+// but FIRST_POINT/LAST_POINT use their own timestamp columns (first_timestamp, last_timestamp).
 type AggregationSeries struct {
-	Name       string      // Arrow column name: "mean", "min", "max"
+	Name       string      // display name: "mean", "min", "max", "first", "last"
 	TimePoints []time.Time
 	Values     []*float64
+}
+
+// aggColumnSpec describes how an aggregation maps to Arrow columns.
+// Standard aggregations (MEAN, MIN, etc.) have a single value column and use shared timestamps.
+// FIRST_POINT/LAST_POINT have a value column plus their own timestamp column.
+type aggColumnSpec struct {
+	Name      string // display name for the series (e.g. "mean", "first")
+	ValueCol  string // Arrow column name for values (e.g. "mean", "first_value")
+	TimestampCol string // Arrow column name for timestamps; empty means use shared end_bucket_timestamp
 }
 
 type TransformResult struct {
@@ -925,6 +934,28 @@ type TransformResult struct {
 	// Enum path
 	StringValues []string
 	IsEnum       bool
+}
+
+// aggColumnSpecFromEnum maps an aggregation enum value (e.g. "MEAN", "FIRST_POINT")
+// to the Arrow column names it produces. Standard aggregations use a single lowercase
+// column name and share end_bucket_timestamp. FIRST_POINT/LAST_POINT each produce
+// a value column and their own timestamp column.
+func aggColumnSpecFromEnum(agg string) aggColumnSpec {
+	switch agg {
+	case "FIRST_POINT":
+		return aggColumnSpec{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}
+	case "LAST_POINT":
+		return aggColumnSpec{Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"}
+	default:
+		col := strings.ToLower(agg)
+		return aggColumnSpec{Name: col, ValueCol: col, TimestampCol: ""}
+	}
+}
+
+// isNullTsRow returns true if the given row index has a null per-series timestamp.
+// For specs that use shared timestamps (nullTsRows entry is nil), always returns false.
+func isNullTsRow(nullRows []bool, idx int) bool {
+	return nullRows != nil && idx < len(nullRows) && nullRows[idx]
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
@@ -970,14 +1001,14 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		// arrowBucketedNumericFunc - Arrow format bucketed numeric response.
 		// Extracts one AggregationSeries per requested aggregation field.
 		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {
-			var colNames []string
+			var specs []aggColumnSpec
 			for _, agg := range qm.Aggregations {
-				colNames = append(colNames, strings.ToLower(agg))
+				specs = append(specs, aggColumnSpecFromEnum(agg))
 			}
-			if len(colNames) == 0 {
+			if len(specs) == 0 {
 				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
 			}
-			series, err := d.extractArrowBucketedNumericSeries(arrowBucketed, colNames)
+			series, err := d.extractArrowBucketedNumericSeries(arrowBucketed, specs)
 			if err != nil {
 				return err
 			}
@@ -2221,11 +2252,12 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 }
 
 // extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
-// multiple named numeric columns, returning one AggregationSeries per field.
-// All series share the end_bucket_timestamp column as their time axis.
+// one AggregationSeries per aggColumnSpec. Standard aggregations share the
+// end_bucket_timestamp column. FIRST_POINT/LAST_POINT use their own timestamp
+// columns (first_timestamp, last_timestamp) so each series can have independent time axes.
 func (d *Datasource) extractArrowBucketedNumericSeries(
 	arrowPlot computeapi.ArrowBucketedNumericPlot,
-	requestedFields []string,
+	specs []aggColumnSpec,
 ) ([]AggregationSeries, error) {
 	buf := bytes.NewReader(arrowPlot.ArrowBinary)
 	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
@@ -2236,35 +2268,61 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 
 	schema := reader.Schema()
 
-	// Locate the timestamp column
+	// Locate the shared timestamp column. The API always includes end_bucket_timestamp
+	// even for FIRST_POINT/LAST_POINT-only queries, so we require it unconditionally.
 	tsIdx := schema.FieldIndices("end_bucket_timestamp")
 	if len(tsIdx) == 0 {
 		return nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
 	}
 
-	// Locate each requested field column
-	fieldIndices := make([]int, len(requestedFields))
-	for i, name := range requestedFields {
-		idx := schema.FieldIndices(name)
+	// Locate each spec's value column and optional timestamp column
+	type resolvedSpec struct {
+		valueIdx int
+		tsIdx    int // -1 means use shared end_bucket_timestamp
+	}
+	resolved := make([]resolvedSpec, len(specs))
+	for i, spec := range specs {
+		idx := schema.FieldIndices(spec.ValueCol)
 		if len(idx) == 0 {
-			return nil, fmt.Errorf("Arrow schema missing requested column %q: have %v", name, schema.Fields())
+			return nil, fmt.Errorf("Arrow schema missing requested column %q: have %v", spec.ValueCol, schema.Fields())
 		}
-		fieldIndices[i] = idx[0]
+		resolved[i].valueIdx = idx[0]
+		if spec.TimestampCol != "" {
+			tsColIdx := schema.FieldIndices(spec.TimestampCol)
+			if len(tsColIdx) == 0 {
+				return nil, fmt.Errorf("Arrow schema missing timestamp column %q: have %v", spec.TimestampCol, schema.Fields())
+			}
+			resolved[i].tsIdx = tsColIdx[0]
+		} else {
+			resolved[i].tsIdx = -1
+		}
 	}
 
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
-	seriesData := make([]AggregationSeries, len(requestedFields))
-	for i, name := range requestedFields {
-		seriesData[i].Name = name
+	seriesData := make([]AggregationSeries, len(specs))
+	for i, spec := range specs {
+		seriesData[i].Name = spec.Name
 		seriesData[i].Values = []*float64{}
 	}
 	sharedTimePoints := []time.Time{}
+	// Per-series timestamps for specs that have their own timestamp column.
+	// Indexed by spec position; nil for specs using shared timestamps.
+	perSeriesTime := make([][]time.Time, len(specs))
+	// nullTsRows tracks rows where the per-series timestamp is null, so we can
+	// force the corresponding value to nil (a null timestamp means there was no
+	// point in that bucket, so plotting a value at epoch-zero would be wrong).
+	nullTsRows := make([][]bool, len(specs))
+	for i, spec := range specs {
+		if spec.TimestampCol != "" {
+			perSeriesTime[i] = []time.Time{}
+		}
+	}
 
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
 
-		// Extract timestamps
+		// Extract shared timestamps
 		tsCol, ok := rec.Column(tsIdx[0]).(*array.Int64)
 		if !ok {
 			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(tsIdx[0]))
@@ -2273,14 +2331,39 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
 		}
 
+		// Extract per-series timestamps for FIRST_POINT/LAST_POINT.
+		// When a timestamp is null (empty bucket), record a zero time and mark the
+		// row so the value extraction below forces the value to nil.
+		for si, rs := range resolved {
+			if rs.tsIdx < 0 {
+				continue
+			}
+			perTsCol, ok := rec.Column(rs.tsIdx).(*array.Int64)
+			if !ok {
+				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
+			}
+			for i := 0; i < nRows; i++ {
+				if perTsCol.IsNull(i) {
+					perSeriesTime[si] = append(perSeriesTime[si], time.Time{})
+					nullTsRows[si] = append(nullTsRows[si], true)
+				} else {
+					perSeriesTime[si] = append(perSeriesTime[si], time.Unix(0, perTsCol.Value(i)))
+					nullTsRows[si] = append(nullTsRows[si], false)
+				}
+			}
+		}
+
 		// Extract each field's values.
 		// Most aggregation columns are Float64, but COUNT is Uint32 in the API's Arrow schema.
-		for fi, colIdx := range fieldIndices {
-			rawCol := rec.Column(colIdx)
+		// For series with per-row timestamp columns, a null timestamp forces the value to nil
+		// regardless of the value column content.
+		for fi, rs := range resolved {
+			rawCol := rec.Column(rs.valueIdx)
+			baseIdx := len(seriesData[fi].Values) // offset for nullTsRows lookup
 			switch col := rawCol.(type) {
 			case *array.Float64:
 				for i := 0; i < nRows; i++ {
-					if col.IsNull(i) {
+					if col.IsNull(i) || isNullTsRow(nullTsRows[fi], baseIdx+i) {
 						seriesData[fi].Values = append(seriesData[fi].Values, nil)
 					} else {
 						v := col.Value(i)
@@ -2289,7 +2372,7 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 				}
 			case *array.Uint32:
 				for i := 0; i < nRows; i++ {
-					if col.IsNull(i) {
+					if col.IsNull(i) || isNullTsRow(nullTsRows[fi], baseIdx+i) {
 						seriesData[fi].Values = append(seriesData[fi].Values, nil)
 					} else {
 						v := float64(col.Value(i))
@@ -2297,7 +2380,7 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 					}
 				}
 			default:
-				return nil, fmt.Errorf("unsupported column type for %s: %T (expected Float64 or Uint32)", requestedFields[fi], rawCol)
+				return nil, fmt.Errorf("unsupported column type for %s: %T (expected Float64 or Uint32)", specs[fi].ValueCol, rawCol)
 			}
 		}
 	}
@@ -2306,9 +2389,13 @@ func (d *Datasource) extractArrowBucketedNumericSeries(
 		return nil, fmt.Errorf("Arrow IPC read error: %w", err)
 	}
 
-	// Share the timestamp slice across all series — do not mutate after assignment.
+	// Assign timestamps: per-series for FIRST/LAST, shared for everything else.
 	for i := range seriesData {
-		seriesData[i].TimePoints = sharedTimePoints
+		if perSeriesTime[i] != nil {
+			seriesData[i].TimePoints = perSeriesTime[i]
+		} else {
+			seriesData[i].TimePoints = sharedTimePoints
+		}
 	}
 
 	return seriesData, nil

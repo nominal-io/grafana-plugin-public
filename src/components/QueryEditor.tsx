@@ -62,6 +62,8 @@ const NUMERIC_AGG_OPTIONS = [
   { label: 'Max', value: 'MAX' },
   { label: 'Count', value: 'COUNT' },
   { label: 'Variance', value: 'VARIANCE' },
+  { label: 'First', value: 'FIRST_POINT' },
+  { label: 'Last', value: 'LAST_POINT' },
 ];
 
 /** Data source types that support channel queries */
