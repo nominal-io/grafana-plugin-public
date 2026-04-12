@@ -492,6 +492,56 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
 
+  // Infer channelDataType when the resolved channel changes (e.g. template variable).
+  // The backend does its own inference, but the frontend needs the correct type to show
+  // the right aggregation UI (numeric MultiSelect vs disabled "Mode" / "Logs (raw)").
+  useEffect(() => {
+    if (!resolvedChannel || resolvedChannel.includes('$') || !selectedAsset) {
+      return;
+    }
+    // Skip if type was already set by direct dropdown selection (not a variable)
+    if (query?.channelDataType && !query?.channel?.includes('$')) {
+      return;
+    }
+    const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
+    const scopes = (selectedAsset.dataScopes || []).filter(
+      (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
+    );
+    const dataSourceRids: string[] = [];
+    for (const scope of scopes) {
+      const ds = scope.dataSource;
+      if (!ds) {
+        continue;
+      }
+      if (ds.type === 'dataset' && ds.dataset) {
+        dataSourceRids.push(ds.dataset);
+      } else if (ds.type === 'connection' && ds.connection) {
+        dataSourceRids.push(ds.connection);
+      } else if (ds.type === 'logSet' && ds.logSet) {
+        dataSourceRids.push(ds.logSet);
+      }
+    }
+    if (dataSourceRids.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    getBackendSrv()
+      .post(`${datasource.url}/channels`, { dataSourceRids, searchText: resolvedChannel })
+      .then((response) => {
+        if (cancelled || !response?.channels) {
+          return;
+        }
+        const match = response.channels.find((ch: any) => ch.name === resolvedChannel);
+        if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
+          onChange({ ...queryRef.current, channelDataType: match.dataType });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedChannel, selectedAsset, resolvedDataScopeName, datasource]);
+
   // Trigger graph update when query is complete
   useEffect(() => {
     const q = queryRef.current;
