@@ -731,6 +731,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				frame.Name = qm.Channel
 				frame.Meta = &data.FrameMeta{
 					Type:                   data.FrameTypeLogLines,
+					TypeVersion:            data.FrameTypeVersion{0, 1},
 					PreferredVisualization: data.VisTypeLogs,
 				}
 
