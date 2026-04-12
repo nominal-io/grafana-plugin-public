@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -575,7 +576,7 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	if qm.ChannelDataType == "log" {
 		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields
 		pageInfo := computeapi.PageInfo{
-			PageSize: 499, // API enforces pageSize < 500 for log queries
+			PageSize: -499, // Negative = newest first; API enforces abs(pageSize) < 500
 		}
 		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
@@ -727,6 +728,34 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 			}
 
 			if result.IsLog {
+				// Sort descending (newest first) for Grafana's default log sort order.
+				// Grafana's infinite scroll uses the boundary row's timestamp
+				// to compute the next time-range query.
+				if len(result.LogTimes) > 1 {
+					indices := make([]int, len(result.LogTimes))
+					for i := range indices {
+						indices[i] = i
+					}
+					sort.SliceStable(indices, func(a, b int) bool {
+						return result.LogTimes[indices[a]].After(result.LogTimes[indices[b]])
+					})
+
+					sortedTimes := make([]time.Time, len(indices))
+					sortedBodies := make([]string, len(indices))
+					sortedIDs := make([]string, len(indices))
+					sortedLabels := make([]json.RawMessage, len(indices))
+					for i, idx := range indices {
+						sortedTimes[i] = result.LogTimes[idx]
+						sortedBodies[i] = result.LogBodies[idx]
+						sortedIDs[i] = result.LogIDs[idx]
+						sortedLabels[i] = result.LogLabels[idx]
+					}
+					result.LogTimes = sortedTimes
+					result.LogBodies = sortedBodies
+					result.LogIDs = sortedIDs
+					result.LogLabels = sortedLabels
+				}
+
 				frame := data.NewFrame("logs")
 				frame.Name = qm.Channel
 				frame.Meta = &data.FrameMeta{
@@ -747,13 +776,6 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 						data.NewField("timestamp", nil, []time.Time{}),
 						data.NewField("body", nil, []string{}),
 					)
-				}
-
-				if result.LogTruncated {
-					frame.Meta.Notices = append(frame.Meta.Notices, data.Notice{
-						Severity: data.NoticeSeverityWarning,
-						Text:     "Log results truncated to 499 entries. Narrow your time range for complete results.",
-					})
 				}
 
 				log.DefaultLogger.Debug("Successfully processed log query",
@@ -941,7 +963,6 @@ type TransformResult struct {
 
 	// Log path
 	IsLog        bool
-	LogTruncated bool              // true if NextPageToken was non-nil (more data available)
 	LogTimes     []time.Time
 	LogBodies    []string
 	LogIDs       []string
@@ -1063,10 +1084,8 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				result.LogLabels = append(result.LogLabels, json.RawMessage(labelsJSON))
 			}
 			result.IsLog = true
-			result.LogTruncated = paged.NextPageToken != nil
 			log.DefaultLogger.Debug("Extracted paged log data",
-				"entries", len(paged.Timestamps),
-				"truncated", result.LogTruncated)
+				"entries", len(paged.Timestamps))
 			return nil
 		},
 		// logPointFunc — single log point response
