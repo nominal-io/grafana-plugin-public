@@ -264,6 +264,10 @@ func (d *Datasource) inferChannelDataType(ctx context.Context, config *models.Pl
 			if scope.DataSource.Connection != nil {
 				ridStr = *scope.DataSource.Connection
 			}
+		case "logSet":
+			if scope.DataSource.LogSet != nil {
+				ridStr = *scope.DataSource.LogSet
+			}
 		}
 
 		if ridStr == "" {
@@ -417,7 +421,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
 		// For enum channels, aggregations are not used — skip validation.
 		qm.ExplicitAggregations = len(qm.Aggregations) > 0
-		if qm.ChannelDataType != "string" {
+		if qm.ChannelDataType != "string" && qm.ChannelDataType != "log" {
 			if !qm.ExplicitAggregations {
 				qm.Aggregations = []string{AggMean}
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
@@ -542,6 +546,13 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		}
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
 		series = computeapi1.NewSeriesFromEnum(enumSeries)
+	} else if qm.ChannelDataType == "log" {
+		// Log path — no bucketing, no aggregation, no TimeShift needed
+		channelSeries := computeapi.NewChannelSeriesFromAsset(
+			d.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
+		)
+		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
+		series = computeapi1.NewSeriesFromLog(logSeries)
 	} else {
 		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
@@ -561,7 +572,18 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		buckets = int(maxDataPoints)
 	}
 	var seriesNode computeapi1.SummarizeSeries
-	if qm.ChannelDataType == "string" {
+	if qm.ChannelDataType == "log" {
+		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields
+		pageInfo := computeapi.PageInfo{
+			PageSize: 499, // API enforces pageSize < 500 for log queries
+		}
+		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
+		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
+		seriesNode = computeapi1.SummarizeSeries{
+			Input:                 series,
+			SummarizationStrategy: &summarizationStrategy,
+		}
+	} else if qm.ChannelDataType == "string" {
 		// Enum path: no OutputFormat or NumericOutputFields
 		seriesNode = computeapi1.SummarizeSeries{
 			Input:   series,
@@ -704,7 +726,39 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
-			if len(result.AggSeries) > 0 {
+			if result.IsLog {
+				frame := data.NewFrame("logs")
+				frame.Name = qm.Channel
+				frame.Meta = &data.FrameMeta{
+					Type:                   data.FrameTypeLogLines,
+					PreferredVisualization: data.VisTypeLogs,
+				}
+
+				if len(result.LogTimes) > 0 {
+					frame.Fields = append(frame.Fields,
+						data.NewField("timestamp", nil, result.LogTimes),
+						data.NewField("body", nil, result.LogBodies),
+						data.NewField("id", nil, result.LogIDs),
+						data.NewField("labels", nil, result.LogLabels),
+					)
+				} else {
+					frame.Fields = append(frame.Fields,
+						data.NewField("timestamp", nil, []time.Time{}),
+						data.NewField("body", nil, []string{}),
+					)
+				}
+
+				if result.LogTruncated {
+					frame.Meta.Notices = append(frame.Meta.Notices, data.Notice{
+						Severity: data.NoticeSeverityWarning,
+						Text:     "Log results truncated to 499 entries. Narrow your time range for complete results.",
+					})
+				}
+
+				log.DefaultLogger.Debug("Successfully processed log query",
+					"entries", len(result.LogTimes))
+				response.Frames = append(response.Frames, frame)
+			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
@@ -790,7 +844,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		},
 		// errorFunc - called when compute failed
 		func(errorResult computeapi.ErrorResult) error {
-			errMsg := fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code)
+			errMsg := fmt.Sprintf("Compute error: %v (code: %v) [channel=%s, dataType=%s]", errorResult.ErrorType, errorResult.Code, qm.Channel, qm.ChannelDataType)
 
 			// Add a hint for any ChannelHasWrongType error: the query's type setting
 			// and the channel's actual type don't agree. Re-selecting the channel in
@@ -883,6 +937,14 @@ type TransformResult struct {
 	// Enum path
 	StringValues []string
 	IsEnum       bool
+
+	// Log path
+	IsLog        bool
+	LogTruncated bool              // true if NextPageToken was non-nil (more data available)
+	LogTimes     []time.Time
+	LogBodies    []string
+	LogIDs       []string
+	LogLabels    []json.RawMessage // Args serialized as JSON per entry
 }
 
 
@@ -980,8 +1042,52 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		nil, // arrowEnumFunc
 		nil, // arrowBucketedEnumFunc
-		nil, // pagedLogFunc
-		nil, // logPointFunc
+		// pagedLogFunc — paginated log response
+		func(paged computeapi.PagedLogPlot) error {
+			for i := 0; i < len(paged.Timestamps) && i < len(paged.Values); i++ {
+				ts := paged.Timestamps[i]
+				val := paged.Values[i]
+
+				seconds := int64(ts.Seconds)
+				nanos := int64(ts.Nanos)
+				result.LogTimes = append(result.LogTimes, time.Unix(seconds, nanos))
+				result.LogBodies = append(result.LogBodies, val.Message)
+				result.LogIDs = append(result.LogIDs, val.Id.String())
+
+				labelsJSON, err := json.Marshal(val.Args)
+				if err != nil {
+					log.DefaultLogger.Warn("Failed to marshal log args", "index", i, "error", err)
+					labelsJSON = []byte("{}")
+				}
+				result.LogLabels = append(result.LogLabels, json.RawMessage(labelsJSON))
+			}
+			result.IsLog = true
+			result.LogTruncated = paged.NextPageToken != nil
+			log.DefaultLogger.Debug("Extracted paged log data",
+				"entries", len(paged.Timestamps),
+				"truncated", result.LogTruncated)
+			return nil
+		},
+		// logPointFunc — single log point response
+		func(lp *computeapi.LogPoint) error {
+			if lp == nil {
+				return nil
+			}
+			seconds := int64(lp.Timestamp.Seconds)
+			nanos := int64(lp.Timestamp.Nanos)
+			result.LogTimes = []time.Time{time.Unix(seconds, nanos)}
+			result.LogBodies = []string{lp.Value.Message}
+			result.LogIDs = []string{lp.Value.Id.String()}
+
+			labelsJSON, err := json.Marshal(lp.Value.Args)
+			if err != nil {
+				log.DefaultLogger.Warn("Failed to marshal log args", "error", err)
+				labelsJSON = []byte("{}")
+			}
+			result.LogLabels = []json.RawMessage{json.RawMessage(labelsJSON)}
+			result.IsLog = true
+			return nil
+		},
 		nil, // cartesianFunc
 		nil, // bucketedCartesianFunc
 		nil, // bucketedCartesian3dFunc
@@ -1480,6 +1586,8 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	switch channel.DataType.Value() {
 	case api.SeriesDataType_STRING, api.SeriesDataType_STRING_ARRAY:
 		return "string"
+	case api.SeriesDataType_LOG:
+		return "log"
 	default:
 		return "numeric"
 	}
@@ -1651,7 +1759,7 @@ outer:
 		for _, asset := range resp.Results {
 			hasSupported := false
 			for _, scope := range asset.DataScopes {
-				if scope.DataSource.Type == "dataset" || scope.DataSource.Type == "connection" {
+				if scope.DataSource.Type == "dataset" || scope.DataSource.Type == "connection" || scope.DataSource.Type == "logSet" {
 					hasSupported = true
 					break
 				}
@@ -1779,7 +1887,7 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	result := make([]map[string]string, 0)
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type
-		if dsType == "dataset" || dsType == "connection" {
+		if dsType == "dataset" || dsType == "connection" || dsType == "logSet" {
 			result = append(result, map[string]string{
 				"text":  scope.DataScopeName,
 				"value": scope.DataScopeName,
@@ -1897,7 +2005,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	var dataSourceRids []rids.DataSourceRid
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type
-		if dsType != "dataset" && dsType != "connection" {
+		if dsType != "dataset" && dsType != "connection" && dsType != "logSet" {
 			continue
 		}
 
@@ -1911,6 +2019,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 			ridStr = *scope.DataSource.Dataset
 		} else if dsType == "connection" && scope.DataSource.Connection != nil {
 			ridStr = *scope.DataSource.Connection
+		} else if dsType == "logSet" && scope.DataSource.LogSet != nil {
+			ridStr = *scope.DataSource.LogSet
 		}
 
 		if ridStr != "" {
@@ -2014,6 +2124,7 @@ type AssetDataSource struct {
 	Type       string  `json:"type"`
 	Dataset    *string `json:"dataset,omitempty"`
 	Connection *string `json:"connection,omitempty"`
+	LogSet     *string `json:"logSet,omitempty"`
 }
 
 // AssetDataScope represents a single data scope entry on an asset.

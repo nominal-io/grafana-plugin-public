@@ -17,6 +17,7 @@ type ChannelOption = SelectableValue<string> & { dataType?: string };
 const DATA_TYPE_ICONS: Record<string, string> = {
   string: 'font', // Grafana's standard icon for FieldType.string
   numeric: 'calculator-alt', // Grafana's standard icon for FieldType.number
+  log: 'gf-logs',
 };
 
 const fadeInOut = keyframes({
@@ -78,7 +79,7 @@ const NUMERIC_AGG_OPTIONS = [
 ];
 
 /** Data source types that support channel queries */
-const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection'];
+const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
 
 /** Creates a minimal asset placeholder when the actual asset can't be fetched.
  *  dataScopes is intentionally empty — we don't fabricate scope data. */
@@ -243,8 +244,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         // Only collect RIDs for supported data source types (dataset, connection)
         if (ds.type === 'dataset' && ds.dataset) {
           dataSourceRids.push(ds.dataset);
-        } else if (ds.type === 'connection' && (ds as any).connection) {
-          dataSourceRids.push((ds as any).connection);
+        } else if (ds.type === 'connection' && ds.connection) {
+          dataSourceRids.push(ds.connection);
+        } else if (ds.type === 'logSet' && ds.logSet) {
+          dataSourceRids.push(ds.logSet);
         }
       }
       if (dataSourceRids.length === 0) {
@@ -877,10 +880,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   label="Aggregation(s)"
                   tooltip={query?.channelDataType === 'string'
                     ? "String channels only support Mode (most frequent value per time bucket)"
+                    : query?.channelDataType === 'log'
+                    ? "Log channels return raw entries without aggregation"
                     : "Aggregation functions to apply per time bucket"}
                 >
                   {query?.channelDataType === 'string' ? (
                     <Input value="Mode" disabled width={10} />
+                  ) : query?.channelDataType === 'log' ? (
+                    <Input value="Logs (raw)" disabled width={12} />
                   ) : (
                     <MultiSelect
                       options={NUMERIC_AGG_OPTIONS}
