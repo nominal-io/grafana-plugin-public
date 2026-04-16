@@ -116,6 +116,41 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
+// extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
+// appends the values to dest. Rows where validMask[offset+i] is false are skipped
+// (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask to include all rows.
+func extractColumnValues(dest *[]*float64, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
+	switch col := rawCol.(type) {
+	case *array.Float64:
+		for i := 0; i < nRows; i++ {
+			if validMask != nil && !validMask[offset+i] {
+				continue
+			}
+			if col.IsNull(i) {
+				*dest = append(*dest, nil)
+			} else {
+				v := col.Value(i)
+				*dest = append(*dest, &v)
+			}
+		}
+	case *array.Uint32:
+		for i := 0; i < nRows; i++ {
+			if validMask != nil && !validMask[offset+i] {
+				continue
+			}
+			if col.IsNull(i) {
+				*dest = append(*dest, nil)
+			} else {
+				v := float64(col.Value(i))
+				*dest = append(*dest, &v)
+			}
+		}
+	default:
+		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
+	}
+	return nil
+}
+
 // extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
 // one AggregationSeries per aggColumnSpec. Standard aggregations share the
 // end_bucket_timestamp column. FIRST_POINT/LAST_POINT use their own timestamp
@@ -194,38 +229,11 @@ func extractArrowBucketedNumericSeries(
 		}
 
 		// Extract each field's values.
-		// Most aggregation columns are Float64, but COUNT is Uint32 in the API's Arrow schema.
 		// For series with per-series timestamps, rows where the timestamp was null are
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
-			rawCol := rec.Column(rs.valueIdx)
-			switch col := rawCol.(type) {
-			case *array.Float64:
-				for i := 0; i < nRows; i++ {
-					if perSeriesValid[fi] != nil && !perSeriesValid[fi][rowOffset[fi]+i] {
-						continue
-					}
-					if col.IsNull(i) {
-						seriesData[fi].Values = append(seriesData[fi].Values, nil)
-					} else {
-						v := col.Value(i)
-						seriesData[fi].Values = append(seriesData[fi].Values, &v)
-					}
-				}
-			case *array.Uint32:
-				for i := 0; i < nRows; i++ {
-					if perSeriesValid[fi] != nil && !perSeriesValid[fi][rowOffset[fi]+i] {
-						continue
-					}
-					if col.IsNull(i) {
-						seriesData[fi].Values = append(seriesData[fi].Values, nil)
-					} else {
-						v := float64(col.Value(i))
-						seriesData[fi].Values = append(seriesData[fi].Values, &v)
-					}
-				}
-			default:
-				return nil, fmt.Errorf("unsupported column type for %s: %T (expected Float64 or Uint32)", specs[fi].ValueCol, rawCol)
+			if err := extractColumnValues(&seriesData[fi].Values, rec.Column(rs.valueIdx), perSeriesValid[fi], rowOffset[fi], nRows); err != nil {
+				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
 			}
 			if perSeriesValid[fi] != nil {
 				rowOffset[fi] += nRows
