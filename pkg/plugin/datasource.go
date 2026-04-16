@@ -419,7 +419,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		qm.ExplicitAggregations = len(qm.Aggregations) > 0
 		if qm.ChannelDataType != "string" {
 			if !qm.ExplicitAggregations {
-				qm.Aggregations = []string{"MEAN"}
+				qm.Aggregations = []string{AggMean}
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
 				response.Responses[q.RefID] = backend.ErrDataResponse(
 					backend.StatusBadRequest,

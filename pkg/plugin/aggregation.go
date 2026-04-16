@@ -3,7 +3,6 @@ package plugin
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -12,6 +11,17 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+)
+
+// Aggregation enum constants matching the API's expected values.
+const (
+	AggMean       = "MEAN"
+	AggMin        = "MIN"
+	AggMax        = "MAX"
+	AggCount      = "COUNT"
+	AggVariance   = "VARIANCE"
+	AggFirstPoint = "FIRST_POINT"
+	AggLastPoint  = "LAST_POINT"
 )
 
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
@@ -32,20 +42,23 @@ type aggColumnSpec struct {
 	TimestampCol string // Arrow column name for timestamps; empty means use shared end_bucket_timestamp
 }
 
-// aggColumnSpecFromEnum maps an aggregation enum value (e.g. "MEAN", "FIRST_POINT")
-// to the Arrow column names it produces. Standard aggregations use a single lowercase
-// column name and share end_bucket_timestamp. FIRST_POINT/LAST_POINT each produce
-// a value column and their own timestamp column.
+// aggSpecs is the single source of truth for all supported aggregations.
+// To add a new aggregation: add a constant above, then add one entry here.
+// Validation (validateAndDedup) and column mapping (aggColumnSpecFromEnum)
+// both derive from this table.
+var aggSpecs = map[string]aggColumnSpec{
+	AggMean:       {Name: "mean", ValueCol: "mean"},
+	AggMin:        {Name: "min", ValueCol: "min"},
+	AggMax:        {Name: "max", ValueCol: "max"},
+	AggCount:      {Name: "count", ValueCol: "count"},
+	AggVariance:   {Name: "variance", ValueCol: "variance"},
+	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
+	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
+}
+
+// aggColumnSpecFromEnum looks up the Arrow column spec for an aggregation enum value.
 func aggColumnSpecFromEnum(agg string) aggColumnSpec {
-	switch agg {
-	case "FIRST_POINT":
-		return aggColumnSpec{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}
-	case "LAST_POINT":
-		return aggColumnSpec{Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"}
-	default:
-		col := strings.ToLower(agg)
-		return aggColumnSpec{Name: col, ValueCol: col, TimestampCol: ""}
-	}
+	return aggSpecs[agg]
 }
 
 // validateAndDedup checks that all aggregation names are known and removes duplicates,
@@ -55,13 +68,12 @@ func validateAndDedup(aggs []string) ([]string, string) {
 	seen := make(map[string]bool, len(aggs))
 	deduped := make([]string, 0, len(aggs))
 	for _, a := range aggs {
-		switch a {
-		case "MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT":
+		if _, ok := aggSpecs[a]; ok {
 			if !seen[a] {
 				seen[a] = true
 				deduped = append(deduped, a)
 			}
-		default:
+		} else {
 			return nil, a
 		}
 	}
