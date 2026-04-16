@@ -501,6 +501,149 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 
 }
 
+// TestTransformArrowFirstLastWithNullsMultiBatch exercises the multi-record-batch
+// path: rowOffset and perSeriesValid must track state correctly across batch
+// boundaries when null timestamps appear in both batches.
+func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "last_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "last_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+
+	// Batch 1: 2 rows
+	//   Row 0: first has data, last has null timestamp
+	//   Row 1: first has null timestamp, last has data
+	// Batch 2: 2 rows
+	//   Row 2: first has null timestamp, last has data
+	//   Row 3: first has data, last has null timestamp
+	type row struct {
+		endTs    int64
+		firstVal float64
+		firstTs  int64
+		firstOk  bool
+		lastVal  float64
+		lastTs   int64
+		lastOk   bool
+	}
+	batches := [][]row{
+		{
+			{endTs: 1_000_000_000_000, firstVal: 10.0, firstTs: 900_000_000_000, firstOk: true, lastVal: 0, lastTs: 0, lastOk: false},
+			{endTs: 2_000_000_000_000, firstVal: 0, firstTs: 0, firstOk: false, lastVal: 25.0, lastTs: 1_999_000_000_000, lastOk: true},
+		},
+		{
+			{endTs: 3_000_000_000_000, firstVal: 0, firstTs: 0, firstOk: false, lastVal: 35.0, lastTs: 2_999_000_000_000, lastOk: true},
+			{endTs: 4_000_000_000_000, firstVal: 40.0, firstTs: 3_900_000_000_000, firstOk: true, lastVal: 0, lastTs: 0, lastOk: false},
+		},
+	}
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	for _, batch := range batches {
+		n := len(batch)
+		tsB := array.NewInt64Builder(pool)
+		fvB := array.NewFloat64Builder(pool)
+		ftB := array.NewInt64Builder(pool)
+		lvB := array.NewFloat64Builder(pool)
+		ltB := array.NewInt64Builder(pool)
+		for _, r := range batch {
+			tsB.Append(r.endTs)
+			if r.firstOk {
+				fvB.Append(r.firstVal)
+				ftB.Append(r.firstTs)
+			} else {
+				fvB.AppendNull()
+				ftB.AppendNull()
+			}
+			if r.lastOk {
+				lvB.Append(r.lastVal)
+				ltB.Append(r.lastTs)
+			} else {
+				lvB.AppendNull()
+				ltB.AppendNull()
+			}
+		}
+		cols := make([]arrow.Array, 5)
+		cols[0] = tsB.NewArray()
+		cols[1] = fvB.NewArray()
+		cols[2] = ftB.NewArray()
+		cols[3] = lvB.NewArray()
+		cols[4] = ltB.NewArray()
+		rec := array.NewRecord(schema, cols, int64(n))
+		if err := writer.Write(rec); err != nil {
+			t.Fatalf("write batch: %v", err)
+		}
+		rec.Release()
+		for _, c := range cols {
+			c.Release()
+		}
+		tsB.Release()
+		fvB.Release()
+		ftB.Release()
+		lvB.Release()
+		ltB.Release()
+	}
+	writer.Close()
+
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+	series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{
+		{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
+		{Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(series))
+	}
+
+	first := series[0]
+	last := series[1]
+
+	// first: rows 0 and 3 have data, rows 1 and 2 have null timestamps → dropped.
+	if len(first.Values) != 2 {
+		t.Fatalf("first: expected 2 values, got %d", len(first.Values))
+	}
+	if len(first.TimePoints) != 2 {
+		t.Fatalf("first: expected 2 timepoints, got %d", len(first.TimePoints))
+	}
+	if first.Values[0] == nil || *first.Values[0] != 10.0 {
+		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
+	}
+	if first.Values[1] == nil || *first.Values[1] != 40.0 {
+		t.Errorf("first.Values[1] = %v, want 40.0", first.Values[1])
+	}
+	if first.TimePoints[0] != time.Unix(0, 900_000_000_000) {
+		t.Errorf("first.TimePoints[0] = %v, want %v", first.TimePoints[0], time.Unix(0, 900_000_000_000))
+	}
+	if first.TimePoints[1] != time.Unix(0, 3_900_000_000_000) {
+		t.Errorf("first.TimePoints[1] = %v, want %v", first.TimePoints[1], time.Unix(0, 3_900_000_000_000))
+	}
+
+	// last: rows 1 and 2 have data, rows 0 and 3 have null timestamps → dropped.
+	if len(last.Values) != 2 {
+		t.Fatalf("last: expected 2 values, got %d", len(last.Values))
+	}
+	if len(last.TimePoints) != 2 {
+		t.Fatalf("last: expected 2 timepoints, got %d", len(last.TimePoints))
+	}
+	if last.Values[0] == nil || *last.Values[0] != 25.0 {
+		t.Errorf("last.Values[0] = %v, want 25.0", last.Values[0])
+	}
+	if last.Values[1] == nil || *last.Values[1] != 35.0 {
+		t.Errorf("last.Values[1] = %v, want 35.0", last.Values[1])
+	}
+	if last.TimePoints[0] != time.Unix(0, 1_999_000_000_000) {
+		t.Errorf("last.TimePoints[0] = %v, want %v", last.TimePoints[0], time.Unix(0, 1_999_000_000_000))
+	}
+	if last.TimePoints[1] != time.Unix(0, 2_999_000_000_000) {
+		t.Errorf("last.TimePoints[1] = %v, want %v", last.TimePoints[1], time.Unix(0, 2_999_000_000_000))
+	}
+}
+
 func TestValidateAndDedup(t *testing.T) {
 	// All valid, no duplicates
 	deduped, bad := validateAndDedup([]string{"MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT"})
