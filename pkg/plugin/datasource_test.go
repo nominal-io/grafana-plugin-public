@@ -731,6 +731,156 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	}
 }
 
+// TestMixedTypeTemplateVariableWithExplicitAggregations verifies that a saved
+// numeric query with explicit aggregations correctly handles expansion into both
+// string and numeric channels. inferChannelDataType must override the saved type
+// per-query so the string channel gets an enum request (not Arrow numeric).
+func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
+	assetRid := "ri.scout.main.asset.abc123"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
+	mockDS := &mockDatasourceService{
+		searchChannelsFunc: func(_ context.Context, _ bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+			if len(req.ExactMatch) == 0 {
+				return datasourceapi.SearchChannelsResponse{}, nil
+			}
+			chName := req.ExactMatch[0]
+			dsRid := rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))
+			switch chName {
+			case "state":
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("state"), DataSource: dsRid, DataType: &stringType},
+					},
+				}, nil
+			case "temperature":
+				return datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("temperature"), DataSource: dsRid, DataType: &numericType},
+					},
+				}, nil
+			default:
+				return datasourceapi.SearchChannelsResponse{}, nil
+			}
+		},
+	}
+
+	// Both queries are batched into a single API call. First result is Arrow
+	// bucketed numeric (with mean+min columns), second is enum for the string channel.
+	arrowBytes := createTestArrowMultiAgg(
+		[]int64{1000000000000, 2000000000000},
+		map[string][]float64{"mean": {10.0, 20.0}, "min": {5.0, 15.0}},
+	)
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot),
+				)},
+				createMockEnumComputeResult([]string{"idle", "active"}, []int{0, 1}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+
+	// Two queries simulating template variable expansion: same asset, explicit
+	// aggregations, but one channel is numeric and the other is string.
+	// Both start with channelDataType "numeric" (inherited from the saved query).
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: []backend.DataQuery{
+			{
+				RefID: "A",
+				JSON: mustMarshal(NominalQueryModel{
+					AssetRid:        assetRid,
+					Channel:         "temperature",
+					DataScopeName:   "default",
+					ChannelDataType: "numeric",
+					Aggregations:    []string{"MEAN", "MIN"},
+					Buckets:         100,
+				}),
+				TimeRange: timeRange,
+			},
+			{
+				RefID: "B",
+				JSON: mustMarshal(NominalQueryModel{
+					AssetRid:        assetRid,
+					Channel:         "state",
+					DataScopeName:   "default",
+					ChannelDataType: "numeric", // saved as numeric, but actually string
+					Aggregations:    []string{"MEAN", "MIN"},
+					Buckets:         100,
+				}),
+				TimeRange: timeRange,
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Both queries should succeed.
+	if resp.Responses["A"].Error != nil {
+		t.Fatalf("query A error: %v", resp.Responses["A"].Error)
+	}
+	if resp.Responses["B"].Error != nil {
+		t.Fatalf("query B error: %v", resp.Responses["B"].Error)
+	}
+
+	// Both queries should be batched into a single API call.
+	if mockCompute.batchComputeCalls != 1 {
+		t.Fatalf("expected 1 batch compute call, got %d", mockCompute.batchComputeCalls)
+	}
+	if len(mockCompute.lastBatchRequest.Requests) != 2 {
+		t.Fatalf("expected 2 requests in batch, got %d", len(mockCompute.lastBatchRequest.Requests))
+	}
+
+	// Verify the numeric query (temperature) built an Arrow request with output fields.
+	numericReqJSON, _ := json.Marshal(mockCompute.lastBatchRequest.Requests[0].Node)
+	if !strings.Contains(string(numericReqJSON), `"outputFormat"`) {
+		t.Errorf("expected numeric request with outputFormat, got: %s", string(numericReqJSON))
+	}
+
+	// Verify the string query (state) built an enum request (no outputFormat).
+	enumReqJSON, _ := json.Marshal(mockCompute.lastBatchRequest.Requests[1].Node)
+	if strings.Contains(string(enumReqJSON), `"outputFormat"`) {
+		t.Errorf("expected enum request without outputFormat, got: %s", string(enumReqJSON))
+	}
+	if !strings.Contains(string(enumReqJSON), `"type":"enum"`) {
+		t.Errorf("expected enum compute request type, got: %s", string(enumReqJSON))
+	}
+}
+
 func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponses: []computeapi.BatchComputeWithUnitsResponse{
