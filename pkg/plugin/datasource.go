@@ -61,7 +61,7 @@ const maxBatchComputeSubrequests = 300
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
 
 // assetCacheTTL controls how long fetched asset metadata is cached.
-const assetCacheTTL = 2 * time.Minute
+const assetCacheTTL = 5 * time.Minute
 
 // assetCacheEntry holds a cached asset response with its fetch time.
 type assetCacheEntry struct {
