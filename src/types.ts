@@ -8,6 +8,11 @@ export interface NominalQuery extends DataQuery {
   dataScopeName?: string;
   channelDataType?: string;
 
+  // Aggregation functions to request for numeric channels.
+  // Options: "MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT". Empty/missing defaults to ["MEAN"].
+  // For enum/string channels, this field is ignored — the backend uses Mode.
+  aggregations?: string[];
+
   // Query builder mode - remembers how the query was built
   assetInputMethod?: 'search' | 'direct';
 
@@ -22,6 +27,21 @@ export interface NominalQuery extends DataQuery {
   queryText?: string;
   constant?: number;
 }
+
+// Aggregation enum values matching the API. Keep in sync with Go constants in pkg/plugin/aggregation.go.
+export const AggregationType = {
+  Mean: 'MEAN',
+  Min: 'MIN',
+  Max: 'MAX',
+  Count: 'COUNT',
+  Variance: 'VARIANCE',
+  FirstPoint: 'FIRST_POINT',
+  LastPoint: 'LAST_POINT',
+} as const;
+
+export type AggregationTypeValue = (typeof AggregationType)[keyof typeof AggregationType];
+
+export const DEFAULT_AGGREGATIONS: AggregationTypeValue[] = [AggregationType.Mean];
 
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: 'timeShift',

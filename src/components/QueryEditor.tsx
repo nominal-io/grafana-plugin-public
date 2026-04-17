@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
+import { InlineField, Input, Stack, Select, MultiSelect, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
 import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
-import { NominalDataSourceOptions, NominalQuery } from '../types';
+import { NominalDataSourceOptions, NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -67,6 +67,16 @@ interface Asset {
 
 type AssetInputMethod = 'search' | 'direct';
 
+const NUMERIC_AGG_OPTIONS = [
+  { label: 'Mean', value: AggregationType.Mean },
+  { label: 'Min', value: AggregationType.Min },
+  { label: 'Max', value: AggregationType.Max },
+  { label: 'Count', value: AggregationType.Count },
+  { label: 'Variance', value: AggregationType.Variance },
+  { label: 'First', value: AggregationType.FirstPoint },
+  { label: 'Last', value: AggregationType.LastPoint },
+];
+
 /** Data source types that support channel queries */
 const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection'];
 
@@ -123,6 +133,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [channelsLoading, setChannelsLoading] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
+
+  // Tracks the aggregation value from the last query execution (or initial load).
+  // onBlur compares the current selection against this to decide whether to re-run.
+  const committedAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
+  // Tracks the current (possibly uncommitted) selection synchronously.
+  // onChange updates this immediately so onBlur can read the latest value
+  // without waiting for React to re-render query.aggregations.
+  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
+  // Sync pending ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
+  // Do NOT sync committedAggRef here — it should only update when onBlur actually fires a query.
+  // Otherwise the effect runs between onChange and onBlur, making them equal before the comparison.
+  useEffect(() => {
+    pendingAggRef.current = query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS];
+  }, [query.aggregations]);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange→query→effect cycles)
@@ -844,6 +868,41 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     allowCustomValue
                     isClearable={false}
                   />
+                </InlineField>
+              )}
+
+              {/* Aggregation selector - shown when a channel is selected */}
+              {query?.channel && (
+                <InlineField
+                  label="Aggregation(s)"
+                  tooltip={query?.channelDataType === 'string'
+                    ? "String channels only support Mode (most frequent value per time bucket)"
+                    : "Aggregation functions to apply per time bucket"}
+                >
+                  {query?.channelDataType === 'string' ? (
+                    <Input value="Mode" disabled width={10} />
+                  ) : (
+                    <MultiSelect
+                      options={NUMERIC_AGG_OPTIONS}
+                      value={query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]}
+                      onChange={(selected) => {
+                        const values = selected.map(s => s.value).filter((v): v is string => v != null);
+                        const aggs = values.length > 0 ? values : [...DEFAULT_AGGREGATIONS];
+                        pendingAggRef.current = aggs;
+                        onChange({ ...query, aggregations: aggs });
+                      }}
+                      onBlur={() => {
+                        const current = pendingAggRef.current;
+                        if (JSON.stringify(current) !== JSON.stringify(committedAggRef.current)) {
+                          committedAggRef.current = current;
+                          onRunQuery();
+                        }
+                      }}
+                      closeMenuOnSelect={false}
+                      placeholder="Select aggregations..."
+                      width={35}
+                    />
+                  )}
                 </InlineField>
               )}
             </>
