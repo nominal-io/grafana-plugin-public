@@ -729,7 +729,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // (used when the asset fetch fails) would silently hide the channel selector entirely.
   const hasChannelSearch = selectedAsset !== null;
 
-
   const singleBoxStyle = {
     padding: theme.spacing(1, 1.5),
     backgroundColor: theme.colors.background.primary,

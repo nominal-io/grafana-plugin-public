@@ -325,7 +325,7 @@ func makeBatchableQueries(count int, timeRange backend.TimeRange) []backend.Data
 func makeBatchComputeWithUnitsResponse(count int) computeapi.BatchComputeWithUnitsResponse {
 	results := make([]computeapi.ComputeWithUnitsResult, count)
 	for i := 0; i < count; i++ {
-		results[i] = createMockComputeResult([]float64{float64(i + 1)})
+		results[i] = createMockArrowComputeResult([]float64{float64(i + 1)})
 	}
 	return computeapi.BatchComputeWithUnitsResponse{Results: results}
 }
@@ -490,12 +490,12 @@ func TestBatchQueryExecution(t *testing.T) {
 	// Create mock compute service
 	mockService := &mockComputeService{}
 
-	// Create mock response with success results for each query
+	// Create mock response with Arrow bucketed numeric results (production format)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
-			createMockComputeResult([]float64{1.0, 2.0, 3.0}),
-			createMockComputeResult([]float64{4.0, 5.0, 6.0}),
-			createMockComputeResult([]float64{7.0, 8.0, 9.0}),
+			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}),
+			createMockArrowComputeResult([]float64{4.0, 5.0, 6.0}),
+			createMockArrowComputeResult([]float64{7.0, 8.0, 9.0}),
 		},
 	}
 
@@ -946,11 +946,11 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 	// Create mock compute service
 	mockService := &mockComputeService{}
 
-	// Create mock response for the 2 batchable queries
+	// Create mock response for the 2 batchable queries (Arrow format, matching production)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
-			createMockComputeResult([]float64{1.0, 2.0}),
-			createMockComputeResult([]float64{3.0, 4.0}),
+			createMockArrowComputeResult([]float64{1.0, 2.0}),
+			createMockArrowComputeResult([]float64{3.0, 4.0}),
 		},
 	}
 
@@ -1096,9 +1096,9 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 	// This simulates a batch where one query fails (e.g., channel not found)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
-			createMockComputeResult([]float64{1.0, 2.0, 3.0}), // Query A: Success
-			createMockErrorResult(404, "CHANNEL_NOT_FOUND"),   // Query B: Error
-			createMockComputeResult([]float64{7.0, 8.0, 9.0}), // Query C: Success
+			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}), // Query A: Success
+			createMockErrorResult(404, "CHANNEL_NOT_FOUND"),         // Query B: Error
+			createMockArrowComputeResult([]float64{7.0, 8.0, 9.0}), // Query C: Success
 		},
 	}
 
@@ -1195,8 +1195,8 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 	// Only return 2 results for 3 queries - simulates API bug or truncation
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
-			createMockComputeResult([]float64{1.0, 2.0, 3.0}),
-			createMockComputeResult([]float64{4.0, 5.0, 6.0}),
+			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}),
+			createMockArrowComputeResult([]float64{4.0, 5.0, 6.0}),
 			// Missing third result
 		},
 	}
@@ -1379,7 +1379,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 	})
 }
 
-func TestNumericRegressionAfterPhase3(t *testing.T) {
+func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 	ds := &Datasource{}
 
 	t.Run("numeric batch result produces float64 value fields", func(t *testing.T) {
@@ -1490,6 +1490,24 @@ func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult
 	computeResponse := computeapi.NewComputeNodeResponseFromNumeric(numericPlot)
 	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
 
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createMockArrowComputeResult creates a mock ComputeWithUnitsResult with Arrow
+// bucketed numeric data (mean column). This mirrors production behavior where
+// numeric queries send OutputFormat=ARROW_V3 and receive ArrowBucketedNumericPlot.
+func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
+	baseTime := int64(1704067200000000000) // 2024-01-01 00:00:00 UTC in nanos
+	timestamps := make([]int64, len(values))
+	for i := range timestamps {
+		timestamps[i] = baseTime + int64(i*60)*1_000_000_000
+	}
+	arrowBytes := createTestArrowBucketedNumeric(timestamps, values, nil)
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	computeResponse := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
 	return computeapi.ComputeWithUnitsResult{
 		ComputeResult: computeResult,
 	}
@@ -1668,46 +1686,6 @@ func TestEnumPointTransformation(t *testing.T) {
 		}
 		if v := valueField.At(0).(string); v != "active" {
 			t.Errorf("expected %q, got %q", "active", v)
-		}
-	})
-}
-
-func TestNumericPathUnchangedAfterRefactor(t *testing.T) {
-	ds := &Datasource{}
-
-	t.Run("numeric results still produce float64 frames", func(t *testing.T) {
-		result := createMockComputeResult([]float64{1.5, 2.5, 3.5})
-		qm := NominalQueryModel{
-			Channel:  "temperature",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := ds.transformBatchResult(result, qm)
-		if len(resp.Frames) != 1 {
-			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
-		}
-
-		frame := resp.Frames[0]
-		if len(frame.Fields) != 2 {
-			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
-		}
-
-		valueField := frame.Fields[1]
-		if valueField.Name != "value" {
-			t.Errorf("expected field name 'value', got %q", valueField.Name)
-		}
-		if valueField.Len() != 3 {
-			t.Fatalf("expected 3 values, got %d", valueField.Len())
-		}
-		expectedValues := []float64{1.5, 2.5, 3.5}
-		for i, expected := range expectedValues {
-			actual, ok := valueField.At(i).(*float64)
-			if !ok || actual == nil {
-				t.Fatalf("value at index %d is not a *float64 or is nil", i)
-			}
-			if *actual != expected {
-				t.Errorf("value at index %d: expected %v, got %v", i, expected, *actual)
-			}
 		}
 	})
 }
@@ -3792,8 +3770,6 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 			firstSeries.TimePoints[0], time.Unix(0, 900000000000))
 	}
 }
-
-
 
 func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
 	arrowPlot := computeapi.ArrowNumericPlot{ArrowBinary: []byte{}}

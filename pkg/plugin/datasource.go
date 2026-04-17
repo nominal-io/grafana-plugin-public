@@ -730,14 +730,13 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					}
 					response.Frames = append(response.Frames, frame)
 				}
+				dataPoints := 0
+				if len(result.AggSeries) > 0 {
+					dataPoints = len(result.AggSeries[0].TimePoints)
+				}
 				log.DefaultLogger.Debug("Successfully processed multi-agg query",
 					"series", len(result.AggSeries),
-					"dataPoints", func() int {
-						if len(result.AggSeries) > 0 {
-							return len(result.AggSeries[0].TimePoints)
-						}
-						return 0
-					}())
+					"dataPoints", dataPoints)
 			} else if result.IsEnum {
 				frame := data.NewFrame("response")
 				frame.Name = qm.Channel
