@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent, act, within } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 import { DataSource } from '../datasource';
@@ -36,17 +36,15 @@ function getAggregationSection() {
 }
 
 describe('Aggregation widget', () => {
-  it('renders disabled Mode input for string channels', async () => {
-    await act(async () => {
-      render(
-        <QueryEditor
-          query={makeQuery({ channel: 'state', channelDataType: 'string' })}
-          onChange={jest.fn()}
-          onRunQuery={jest.fn()}
-          datasource={mockDatasource}
-        />
-      );
-    });
+  it('renders disabled Mode input for string channels', () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'state', channelDataType: 'string' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
 
     // String channels render a read-only "Mode" input instead of the MultiSelect
     const modeInput = screen.getByDisplayValue('Mode');
@@ -57,62 +55,52 @@ describe('Aggregation widget', () => {
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
-  it('blur with changed aggregations calls onRunQuery', async () => {
+  it('blur with changed aggregations calls onRunQuery', () => {
     const onRunQuery = jest.fn();
     const onChange = jest.fn();
 
-    let rerender: ReturnType<typeof render>['rerender'];
-    await act(async () => {
-      const result = render(
-        <QueryEditor
-          query={makeQuery({ channel: 'temp', channelDataType: 'numeric' })}
-          onChange={onChange}
-          onRunQuery={onRunQuery}
-          datasource={mockDatasource}
-        />
-      );
-      rerender = result.rerender;
-    });
+    const { rerender } = render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric' })}
+        onChange={onChange}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
 
     // Rerender with changed aggregations (simulating user selection via onChange callback)
-    await act(async () => {
-      rerender!(
-        <QueryEditor
-          query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Min, AggregationType.Max] })}
-          onChange={onChange}
-          onRunQuery={onRunQuery}
-          datasource={mockDatasource}
-        />
-      );
-    });
+    rerender(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Min, AggregationType.Max] })}
+        onChange={onChange}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
 
     // Blur the aggregation MultiSelect's combobox (not the channel Select's)
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
-    await act(async () => {
-      fireEvent.blur(combobox);
-    });
+    fireEvent.blur(combobox);
 
     expect(onRunQuery).toHaveBeenCalled();
   });
 
-  it('blur without change does not call onRunQuery', async () => {
+  it('blur without change does not call onRunQuery', () => {
     const onRunQuery = jest.fn();
 
-    await act(async () => {
-      render(
-        <QueryEditor
-          query={makeQuery({
-            channel: 'temp',
-            channelDataType: 'numeric',
-            aggregations: [...DEFAULT_AGGREGATIONS],
-          })}
-          onChange={jest.fn()}
-          onRunQuery={onRunQuery}
-          datasource={mockDatasource}
-        />
-      );
-    });
+    render(
+      <QueryEditor
+        query={makeQuery({
+          channel: 'temp',
+          channelDataType: 'numeric',
+          aggregations: [...DEFAULT_AGGREGATIONS],
+        })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
 
     // Clear calls from the "query complete" auto-run effect
     onRunQuery.mockClear();
@@ -120,28 +108,22 @@ describe('Aggregation widget', () => {
     // Blur the aggregation MultiSelect (same value as initial → no additional onRunQuery)
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
-    await act(async () => {
-      fireEvent.blur(combobox);
-    });
+    fireEvent.blur(combobox);
 
     expect(onRunQuery).not.toHaveBeenCalled();
   });
 
-  it('empty aggregations falls back to MEAN', async () => {
+  it('empty aggregations falls back to MEAN', () => {
     const onRunQuery = jest.fn();
 
-    let rerender: ReturnType<typeof render>['rerender'];
-    await act(async () => {
-      const result = render(
-        <QueryEditor
-          query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [] })}
-          onChange={jest.fn()}
-          onRunQuery={onRunQuery}
-          datasource={mockDatasource}
-        />
-      );
-      rerender = result.rerender;
-    });
+    const { rerender } = render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [] })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
 
     // Empty aggregations should display Mean (the DEFAULT_AGGREGATIONS fallback)
     expect(screen.getByText('Mean')).toBeInTheDocument();
@@ -150,22 +132,18 @@ describe('Aggregation widget', () => {
 
     // Rerender with explicit ['MEAN'] — the component should treat this as identical
     // to the empty-fallback state, so blur should NOT trigger onRunQuery.
-    await act(async () => {
-      rerender!(
-        <QueryEditor
-          query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Mean] })}
-          onChange={jest.fn()}
-          onRunQuery={onRunQuery}
-          datasource={mockDatasource}
-        />
-      );
-    });
+    rerender(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Mean] })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
 
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
-    await act(async () => {
-      fireEvent.blur(combobox);
-    });
+    fireEvent.blur(combobox);
 
     expect(onRunQuery).not.toHaveBeenCalled();
   });
