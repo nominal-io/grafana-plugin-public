@@ -1010,6 +1010,8 @@ type TransformResult struct {
 }
 
 // LogEntry represents a single log entry with its timestamp and metadata.
+// Labels is json.RawMessage (FieldTypeJSON), not a string — Grafana's Logs panel
+// expects a dedicated JSON-typed column for per-entry labels, not a JSON-encoded string.
 type LogEntry struct {
 	Time   time.Time
 	Body   string
