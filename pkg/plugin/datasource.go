@@ -775,6 +775,8 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					frame.Fields = append(frame.Fields,
 						data.NewField("timestamp", nil, []time.Time{}),
 						data.NewField("body", nil, []string{}),
+						data.NewField("id", nil, []string{}),
+						data.NewField("labels", nil, []json.RawMessage{}),
 					)
 				}
 
