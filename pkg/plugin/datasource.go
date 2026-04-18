@@ -784,16 +784,19 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 
 			if result.IsLog {
 				// Sort descending (newest first) for Grafana's default log sort order.
-				// Grafana's infinite scroll uses the boundary row's timestamp
-				// to compute the next time-range query.
+				// Grafana's infinite scroll uses the boundary row's timestamp to compute
+				// the next time-range query. Don't assume this sort is redundant: the
+				// compute API's PageInfo contract specifies selection direction (via sign
+				// of PageSize), not response order.
 				sort.SliceStable(result.LogEntries, func(a, b int) bool {
 					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
 				})
 
 				frame := data.NewFrame(qm.Channel)
 				frame.Meta = &data.FrameMeta{
-					Type:                   data.FrameTypeLogLines,
-					TypeVersion:            data.FrameTypeVersion{0, 1},
+					Type: data.FrameTypeLogLines,
+					// log-lines dataplane contract is at v0.0 — don't confuse with time-series-wide's 0.1
+					TypeVersion:            data.FrameTypeVersion{0, 0},
 					PreferredVisualization: data.VisTypeLogs,
 				}
 

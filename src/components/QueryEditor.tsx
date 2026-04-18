@@ -546,8 +546,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       })
       .catch(() => {});
     return () => { cancelled = true; };
+    // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
+    // call whenever setSelectedAsset is called with a logically identical asset.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedChannel, selectedAsset, resolvedDataScopeName, datasource]);
+  }, [resolvedChannel, selectedAsset?.rid, resolvedDataScopeName, datasource]);
 
   // Trigger graph update when query is complete
   useEffect(() => {
