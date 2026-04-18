@@ -731,30 +731,9 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				// Sort descending (newest first) for Grafana's default log sort order.
 				// Grafana's infinite scroll uses the boundary row's timestamp
 				// to compute the next time-range query.
-				if len(result.LogTimes) > 1 {
-					indices := make([]int, len(result.LogTimes))
-					for i := range indices {
-						indices[i] = i
-					}
-					sort.SliceStable(indices, func(a, b int) bool {
-						return result.LogTimes[indices[a]].After(result.LogTimes[indices[b]])
-					})
-
-					sortedTimes := make([]time.Time, len(indices))
-					sortedBodies := make([]string, len(indices))
-					sortedIDs := make([]string, len(indices))
-					sortedLabels := make([]json.RawMessage, len(indices))
-					for i, idx := range indices {
-						sortedTimes[i] = result.LogTimes[idx]
-						sortedBodies[i] = result.LogBodies[idx]
-						sortedIDs[i] = result.LogIDs[idx]
-						sortedLabels[i] = result.LogLabels[idx]
-					}
-					result.LogTimes = sortedTimes
-					result.LogBodies = sortedBodies
-					result.LogIDs = sortedIDs
-					result.LogLabels = sortedLabels
-				}
+				sort.SliceStable(result.LogEntries, func(a, b int) bool {
+					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
+				})
 
 				frame := data.NewFrame("logs")
 				frame.Name = qm.Channel
@@ -764,12 +743,22 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					PreferredVisualization: data.VisTypeLogs,
 				}
 
-				if len(result.LogTimes) > 0 {
+				if len(result.LogEntries) > 0 {
+					times := make([]time.Time, len(result.LogEntries))
+					bodies := make([]string, len(result.LogEntries))
+					ids := make([]string, len(result.LogEntries))
+					labels := make([]json.RawMessage, len(result.LogEntries))
+					for i, e := range result.LogEntries {
+						times[i] = e.Time
+						bodies[i] = e.Body
+						ids[i] = e.ID
+						labels[i] = e.Labels
+					}
 					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, result.LogTimes),
-						data.NewField("body", nil, result.LogBodies),
-						data.NewField("id", nil, result.LogIDs),
-						data.NewField("labels", nil, result.LogLabels),
+						data.NewField("timestamp", nil, times),
+						data.NewField("body", nil, bodies),
+						data.NewField("id", nil, ids),
+						data.NewField("labels", nil, labels),
 					)
 				} else {
 					frame.Fields = append(frame.Fields,
@@ -781,7 +770,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				}
 
 				log.DefaultLogger.Debug("Successfully processed log query",
-					"entries", len(result.LogTimes))
+					"entries", len(result.LogEntries))
 				response.Frames = append(response.Frames, frame)
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
@@ -964,13 +953,31 @@ type TransformResult struct {
 	IsEnum       bool
 
 	// Log path
-	IsLog        bool
-	LogTimes     []time.Time
-	LogBodies    []string
-	LogIDs       []string
-	LogLabels    []json.RawMessage // Args serialized as JSON per entry
+	IsLog      bool
+	LogEntries []LogEntry
 }
 
+// LogEntry represents a single log entry with its timestamp and metadata.
+type LogEntry struct {
+	Time   time.Time
+	Body   string
+	ID     string
+	Labels json.RawMessage
+}
+
+// marshalLogArgs serializes log Args to JSON, returning "{}" for nil maps.
+// json.Marshal(nil) produces "null", not "{}", so we handle nil explicitly.
+func marshalLogArgs(args map[string]string, index int) json.RawMessage {
+	if args == nil {
+		return json.RawMessage("{}")
+	}
+	labelsJSON, err := json.Marshal(args)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to marshal log args", "index", index, "error", err)
+		return json.RawMessage("{}")
+	}
+	return labelsJSON
+}
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
@@ -1073,24 +1080,12 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
-				seconds := int64(ts.Seconds)
-				nanos := int64(ts.Nanos)
-				result.LogTimes = append(result.LogTimes, time.Unix(seconds, nanos))
-				result.LogBodies = append(result.LogBodies, val.Message)
-				result.LogIDs = append(result.LogIDs, val.Id.String())
-
-				var labelsJSON []byte
-				if val.Args == nil {
-					labelsJSON = []byte("{}")
-				} else {
-					var err error
-					labelsJSON, err = json.Marshal(val.Args)
-					if err != nil {
-						log.DefaultLogger.Warn("Failed to marshal log args", "index", i, "error", err)
-						labelsJSON = []byte("{}")
-					}
-				}
-				result.LogLabels = append(result.LogLabels, json.RawMessage(labelsJSON))
+				result.LogEntries = append(result.LogEntries, LogEntry{
+					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
+					Body:   val.Message,
+					ID:     val.Id.String(),
+					Labels: marshalLogArgs(val.Args, i),
+				})
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
@@ -1103,24 +1098,12 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				result.IsLog = true
 				return nil
 			}
-			seconds := int64(lp.Timestamp.Seconds)
-			nanos := int64(lp.Timestamp.Nanos)
-			result.LogTimes = []time.Time{time.Unix(seconds, nanos)}
-			result.LogBodies = []string{lp.Value.Message}
-			result.LogIDs = []string{lp.Value.Id.String()}
-
-			var labelsJSON []byte
-			if lp.Value.Args == nil {
-				labelsJSON = []byte("{}")
-			} else {
-				var err error
-				labelsJSON, err = json.Marshal(lp.Value.Args)
-				if err != nil {
-					log.DefaultLogger.Warn("Failed to marshal log args", "error", err)
-					labelsJSON = []byte("{}")
-				}
-			}
-			result.LogLabels = []json.RawMessage{json.RawMessage(labelsJSON)}
+			result.LogEntries = []LogEntry{{
+				Time:   time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)),
+				Body:   lp.Value.Message,
+				ID:     lp.Value.Id.String(),
+				Labels: marshalLogArgs(lp.Value.Args, 0),
+			}}
 			result.IsLog = true
 			return nil
 		},
@@ -1629,6 +1612,11 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	}
 }
 
+// isSupportedDataSourceType returns true for data source types that support channel queries.
+func isSupportedDataSourceType(dsType string) bool {
+	return dsType == "dataset" || dsType == "connection" || dsType == "logSet"
+}
+
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection
 func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	// Load settings to get API key and base URL
@@ -1795,7 +1783,7 @@ outer:
 		for _, asset := range resp.Results {
 			hasSupported := false
 			for _, scope := range asset.DataScopes {
-				if scope.DataSource.Type == "dataset" || scope.DataSource.Type == "connection" || scope.DataSource.Type == "logSet" {
+				if isSupportedDataSourceType(scope.DataSource.Type) {
 					hasSupported = true
 					break
 				}
@@ -1923,7 +1911,7 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	result := make([]map[string]string, 0)
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type
-		if dsType == "dataset" || dsType == "connection" || dsType == "logSet" {
+		if isSupportedDataSourceType(dsType) {
 			result = append(result, map[string]string{
 				"text":  scope.DataScopeName,
 				"value": scope.DataScopeName,
@@ -2041,7 +2029,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	var dataSourceRids []rids.DataSourceRid
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type
-		if dsType != "dataset" && dsType != "connection" && dsType != "logSet" {
+		if !isSupportedDataSourceType(dsType) {
 			continue
 		}
 
