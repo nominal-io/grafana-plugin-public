@@ -81,6 +81,22 @@ const NUMERIC_AGG_OPTIONS = [
 /** Data source types that support channel queries */
 const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
 
+/** Returns the rid for a data source, or undefined if the type is unsupported or the rid field is missing. */
+const getDataSourceRid = (
+  ds: Asset['dataScopes'][number]['dataSource']
+): string | undefined => {
+  if (ds.type === 'dataset') {
+    return ds.dataset;
+  }
+  if (ds.type === 'connection') {
+    return ds.connection;
+  }
+  if (ds.type === 'logSet') {
+    return ds.logSet;
+  }
+  return undefined;
+};
+
 /** Creates a minimal asset placeholder when the actual asset can't be fetched.
  *  dataScopes is intentionally empty — we don't fabricate scope data. */
 const createBasicAsset = (rid: string, title: string): Asset => ({
@@ -237,17 +253,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       );
       const dataSourceRids: string[] = [];
       for (const scope of scopes) {
-        const ds = scope.dataSource;
-        if (!ds) {
+        if (!scope.dataSource) {
           continue;
         }
-        // Only collect RIDs for supported data source types
-        if (ds.type === 'dataset' && ds.dataset) {
-          dataSourceRids.push(ds.dataset);
-        } else if (ds.type === 'connection' && ds.connection) {
-          dataSourceRids.push(ds.connection);
-        } else if (ds.type === 'logSet' && ds.logSet) {
-          dataSourceRids.push(ds.logSet);
+        const rid = getDataSourceRid(scope.dataSource);
+        if (rid) {
+          dataSourceRids.push(rid);
         }
       }
       if (dataSourceRids.length === 0) {
@@ -509,16 +520,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     );
     const dataSourceRids: string[] = [];
     for (const scope of scopes) {
-      const ds = scope.dataSource;
-      if (!ds) {
+      if (!scope.dataSource) {
         continue;
       }
-      if (ds.type === 'dataset' && ds.dataset) {
-        dataSourceRids.push(ds.dataset);
-      } else if (ds.type === 'connection' && ds.connection) {
-        dataSourceRids.push(ds.connection);
-      } else if (ds.type === 'logSet' && ds.logSet) {
-        dataSourceRids.push(ds.logSet);
+      const rid = getDataSourceRid(scope.dataSource);
+      if (rid) {
+        dataSourceRids.push(rid);
       }
     }
     if (dataSourceRids.length === 0) {

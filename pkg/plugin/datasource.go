@@ -626,7 +626,10 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	}
 	var seriesNode computeapi1.SummarizeSeries
 	if qm.ChannelDataType == "log" {
-		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields
+		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields.
+		// 250 entries per page. Older entries are fetched on-demand via Grafana's
+		// "Show more" button, which re-queries with an older `to` timestamp using
+		// the boundary row (hence the descending sort in transformBatchResult).
 		pageInfo := computeapi.PageInfo{
 			PageSize: -250, // Negative = newest first; 250 is plenty for UX and keeps query times down
 		}
@@ -787,8 +790,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
 				})
 
-				frame := data.NewFrame("logs")
-				frame.Name = qm.Channel
+				frame := data.NewFrame(qm.Channel)
 				frame.Meta = &data.FrameMeta{
 					Type:                   data.FrameTypeLogLines,
 					TypeVersion:            data.FrameTypeVersion{0, 1},
