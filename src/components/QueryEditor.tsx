@@ -241,7 +241,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         if (!ds) {
           continue;
         }
-        // Only collect RIDs for supported data source types (dataset, connection)
+        // Only collect RIDs for supported data source types
         if (ds.type === 'dataset' && ds.dataset) {
           dataSourceRids.push(ds.dataset);
         } else if (ds.type === 'connection' && ds.connection) {

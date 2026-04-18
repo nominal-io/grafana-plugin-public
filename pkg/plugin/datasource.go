@@ -578,7 +578,7 @@ type NominalQueryModel struct {
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
-// Branches on ChannelDataType: "string" channels produce enum series, all others produce numeric series.
+// Branches on ChannelDataType: "string" produces enum series, "log" produces log series, all others numeric.
 // maxDataPoints from Grafana reflects the panel's pixel width; when positive it overrides qm.Buckets
 // so the compute API only returns as many points as the panel can actually display.
 func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
