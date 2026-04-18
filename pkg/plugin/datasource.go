@@ -72,7 +72,7 @@ type assetCacheEntry struct {
 
 // channelTypeCacheEntry holds a cached channel type inference result with its fetch time.
 type channelTypeCacheEntry struct {
-	channelType string // "string", "numeric", or "" for searched-but-not-found
+	channelType string // "string", "log", "numeric", or "" for searched-but-not-found
 	fetchedAt   time.Time
 }
 
@@ -1647,9 +1647,8 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 	return fmt.Sprintf("Channel: %s", string(channel.Name))
 }
 
-// getChannelDataType normalizes the API's SeriesDataType to a binary string/numeric classification.
-// Returns "string" for STRING and STRING_ARRAY types, "numeric" for all other known types,
-// or empty string if the metadata is not available (treated as numeric for backward compatibility).
+// getChannelDataType normalizes the API's SeriesDataType to "string", "log", or "numeric".
+// Returns empty string if the metadata is not available (treated as numeric for backward compatibility).
 func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	if channel.DataType == nil {
 		return ""
@@ -1828,7 +1827,7 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	}
 
 	// Transform to MetricFindValue format: { text: "name", value: "rid" }
-	// Filter to assets with supported data sources (dataset or connection)
+	// Filter to assets with supported data sources
 	result := make([]map[string]string, 0)
 outer:
 	for _, resp := range assetResponses {
@@ -1959,7 +1958,7 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	}
 
 	// Transform datascopes to MetricFindValue format: { text: "name", value: "name" }
-	// Filter to supported data source types (dataset, connection)
+	// Filter to supported data source types
 	result := make([]map[string]string, 0)
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type

@@ -1035,7 +1035,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </span>
               )}
             </span>
-            <span style={{ color: theme.colors.text.secondary }}>Dataset Scopes:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Data Scopes:</span>
             <span
               style={{
                 color: theme.colors.success.text,
@@ -1043,7 +1043,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 marginLeft: theme.spacing(0.5),
               }}
             >
-              {selectedAsset.dataScopes.filter((s) => s.dataSource.type === 'dataset').length}
+              {selectedAsset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type)).length}
             </span>
           </div>
         )}
