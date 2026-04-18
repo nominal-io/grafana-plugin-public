@@ -441,6 +441,9 @@ type mockComputeService struct {
 	batchComputeError     error
 	batchComputeErrors    []error
 	singleComputeCalls    int
+	// batchComputeFunc, if set, is called instead of using the static responses.
+	// Useful for tests with nondeterministic call ordering (e.g. parallel batches).
+	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
 }
 
 func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
@@ -464,6 +467,10 @@ func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHead
 	m.batchComputeCalls++
 	m.lastBatchRequest = requestArg
 	m.batchRequests = append(m.batchRequests, requestArg)
+
+	if m.batchComputeFunc != nil {
+		return m.batchComputeFunc(requestArg)
+	}
 
 	callIndex := m.batchComputeCalls - 1
 	if callIndex < len(m.batchComputeErrors) && m.batchComputeErrors[callIndex] != nil {
@@ -4126,6 +4133,110 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 			t.Error("expected different JSON for log vs numeric ChannelDataType")
 		}
 	})
+}
+
+func TestMixedLogNumericParallelBatch(t *testing.T) {
+	// With parallel goroutines, call ordering is nondeterministic.
+	// Use batchComputeFunc to inspect each request and return the matching response.
+	logResponse := computeapi.BatchComputeWithUnitsResponse{
+		Results: []computeapi.ComputeWithUnitsResult{
+			createMockPagedLogResult([]string{"log entry"}, []map[string]string{{"k": "v"}}),
+		},
+	}
+	numericResponse := computeapi.BatchComputeWithUnitsResponse{
+		Results: []computeapi.ComputeWithUnitsResult{
+			createMockArrowComputeResult([]float64{1.0, 2.0}),
+		},
+	}
+	mockService := &mockComputeService{
+		batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+			// Inspect the serialized request to determine if it's a log or numeric query.
+			// Log requests contain "log" series type; numeric requests contain "numeric".
+			reqJSON, _ := json.Marshal(req)
+			if strings.Contains(string(reqJSON), `"type":"log"`) {
+				return logResponse, nil
+			}
+			return numericResponse, nil
+		},
+	}
+
+	ds := &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
+		},
+		computeService: mockService,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: []backend.DataQuery{
+			{
+				RefID:     "LOG",
+				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: "log", Buckets: 100}),
+				TimeRange: timeRange,
+			},
+			{
+				RefID:     "NUM",
+				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temperature", DataScopeName: "ds1", ChannelDataType: "numeric", Buckets: 100, Aggregations: []string{"MEAN"}}),
+				TimeRange: timeRange,
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have made 2 separate batch calls (parallel)
+	if mockService.batchComputeCalls != 2 {
+		t.Errorf("expected 2 batch compute calls for mixed log/numeric, got %d", mockService.batchComputeCalls)
+	}
+
+	// Each batch should contain exactly 1 request
+	for i, req := range mockService.batchRequests {
+		if len(req.Requests) != 1 {
+			t.Errorf("batch call %d: expected 1 request, got %d", i, len(req.Requests))
+		}
+	}
+
+	// Both refIDs should have responses
+	if len(resp.Responses) != 2 {
+		t.Fatalf("expected 2 responses, got %d", len(resp.Responses))
+	}
+
+	logResp, ok := resp.Responses["LOG"]
+	if !ok {
+		t.Fatal("expected response for LOG refID")
+	}
+	numResp, ok := resp.Responses["NUM"]
+	if !ok {
+		t.Fatal("expected response for NUM refID")
+	}
+
+	// Both should have frames (no errors)
+	if logResp.Error != nil {
+		t.Errorf("unexpected error for LOG: %v", logResp.Error)
+	}
+	if numResp.Error != nil {
+		t.Errorf("unexpected error for NUM: %v", numResp.Error)
+	}
+	if len(logResp.Frames) == 0 {
+		t.Error("expected frames for LOG response")
+	}
+	if len(numResp.Frames) == 0 {
+		t.Error("expected frames for NUM response")
+	}
 }
 
 // strPtr is a helper to create a *string

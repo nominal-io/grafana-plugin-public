@@ -446,8 +446,60 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 	}
 
-	// Execute batch query for all batchable queries
-	if len(batchableQueries) > 0 {
+	// Check if we have a mix of log and non-log queries.
+	// If mixed, execute them in parallel batches so log queries (paged, uncacheable)
+	// don't delay numeric/enum results.
+	hasLog := false
+	hasOther := false
+	for _, qm := range batchableModels {
+		if qm.ChannelDataType == "log" {
+			hasLog = true
+		} else {
+			hasOther = true
+		}
+		if hasLog && hasOther {
+			break
+		}
+	}
+
+	if hasLog && hasOther {
+		// Mixed: partition and execute in parallel
+		var logQueries, otherQueries []backend.DataQuery
+		var logQMs, otherQMs []NominalQueryModel
+		for i, qm := range batchableModels {
+			if qm.ChannelDataType == "log" {
+				logQueries = append(logQueries, batchableQueries[i])
+				logQMs = append(logQMs, qm)
+			} else {
+				otherQueries = append(otherQueries, batchableQueries[i])
+				otherQMs = append(otherQMs, qm)
+			}
+		}
+
+		var wg sync.WaitGroup
+		var logResults, otherResults map[string]backend.DataResponse
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			log.DefaultLogger.Debug("Executing log batch query", "count", len(logQueries))
+			logResults = d.executeBatchQuery(ctx, config, logQueries, logQMs)
+		}()
+		go func() {
+			defer wg.Done()
+			log.DefaultLogger.Debug("Executing batch query", "count", len(otherQueries))
+			otherResults = d.executeBatchQuery(ctx, config, otherQueries, otherQMs)
+		}()
+		wg.Wait()
+
+		for refID, res := range logResults {
+			response.Responses[refID] = res
+		}
+		for refID, res := range otherResults {
+			response.Responses[refID] = res
+		}
+	} else if len(batchableQueries) > 0 {
+		// All same type: single batch, no overhead
 		log.DefaultLogger.Debug("Executing batch query", "count", len(batchableQueries))
 		batchResults := d.executeBatchQuery(ctx, config, batchableQueries, batchableModels)
 		for refID, res := range batchResults {
