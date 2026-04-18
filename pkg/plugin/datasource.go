@@ -1076,10 +1076,16 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				result.LogBodies = append(result.LogBodies, val.Message)
 				result.LogIDs = append(result.LogIDs, val.Id.String())
 
-				labelsJSON, err := json.Marshal(val.Args)
-				if err != nil {
-					log.DefaultLogger.Warn("Failed to marshal log args", "index", i, "error", err)
+				var labelsJSON []byte
+				if val.Args == nil {
 					labelsJSON = []byte("{}")
+				} else {
+					var err error
+					labelsJSON, err = json.Marshal(val.Args)
+					if err != nil {
+						log.DefaultLogger.Warn("Failed to marshal log args", "index", i, "error", err)
+						labelsJSON = []byte("{}")
+					}
 				}
 				result.LogLabels = append(result.LogLabels, json.RawMessage(labelsJSON))
 			}
@@ -1099,10 +1105,16 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 			result.LogBodies = []string{lp.Value.Message}
 			result.LogIDs = []string{lp.Value.Id.String()}
 
-			labelsJSON, err := json.Marshal(lp.Value.Args)
-			if err != nil {
-				log.DefaultLogger.Warn("Failed to marshal log args", "error", err)
+			var labelsJSON []byte
+			if lp.Value.Args == nil {
 				labelsJSON = []byte("{}")
+			} else {
+				var err error
+				labelsJSON, err = json.Marshal(lp.Value.Args)
+				if err != nil {
+					log.DefaultLogger.Warn("Failed to marshal log args", "error", err)
+					labelsJSON = []byte("{}")
+				}
 			}
 			result.LogLabels = []json.RawMessage{json.RawMessage(labelsJSON)}
 			result.IsLog = true
