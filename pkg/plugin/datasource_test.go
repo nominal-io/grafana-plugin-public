@@ -1695,6 +1695,32 @@ func TestEnumPointTransformation(t *testing.T) {
 			t.Errorf("expected %q, got %q", "active", v)
 		}
 	})
+
+	t.Run("nil enum point produces empty enum frame not numeric", func(t *testing.T) {
+		computeResponse := computeapi.NewComputeNodeResponseFromEnumPoint(nil)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "status",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "string",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		frame := resp.Frames[0]
+		if frame.Meta == nil {
+			t.Fatal("expected frame metadata on empty enum response")
+		}
+		if frame.Meta.Type != data.FrameTypeTable {
+			t.Errorf("expected FrameTypeTable (enum path), got %v — nil enum points must not fall through to numeric", frame.Meta.Type)
+		}
+		if frame.Meta.PreferredVisualization != data.VisTypeTable {
+			t.Errorf("expected VisTypeTable, got %v", frame.Meta.PreferredVisualization)
+		}
+	})
 }
 
 func TestDisplayNameFromDS(t *testing.T) {
