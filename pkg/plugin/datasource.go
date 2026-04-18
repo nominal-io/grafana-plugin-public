@@ -576,7 +576,7 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	if qm.ChannelDataType == "log" {
 		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields
 		pageInfo := computeapi.PageInfo{
-			PageSize: -499, // Negative = newest first; API enforces abs(pageSize) < 500
+			PageSize: -250, // Negative = newest first; 250 is plenty for UX and keeps query times down
 		}
 		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
