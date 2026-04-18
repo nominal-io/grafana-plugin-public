@@ -1042,6 +1042,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		// enumPointFunc - single-point enum response (value is already a resolved string)
 		func(ep *computeapi.EnumPoint) error {
 			if ep == nil {
+				result.IsEnum = true
 				return nil
 			}
 			seconds := int64(ep.Timestamp.Seconds)
@@ -1097,6 +1098,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		// logPointFunc — single log point response
 		func(lp *computeapi.LogPoint) error {
 			if lp == nil {
+				result.IsLog = true
 				return nil
 			}
 			seconds := int64(lp.Timestamp.Seconds)
