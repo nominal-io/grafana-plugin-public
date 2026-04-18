@@ -3857,6 +3857,277 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 	})
 }
 
+// --- Log query path tests ---
+
+// createMockPagedLogResult creates a mock ComputeWithUnitsResult with paged log data.
+func createMockPagedLogResult(messages []string, args []map[string]string) computeapi.ComputeWithUnitsResult {
+	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
+	timestamps := make([]api.Timestamp, len(messages))
+	values := make([]computeapi.LogValue, len(messages))
+	for i, msg := range messages {
+		timestamps[i] = api.Timestamp{
+			Seconds: safelong.SafeLong(baseTime + int64(i*60)),
+			Nanos:   safelong.SafeLong(0),
+		}
+		values[i] = computeapi.LogValue{
+			Message: msg,
+			Id:      [16]byte{byte(i)},
+		}
+		if args != nil && i < len(args) {
+			values[i].Args = args[i]
+		}
+	}
+	pagedLog := computeapi.PagedLogPlot{
+		Timestamps: timestamps,
+		Values:     values,
+	}
+	computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createMockLogPointResult creates a mock ComputeWithUnitsResult with a single log point.
+func createMockLogPointResult(message string, args map[string]string) computeapi.ComputeWithUnitsResult {
+	logPoint := computeapi.LogPoint{
+		Timestamp: api.Timestamp{
+			Seconds: safelong.SafeLong(1704067200),
+			Nanos:   safelong.SafeLong(0),
+		},
+		Value: computeapi.LogValue{
+			Message: message,
+			Id:      [16]byte{0x01},
+			Args:    args,
+		},
+	}
+	computeResponse := computeapi.NewComputeNodeResponseFromLogPoint(&logPoint)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+func TestLogPagedTransformation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("transforms paged log entries into log frame", func(t *testing.T) {
+		messages := []string{"error: disk full", "warn: high memory", "info: started"}
+		args := []map[string]string{
+			{"host": "srv-1", "level": "error"},
+			{"host": "srv-2", "level": "warn"},
+			{"host": "srv-1", "level": "info"},
+		}
+		result := createMockPagedLogResult(messages, args)
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if frame.Meta == nil || frame.Meta.Type != data.FrameTypeLogLines {
+			t.Errorf("expected FrameTypeLogLines metadata")
+		}
+		if frame.Meta.PreferredVisualization != data.VisTypeLogs {
+			t.Errorf("expected VisTypeLogs, got %v", frame.Meta.PreferredVisualization)
+		}
+
+		if len(frame.Fields) != 4 {
+			t.Fatalf("expected 4 fields (timestamp, body, id, labels), got %d", len(frame.Fields))
+		}
+
+		bodyField := frame.Fields[1]
+		if bodyField.Len() != 3 {
+			t.Fatalf("expected 3 log entries, got %d", bodyField.Len())
+		}
+
+		// Verify sort order: newest first (highest timestamp first)
+		tsField := frame.Fields[0]
+		t0 := tsField.At(0).(time.Time)
+		t2 := tsField.At(2).(time.Time)
+		if !t0.After(t2) {
+			t.Errorf("expected descending sort, but first timestamp %v is not after last %v", t0, t2)
+		}
+
+		// Verify body content is preserved (sorted order: index 2, 1, 0)
+		if v := bodyField.At(0).(string); v != "info: started" {
+			t.Errorf("expected newest message first, got %q", v)
+		}
+		if v := bodyField.At(2).(string); v != "error: disk full" {
+			t.Errorf("expected oldest message last, got %q", v)
+		}
+
+		// Verify labels are valid JSON objects
+		labelsField := frame.Fields[3]
+		for i := 0; i < labelsField.Len(); i++ {
+			raw := labelsField.At(i).(json.RawMessage)
+			var parsed map[string]string
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Errorf("labels at index %d is not valid JSON object: %v", i, err)
+			}
+		}
+	})
+
+	t.Run("nil Args produces empty JSON object not null", func(t *testing.T) {
+		messages := []string{"no-args entry"}
+		result := createMockPagedLogResult(messages, nil) // nil args
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		labelsField := resp.Frames[0].Fields[3]
+		raw := labelsField.At(0).(json.RawMessage)
+		if string(raw) != "{}" {
+			t.Errorf("expected labels to be {} for nil Args, got %q", string(raw))
+		}
+	})
+
+	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
+		result := createMockPagedLogResult([]string{}, nil)
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if frame.Meta == nil || frame.Meta.Type != data.FrameTypeLogLines {
+			t.Errorf("expected FrameTypeLogLines metadata on empty frame")
+		}
+		if len(frame.Fields) != 4 {
+			t.Fatalf("expected 4 fields even when empty, got %d", len(frame.Fields))
+		}
+	})
+}
+
+func TestLogPointTransformation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("transforms single log point", func(t *testing.T) {
+		result := createMockLogPointResult("single entry", map[string]string{"host": "srv-1"})
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		frame := resp.Frames[0]
+		if frame.Meta == nil || frame.Meta.Type != data.FrameTypeLogLines {
+			t.Errorf("expected FrameTypeLogLines metadata")
+		}
+
+		bodyField := frame.Fields[1]
+		if bodyField.Len() != 1 {
+			t.Fatalf("expected 1 entry, got %d", bodyField.Len())
+		}
+		if v := bodyField.At(0).(string); v != "single entry" {
+			t.Errorf("expected %q, got %q", "single entry", v)
+		}
+	})
+
+	t.Run("nil Args on single log point produces empty JSON object", func(t *testing.T) {
+		result := createMockLogPointResult("no-args", nil)
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := ds.transformBatchResult(result, qm)
+		labelsField := resp.Frames[0].Fields[3]
+		raw := labelsField.At(0).(json.RawMessage)
+		if string(raw) != "{}" {
+			t.Errorf("expected labels to be {} for nil Args, got %q", string(raw))
+		}
+	})
+}
+
+func TestBuildComputeRequestLogPath(t *testing.T) {
+	ds := &Datasource{}
+	baseTimeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	t.Run("log ChannelDataType produces log series with page strategy", func(t *testing.T) {
+		qm := NominalQueryModel{
+			AssetRid:        "ri.nominal.asset.123",
+			Channel:         "app.logs",
+			ChannelDataType: "log",
+			DataScopeName:   "default",
+			Buckets:         1000,
+		}
+		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+
+		jsonBytes, err := json.Marshal(req.Node)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+		jsonStr := string(jsonBytes)
+
+		if !strings.Contains(jsonStr, `"type":"log"`) {
+			t.Errorf("expected log series type in JSON, got: %s", jsonStr)
+		}
+		// Log path uses page strategy, not buckets
+		if strings.Contains(jsonStr, `"outputFormat"`) {
+			t.Errorf("expected no outputFormat for log path, got: %s", jsonStr)
+		}
+		if strings.Contains(jsonStr, `"numericOutputFields"`) {
+			t.Errorf("expected no numericOutputFields for log path, got: %s", jsonStr)
+		}
+	})
+
+	t.Run("log path is structurally different from numeric and enum", func(t *testing.T) {
+		logQM := NominalQueryModel{
+			AssetRid:        "ri.nominal.asset.123",
+			Channel:         "app.logs",
+			ChannelDataType: "log",
+			DataScopeName:   "default",
+		}
+		numericQM := NominalQueryModel{
+			AssetRid:        "ri.nominal.asset.123",
+			Channel:         "temperature",
+			ChannelDataType: "numeric",
+			DataScopeName:   "default",
+			Buckets:         1000,
+			Aggregations:    []string{"MEAN"},
+		}
+
+		logReq := ds.buildComputeRequest(logQM, baseTimeRange, 0)
+		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange, 0)
+
+		logJSON, _ := json.Marshal(logReq.Node)
+		numericJSON, _ := json.Marshal(numericReq.Node)
+
+		if string(logJSON) == string(numericJSON) {
+			t.Error("expected different JSON for log vs numeric ChannelDataType")
+		}
+	})
+}
+
 // strPtr is a helper to create a *string
 func strPtr(s string) *string {
 	return &s
