@@ -500,7 +500,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     // Skip if type was already set by direct dropdown selection (not a variable)
-    if (query?.channelDataType && !query?.channel?.includes('$')) {
+    if (queryRef.current?.channelDataType && !queryRef.current?.channel?.includes('$')) {
       return;
     }
     const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
