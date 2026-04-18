@@ -4132,3 +4132,93 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+func TestGetChannelDataType(t *testing.T) {
+	tests := []struct {
+		name     string
+		dataType *api.SeriesDataType
+		expected string
+	}{
+		{"nil dataType returns empty", nil, ""},
+		{"STRING returns string", ptrSeriesDataType(api.SeriesDataType_STRING), "string"},
+		{"STRING_ARRAY returns string", ptrSeriesDataType(api.SeriesDataType_STRING_ARRAY), "string"},
+		{"LOG returns log", ptrSeriesDataType(api.SeriesDataType_LOG), "log"},
+		{"DOUBLE returns numeric", ptrSeriesDataType(api.SeriesDataType_DOUBLE), "numeric"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := datasourceapi.ChannelMetadata{DataType: tt.dataType}
+			got := getChannelDataType(ch)
+			if got != tt.expected {
+				t.Errorf("getChannelDataType() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func ptrSeriesDataType(v api.SeriesDataType_Value) *api.SeriesDataType {
+	dt := api.New_SeriesDataType(v)
+	return &dt
+}
+
+func TestLogChannelSkipsAggregationValidation(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockPagedLogResult([]string{"test entry"}, []map[string]string{{"k": "v"}}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
+		},
+		computeService: mockService,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+
+	// A log query with no aggregations should NOT get default ["MEAN"] injected,
+	// and should NOT be rejected for missing aggregations.
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: []backend.DataQuery{
+			{
+				RefID:     "A",
+				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log", Buckets: 100}),
+				TimeRange: timeRange,
+			},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	response, ok := resp.Responses["A"]
+	if !ok {
+		t.Fatal("expected response for refID A")
+	}
+	// The query should not have been rejected — no StatusBadRequest error about aggregations.
+	if response.Status == backend.StatusBadRequest {
+		t.Errorf("log query was rejected with bad request: %v", response.Error)
+	}
+	// Should produce a log frame, not a numeric frame.
+	if len(response.Frames) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(response.Frames))
+	}
+	if response.Frames[0].Meta == nil || response.Frames[0].Meta.Type != data.FrameTypeLogLines {
+		t.Errorf("expected FrameTypeLogLines, got %v", response.Frames[0].Meta)
+	}
+}
