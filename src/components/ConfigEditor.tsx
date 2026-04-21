@@ -1,33 +1,32 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, SecretInput, useTheme2 } from '@grafana/ui';
+import { InlineField, Input, SecretInput } from '@grafana/ui';
+import { ConfigSection, DataSourceDescription } from '@grafana/plugin-ui';
 import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
+import { DEFAULT_NOMINAL_BASE_URL, NOMINAL_DOCS_URL, NOMINAL_PLUGIN_README_URL } from '../constants';
 
 interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
-  const theme = useTheme2();
-  const { jsonData, secureJsonData, secureJsonFields } = options;
-  const apiKey = secureJsonData?.apiKey || '';
+  const { jsonData, secureJsonFields } = options;
+  const apiKey = options.secureJsonData?.apiKey || '';
 
   const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        baseUrl: event.target.value,
+        baseUrl: event.target.value.trim(),
       },
     });
   };
 
-
-  // Secure field (only sent to the backend)
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
       ...options,
       secureJsonData: {
-        apiKey: event.target.value,
+        apiKey: event.target.value.trim(),
       },
     });
   };
@@ -48,49 +47,60 @@ export function ConfigEditor(props: Props) {
 
   return (
     <>
-      <InlineField
-        label="Base URL"
-        labelWidth={14}
-        interactive
-        tooltip={'Nominal API base URL including the full path (e.g., https://api.gov.nominal.io/api)'}
-      >
-        <Input
-          id="config-editor-base-url"
-          onChange={onBaseUrlChange}
-          value={jsonData.baseUrl || ''}
-          placeholder="https://api.gov.nominal.io/api"
-          width={40}
-        />
-      </InlineField>
-
-
-      <InlineField
-        label="API Key"
-        labelWidth={14}
-        interactive
-        tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
-      >
-        <SecretInput
-          required
-          id="config-editor-api-key"
-          isConfigured={secureJsonFields?.apiKey || false}
-          value={apiKey}
-          placeholder="Enter your Nominal API key"
-          width={40}
-          onReset={onResetAPIKey}
-          onChange={onAPIKeyChange}
-        />
-      </InlineField>
-
-
-      <div style={{ marginTop: theme.spacing(2), padding: theme.spacing(1.5), backgroundColor: theme.colors.background.secondary, borderRadius: theme.shape.radius.default }}>
-        <h4 style={{ margin: `0 0 ${theme.spacing(1)} 0`, fontSize: theme.typography.size.md, color: theme.colors.text.primary }}>Quick Setup Guide:</h4>
-        <ol style={{ margin: '0', paddingLeft: theme.spacing(2.5), fontSize: theme.typography.size.sm, lineHeight: theme.typography.body.lineHeight, color: theme.colors.text.primary }}>
-          <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
-          <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
-          <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
+      <DataSourceDescription
+        dataSourceName="Nominal"
+        docsLink={NOMINAL_PLUGIN_README_URL}
+        hasRequiredFields
+      />
+      <ConfigSection title="Connection">
+        <InlineField
+          label="Base URL"
+          labelWidth={14}
+          interactive
+          tooltip={`Nominal API base URL including the full path (e.g., ${DEFAULT_NOMINAL_BASE_URL})`}
+        >
+          <Input
+            id="config-editor-base-url"
+            onChange={onBaseUrlChange}
+            value={jsonData.baseUrl || ''}
+            placeholder={DEFAULT_NOMINAL_BASE_URL}
+            width={40}
+          />
+        </InlineField>
+      </ConfigSection>
+      <ConfigSection title="Authentication">
+        <InlineField
+          label="API Key"
+          labelWidth={14}
+          interactive
+          tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
+        >
+          <SecretInput
+            required
+            id="config-editor-api-key"
+            isConfigured={secureJsonFields?.apiKey || false}
+            value={apiKey}
+            placeholder="Enter your Nominal API key"
+            width={40}
+            onReset={onResetAPIKey}
+            onChange={onAPIKeyChange}
+          />
+        </InlineField>
+      </ConfigSection>
+      <ConfigSection title="Quick Setup">
+        <ol>
+          <li>Set Base URL to your Nominal API endpoint including the full path (e.g., {DEFAULT_NOMINAL_BASE_URL}).</li>
+          <li>Enter your Nominal API key (NOM_KEY) in the API Key field.</li>
+          <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration.</li>
         </ol>
-      </div>
+        <p>
+          For more on using Nominal, see the{' '}
+          <a href={NOMINAL_DOCS_URL} target="_blank" rel="noreferrer">
+            Nominal documentation
+          </a>
+          .
+        </p>
+      </ConfigSection>
     </>
   );
 }

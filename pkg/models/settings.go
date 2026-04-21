@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
@@ -36,6 +37,13 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
 	}
 
+	// Trim surrounding whitespace from all string settings. This mirrors the
+	// frontend ConfigEditor trim and also defends against provisioning paths
+	// (datasources.yml, HTTP datasources API) that bypass the editor. A
+	// trailing newline in the API key causes the upstream Conjure bearer-token
+	// validator to reject every request with an opaque INVALID_ARGUMENT.
+	settings.BaseUrl = strings.TrimSpace(settings.BaseUrl)
+	settings.Path = strings.TrimSpace(settings.Path)
 	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
 
 	return &settings, nil
@@ -43,6 +51,6 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 
 func loadSecretPluginSettings(source map[string]string) *SecretPluginSettings {
 	return &SecretPluginSettings{
-		ApiKey: source["apiKey"],
+		ApiKey: strings.TrimSpace(source["apiKey"]),
 	}
 }

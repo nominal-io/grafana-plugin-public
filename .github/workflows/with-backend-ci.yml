@@ -50,6 +50,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --prefer-offline
 
+      - name: Check shared constants (Go ↔ TS)
+        # Paired: pkg/plugin/datasource.go `defaultAPIBaseURL` and src/constants.ts `DEFAULT_NOMINAL_BASE_URL`.
+        run: |
+          go_url=$(grep -E '^const defaultAPIBaseURL = "[^"]+"' pkg/plugin/datasource.go | sed -E 's/.*"([^"]+)".*/\1/')
+          ts_url=$(grep -E "export const DEFAULT_NOMINAL_BASE_URL = ['\"][^'\"]+['\"]" src/constants.ts | sed -E "s/.*['\"]([^'\"]+)['\"].*/\1/")
+          if [ -z "$go_url" ] || [ -z "$ts_url" ]; then
+            echo "::error::Could not extract default base URL from Go or TS source"
+            exit 1
+          fi
+          if [ "$go_url" != "$ts_url" ]; then
+            echo "::error::Default Nominal API base URL drift: Go=$go_url TS=$ts_url"
+            exit 1
+          fi
+          echo "OK: $go_url"
+
       - name: Typecheck
         run: pnpm run typecheck
       - name: Lint
