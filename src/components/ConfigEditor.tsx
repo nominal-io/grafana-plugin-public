@@ -9,8 +9,8 @@ interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOpti
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
-  const { jsonData, secureJsonFields } = options;
-  const apiKey = options.secureJsonData?.apiKey || '';
+  const { jsonData, secureJsonData, secureJsonFields } = options;
+  const apiKey = secureJsonData?.apiKey || '';
 
   const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
