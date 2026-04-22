@@ -2,6 +2,18 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.10.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.9.2...nominal-grafana-plugin@0.10.0) (2026-04-22)
+
+
+### Features
+
+* multi-aggregation support for numeric series ([#42](https://github.com/nominal-io/grafana-plugin-public/issues/42)) ([4861564](https://github.com/nominal-io/grafana-plugin-public/commit/4861564605ae46caf2d11ab0c6766ae83a598cf1))
+
+
+### Bug Fixes
+
+* bump protobufjs to &gt;=7.5.5 to patch CVE-2026-41242 ([#55](https://github.com/nominal-io/grafana-plugin-public/issues/55)) ([b155e12](https://github.com/nominal-io/grafana-plugin-public/commit/b155e123e62d251d376c988e1c402d37a6f795b5))
+
 ## [0.9.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.9.1...nominal-grafana-plugin@0.9.2) (2026-04-11)
 
 
