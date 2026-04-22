@@ -1,16 +1,24 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, SecretInput } from '@grafana/ui';
+import { css } from '@emotion/css';
+import { InlineField, Input, SecretInput, Stack, useStyles2 } from '@grafana/ui';
 import { ConfigSection, DataSourceDescription } from '@grafana/plugin-ui';
-import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
+import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 import { DEFAULT_NOMINAL_BASE_URL, NOMINAL_DOCS_URL, NOMINAL_PLUGIN_README_URL } from '../constants';
 
 interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
+const getStyles = (theme: GrafanaTheme2) => ({
+  quickSetupList: css({
+    paddingLeft: theme.spacing(3),
+  }),
+});
+
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonData, secureJsonFields } = options;
   const apiKey = secureJsonData?.apiKey || '';
+  const styles = useStyles2(getStyles);
 
   const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
@@ -46,7 +54,7 @@ export function ConfigEditor(props: Props) {
   };
 
   return (
-    <>
+    <Stack direction="column" gap={4}>
       <DataSourceDescription
         dataSourceName="Nominal"
         docsLink={NOMINAL_PLUGIN_README_URL}
@@ -88,7 +96,7 @@ export function ConfigEditor(props: Props) {
         </InlineField>
       </ConfigSection>
       <ConfigSection title="Quick Setup">
-        <ol>
+        <ol className={styles.quickSetupList}>
           <li>Set Base URL to your Nominal API endpoint including the full path (e.g., {DEFAULT_NOMINAL_BASE_URL}).</li>
           <li>Enter your Nominal API key (NOM_KEY) in the API Key field.</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration.</li>
@@ -101,6 +109,6 @@ export function ConfigEditor(props: Props) {
           .
         </p>
       </ConfigSection>
-    </>
+    </Stack>
   );
 }
