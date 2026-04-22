@@ -20,24 +20,11 @@ export function ConfigEditor(props: Props) {
   const apiKey = secureJsonData?.apiKey || '';
   const styles = useStyles2(getStyles);
 
-  const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        baseUrl: event.target.value.trim(),
-      },
-    });
-  };
+  const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) =>
+    onOptionsChange({ ...options, jsonData: { ...jsonData, baseUrl: event.target.value } });
 
-  const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        apiKey: event.target.value.trim(),
-      },
-    });
-  };
+  const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) =>
+    onOptionsChange({ ...options, secureJsonData: { apiKey: event.target.value } });
 
   const onResetAPIKey = () => {
     onOptionsChange({
