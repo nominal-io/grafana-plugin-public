@@ -1,30 +1,32 @@
 import React, { ChangeEvent } from 'react';
 import { css } from '@emotion/css';
-import { InlineField, Input, SecretInput, Stack, useStyles2 } from '@grafana/ui';
+import { InlineField, Input, SecretInput, Stack, Text, TextLink, useStyles2 } from '@grafana/ui';
 import { ConfigSection, DataSourceDescription } from '@grafana/plugin-ui';
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 import { DEFAULT_NOMINAL_BASE_URL, NOMINAL_DOCS_URL, NOMINAL_PLUGIN_README_URL } from '../constants';
 
-interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
-
 const getStyles = (theme: GrafanaTheme2) => ({
-  quickSetupList: css({
+  stepsList: css({
     paddingLeft: theme.spacing(3),
+    margin: 0,
   }),
 });
+
+interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonData, secureJsonFields } = options;
   const apiKey = secureJsonData?.apiKey || '';
-  const styles = useStyles2(getStyles);
 
   const onBaseUrlChange = (event: ChangeEvent<HTMLInputElement>) =>
     onOptionsChange({ ...options, jsonData: { ...jsonData, baseUrl: event.target.value } });
 
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) =>
     onOptionsChange({ ...options, secureJsonData: { apiKey: event.target.value } });
+
+  const styles = useStyles2(getStyles);
 
   const onResetAPIKey = () => {
     onOptionsChange({
@@ -42,15 +44,36 @@ export function ConfigEditor(props: Props) {
 
   return (
     <Stack direction="column" gap={4}>
-      <DataSourceDescription
-        dataSourceName="Nominal"
-        docsLink={NOMINAL_PLUGIN_README_URL}
-        hasRequiredFields
-      />
+      <Stack direction="column" gap={2}>
+        <DataSourceDescription
+          dataSourceName="Nominal"
+          docsLink={NOMINAL_PLUGIN_README_URL}
+          hasRequiredFields
+        />
+        <ol className={styles.stepsList}>
+          <Text element="li" color="secondary">
+            Set Base URL to your Nominal API endpoint including the full path (e.g., {DEFAULT_NOMINAL_BASE_URL}).
+          </Text>
+          <Text element="li" color="secondary">
+            Enter your Nominal API key (NOM_KEY) in the API Key field.
+          </Text>
+          <Text element="li" color="secondary">
+            Click &quot;Save &amp; Test&quot; to verify and save the configuration.
+          </Text>
+        </ol>
+        <Text element="p" color="secondary">
+          For more information on using Nominal, see the{' '}
+          <TextLink href={NOMINAL_DOCS_URL} external inline>
+            Nominal documentation
+          </TextLink>
+          .
+        </Text>
+      </Stack>
       <ConfigSection title="Connection">
         <InlineField
           label="Base URL"
           labelWidth={14}
+          required
           interactive
           tooltip={`Nominal API base URL including the full path (e.g., ${DEFAULT_NOMINAL_BASE_URL})`}
         >
@@ -67,6 +90,7 @@ export function ConfigEditor(props: Props) {
         <InlineField
           label="API Key"
           labelWidth={14}
+          required
           interactive
           tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
         >
@@ -81,20 +105,6 @@ export function ConfigEditor(props: Props) {
             onChange={onAPIKeyChange}
           />
         </InlineField>
-      </ConfigSection>
-      <ConfigSection title="Quick Setup">
-        <ol className={styles.quickSetupList}>
-          <li>Set Base URL to your Nominal API endpoint including the full path (e.g., {DEFAULT_NOMINAL_BASE_URL}).</li>
-          <li>Enter your Nominal API key (NOM_KEY) in the API Key field.</li>
-          <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration.</li>
-        </ol>
-        <p>
-          For more on using Nominal, see the{' '}
-          <a href={NOMINAL_DOCS_URL} target="_blank" rel="noreferrer">
-            Nominal documentation
-          </a>
-          .
-        </p>
       </ConfigSection>
     </Stack>
   );
