@@ -552,7 +552,11 @@ func TestBatchQueryExecution(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify batch was called exactly once (not 3 times)
+	// Verify batch was called exactly once (not 3 times).
+	// All queries above leave ChannelDataType unset, so they land in the non-log
+	// partition and produce a single batch call. The log partition is empty and
+	// makes no backend call. If you add a log query here, expect 2 batch calls.
+	// See TestMixedLogNumericParallelBatch for the partitioned scenario.
 	if mockService.batchComputeCalls != 1 {
 		t.Errorf("expected 1 batch compute call, got %d", mockService.batchComputeCalls)
 	}

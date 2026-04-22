@@ -431,10 +431,14 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 	}
 
+	if len(batchableQueries) == 0 {
+		return response, nil
+	}
+
 	// Partition into log and non-log queries. When both partitions are non-empty,
 	// execute them in parallel so log queries (paged, uncacheable) don't delay
-	// numeric/enum results. When only one partition has queries, the single
-	// dispatched goroutine is a negligible overhead over a direct call.
+	// numeric/enum results. When only one partition has queries, the other
+	// goroutine short-circuits via runBatch's empty-slice check.
 	var logQueries, otherQueries []backend.DataQuery
 	var logQMs, otherQMs []NominalQueryModel
 	for i, qm := range batchableModels {
