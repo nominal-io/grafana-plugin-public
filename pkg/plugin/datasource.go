@@ -255,23 +255,8 @@ func (d *Datasource) inferChannelDataType(ctx context.Context, config *models.Pl
 			continue
 		}
 
-		var ridStr string
-		switch scope.DataSource.Type {
-		case "dataset":
-			if scope.DataSource.Dataset != nil {
-				ridStr = *scope.DataSource.Dataset
-			}
-		case "connection":
-			if scope.DataSource.Connection != nil {
-				ridStr = *scope.DataSource.Connection
-			}
-		case "logSet":
-			if scope.DataSource.LogSet != nil {
-				ridStr = *scope.DataSource.LogSet
-			}
-		}
-
-		if ridStr == "" {
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
 			continue
 		}
 
@@ -446,65 +431,48 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 	}
 
-	// Check if we have a mix of log and non-log queries.
-	// If mixed, execute them in parallel batches so log queries (paged, uncacheable)
-	// don't delay numeric/enum results.
-	hasLog := false
-	hasOther := false
-	for _, qm := range batchableModels {
+	// Partition into log and non-log queries. When both partitions are non-empty,
+	// execute them in parallel so log queries (paged, uncacheable) don't delay
+	// numeric/enum results. When only one partition has queries, the single
+	// dispatched goroutine is a negligible overhead over a direct call.
+	var logQueries, otherQueries []backend.DataQuery
+	var logQMs, otherQMs []NominalQueryModel
+	for i, qm := range batchableModels {
 		if qm.ChannelDataType == "log" {
-			hasLog = true
+			logQueries = append(logQueries, batchableQueries[i])
+			logQMs = append(logQMs, qm)
 		} else {
-			hasOther = true
-		}
-		if hasLog && hasOther {
-			break
+			otherQueries = append(otherQueries, batchableQueries[i])
+			otherQMs = append(otherQMs, qm)
 		}
 	}
 
-	if hasLog && hasOther {
-		// Mixed: partition and execute in parallel
-		var logQueries, otherQueries []backend.DataQuery
-		var logQMs, otherQMs []NominalQueryModel
-		for i, qm := range batchableModels {
-			if qm.ChannelDataType == "log" {
-				logQueries = append(logQueries, batchableQueries[i])
-				logQMs = append(logQMs, qm)
-			} else {
-				otherQueries = append(otherQueries, batchableQueries[i])
-				otherQMs = append(otherQMs, qm)
-			}
+	runBatch := func(label string, queries []backend.DataQuery, qms []NominalQueryModel) map[string]backend.DataResponse {
+		if len(queries) == 0 {
+			return nil
 		}
+		log.DefaultLogger.Debug("Executing batch query", "partition", label, "count", len(queries))
+		return d.executeBatchQuery(ctx, config, queries, qms)
+	}
 
-		var wg sync.WaitGroup
-		var logResults, otherResults map[string]backend.DataResponse
+	var wg sync.WaitGroup
+	var logResults, otherResults map[string]backend.DataResponse
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		logResults = runBatch("log", logQueries, logQMs)
+	}()
+	go func() {
+		defer wg.Done()
+		otherResults = runBatch("other", otherQueries, otherQMs)
+	}()
+	wg.Wait()
 
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			log.DefaultLogger.Debug("Executing log batch query", "count", len(logQueries))
-			logResults = d.executeBatchQuery(ctx, config, logQueries, logQMs)
-		}()
-		go func() {
-			defer wg.Done()
-			log.DefaultLogger.Debug("Executing batch query", "count", len(otherQueries))
-			otherResults = d.executeBatchQuery(ctx, config, otherQueries, otherQMs)
-		}()
-		wg.Wait()
-
-		for refID, res := range logResults {
-			response.Responses[refID] = res
-		}
-		for refID, res := range otherResults {
-			response.Responses[refID] = res
-		}
-	} else if len(batchableQueries) > 0 {
-		// All same type: single batch, no overhead
-		log.DefaultLogger.Debug("Executing batch query", "count", len(batchableQueries))
-		batchResults := d.executeBatchQuery(ctx, config, batchableQueries, batchableModels)
-		for refID, res := range batchResults {
-			response.Responses[refID] = res
-		}
+	for refID, res := range logResults {
+		response.Responses[refID] = res
+	}
+	for refID, res := range otherResults {
+		response.Responses[refID] = res
 	}
 
 	return response, nil
@@ -1026,15 +994,12 @@ type LogEntry struct {
 
 // marshalLogArgs serializes log Args to JSON, returning "{}" for nil maps.
 // json.Marshal(nil) produces "null", not "{}", so we handle nil explicitly.
-func marshalLogArgs(args map[string]string, index int) json.RawMessage {
+// map[string]string is always JSON-serializable, so we don't handle marshal errors.
+func marshalLogArgs(args map[string]string) json.RawMessage {
 	if args == nil {
 		return json.RawMessage("{}")
 	}
-	labelsJSON, err := json.Marshal(args)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to marshal log args", "index", index, "error", err)
-		return json.RawMessage("{}")
-	}
+	labelsJSON, _ := json.Marshal(args)
 	return labelsJSON
 }
 
@@ -1143,7 +1108,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
 					Body:   val.Message,
 					ID:     val.Id.String(),
-					Labels: marshalLogArgs(val.Args, i),
+					Labels: marshalLogArgs(val.Args),
 				})
 			}
 			result.IsLog = true
@@ -1161,7 +1126,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 				Time:   time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)),
 				Body:   lp.Value.Message,
 				ID:     lp.Value.Id.String(),
-				Labels: marshalLogArgs(lp.Value.Args, 0),
+				Labels: marshalLogArgs(lp.Value.Args),
 			}}
 			result.IsLog = true
 			return nil
@@ -1675,6 +1640,26 @@ func isSupportedDataSourceType(dsType string) bool {
 	return dsType == "dataset" || dsType == "connection" || dsType == "logSet"
 }
 
+// dataSourceRidFor returns the RID string for a supported AssetDataSource.
+// Returns ("", false) for unsupported types or missing RID pointers.
+func dataSourceRidFor(ds AssetDataSource) (string, bool) {
+	switch ds.Type {
+	case "dataset":
+		if ds.Dataset != nil {
+			return *ds.Dataset, true
+		}
+	case "connection":
+		if ds.Connection != nil {
+			return *ds.Connection, true
+		}
+	case "logSet":
+		if ds.LogSet != nil {
+			return *ds.LogSet, true
+		}
+	}
+	return "", false
+}
+
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection
 func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	// Load settings to get API key and base URL
@@ -2086,31 +2071,20 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	// Extract datasource RIDs from the asset's datascopes, optionally filtered by dataScopeName
 	var dataSourceRids []rids.DataSourceRid
 	for _, scope := range asset.DataScopes {
-		dsType := scope.DataSource.Type
-		if !isSupportedDataSourceType(dsType) {
-			continue
-		}
-
 		// If a dataScopeName filter is provided, only include matching scopes
 		if searchRequest.DataScopeName != "" && scope.DataScopeName != searchRequest.DataScopeName {
 			continue
 		}
 
-		var ridStr string
-		if dsType == "dataset" && scope.DataSource.Dataset != nil {
-			ridStr = *scope.DataSource.Dataset
-		} else if dsType == "connection" && scope.DataSource.Connection != nil {
-			ridStr = *scope.DataSource.Connection
-		} else if dsType == "logSet" && scope.DataSource.LogSet != nil {
-			ridStr = *scope.DataSource.LogSet
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
+			continue
 		}
 
-		if ridStr != "" {
-			if parsedRid, err := rid.ParseRID(ridStr); err == nil {
-				dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
-			} else {
-				log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
-			}
+		if parsedRid, err := rid.ParseRID(ridStr); err == nil {
+			dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
+		} else {
+			log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
 		}
 	}
 

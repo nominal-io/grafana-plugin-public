@@ -544,7 +544,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           onChange({ ...queryRef.current, channelDataType: match.dataType });
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('Nominal: failed to infer channel data type', err);
+      });
     return () => { cancelled = true; };
     // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
     // call whenever setSelectedAsset is called with a logically identical asset.
