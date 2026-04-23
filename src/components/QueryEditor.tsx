@@ -1,11 +1,21 @@
-import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
 import { InlineField, Input, Stack, Select, MultiSelect, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
 import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
-import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
+import { getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
+import {
+  Asset,
+  assetToOption,
+  createBasicAsset,
+  fetchAssetByRid,
+  resolveDataSourceRids,
+  searchAssets,
+  searchChannels,
+  SUPPORTED_DATA_SOURCE_TYPES,
+} from '../utils/api';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -42,30 +52,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-interface Asset {
-  rid: string;
-  title: string;
-  description?: string;
-  labels: string[];
-  dataScopes: Array<{
-    dataScopeName: string;
-    dataSource: {
-      type: string;
-      dataset?: string;
-      video?: string;
-      connection?: string;
-      logSet?: string;
-    };
-    offset?: any;
-    timestampType?: string;
-    seriesTags?: Record<string, any>;
-  }>;
-  properties?: Record<string, any>;
-  createdBy?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
 type AssetInputMethod = 'search' | 'direct';
 
 const NUMERIC_AGG_OPTIONS = [
@@ -77,57 +63,6 @@ const NUMERIC_AGG_OPTIONS = [
   { label: 'First', value: AggregationType.FirstPoint },
   { label: 'Last', value: AggregationType.LastPoint },
 ];
-
-/** Data source types that support channel queries */
-const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
-
-/** Returns the rid for a data source, or undefined if the type is unsupported or the rid field is missing. */
-const getDataSourceRid = (
-  ds: Asset['dataScopes'][number]['dataSource']
-): string | undefined => {
-  if (ds.type === 'dataset') {
-    return ds.dataset;
-  }
-  if (ds.type === 'connection') {
-    return ds.connection;
-  }
-  if (ds.type === 'logSet') {
-    return ds.logSet;
-  }
-  return undefined;
-};
-
-/** Creates a minimal asset placeholder when the actual asset can't be fetched.
- *  dataScopes is intentionally empty — we don't fabricate scope data. */
-const createBasicAsset = (rid: string, title: string): Asset => ({
-  rid,
-  title,
-  labels: [],
-  dataScopes: [],
-});
-
-/** Fetches a single asset by its exact RID using the batch lookup endpoint */
-export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
-  // Validate RID format - must start with "ri." to be a valid resource identifier
-  if (!rid || !rid.startsWith('ri.')) {
-    return null;
-  }
-
-  // Use the efficient batch lookup endpoint instead of searching all assets
-  const response = await getBackendSrv().post(
-    `${datasourceUrl}/scout/v1/asset/multiple`,
-    [rid] // API expects an array of RIDs
-  );
-
-  // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
-  const asset = response?.[rid];
-  if (asset && asset.dataScopes?.length > 0) {
-    return asset;
-  }
-  // Log to help diagnose asset lookup failures (e.g. unexpected response format)
-  console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
-  return null;
-};
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const theme = useTheme2();
@@ -206,33 +141,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const loadAssets = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Use the backend proxy to search for assets
-      const response = await getBackendSrv().post(`${datasource.url}/scout/v1/search-assets`, {
-        query: {
-          searchText: searchQuery || '',
-          type: 'searchText',
-        },
-        sort: {
-          field: 'CREATED_AT',
-          isDescending: false,
-        },
-        pageSize: 50,
-      });
-
-      if (response && response.results) {
-        // Filter assets to only include those with supported data source types
-        const filteredAssets = response.results.filter((asset: Asset) => {
-          return (
-            asset.dataScopes &&
-            asset.dataScopes.length > 0 &&
-            asset.dataScopes.some((scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type))
-          );
-        });
-
-        setAssets(filteredAssets);
-      } else {
-        setAssets([]);
-      }
+      setAssets(await searchAssets(datasource.url, searchQuery));
     } catch (error) {
       console.error('Failed to load assets:', error);
       setAssets([]);
@@ -248,34 +157,16 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         return [];
       }
       const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-      const scopes = (selectedAsset.dataScopes || []).filter(
-        (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
-      );
-      const dataSourceRids: string[] = [];
-      for (const scope of scopes) {
-        if (!scope.dataSource) {
-          continue;
-        }
-        const rid = getDataSourceRid(scope.dataSource);
-        if (rid) {
-          dataSourceRids.push(rid);
-        }
-      }
-      if (dataSourceRids.length === 0) {
-        return [];
-      }
+      const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
       try {
-        const response = await getBackendSrv().post(`${datasource.url}/channels`, { dataSourceRids, searchText });
-        if (response?.channels) {
-          return response.channels.map((ch: any) => ({
-            label: ch.name,
-            value: ch.name,
-            description: ch.description || `Channel: ${ch.name}`,
-            dataType: ch.dataType || '',
-            icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
-          }));
-        }
-        return [];
+        const channels = await searchChannels(datasource.url, dataSourceRids, searchText);
+        return channels.map((ch) => ({
+          label: ch.name,
+          value: ch.name,
+          description: ch.description || `Channel: ${ch.name}`,
+          dataType: ch.dataType || '',
+          icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
+        }));
       } catch (error) {
         console.error('Failed to load channel options:', error);
         return [];
@@ -515,31 +406,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-    const scopes = (selectedAsset.dataScopes || []).filter(
-      (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
-    );
-    const dataSourceRids: string[] = [];
-    for (const scope of scopes) {
-      if (!scope.dataSource) {
-        continue;
-      }
-      const rid = getDataSourceRid(scope.dataSource);
-      if (rid) {
-        dataSourceRids.push(rid);
-      }
-    }
+    const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
     if (dataSourceRids.length === 0) {
       return;
     }
 
     let cancelled = false;
-    getBackendSrv()
-      .post(`${datasource.url}/channels`, { dataSourceRids, searchText: resolvedChannel })
-      .then((response) => {
-        if (cancelled || !response?.channels) {
+    searchChannels(datasource.url, dataSourceRids, resolvedChannel)
+      .then((channels) => {
+        if (cancelled) {
           return;
         }
-        const match = response.channels.find((ch: any) => ch.name === resolvedChannel);
+        const match = channels.find((ch) => ch.name === resolvedChannel);
         if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
           onChange({ ...queryRef.current, channelDataType: match.dataType });
         }
@@ -610,20 +488,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
   };
 
-  // Convert asset to dropdown option
-  const assetToOption = (asset: Asset): SelectableValue<string> => {
-    const supportedScopes = asset.dataScopes.filter((scope) =>
-      SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-    );
-    return {
-      label: asset.title,
-      value: asset.rid,
-      description: `${asset.labels.join(', ') || 'No labels'} - ${supportedScopes.length} data scope(s)`,
-    };
-  };
-
   // Prepare asset options for dropdown
-  const assetOptions: Array<SelectableValue<string>> = (() => {
+  const assetOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = assets.map(assetToOption);
 
     // Include the currently selected asset if it's not in the search results
@@ -646,20 +512,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [assets, selectedAsset, query?.assetRid]);
 
   // Compute asset select value - show variable if set, otherwise match by resolved RID
-  const assetSelectValue = (() => {
+  const assetSelectValue = useMemo(() => {
     const currentValue = query?.assetRid || '';
     if (currentValue.includes('$')) {
       return currentValue;
     }
     return assetOptions.some((opt) => opt.value === resolvedAssetRid) ? resolvedAssetRid : '';
-  })();
+  }, [query?.assetRid, assetOptions, resolvedAssetRid]);
 
   // Prepare data scope options for dropdown
   // Include template variable option if the current value is a variable
-  const dataScopeOptions: Array<SelectableValue<string>> = (() => {
+  const dataScopeOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = dataScopes.map((scope) => ({
       label: scope,
       value: scope,
@@ -684,11 +550,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [dataScopes, query?.dataScopeName, resolvedDataScopeName]);
 
   // Prepare channel options for dropdown
   // Include template variable option if the current value is a variable
-  const channelOptions: ChannelOption[] = (() => {
+  const channelOptions = useMemo<ChannelOption[]>(() => {
     const options = [...channelResults];
     const currentValue = query?.channel || '';
     if (currentValue.includes('$') && !options.some(o => o.value === currentValue)) {
@@ -700,7 +566,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       options.unshift({ label, value: currentValue });
     }
     return options;
-  })();
+  }, [channelResults, query?.channel, resolvedChannel]);
 
   const handleAssetInputMethodChange = (method: AssetInputMethod) => {
     setHasUserInteracted(true);
