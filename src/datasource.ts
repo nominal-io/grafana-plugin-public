@@ -179,17 +179,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   // No custom query method - let DataSourceWithBackend handle routing to Go backend
-
-  /**
-   * Test the connection to Nominal API
-   * For backend datasources, this method is often not needed as CheckHealth handles it
-   * But some Grafana versions still call this method
-   */
-  async testDatasource() {
-    // The Go backend CheckHealth method does the actual connection test
-    return {
-      status: 'success',
-      message: 'Connection test delegated to backend'
-    };
-  }
+  // No custom testDatasource - inherited DataSourceWithBackend.testDatasource()
+  // calls the backend CheckHealth handler and surfaces its real result.
 }
