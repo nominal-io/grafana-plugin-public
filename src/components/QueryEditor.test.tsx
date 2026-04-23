@@ -1,6 +1,7 @@
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react';
-import { fetchAssetByRid, QueryEditor } from './QueryEditor';
+import { QueryEditor } from './QueryEditor';
+import { fetchAssetByRid } from '../utils/api';
 import { NominalQuery } from '../types';
 import { DataSource } from '../datasource';
 
