@@ -592,10 +592,6 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		series = computeapi1.NewSeriesFromNumeric(numericSeries)
 	}
 
-	buckets := int(qm.Buckets)
-	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
-		buckets = int(maxDataPoints)
-	}
 	var seriesNode computeapi1.SummarizeSeries
 	if qm.ChannelDataType == "log" {
 		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields.
@@ -611,26 +607,32 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 			Input:                 series,
 			SummarizationStrategy: &summarizationStrategy,
 		}
-	} else if qm.ChannelDataType == "string" {
-		// Enum path: no OutputFormat or NumericOutputFields
-		seriesNode = computeapi1.SummarizeSeries{
-			Input:   series,
-			Buckets: &buckets,
-		}
 	} else {
-		// Numeric path: Arrow format with user-selected aggregation fields.
-		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-		var outputFields []computeapi.NumericOutputField
-		for _, agg := range qm.Aggregations {
-			outputFields = append(outputFields, computeapi.New_NumericOutputField(
-				computeapi.NumericOutputField_Value(agg),
-			))
+		buckets := int(qm.Buckets)
+		if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
+			buckets = int(maxDataPoints)
 		}
-		seriesNode = computeapi1.SummarizeSeries{
-			Input:               series,
-			Buckets:             &buckets,
-			OutputFormat:        &arrowFormat,
-			NumericOutputFields: &outputFields,
+		if qm.ChannelDataType == "string" {
+			// Enum path: no OutputFormat or NumericOutputFields
+			seriesNode = computeapi1.SummarizeSeries{
+				Input:   series,
+				Buckets: &buckets,
+			}
+		} else {
+			// Numeric path: Arrow format with user-selected aggregation fields.
+			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
+			var outputFields []computeapi.NumericOutputField
+			for _, agg := range qm.Aggregations {
+				outputFields = append(outputFields, computeapi.New_NumericOutputField(
+					computeapi.NumericOutputField_Value(agg),
+				))
+			}
+			seriesNode = computeapi1.SummarizeSeries{
+				Input:               series,
+				Buckets:             &buckets,
+				OutputFormat:        &arrowFormat,
+				NumericOutputFields: &outputFields,
+			}
 		}
 	}
 
