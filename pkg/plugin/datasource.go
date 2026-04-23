@@ -58,6 +58,7 @@ var proxyAllowedHeaders = map[string]bool{
 const maxBatchComputeSubrequests = 300
 
 // defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
+// Mirrored on the frontend at src/constants.ts (DEFAULT_NOMINAL_BASE_URL) — keep both in sync.
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
 
 // assetCacheTTL controls how long fetched asset metadata is cached.
