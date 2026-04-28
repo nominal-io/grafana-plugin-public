@@ -6,7 +6,7 @@ require (
 	github.com/apache/arrow-go/v18 v18.5.2
 	github.com/grafana/grafana-plugin-sdk-go v0.291.0
 	github.com/nominal-io/nominal-api-go v0.0.0-20260223132649-89e4ad674328
-	github.com/palantir/conjure-go-runtime/v2 v2.99.0
+	github.com/palantir/conjure-go-runtime/v3 v3.12.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
