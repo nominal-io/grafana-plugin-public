@@ -1,50 +1,65 @@
-<!-- This README file is going to be the one displayed on the Grafana.com website for your plugin. Uncomment and replace the content here before publishing.
+# Nominal
 
-Remove any remaining comments before publishing as these may be displayed on Grafana.com -->
-
-# Nominal-Ds
-
-<!-- To help maximize the impact of your README and improve usability for users, we propose the following loose structure:
-
-**BEFORE YOU BEGIN**
-- Ensure all links are absolute URLs so that they will work when the README is displayed within Grafana and Grafana.com
-- Be inspired ✨
-  - [grafana-polystat-panel](https://github.com/grafana/grafana-polystat-panel)
-  - [volkovlabs-variable-panel](https://github.com/volkovlabs/volkovlabs-variable-panel)
-
-**ADD SOME BADGES**
-
-Badges convey useful information at a glance for users whether in the Catalog or viewing the source code. You can use the generator on [Shields.io](https://shields.io/badges/dynamic-json-badge) together with the Grafana.com API
-to create dynamic badges that update automatically when you publish a new version to the marketplace.
-
-- For the URL parameter use `https://grafana.com/api/plugins/your-plugin-id`.
-- Example queries:
-  - Downloads: `$.downloads`
-  - Catalog Version: `$.version`
-  - Grafana Dependency: `$.grafanaDependency`
-  - Signature Type: `$.versionSignatureType`
-- Optionally, for the logo parameter use `grafana`.
-
-Full example: ![Dynamic JSON Badge](https://img.shields.io/badge/dynamic/json?logo=grafana&query=$.version&url=https://grafana.com/api/plugins/grafana-polystat-panel&label=Marketplace&prefix=v&color=F47A20)
-
-Consider other [badges](https://shields.io/badges) as you feel appropriate for your project.
-
-## Overview / Introduction
-Provide one or more paragraphs as an introduction to your plugin to help users understand why they should use it.
-
-Consider including screenshots:
-- in [plugin.json](https://grafana.com/developers/plugin-tools/reference/plugin-json#info) include them as relative links.
-- in the README ensure they are absolute URLs.
+The Nominal data source for Grafana connects dashboards, Explore, template variables, and alert rules to Nominal time-series data. Use it to search for Nominal assets, choose data scopes and channels, and visualize numeric or string channel values alongside the rest of your Grafana telemetry.
 
 ## Requirements
-List any requirements or dependencies they may need to run the plugin.
 
-## Getting Started
-Provide a quick start on how to configure and use the plugin.
+- Grafana 10.4 or later.
+- A Nominal API key.
+- Access to a Nominal API endpoint, such as `https://api.gov.nominal.io/api`.
 
-## Documentation
-If your project has dedicated documentation available for users, provide links here. For help in following Grafana's style recommendations for technical documentation, refer to our [Writer's Toolkit](https://grafana.com/docs/writers-toolkit/).
+## Configure the Data Source
 
-## Contributing
-Do you want folks to contribute to the plugin or provide feedback through specific means? If so, tell them how!
--->
+1. In Grafana, go to **Connections** > **Data sources**.
+2. Add the **Nominal** data source.
+3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
+4. Enter your Nominal API key in **API Key**.
+5. Select **Save & test**.
+
+Grafana stores the API key securely and sends it only to the Nominal backend plugin. The health check verifies that Grafana can reach Nominal and authenticate with the configured key.
+
+## Build Queries
+
+The query editor helps you build Nominal queries without writing raw API requests.
+
+- Search for an asset by name or paste a resource identifier directly.
+- Select a data scope from the asset.
+- Select a channel from the selected data scope.
+- Choose the query mode and bucket count for time-series panels.
+
+Queries return Grafana data frames that can be used in dashboards, Explore, and alert rules.
+
+## Dashboard Variables
+
+Nominal supports Grafana dashboard variables for assets, data scopes, and channels.
+
+Example variable queries:
+
+```text
+assets
+assets(engine)
+datascopes(${asset})
+channels(${asset})
+channels(${asset}, ${datascope})
+```
+
+Use these variables to create dashboards that can switch between Nominal assets, scopes, and channels without editing each panel.
+
+## Alerting
+
+The plugin supports Grafana Alerting. After configuring the data source, create an alert rule from a panel that uses a Nominal query, or create a new Grafana-managed alert rule and select the Nominal data source.
+
+Before saving an alert rule, use Grafana's preview or evaluation flow to confirm that the selected query returns the numeric series expected by the alert condition.
+
+## Troubleshooting
+
+- If **Save & test** fails, confirm that the Base URL includes the `/api` path and that the API key is valid.
+- If asset or channel search fails, confirm that the data source can reach Nominal and that the API key has access to the requested data.
+- If an alert rule does not evaluate, confirm that the query returns a numeric time series for the selected time range.
+
+## Links
+
+- Nominal: https://www.nominal.io/
+- Documentation: https://docs.nominal.io/
+- Source repository: https://github.com/nominal-io/grafana-plugin-public
+- Grafana plugin development documentation: https://grafana.com/developers/plugin-tools
