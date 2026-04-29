@@ -1,9 +1,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
   "type": "datasource",
-  "name": "Nominal-Ds",
+  "name": "Nominal",
   "id": "nominaltest-nominalds-datasource",
   "metrics": true,
+  "alerting": true,
   "backend": true,
   "executable": "gpx_nominal_ds",
   "info": {
@@ -12,13 +13,29 @@
       "name": "Nominal inc"
     },
     "keywords": [
-      "datasource"
+      "datasource",
+      "nominal",
+      "time-series",
+      "monitoring"
     ],
     "logos": {
       "small": "img/logo.svg",
       "large": "img/logo.svg"
     },
-    "links": [],
+    "links": [
+      {
+        "name": "documentation",
+        "url": "https://docs.nominal.io/"
+      },
+      {
+        "name": "repository",
+        "url": "https://github.com/nominal-io/grafana-plugin-public"
+      },
+      {
+        "name": "license",
+        "url": "https://github.com/nominal-io/grafana-plugin-public/blob/main/LICENSE"
+      }
+    ],
     "screenshots": [
       {
         "name": "Datasource Configuration",

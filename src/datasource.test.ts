@@ -27,6 +27,14 @@ function createDataSource(): DataSource {
   return new DataSource(settings);
 }
 
+describe('backend health check routing', () => {
+  it('does not override the backend health check with a frontend testDatasource method', () => {
+    const ds = createDataSource();
+
+    expect(Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(ds), 'testDatasource')).toBe(false);
+  });
+});
+
 describe('metricFindQuery routing', () => {
   let ds: DataSource;
 
@@ -196,5 +204,11 @@ describe('validateMetricFindResponse', () => {
   it('throws on item missing text field', async () => {
     mockBackendSrv.post.mockResolvedValue([{ value: 'rid-1' }]);
     await expect(ds.metricFindQuery('assets')).rejects.toThrow('missing text or value');
+  });
+
+  it('throws a user-safe error when the variable request fails', async () => {
+    mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
+
+    await expect(ds.metricFindQuery('assets')).rejects.toThrow('Unable to load Nominal assets');
   });
 });

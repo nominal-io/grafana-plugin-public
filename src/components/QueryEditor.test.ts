@@ -4,6 +4,7 @@ import { fetchAssetByRid } from './QueryEditor';
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(),
+  getAppEvents: jest.fn(() => ({ publish: jest.fn() })),
   getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
 }));
 
