@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 're
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
 import { InlineField, Input, Stack, Select, MultiSelect, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
-import { GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
-import { getBackendSrv, getTemplateSrv } from '@grafana/runtime';
+import { AppEvents, GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
+import { getAppEvents, getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 
@@ -30,6 +30,13 @@ const fadeInOut = keyframes({
 const copiedMessageClassName = css({
   animation: `${fadeInOut} 2s ease-in-out`,
 });
+
+const notifyError = (title: string, message: string) => {
+  getAppEvents().publish({
+    type: AppEvents.alertError.name,
+    payload: [title, message],
+  });
+};
 
 const getStyles = (theme: GrafanaTheme2) => ({
   ridClickTarget: css({
@@ -124,8 +131,6 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
   if (asset && asset.dataScopes?.length > 0) {
     return asset;
   }
-  // Log to help diagnose asset lookup failures (e.g. unexpected response format)
-  console.warn('fetchAssetByRid: asset not found in response', { rid, responseKeys: Object.keys(response || {}) });
   return null;
 };
 
@@ -184,8 +189,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       copiedTimerRef.current = setTimeout(() => {
         setShowCopiedMessage(false);
       }, 2000); // Hide after 2 seconds
-    } catch (err) {
-      console.error('Failed to copy to clipboard:', err);
+    } catch {
       // Fallback for browsers that don't support clipboard API
       const textArea = document.createElement('textarea');
       textArea.value = text;
@@ -233,8 +237,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       } else {
         setAssets([]);
       }
-    } catch (error) {
-      console.error('Failed to load assets:', error);
+    } catch {
+      notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
       setAssets([]);
     } finally {
       setIsLoading(false);
@@ -276,8 +280,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           }));
         }
         return [];
-      } catch (error) {
-        console.error('Failed to load channel options:', error);
+      } catch {
+        notifyError('Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.');
         return [];
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -339,11 +343,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
           setDataScopes([]);
         }
-      } catch (error) {
+      } catch {
         if (signal?.aborted) {
           return;
         }
-        console.error('Failed to fetch asset by RID:', error);
+        notifyError('Unable to load Nominal asset', 'The RID was kept, but data scopes could not be loaded automatically.');
         setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
         setDataScopes([]);
       }
@@ -1039,7 +1043,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     fontSize: theme.typography.size.xs,
                     whiteSpace: 'nowrap',
                     border: `1px solid ${theme.colors.success.border}`,
-                    zIndex: 1000,
+                    zIndex: theme.zIndex.tooltip,
                   }}
                 >
                   ✓ Copied to clipboard

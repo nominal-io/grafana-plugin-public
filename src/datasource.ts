@@ -118,19 +118,19 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return [];
     }
 
+    let response: unknown;
     try {
-      const response = await getBackendSrv().post(
+      response = await getBackendSrv().post(
         `${this.url}/assets`,
         {
           searchText: searchText,
           maxResults: 500,
         }
       );
-      return this.validateMetricFindResponse(response, 'asset');
-    } catch (error) {
-      console.error('Failed to fetch assets for variable:', error);
-      throw error;  // Let Grafana display the error to the user
+    } catch {
+      throw new Error('Unable to load Nominal assets for the variable query.');
     }
+    return this.validateMetricFindResponse(response, 'asset');
   }
 
   private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
@@ -139,18 +139,18 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return [];
     }
 
+    let response: unknown;
     try {
-      const response = await getBackendSrv().post(
+      response = await getBackendSrv().post(
         `${this.url}/datascopes`,
         {
           assetRid: assetRid,
         }
       );
-      return this.validateMetricFindResponse(response, 'datascope');
-    } catch (error) {
-      console.error('Failed to fetch datascopes for variable:', error);
-      throw error;  // Let Grafana display the error to the user
+    } catch {
+      throw new Error('Unable to load Nominal data scopes for the variable query.');
     }
+    return this.validateMetricFindResponse(response, 'datascope');
   }
 
   private async fetchChannelVariables(assetRid: string, dataScopeName: string): Promise<MetricFindValue[]> {
@@ -163,33 +163,20 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return [];
     }
 
+    let response: unknown;
     try {
-      const response = await getBackendSrv().post(
+      response = await getBackendSrv().post(
         `${this.url}/channelvariables`,
         {
           assetRid: assetRid,
           dataScopeName: dataScopeName,
         }
       );
-      return this.validateMetricFindResponse(response, 'channel');
-    } catch (error) {
-      console.error('Failed to fetch channels for variable:', error);
-      throw error;  // Let Grafana display the error to the user
+    } catch {
+      throw new Error('Unable to load Nominal channels for the variable query.');
     }
+    return this.validateMetricFindResponse(response, 'channel');
   }
 
   // No custom query method - let DataSourceWithBackend handle routing to Go backend
-
-  /**
-   * Test the connection to Nominal API
-   * For backend datasources, this method is often not needed as CheckHealth handles it
-   * But some Grafana versions still call this method
-   */
-  async testDatasource() {
-    // The Go backend CheckHealth method does the actual connection test
-    return {
-      status: 'success',
-      message: 'Connection test delegated to backend'
-    };
-  }
 }
