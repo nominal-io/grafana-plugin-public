@@ -6,3 +6,5 @@ services:
     env_file:
       - path: .env.local
         required: false
+    environment:
+      NOMINAL_API_KEY: ${NOMINAL_API_KEY:-}
