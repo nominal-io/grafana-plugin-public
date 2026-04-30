@@ -533,8 +533,8 @@ type NominalQueryModel struct {
 
 	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
 	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
-	Aggregations            []string `json:"aggregations,omitempty"`
-	ExplicitAggregations    bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
+	Aggregations         []string `json:"aggregations,omitempty"`
+	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -1284,6 +1284,13 @@ func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.Buck
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	log.DefaultLogger.Debug("CheckHealth called")
+
+	if req.PluginContext.DataSourceInstanceSettings == nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: "Data source is not configured",
+		}, nil
+	}
 
 	// Add timeout to prevent hanging
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -2361,4 +2368,3 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 
 	return allResults, nil
 }
-

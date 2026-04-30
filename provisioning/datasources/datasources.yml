@@ -1,8 +1,8 @@
 apiVersion: 1
 
 datasources:
-  - name: 'nominal-ds'
-    uid: 'nominal-ds'
+  - name: 'nominal'
+    uid: 'nominal'
     type: 'nominaltest-nominalds-datasource'
     access: proxy
     isDefault: false
@@ -10,6 +10,6 @@ datasources:
     version: 1
     editable: true
     jsonData:
-      baseUrl: 'https://api.gov.nominal.io/api'
+      baseUrl: 'https://api-staging.gov.nominal.io/api'
     secureJsonData:
-      apiKey: ''
+      apiKey: '${NOMINAL_API_KEY}'

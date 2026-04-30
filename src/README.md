@@ -4,7 +4,7 @@ The Nominal data source for Grafana connects dashboards, Explore, template varia
 
 ## Requirements
 
-- Grafana 10.4 or later.
+- Grafana 12.3 or later.
 - A Nominal API key.
 - Access to a Nominal API endpoint, such as `https://api.gov.nominal.io/api`.
 
@@ -28,6 +28,8 @@ The query editor helps you build Nominal queries without writing raw API request
 - Choose the query mode and bucket count for time-series panels.
 
 Queries return Grafana data frames that can be used in dashboards, Explore, and alert rules.
+
+Annotations are not supported yet.
 
 ## Dashboard Variables
 

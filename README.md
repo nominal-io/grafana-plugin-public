@@ -92,8 +92,8 @@ Releases are cut automatically via release-please when conventional commits land
 ### Quick Install
 
 ```bash
-# Download the latest release (replace VERSION with actual version, e.g., 0.0.13)
-VERSION="0.0.13"
+# Download the latest release (replace VERSION with the GitHub release version)
+VERSION="0.11.0"
 curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominaltest-nominalds-datasource-${VERSION}.zip" \
   -o plugin.zip
 
@@ -180,7 +180,7 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
   {
     "id": 1,
     "uid": "P1E5984762EB73E39",
-    "name": "nominal-ds",
+    "name": "nominal",
     "url": "",
     "jsonData": {
       "baseUrl": "https://api.gov.nominal.io/api"
