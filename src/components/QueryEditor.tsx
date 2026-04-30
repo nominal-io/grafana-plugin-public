@@ -17,6 +17,7 @@ type ChannelOption = SelectableValue<string> & { dataType?: string };
 const DATA_TYPE_ICONS: Record<string, string> = {
   string: 'font', // Grafana's standard icon for FieldType.string
   numeric: 'calculator-alt', // Grafana's standard icon for FieldType.number
+  log: 'gf-logs',
 };
 
 const fadeInOut = keyframes({
@@ -85,7 +86,23 @@ const NUMERIC_AGG_OPTIONS = [
 ];
 
 /** Data source types that support channel queries */
-const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection'];
+const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
+
+/** Returns the rid for a data source, or undefined if the type is unsupported or the rid field is missing. */
+const getDataSourceRid = (
+  ds: Asset['dataScopes'][number]['dataSource']
+): string | undefined => {
+  if (ds.type === 'dataset') {
+    return ds.dataset;
+  }
+  if (ds.type === 'connection') {
+    return ds.connection;
+  }
+  if (ds.type === 'logSet') {
+    return ds.logSet;
+  }
+  return undefined;
+};
 
 /** Creates a minimal asset placeholder when the actual asset can't be fetched.
  *  dataScopes is intentionally empty — we don't fabricate scope data. */
@@ -240,15 +257,12 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       );
       const dataSourceRids: string[] = [];
       for (const scope of scopes) {
-        const ds = scope.dataSource;
-        if (!ds) {
+        if (!scope.dataSource) {
           continue;
         }
-        // Only collect RIDs for supported data source types (dataset, connection)
-        if (ds.type === 'dataset' && ds.dataset) {
-          dataSourceRids.push(ds.dataset);
-        } else if (ds.type === 'connection' && (ds as any).connection) {
-          dataSourceRids.push((ds as any).connection);
+        const rid = getDataSourceRid(scope.dataSource);
+        if (rid) {
+          dataSourceRids.push(rid);
         }
       }
       if (dataSourceRids.length === 0) {
@@ -492,6 +506,56 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
+
+  // Infer channelDataType when the resolved channel changes (e.g. template variable).
+  // The backend does its own inference, but the frontend needs the correct type to show
+  // the right aggregation UI (numeric MultiSelect vs disabled "Mode" / "Logs (raw)").
+  useEffect(() => {
+    if (!resolvedChannel || resolvedChannel.includes('$') || !selectedAsset) {
+      return;
+    }
+    // Skip if type was already set by direct dropdown selection (not a variable)
+    if (queryRef.current?.channelDataType && !queryRef.current?.channel?.includes('$')) {
+      return;
+    }
+    const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
+    const scopes = (selectedAsset.dataScopes || []).filter(
+      (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
+    );
+    const dataSourceRids: string[] = [];
+    for (const scope of scopes) {
+      if (!scope.dataSource) {
+        continue;
+      }
+      const rid = getDataSourceRid(scope.dataSource);
+      if (rid) {
+        dataSourceRids.push(rid);
+      }
+    }
+    if (dataSourceRids.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+    getBackendSrv()
+      .post(`${datasource.url}/channels`, { dataSourceRids, searchText: resolvedChannel })
+      .then((response) => {
+        if (cancelled || !response?.channels) {
+          return;
+        }
+        const match = response.channels.find((ch: any) => ch.name === resolvedChannel);
+        if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
+          onChange({ ...queryRef.current, channelDataType: match.dataType });
+        }
+      })
+      .catch((err) => {
+        console.warn('Nominal: failed to infer channel data type', err);
+      });
+    return () => { cancelled = true; };
+    // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
+    // call whenever setSelectedAsset is called with a logically identical asset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedChannel, selectedAsset?.rid, resolvedDataScopeName, datasource]);
 
   // Trigger graph update when query is complete
   useEffect(() => {
@@ -881,10 +945,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   label="Aggregation(s)"
                   tooltip={query?.channelDataType === 'string'
                     ? "String channels only support Mode (most frequent value per time bucket)"
+                    : query?.channelDataType === 'log'
+                    ? "Log channels return raw entries without aggregation"
                     : "Aggregation functions to apply per time bucket"}
                 >
                   {query?.channelDataType === 'string' ? (
                     <Input value="Mode" disabled width={10} />
+                  ) : query?.channelDataType === 'log' ? (
+                    <Input value="Logs (raw)" disabled width={12} />
                   ) : (
                     <MultiSelect
                       options={NUMERIC_AGG_OPTIONS}
@@ -982,7 +1050,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </span>
               )}
             </span>
-            <span style={{ color: theme.colors.text.secondary }}>Dataset Scopes:</span>
+            <span style={{ color: theme.colors.text.secondary }}>Data Scopes:</span>
             <span
               style={{
                 color: theme.colors.success.text,
@@ -990,7 +1058,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 marginLeft: theme.spacing(0.5),
               }}
             >
-              {selectedAsset.dataScopes.filter((s) => s.dataSource.type === 'dataset').length}
+              {selectedAsset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type)).length}
             </span>
           </div>
         )}

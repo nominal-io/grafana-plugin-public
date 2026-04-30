@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -71,7 +72,7 @@ type assetCacheEntry struct {
 
 // channelTypeCacheEntry holds a cached channel type inference result with its fetch time.
 type channelTypeCacheEntry struct {
-	channelType string // "string", "numeric", or "" for searched-but-not-found
+	channelType string // "string", "log", "numeric", or "" for searched-but-not-found
 	fetchedAt   time.Time
 }
 
@@ -254,19 +255,8 @@ func (d *Datasource) inferChannelDataType(ctx context.Context, config *models.Pl
 			continue
 		}
 
-		var ridStr string
-		switch scope.DataSource.Type {
-		case "dataset":
-			if scope.DataSource.Dataset != nil {
-				ridStr = *scope.DataSource.Dataset
-			}
-		case "connection":
-			if scope.DataSource.Connection != nil {
-				ridStr = *scope.DataSource.Connection
-			}
-		}
-
-		if ridStr == "" {
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
 			continue
 		}
 
@@ -417,7 +407,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
 		// For enum channels, aggregations are not used — skip validation.
 		qm.ExplicitAggregations = len(qm.Aggregations) > 0
-		if qm.ChannelDataType != "string" {
+		if qm.ChannelDataType != "string" && qm.ChannelDataType != "log" {
 			if !qm.ExplicitAggregations {
 				qm.Aggregations = []string{AggMean}
 			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
@@ -441,13 +431,52 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 	}
 
-	// Execute batch query for all batchable queries
-	if len(batchableQueries) > 0 {
-		log.DefaultLogger.Debug("Executing batch query", "count", len(batchableQueries))
-		batchResults := d.executeBatchQuery(ctx, config, batchableQueries, batchableModels)
-		for refID, res := range batchResults {
-			response.Responses[refID] = res
+	if len(batchableQueries) == 0 {
+		return response, nil
+	}
+
+	// Partition into log and non-log queries. When both partitions are non-empty,
+	// execute them in parallel so log queries (paged, uncacheable) don't delay
+	// numeric/enum results. When only one partition has queries, the other
+	// goroutine short-circuits via runBatch's empty-slice check.
+	var logQueries, otherQueries []backend.DataQuery
+	var logQMs, otherQMs []NominalQueryModel
+	for i, qm := range batchableModels {
+		if qm.ChannelDataType == "log" {
+			logQueries = append(logQueries, batchableQueries[i])
+			logQMs = append(logQMs, qm)
+		} else {
+			otherQueries = append(otherQueries, batchableQueries[i])
+			otherQMs = append(otherQMs, qm)
 		}
+	}
+
+	runBatch := func(label string, queries []backend.DataQuery, qms []NominalQueryModel) map[string]backend.DataResponse {
+		if len(queries) == 0 {
+			return nil
+		}
+		log.DefaultLogger.Debug("Executing batch query", "partition", label, "count", len(queries))
+		return d.executeBatchQuery(ctx, config, queries, qms)
+	}
+
+	var wg sync.WaitGroup
+	var logResults, otherResults map[string]backend.DataResponse
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		logResults = runBatch("log", logQueries, logQMs)
+	}()
+	go func() {
+		defer wg.Done()
+		otherResults = runBatch("other", otherQueries, otherQMs)
+	}()
+	wg.Wait()
+
+	for refID, res := range logResults {
+		response.Responses[refID] = res
+	}
+	for refID, res := range otherResults {
+		response.Responses[refID] = res
 	}
 
 	return response, nil
@@ -521,7 +550,7 @@ type NominalQueryModel struct {
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
-// Branches on ChannelDataType: "string" channels produce enum series, all others produce numeric series.
+// Branches on ChannelDataType: "string" produces enum series, "log" produces log series, all others numeric.
 // maxDataPoints from Grafana reflects the panel's pixel width; when positive it overrides qm.Buckets
 // so the compute API only returns as many points as the panel can actually display.
 func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
@@ -542,6 +571,13 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		}
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
 		series = computeapi1.NewSeriesFromEnum(enumSeries)
+	} else if qm.ChannelDataType == "log" {
+		// Log path — no bucketing, no aggregation, no TimeShift needed
+		channelSeries := computeapi.NewChannelSeriesFromAsset(
+			d.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
+		)
+		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
+		series = computeapi1.NewSeriesFromLog(logSeries)
 	} else {
 		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
@@ -556,31 +592,47 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 		series = computeapi1.NewSeriesFromNumeric(numericSeries)
 	}
 
-	buckets := int(qm.Buckets)
-	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
-		buckets = int(maxDataPoints)
-	}
 	var seriesNode computeapi1.SummarizeSeries
-	if qm.ChannelDataType == "string" {
-		// Enum path: no OutputFormat or NumericOutputFields
+	if qm.ChannelDataType == "log" {
+		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields.
+		// 250 entries per page. Older entries are fetched on-demand via Grafana's
+		// "Show more" button, which re-queries with an older `to` timestamp using
+		// the boundary row (hence the descending sort in transformBatchResult).
+		pageInfo := computeapi.PageInfo{
+			PageSize: -250, // Negative = newest first; 250 is plenty for UX and keeps query times down
+		}
+		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
+		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		seriesNode = computeapi1.SummarizeSeries{
-			Input:   series,
-			Buckets: &buckets,
+			Input:                 series,
+			SummarizationStrategy: &summarizationStrategy,
 		}
 	} else {
-		// Numeric path: Arrow format with user-selected aggregation fields.
-		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-		var outputFields []computeapi.NumericOutputField
-		for _, agg := range qm.Aggregations {
-			outputFields = append(outputFields, computeapi.New_NumericOutputField(
-				computeapi.NumericOutputField_Value(agg),
-			))
+		buckets := int(qm.Buckets)
+		if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
+			buckets = int(maxDataPoints)
 		}
-		seriesNode = computeapi1.SummarizeSeries{
-			Input:               series,
-			Buckets:             &buckets,
-			OutputFormat:        &arrowFormat,
-			NumericOutputFields: &outputFields,
+		if qm.ChannelDataType == "string" {
+			// Enum path: no OutputFormat or NumericOutputFields
+			seriesNode = computeapi1.SummarizeSeries{
+				Input:   series,
+				Buckets: &buckets,
+			}
+		} else {
+			// Numeric path: Arrow format with user-selected aggregation fields.
+			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
+			var outputFields []computeapi.NumericOutputField
+			for _, agg := range qm.Aggregations {
+				outputFields = append(outputFields, computeapi.New_NumericOutputField(
+					computeapi.NumericOutputField_Value(agg),
+				))
+			}
+			seriesNode = computeapi1.SummarizeSeries{
+				Input:               series,
+				Buckets:             &buckets,
+				OutputFormat:        &arrowFormat,
+				NumericOutputFields: &outputFields,
+			}
 		}
 	}
 
@@ -704,7 +756,54 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 				return nil
 			}
 
-			if len(result.AggSeries) > 0 {
+			if result.IsLog {
+				// Sort descending (newest first) for Grafana's default log sort order.
+				// Grafana's infinite scroll uses the boundary row's timestamp to compute
+				// the next time-range query. Don't assume this sort is redundant: the
+				// compute API's PageInfo contract specifies selection direction (via sign
+				// of PageSize), not response order.
+				sort.SliceStable(result.LogEntries, func(a, b int) bool {
+					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
+				})
+
+				frame := data.NewFrame(qm.Channel)
+				frame.Meta = &data.FrameMeta{
+					Type: data.FrameTypeLogLines,
+					// log-lines dataplane contract is at v0.0 — don't confuse with time-series-wide's 0.1
+					TypeVersion:            data.FrameTypeVersion{0, 0},
+					PreferredVisualization: data.VisTypeLogs,
+				}
+
+				if len(result.LogEntries) > 0 {
+					times := make([]time.Time, len(result.LogEntries))
+					bodies := make([]string, len(result.LogEntries))
+					ids := make([]string, len(result.LogEntries))
+					labels := make([]json.RawMessage, len(result.LogEntries))
+					for i, e := range result.LogEntries {
+						times[i] = e.Time
+						bodies[i] = e.Body
+						ids[i] = e.ID
+						labels[i] = e.Labels
+					}
+					frame.Fields = append(frame.Fields,
+						data.NewField("timestamp", nil, times),
+						data.NewField("body", nil, bodies),
+						data.NewField("id", nil, ids),
+						data.NewField("labels", nil, labels),
+					)
+				} else {
+					frame.Fields = append(frame.Fields,
+						data.NewField("timestamp", nil, []time.Time{}),
+						data.NewField("body", nil, []string{}),
+						data.NewField("id", nil, []string{}),
+						data.NewField("labels", nil, []json.RawMessage{}),
+					)
+				}
+
+				log.DefaultLogger.Debug("Successfully processed log query",
+					"entries", len(result.LogEntries))
+				response.Frames = append(response.Frames, frame)
+			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
 					frame := data.NewFrame("response")
@@ -790,7 +889,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 		},
 		// errorFunc - called when compute failed
 		func(errorResult computeapi.ErrorResult) error {
-			errMsg := fmt.Sprintf("Compute error: %v (code: %v)", errorResult.ErrorType, errorResult.Code)
+			errMsg := fmt.Sprintf("Compute error: %v (code: %v) [channel=%s, dataType=%s]", errorResult.ErrorType, errorResult.Code, qm.Channel, qm.ChannelDataType)
 
 			// Add a hint for any ChannelHasWrongType error: the query's type setting
 			// and the channel's actual type don't agree. Re-selecting the channel in
@@ -883,8 +982,32 @@ type TransformResult struct {
 	// Enum path
 	StringValues []string
 	IsEnum       bool
+
+	// Log path
+	IsLog      bool
+	LogEntries []LogEntry
 }
 
+// LogEntry represents a single log entry with its timestamp and metadata.
+// Labels is json.RawMessage (FieldTypeJSON), not a string — Grafana's Logs panel
+// expects a dedicated JSON-typed column for per-entry labels, not a JSON-encoded string.
+type LogEntry struct {
+	Time   time.Time
+	Body   string
+	ID     string
+	Labels json.RawMessage
+}
+
+// marshalLogArgs serializes log Args to JSON, returning "{}" for nil maps.
+// json.Marshal(nil) produces "null", not "{}", so we handle nil explicitly.
+// map[string]string is always JSON-serializable, so we don't handle marshal errors.
+func marshalLogArgs(args map[string]string) json.RawMessage {
+	if args == nil {
+		return json.RawMessage("{}")
+	}
+	labelsJSON, _ := json.Marshal(args)
+	return labelsJSON
+}
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
@@ -958,6 +1081,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		// enumPointFunc - single-point enum response (value is already a resolved string)
 		func(ep *computeapi.EnumPoint) error {
 			if ep == nil {
+				result.IsEnum = true
 				return nil
 			}
 			seconds := int64(ep.Timestamp.Seconds)
@@ -980,8 +1104,39 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		nil, // arrowEnumFunc
 		nil, // arrowBucketedEnumFunc
-		nil, // pagedLogFunc
-		nil, // logPointFunc
+		// pagedLogFunc — paginated log response
+		func(paged computeapi.PagedLogPlot) error {
+			for i := 0; i < len(paged.Timestamps) && i < len(paged.Values); i++ {
+				ts := paged.Timestamps[i]
+				val := paged.Values[i]
+
+				result.LogEntries = append(result.LogEntries, LogEntry{
+					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
+					Body:   val.Message,
+					ID:     val.Id.String(),
+					Labels: marshalLogArgs(val.Args),
+				})
+			}
+			result.IsLog = true
+			log.DefaultLogger.Debug("Extracted paged log data",
+				"entries", len(paged.Timestamps))
+			return nil
+		},
+		// logPointFunc — single log point response
+		func(lp *computeapi.LogPoint) error {
+			if lp == nil {
+				result.IsLog = true
+				return nil
+			}
+			result.LogEntries = []LogEntry{{
+				Time:   time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)),
+				Body:   lp.Value.Message,
+				ID:     lp.Value.Id.String(),
+				Labels: marshalLogArgs(lp.Value.Args),
+			}}
+			result.IsLog = true
+			return nil
+		},
 		nil, // cartesianFunc
 		nil, // bucketedCartesianFunc
 		nil, // bucketedCartesian3dFunc
@@ -1470,9 +1625,8 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 	return fmt.Sprintf("Channel: %s", string(channel.Name))
 }
 
-// getChannelDataType normalizes the API's SeriesDataType to a binary string/numeric classification.
-// Returns "string" for STRING and STRING_ARRAY types, "numeric" for all other known types,
-// or empty string if the metadata is not available (treated as numeric for backward compatibility).
+// getChannelDataType normalizes the API's SeriesDataType to "string", "log", or "numeric".
+// Returns empty string if the metadata is not available (treated as numeric for backward compatibility).
 func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	if channel.DataType == nil {
 		return ""
@@ -1480,9 +1634,36 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	switch channel.DataType.Value() {
 	case api.SeriesDataType_STRING, api.SeriesDataType_STRING_ARRAY:
 		return "string"
+	case api.SeriesDataType_LOG:
+		return "log"
 	default:
 		return "numeric"
 	}
+}
+
+// isSupportedDataSourceType returns true for data source types that support channel queries.
+func isSupportedDataSourceType(dsType string) bool {
+	return dsType == "dataset" || dsType == "connection" || dsType == "logSet"
+}
+
+// dataSourceRidFor returns the RID string for a supported AssetDataSource.
+// Returns ("", false) for unsupported types or missing RID pointers.
+func dataSourceRidFor(ds AssetDataSource) (string, bool) {
+	switch ds.Type {
+	case "dataset":
+		if ds.Dataset != nil {
+			return *ds.Dataset, true
+		}
+	case "connection":
+		if ds.Connection != nil {
+			return *ds.Connection, true
+		}
+	case "logSet":
+		if ds.LogSet != nil {
+			return *ds.LogSet, true
+		}
+	}
+	return "", false
 }
 
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection
@@ -1644,14 +1825,14 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	}
 
 	// Transform to MetricFindValue format: { text: "name", value: "rid" }
-	// Filter to assets with supported data sources (dataset or connection)
+	// Filter to assets with supported data sources
 	result := make([]map[string]string, 0)
 outer:
 	for _, resp := range assetResponses {
 		for _, asset := range resp.Results {
 			hasSupported := false
 			for _, scope := range asset.DataScopes {
-				if scope.DataSource.Type == "dataset" || scope.DataSource.Type == "connection" {
+				if isSupportedDataSourceType(scope.DataSource.Type) {
 					hasSupported = true
 					break
 				}
@@ -1775,11 +1956,11 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	}
 
 	// Transform datascopes to MetricFindValue format: { text: "name", value: "name" }
-	// Filter to supported data source types (dataset, connection)
+	// Filter to supported data source types
 	result := make([]map[string]string, 0)
 	for _, scope := range asset.DataScopes {
 		dsType := scope.DataSource.Type
-		if dsType == "dataset" || dsType == "connection" {
+		if isSupportedDataSourceType(dsType) {
 			result = append(result, map[string]string{
 				"text":  scope.DataScopeName,
 				"value": scope.DataScopeName,
@@ -1896,29 +2077,20 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	// Extract datasource RIDs from the asset's datascopes, optionally filtered by dataScopeName
 	var dataSourceRids []rids.DataSourceRid
 	for _, scope := range asset.DataScopes {
-		dsType := scope.DataSource.Type
-		if dsType != "dataset" && dsType != "connection" {
-			continue
-		}
-
 		// If a dataScopeName filter is provided, only include matching scopes
 		if searchRequest.DataScopeName != "" && scope.DataScopeName != searchRequest.DataScopeName {
 			continue
 		}
 
-		var ridStr string
-		if dsType == "dataset" && scope.DataSource.Dataset != nil {
-			ridStr = *scope.DataSource.Dataset
-		} else if dsType == "connection" && scope.DataSource.Connection != nil {
-			ridStr = *scope.DataSource.Connection
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
+			continue
 		}
 
-		if ridStr != "" {
-			if parsedRid, err := rid.ParseRID(ridStr); err == nil {
-				dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
-			} else {
-				log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
-			}
+		if parsedRid, err := rid.ParseRID(ridStr); err == nil {
+			dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
+		} else {
+			log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
 		}
 	}
 
@@ -2014,6 +2186,7 @@ type AssetDataSource struct {
 	Type       string  `json:"type"`
 	Dataset    *string `json:"dataset,omitempty"`
 	Connection *string `json:"connection,omitempty"`
+	LogSet     *string `json:"logSet,omitempty"`
 }
 
 // AssetDataScope represents a single data scope entry on an asset.

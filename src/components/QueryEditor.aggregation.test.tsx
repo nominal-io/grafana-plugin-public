@@ -113,6 +113,22 @@ describe('Aggregation widget', () => {
     expect(onRunQuery).not.toHaveBeenCalled();
   });
 
+  it('renders disabled Logs (raw) input for log channels', () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'app.logs', channelDataType: 'log' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const logsInput = screen.getByDisplayValue('Logs (raw)');
+    expect(logsInput).toBeInTheDocument();
+    const aggSection = getAggregationSection();
+    expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
+  });
+
   it('empty aggregations falls back to MEAN', () => {
     const onRunQuery = jest.fn();
 
