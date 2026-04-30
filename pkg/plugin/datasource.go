@@ -1497,7 +1497,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 
 // handleChannelsSearch handles searching for channels in a data source
 func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	log.DefaultLogger.Debug("Channels search request", "method", req.Method, "body", string(req.Body))
+	log.DefaultLogger.Debug("Channels search request", "method", req.Method, "bodyBytes", len(req.Body))
 
 	if req.Method != "POST" {
 		return sender.Send(&backend.CallResourceResponse{
@@ -1569,7 +1569,7 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 		DataSources:     dataSourceRids,
 	}
 
-	log.DefaultLogger.Debug("Making channels search API call", "dataSourceCount", len(dataSourceRids), "searchText", searchRequest.SearchText)
+	log.DefaultLogger.Debug("Making channels search API call", "dataSourceCount", len(dataSourceRids), "searchTextLength", len(searchRequest.SearchText))
 
 	// Make the API call using the datasource service
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
