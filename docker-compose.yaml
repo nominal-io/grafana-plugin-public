@@ -3,3 +3,8 @@ services:
     extends:
       file: .config/docker-compose-base.yaml
       service: grafana
+    env_file:
+      - path: .env.local
+        required: false
+    environment:
+      NOMINAL_API_KEY: ${NOMINAL_API_KEY:-}

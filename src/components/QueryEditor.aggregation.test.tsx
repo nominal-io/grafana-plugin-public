@@ -1,13 +1,15 @@
 import React from 'react';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 import { DataSource } from '../datasource';
 
 // Mock Grafana runtime
+const post = jest.fn();
+
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
-  getBackendSrv: jest.fn(() => ({ post: jest.fn().mockResolvedValue({}) })),
+  getBackendSrv: jest.fn(() => ({ post })),
   getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
 }));
 
@@ -35,8 +37,19 @@ function getAggregationSection() {
   return label.closest('label')!.parentElement!;
 }
 
+async function settleInitialEffects() {
+  await waitFor(() => {
+    expect(post.mock.calls.length).toBeGreaterThan(0);
+  });
+}
+
 describe('Aggregation widget', () => {
-  it('renders disabled Mode input for string channels', () => {
+  beforeEach(() => {
+    post.mockReset();
+    post.mockResolvedValue({});
+  });
+
+  it('renders disabled Mode input for string channels', async () => {
     render(
       <QueryEditor
         query={makeQuery({ channel: 'state', channelDataType: 'string' })}
@@ -45,17 +58,18 @@ describe('Aggregation widget', () => {
         datasource={mockDatasource}
       />
     );
+    await settleInitialEffects();
 
-    // String channels render a read-only "Mode" input instead of the MultiSelect
+    // String channels render a read-only "Mode" input instead of a multi-value picker.
     const modeInput = screen.getByDisplayValue('Mode');
     expect(modeInput).toBeInTheDocument();
     // The Grafana Input component with disabled prop renders as a visually
-    // disabled field. Verify there's no MultiSelect combobox in the aggregation section.
+    // disabled field. Verify there's no combobox in the aggregation section.
     const aggSection = getAggregationSection();
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
-  it('blur with changed aggregations calls onRunQuery', () => {
+  it('blur with changed aggregations calls onRunQuery', async () => {
     const onRunQuery = jest.fn();
     const onChange = jest.fn();
 
@@ -67,6 +81,7 @@ describe('Aggregation widget', () => {
         datasource={mockDatasource}
       />
     );
+    await settleInitialEffects();
 
     // Rerender with changed aggregations (simulating user selection via onChange callback)
     rerender(
@@ -78,7 +93,7 @@ describe('Aggregation widget', () => {
       />
     );
 
-    // Blur the aggregation MultiSelect's combobox (not the channel Select's)
+    // Blur the aggregation combobox (not the channel Select's)
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
@@ -86,7 +101,7 @@ describe('Aggregation widget', () => {
     expect(onRunQuery).toHaveBeenCalled();
   });
 
-  it('blur without change does not call onRunQuery', () => {
+  it('blur without change does not call onRunQuery', async () => {
     const onRunQuery = jest.fn();
 
     render(
@@ -101,11 +116,12 @@ describe('Aggregation widget', () => {
         datasource={mockDatasource}
       />
     );
+    await settleInitialEffects();
 
     // Clear calls from the "query complete" auto-run effect
     onRunQuery.mockClear();
 
-    // Blur the aggregation MultiSelect (same value as initial → no additional onRunQuery)
+    // Blur the aggregation combobox (same value as initial -> no additional onRunQuery)
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
@@ -113,7 +129,7 @@ describe('Aggregation widget', () => {
     expect(onRunQuery).not.toHaveBeenCalled();
   });
 
-  it('renders disabled Logs (raw) input for log channels', () => {
+  it('renders disabled Logs (raw) input for log channels', async () => {
     render(
       <QueryEditor
         query={makeQuery({ channel: 'app.logs', channelDataType: 'log' })}
@@ -122,6 +138,7 @@ describe('Aggregation widget', () => {
         datasource={mockDatasource}
       />
     );
+    await settleInitialEffects();
 
     const logsInput = screen.getByDisplayValue('Logs (raw)');
     expect(logsInput).toBeInTheDocument();
@@ -129,7 +146,7 @@ describe('Aggregation widget', () => {
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
-  it('empty aggregations falls back to MEAN', () => {
+  it('empty aggregations falls back to MEAN', async () => {
     const onRunQuery = jest.fn();
 
     const { rerender } = render(
@@ -140,6 +157,7 @@ describe('Aggregation widget', () => {
         datasource={mockDatasource}
       />
     );
+    await settleInitialEffects();
 
     // Empty aggregations should display Mean (the DEFAULT_AGGREGATIONS fallback)
     expect(screen.getByText('Mean')).toBeInTheDocument();

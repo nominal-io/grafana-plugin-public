@@ -35,6 +35,47 @@ describe('backend health check routing', () => {
   });
 });
 
+describe('filterQuery', () => {
+  let ds: DataSource;
+
+  beforeEach(() => {
+    ds = createDataSource();
+  });
+
+  it('skips hidden queries', () => {
+    expect(ds.filterQuery({
+      refId: 'A',
+      hide: true,
+      assetRid: 'ri.scout.main.asset.1',
+      channel: 'temperature',
+      dataScopeName: 'default',
+    })).toBe(false);
+  });
+
+  it('skips whitespace-only queries', () => {
+    expect(ds.filterQuery({
+      refId: 'A',
+      assetRid: '   ',
+      channel: '  ',
+      dataScopeName: '\t',
+    })).toBe(false);
+  });
+
+  it('keeps complete Nominal and legacy queries', () => {
+    expect(ds.filterQuery({
+      refId: 'A',
+      assetRid: 'ri.scout.main.asset.1',
+      channel: 'temperature',
+      dataScopeName: 'default',
+    })).toBe(true);
+
+    expect(ds.filterQuery({
+      refId: 'B',
+      queryText: 'legacy query',
+    })).toBe(true);
+  });
+});
+
 describe('metricFindQuery routing', () => {
   let ds: DataSource;
 
@@ -133,6 +174,30 @@ describe('metricFindQuery template variable resolution', () => {
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
       expect.objectContaining({ assetRid: 'ri.scout.main.asset.resolved', dataScopeName: 'myScope' })
+    );
+  });
+
+  it('uses scoped variables when resolving chained variable queries', async () => {
+    mockTemplateSrv.replace.mockImplementation((v: string, scopedVars?: any) => {
+      if (v === '${asset}') {
+        return scopedVars?.asset?.value || v;
+      }
+      if (v === '${scope}') {
+        return scopedVars?.scope?.value || v;
+      }
+      return v;
+    });
+
+    await ds.metricFindQuery('channels(${asset}, ${scope})', {
+      scopedVars: {
+        asset: { text: 'Asset 1', value: 'ri.scout.main.asset.scoped' },
+        scope: { text: 'Primary', value: 'primary' },
+      },
+    });
+
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.scoped', dataScopeName: 'primary' })
     );
   });
 });

@@ -30,7 +30,7 @@
     {
       "datasource": {
         "type": "nominaltest-nominalds-datasource",
-        "uid": "nominal-ds"
+        "uid": "nominal"
       },
       "description": "Deterministic backend sanity query. This does not require Nominal API data and is useful to verify plugin wiring.",
       "fieldConfig": {
@@ -109,7 +109,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.3.0",
+      "pluginVersion": "12.1.0",
       "targets": [
         {
           "constant": 42,
@@ -123,7 +123,7 @@
     {
       "datasource": {
         "type": "nominaltest-nominalds-datasource",
-        "uid": "nominal-ds"
+        "uid": "nominal"
       },
       "description": "Live staging query — pre-configured with a continuously updated dataset. Should render non-empty series at any time.",
       "fieldConfig": {
@@ -202,7 +202,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.3.0",
+      "pluginVersion": "12.1.0",
       "targets": [
         {
           "assetRid": "ri.scout.gov-staging.asset.18fbe7fd-de1f-491d-af60-da7f375342d6",
@@ -234,10 +234,10 @@
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## Reviewer notes\n1. Configure datasource `nominal-ds` with API key and set base URL to `https://api-staging.gov.nominal.io/api`.\n2. Panel A should always return a short line with 2 points (no API data needed).\n3. Panel B is pre-configured with a live staging dataset — it should render non-empty series without any manual changes.\n4. If Panel B is empty, verify the datasource Base URL and API key are set correctly.",
+        "content": "## Reviewer notes\n1. Configure datasource `nominal` with API key and set base URL to `https://api-staging.gov.nominal.io/api`.\n2. Panel A should always return a short line with 2 points (no API data needed).\n3. Panel B is pre-configured with a live staging dataset — it should render non-empty series without any manual changes.\n4. If Panel B is empty, verify the datasource Base URL and API key are set correctly.",
         "mode": "markdown"
       },
-      "pluginVersion": "12.3.0",
+      "pluginVersion": "12.1.0",
       "title": "Reviewer Instructions",
       "type": "text"
     }

@@ -144,6 +144,25 @@ func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
 	}
 }
 
+func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
+	ds := &Datasource{}
+
+	result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != backend.HealthStatusError {
+		t.Fatalf("expected error health status, got %v", result.Status)
+	}
+	if result.Message != "Data source is not configured" {
+		t.Fatalf("expected not configured message, got %q", result.Message)
+	}
+}
+
 func TestQueryDataWithInvalidJSON(t *testing.T) {
 	ds := &Datasource{
 		settings: backend.DataSourceInstanceSettings{
@@ -1108,7 +1127,7 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}), // Query A: Success
-			createMockErrorResult(404, "CHANNEL_NOT_FOUND"),         // Query B: Error
+			createMockErrorResult(404, "CHANNEL_NOT_FOUND"),        // Query B: Error
 			createMockArrowComputeResult([]float64{7.0, 8.0, 9.0}), // Query C: Success
 		},
 	}
@@ -3564,9 +3583,9 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 	}
 
 	expected := []struct {
-		name   string
-		first  float64
-		last   float64
+		name  string
+		first float64
+		last  float64
 	}{
 		{"mean", 1.5, 3.5},
 		{"min", 1.0, 3.0},
