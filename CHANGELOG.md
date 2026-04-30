@@ -2,6 +2,19 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.11.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.10.0...nominal-grafana-plugin@0.11.0) (2026-04-30)
+
+
+### Features
+
+* add log channel support ([#52](https://github.com/nominal-io/grafana-plugin-public/issues/52)) ([6419816](https://github.com/nominal-io/grafana-plugin-public/commit/64198168b99650e99db575cc69a27f1fcf5a5cc7))
+
+
+### Bug Fixes
+
+* address Grafana review feedback ([#57](https://github.com/nominal-io/grafana-plugin-public/issues/57)) ([d8b3285](https://github.com/nominal-io/grafana-plugin-public/commit/d8b3285d191f7a8a9331bdc718f19a0757ed3f4d))
+* use branded plugin logo ([#59](https://github.com/nominal-io/grafana-plugin-public/issues/59)) ([9012c78](https://github.com/nominal-io/grafana-plugin-public/commit/9012c78bffdb0f2c1a1335faeed28f826dab9c9f))
+
 ## [0.10.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.9.2...nominal-grafana-plugin@0.10.0) (2026-04-22)
 
 
