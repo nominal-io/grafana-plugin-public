@@ -4,7 +4,7 @@ The Nominal data source for Grafana connects dashboards, Explore, template varia
 
 ## Requirements
 
-- Grafana 12.3 or later.
+- Grafana 12.1 or later.
 - A Nominal API key.
 - Access to a Nominal API endpoint, such as `https://api.gov.nominal.io/api`.
 
