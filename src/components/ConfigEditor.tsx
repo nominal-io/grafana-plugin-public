@@ -1,13 +1,35 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, SecretInput, useTheme2 } from '@grafana/ui';
-import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
+import { css } from '@emotion/css';
+import { InlineField, Input, SecretInput, useStyles2 } from '@grafana/ui';
+import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
+const getStyles = (theme: GrafanaTheme2) => ({
+  quickSetup: css({
+    backgroundColor: theme.colors.background.secondary,
+    borderRadius: theme.shape.radius.default,
+    marginTop: theme.spacing(2),
+    padding: theme.spacing(1.5),
+  }),
+  quickSetupTitle: css({
+    color: theme.colors.text.primary,
+    fontSize: theme.typography.h5.fontSize,
+    margin: `0 0 ${theme.spacing(1)} 0`,
+  }),
+  quickSetupList: css({
+    color: theme.colors.text.primary,
+    fontSize: theme.typography.bodySmall.fontSize,
+    lineHeight: theme.typography.body.lineHeight,
+    margin: 0,
+    paddingLeft: theme.spacing(2.5),
+  }),
+});
+
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
-  const theme = useTheme2();
+  const styles = useStyles2(getStyles);
   const { jsonData, secureJsonData, secureJsonFields } = options;
   const apiKey = secureJsonData?.apiKey || '';
 
@@ -83,9 +105,9 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
 
-      <div style={{ marginTop: theme.spacing(2), padding: theme.spacing(1.5), backgroundColor: theme.colors.background.secondary, borderRadius: theme.shape.radius.default }}>
-        <h4 style={{ margin: `0 0 ${theme.spacing(1)} 0`, fontSize: theme.typography.size.md, color: theme.colors.text.primary }}>Quick Setup Guide:</h4>
-        <ol style={{ margin: '0', paddingLeft: theme.spacing(2.5), fontSize: theme.typography.size.sm, lineHeight: theme.typography.body.lineHeight, color: theme.colors.text.primary }}>
+      <div className={styles.quickSetup}>
+        <h4 className={styles.quickSetupTitle}>Quick Setup Guide:</h4>
+        <ol className={styles.quickSetupList}>
           <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
           <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>

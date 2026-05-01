@@ -36,9 +36,18 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   filterQuery(query: NominalQuery): boolean {
-    // Allow queries with either legacy queryText or new Nominal parameters
-    // All three fields (assetRid, channel, dataScopeName) are required for a valid query
-    return !!(query.queryText || (query.assetRid && query.channel && query.dataScopeName));
+    if (query.hide) {
+      return false;
+    }
+
+    const queryText = query.queryText?.trim();
+    const assetRid = query.assetRid?.trim();
+    const channel = query.channel?.trim();
+    const dataScopeName = query.dataScopeName?.trim();
+
+    // Allow queries with either legacy queryText or new Nominal parameters.
+    // All three fields (assetRid, channel, dataScopeName) are required for a valid Nominal query.
+    return !!(queryText || (assetRid && channel && dataScopeName));
   }
 
   /**
@@ -50,17 +59,18 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    */
-  async metricFindQuery(query: string, options?: any): Promise<MetricFindValue[]> {
+  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
+    const scopedVars = options?.scopedVars;
 
     // Handle channels query: channels(<assetRid>) or channels(<assetRid>, <dataScopeName>)
     const channelsMatch = trimmedQuery.match(/^channels\(([^,)]+)(?:,\s*([^)]+))?\)$/i);
     if (channelsMatch) {
       const assetRidRaw = channelsMatch[1].trim();
       const dataScopeNameRaw = channelsMatch[2]?.trim() || '';
-      const assetRid = getTemplateSrv().replace(assetRidRaw);
-      const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw) : '';
+      const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
+      const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
       return this.fetchChannelVariables(assetRid, dataScopeName);
     }
 
@@ -69,21 +79,22 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     if (datascopesMatch) {
       const assetRidRaw = datascopesMatch[1].trim();
       // Resolve any template variables in the asset RID
-      const assetRid = getTemplateSrv().replace(assetRidRaw);
+      const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
       return this.fetchDatascopeVariables(assetRid);
     }
 
     // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
     const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
     if (assetsMatch) {
-      const searchText = assetsMatch[1].trim();
+      const searchText = getTemplateSrv().replace(assetsMatch[1].trim(), scopedVars);
       return this.fetchAssetVariables(searchText);
     }
 
     if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
-      const searchText = lowerQuery.startsWith('assets:')
+      const rawSearchText = lowerQuery.startsWith('assets:')
         ? trimmedQuery.substring(7).trim()
         : '';
+      const searchText = getTemplateSrv().replace(rawSearchText, scopedVars);
 
       return this.fetchAssetVariables(searchText);
     }

@@ -18,7 +18,7 @@ pnpm run server
    - Username: `admin` (or `GRAFANA_ADMIN_USER` from your `.env`)
    - Password: `admin` (or `GRAFANA_ADMIN_PASSWORD` from your `.env`)
 
-3. Open `Connections` -> `Data sources` -> `nominal-ds`.
+3. Open `Connections` -> `Data sources` -> `nominal`.
 
 4. In data source settings:
 

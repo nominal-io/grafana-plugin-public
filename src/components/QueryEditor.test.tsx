@@ -1,4 +1,5 @@
 import React from 'react';
+// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, render, waitFor } from '@testing-library/react';
 import { fetchAssetByRid, QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
@@ -188,6 +189,7 @@ describe('channel data type inference effect', () => {
       ).toBe(true);
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -218,6 +220,7 @@ describe('channel data type inference effect', () => {
       ).toBe(true);
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
@@ -226,7 +229,7 @@ describe('channel data type inference effect', () => {
       (call) => call[0]?.channelDataType !== undefined
     );
     expect(channelTypeUpdates).toHaveLength(0);
-    expect(warnSpy).toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
 
     warnSpy.mockRestore();
   });

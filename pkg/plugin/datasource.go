@@ -533,8 +533,8 @@ type NominalQueryModel struct {
 
 	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
 	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
-	Aggregations            []string `json:"aggregations,omitempty"`
-	ExplicitAggregations    bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
+	Aggregations         []string `json:"aggregations,omitempty"`
+	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -1285,6 +1285,13 @@ func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.Buck
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	log.DefaultLogger.Debug("CheckHealth called")
 
+	if req.PluginContext.DataSourceInstanceSettings == nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: "Data source is not configured",
+		}, nil
+	}
+
 	// Add timeout to prevent hanging
 	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -1490,7 +1497,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 
 // handleChannelsSearch handles searching for channels in a data source
 func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	log.DefaultLogger.Debug("Channels search request", "method", req.Method, "body", string(req.Body))
+	log.DefaultLogger.Debug("Channels search request", "method", req.Method, "bodyBytes", len(req.Body))
 
 	if req.Method != "POST" {
 		return sender.Send(&backend.CallResourceResponse{
@@ -1562,7 +1569,7 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 		DataSources:     dataSourceRids,
 	}
 
-	log.DefaultLogger.Debug("Making channels search API call", "dataSourceCount", len(dataSourceRids), "searchText", searchRequest.SearchText)
+	log.DefaultLogger.Debug("Making channels search API call", "dataSourceCount", len(dataSourceRids), "searchTextLength", len(searchRequest.SearchText))
 
 	// Make the API call using the datasource service
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
@@ -2361,4 +2368,3 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 
 	return allResults, nil
 }
-

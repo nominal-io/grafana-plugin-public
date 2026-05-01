@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
-import { InlineField, Input, Stack, Select, MultiSelect, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
+import { InlineField, Input, Stack, Select, MultiCombobox, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
 import { AppEvents, GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
 import { getAppEvents, getBackendSrv, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
@@ -548,9 +548,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           onChange({ ...queryRef.current, channelDataType: match.dataType });
         }
       })
-      .catch((err) => {
-        console.warn('Nominal: failed to infer channel data type', err);
-      });
+      .catch(() => undefined);
     return () => { cancelled = true; };
     // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
     // call whenever setSelectedAsset is called with a logically identical asset.
@@ -950,11 +948,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     : "Aggregation functions to apply per time bucket"}
                 >
                   {query?.channelDataType === 'string' ? (
-                    <Input value="Mode" disabled width={10} />
+                    <Input value="Mode" disabled readOnly width={10} />
                   ) : query?.channelDataType === 'log' ? (
-                    <Input value="Logs (raw)" disabled width={12} />
+                    <Input value="Logs (raw)" disabled readOnly width={12} />
                   ) : (
-                    <MultiSelect
+                    <MultiCombobox
                       options={NUMERIC_AGG_OPTIONS}
                       value={query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]}
                       onChange={(selected) => {
@@ -970,7 +968,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                           onRunQuery();
                         }
                       }}
-                      closeMenuOnSelect={false}
                       placeholder="Select aggregations..."
                       width={35}
                     />
@@ -1024,7 +1021,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   textDecorationColor: theme.colors.primary.shade,
                   marginLeft: theme.spacing(0.75),
                   marginRight: theme.spacing(1),
-                  fontSize: theme.typography.size.xs,
+                  fontSize: theme.typography.bodySmall.fontSize,
                 }}
               >
                 {selectedAsset.rid}
@@ -1040,7 +1037,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     color: theme.colors.success.text,
                     padding: theme.spacing(0.25, 0.75),
                     borderRadius: theme.shape.radius.default,
-                    fontSize: theme.typography.size.xs,
+                    fontSize: theme.typography.bodySmall.fontSize,
                     whiteSpace: 'nowrap',
                     border: `1px solid ${theme.colors.success.border}`,
                     zIndex: theme.zIndex.tooltip,
