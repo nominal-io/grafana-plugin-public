@@ -90,8 +90,8 @@ export const assetToOption = (asset: Asset): SelectableValue<string> => {
 };
 
 /** Fetches a single asset by its exact RID using the batch lookup endpoint */
-export const fetchAssetByRid = async (datasourceUrl: string | undefined, rid: string): Promise<Asset | null> => {
-  if (!datasourceUrl || !rid || !rid.startsWith('ri.')) {
+export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
+  if (!rid || !rid.startsWith('ri.')) {
     return null;
   }
 
@@ -108,10 +108,7 @@ export const fetchAssetByRid = async (datasourceUrl: string | undefined, rid: st
 };
 
 /** Searches assets, returning only those with at least one supported-type dataScope. */
-export const searchAssets = async (datasourceUrl: string | undefined, searchText: string): Promise<Asset[]> => {
-  if (!datasourceUrl) {
-    return [];
-  }
+export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
   const response = await getBackendSrv().post(`${datasourceUrl}/scout/v1/search-assets`, {
     query: {
       searchText: searchText || '',
@@ -137,11 +134,11 @@ export const searchAssets = async (datasourceUrl: string | undefined, searchText
 /** Searches channels for the given data source RIDs. Returns raw channel objects;
  *  callers are responsible for mapping to their display shape. */
 export const searchChannels = async (
-  datasourceUrl: string | undefined,
+  datasourceUrl: string,
   dataSourceRids: string[],
   searchText: string
 ): Promise<Channel[]> => {
-  if (!datasourceUrl || dataSourceRids.length === 0) {
+  if (dataSourceRids.length === 0) {
     return [];
   }
   const response = await getBackendSrv().post(`${datasourceUrl}/channels`, {

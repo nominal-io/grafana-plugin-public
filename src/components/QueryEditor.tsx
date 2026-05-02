@@ -218,9 +218,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
    *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
-      if (!datasource.url) {
-        return;
-      }
       try {
         const foundAsset = await fetchAssetByRid(datasource.url, resolvedRid);
         if (signal?.aborted) {

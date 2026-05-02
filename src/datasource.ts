@@ -9,7 +9,7 @@ import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/r
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
-  url?: string;
+  url: string;
 
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
