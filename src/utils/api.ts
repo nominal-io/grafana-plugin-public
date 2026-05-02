@@ -1,25 +1,35 @@
 import { SelectableValue } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 
+export type WeakTimestampType = 'ABSOLUTE' | 'RELATIVE' | 'PENDING' | 'UNKNOWN';
+
+export interface Duration {
+  seconds: number;
+  nanos: number;
+  picos?: number;
+}
+
+export type DataSource =
+  | { type: 'dataset'; dataset: string }
+  | { type: 'connection'; connection: string }
+  | { type: 'logSet'; logSet: string }
+  | { type: 'video'; video: string };
+
+export interface DataScope {
+  dataScopeName: string;
+  dataSource: DataSource;
+  offset?: Duration;
+  timestampType: WeakTimestampType;
+  seriesTags: Record<string, string>;
+}
+
 export interface Asset {
   rid: string;
   title: string;
   description?: string;
   labels: string[];
-  dataScopes: Array<{
-    dataScopeName: string;
-    dataSource: {
-      type: string;
-      dataset?: string;
-      video?: string;
-      connection?: string;
-      logSet?: string;
-    };
-    offset?: any;
-    timestampType?: string;
-    seriesTags?: Record<string, any>;
-  }>;
-  properties?: Record<string, any>;
+  dataScopes: DataScope[];
+  properties: Record<string, string>;
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -34,10 +44,8 @@ export interface Channel {
 /** Data source types that support channel queries */
 export const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
 
-/** Returns the rid for a data source, or undefined if the type is unsupported or the rid field is missing. */
-export const getDataSourceRid = (
-  ds: Asset['dataScopes'][number]['dataSource']
-): string | undefined => {
+/** Returns the rid for a data source, or undefined if the type is unsupported. */
+export const getDataSourceRid = (ds: DataSource): string | undefined => {
   if (ds.type === 'dataset') {
     return ds.dataset;
   }
@@ -52,14 +60,11 @@ export const getDataSourceRid = (
 
 /** Collects data source RIDs from an asset's dataScopes, optionally filtered to a single scope. */
 export const resolveDataSourceRids = (asset: Asset, dataScopeName?: string): string[] => {
-  const scopes = (asset.dataScopes || []).filter(
+  const scopes = asset.dataScopes.filter(
     (scope) => !dataScopeName || scope.dataScopeName === dataScopeName
   );
   const rids: string[] = [];
   for (const scope of scopes) {
-    if (!scope.dataSource) {
-      continue;
-    }
     const rid = getDataSourceRid(scope.dataSource);
     if (rid) {
       rids.push(rid);
@@ -75,6 +80,7 @@ export const createBasicAsset = (rid: string, title: string): Asset => ({
   title,
   labels: [],
   dataScopes: [],
+  properties: {},
 });
 
 /** Convert asset to dropdown option */
