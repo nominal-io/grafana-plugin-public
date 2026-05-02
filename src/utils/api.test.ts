@@ -3,11 +3,25 @@ import {
   DataScope,
   assetToOption,
   createBasicAsset,
+  fetchAssetByRid,
   getDataSourceRid,
   getSupportedScopeNames,
   getSupportedScopes,
   resolveDataSourceRids,
 } from './api';
+
+const DATASOURCE_URL = '/api/datasources/uid/test/resources';
+const VALID_RID = 'ri.scout.main.asset.abc-123';
+
+const post = jest.fn();
+
+jest.mock('@grafana/runtime', () => ({
+  getBackendSrv: jest.fn(() => ({ post })),
+}));
+
+beforeEach(() => {
+  post.mockReset();
+});
 
 const scope = (name: string, dataSource: DataScope['dataSource']): DataScope => ({
   dataScopeName: name,
@@ -127,5 +141,63 @@ describe('createBasicAsset', () => {
       dataScopes: [],
       properties: {},
     });
+  });
+});
+
+describe('fetchAssetByRid', () => {
+  it('returns null for empty RID', async () => {
+    const result = await fetchAssetByRid(DATASOURCE_URL, '');
+    expect(result).toBeNull();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('returns null for RID not starting with "ri."', async () => {
+    const result = await fetchAssetByRid(DATASOURCE_URL, 'not-a-valid-rid');
+    expect(result).toBeNull();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('calls batch lookup endpoint with correct URL and payload', async () => {
+    post.mockResolvedValue({});
+    await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
+    expect(post).toHaveBeenCalledWith(
+      `${DATASOURCE_URL}/scout/v1/asset/multiple`,
+      [VALID_RID]
+    );
+  });
+
+  it('returns the asset when found with dataScopes', async () => {
+    const asset = {
+      rid: VALID_RID,
+      title: 'Test Asset',
+      labels: [],
+      dataScopes: [{ dataScopeName: 'ds1', dataSource: { type: 'dataset' } }],
+    };
+    post.mockResolvedValue({ [VALID_RID]: asset });
+
+    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
+    expect(result).toEqual(asset);
+  });
+
+  it('returns null when asset has empty dataScopes', async () => {
+    post.mockResolvedValue({
+      [VALID_RID]: { rid: VALID_RID, title: 'Empty', dataScopes: [] },
+    });
+
+    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when RID is not in response map', async () => {
+    post.mockResolvedValue({});
+
+    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
+    expect(result).toBeNull();
+  });
+
+  it('propagates API errors to caller', async () => {
+    post.mockRejectedValue(new Error('Network error'));
+
+    await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
   });
 });
