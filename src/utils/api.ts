@@ -37,8 +37,10 @@ export interface Asset {
 
 export interface Channel {
   name: string;
-  dataType?: string;
-  description?: string;
+  dataSource: string;
+  description: string;
+  // May be empty string when upstream metadata is absent (treated as numeric).
+  dataType: string;
 }
 
 /** Data source types that support channel queries */
