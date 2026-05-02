@@ -11,10 +11,11 @@ import {
   assetToOption,
   createBasicAsset,
   fetchAssetByRid,
+  getSupportedScopes,
+  getSupportedScopeNames,
   resolveDataSourceRids,
   searchAssets,
   searchChannels,
-  SUPPORTED_DATA_SOURCE_TYPES,
 } from '../utils/api';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
@@ -225,10 +226,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         }
         if (foundAsset) {
           setSelectedAsset(foundAsset);
-          const validScopes = foundAsset.dataScopes.filter((scope) =>
-            SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-          );
-          setDataScopes(validScopes.map((scope) => scope.dataScopeName));
+          setDataScopes(getSupportedScopeNames(foundAsset));
         } else {
           setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
           setDataScopes([]);
@@ -357,11 +355,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Update dependent fields when asset changes
   useEffect(() => {
     if (selectedAsset) {
-      // Extract data scope names from supported data source types
-      const validScopes = selectedAsset.dataScopes.filter((scope) =>
-        SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-      );
-      const scopeNames = validScopes.map((scope) => scope.dataScopeName);
+      const scopeNames = getSupportedScopeNames(selectedAsset);
       setDataScopes(scopeNames);
 
       // Only auto-update query if user has interacted with the query builder
@@ -920,7 +914,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 marginLeft: theme.spacing(0.5),
               }}
             >
-              {selectedAsset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type)).length}
+              {getSupportedScopes(selectedAsset).length}
             </span>
           </div>
         )}

@@ -44,6 +44,14 @@ export interface Channel {
 /** Data source types that support channel queries */
 export const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
 
+/** Returns the asset's dataScopes whose dataSource type is queryable by this plugin. */
+export const getSupportedScopes = (asset: Asset): DataScope[] =>
+  asset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type));
+
+/** Returns the dataScopeNames for the asset's supported scopes. */
+export const getSupportedScopeNames = (asset: Asset): string[] =>
+  getSupportedScopes(asset).map((s) => s.dataScopeName);
+
 /** Returns the rid for a data source, or undefined if the type is unsupported. */
 export const getDataSourceRid = (ds: DataSource): string | undefined => {
   if (ds.type === 'dataset') {
@@ -84,16 +92,11 @@ export const createBasicAsset = (rid: string, title: string): Asset => ({
 });
 
 /** Convert asset to dropdown option */
-export const assetToOption = (asset: Asset): SelectableValue<string> => {
-  const supportedScopes = asset.dataScopes.filter((scope) =>
-    SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-  );
-  return {
-    label: asset.title,
-    value: asset.rid,
-    description: `${asset.labels.join(', ') || 'No labels'} - ${supportedScopes.length} data scope(s)`,
-  };
-};
+export const assetToOption = (asset: Asset): SelectableValue<string> => ({
+  label: asset.title,
+  value: asset.rid,
+  description: `${asset.labels.join(', ') || 'No labels'} - ${getSupportedScopes(asset).length} data scope(s)`,
+});
 
 /** Fetches a single asset by its exact RID using the batch lookup endpoint */
 export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
@@ -130,11 +133,7 @@ export const searchAssets = async (datasourceUrl: string, searchText: string): P
   if (!response?.results) {
     return [];
   }
-  return response.results.filter((asset: Asset) =>
-    asset.dataScopes &&
-    asset.dataScopes.length > 0 &&
-    asset.dataScopes.some((scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type))
-  );
+  return response.results.filter((asset: Asset) => getSupportedScopes(asset).length > 0);
 };
 
 /** Searches channels for the given data source RIDs. Returns raw channel objects;
