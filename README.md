@@ -49,7 +49,7 @@ After starting the container, verify the plugin is installed:
 
 ```sh
 # Check if plugin directory exists
-docker exec <container-name> ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
+docker exec <container-name> ls -la /var/lib/grafana/plugins/nominal-nominalds-datasource/
 
 # Should show:
 # - module.js (frontend)
@@ -68,7 +68,7 @@ docker exec <container-name> ls -la /var/lib/grafana/plugins/nominaltest-nominal
   1. Login with your configured credentials
   2. Go to **Configuration > Data sources**
   3. Click **Add data source**
-  4. Look for **Nominal Data Source** in the list
+  4. Look for **Nominal** in the list
 
 ### Reviewer bootstrap
 
@@ -94,7 +94,7 @@ Releases are cut automatically via release-please when conventional commits land
 ```bash
 # Download the latest release (replace VERSION with the GitHub release version)
 VERSION="0.11.0"
-curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominaltest-nominalds-datasource-${VERSION}.zip" \
+curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominal-nominalds-datasource-${VERSION}.zip" \
   -o plugin.zip
 
 # Extract to Grafana plugins directory
@@ -107,43 +107,57 @@ sudo systemctl restart grafana-server
 
 ### Configuration
 
-Release artifacts created after private signing is enabled include a Grafana private plugin signature. Install those ZIP files normally and make sure the Grafana instance URL matches the private signing root URL configured for the release.
+Release artifacts created after Grafana grants public signing include a Grafana plugin signature. Install those ZIP files normally, without configuring Grafana to allow unsigned plugins.
 
 Older unsigned ZIP files still require Grafana to explicitly allow the plugin:
 
 ```ini
 # In grafana.ini or via environment variable
 [plugins]
-allow_loading_unsigned_plugins = nominaltest-nominalds-datasource
+allow_loading_unsigned_plugins = nominal-nominalds-datasource
 
 # Or as environment variable:
-# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominaltest-nominalds-datasource
+# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominal-nominalds-datasource
 ```
 
-### Private release signing
+### Public release signing
 
-Private signing follows Grafana's signing flow and keeps sensitive values out of the repository. Configure these GitHub secrets before cutting a release tag:
+Public signing follows Grafana's signing and review flow. Grafana must approve the plugin for public signing before a signed release can be cut successfully.
+
+Configure this GitHub secret before cutting a release tag:
 
 - `GRAFANA_PLUGIN_ACCESS_KEY`: the Grafana access policy token with `plugins:write` scope.
-- `GRAFANA_PLUGIN_ROOT_URLS`: comma-separated Grafana root URLs where the private plugin will be installed. These must match each instance's Grafana `root_url` setting.
 
 For a local signing check, build the plugin first and then run:
 
 ```bash
-export GRAFANA_PLUGIN_ROOT_URLS="https://your-grafana.example.com"
 GRAFANA_ACCESS_POLICY_TOKEN="$GRAFANA_PLUGIN_ACCESS_KEY" \
   pnpm run sign
 ```
 
 The local command maps `GRAFANA_PLUGIN_ACCESS_KEY` to `GRAFANA_ACCESS_POLICY_TOKEN` because that is the environment variable name Grafana's signing tool reads.
 
-Do not commit tokens, root URL values, or generated signing output from `dist/`.
+Do not commit tokens or generated signing output from `dist/`.
+
+Signing without `rootUrls` is the public plugin path. Grafana approval is tied to the plugin ID, so if the plugin ID changes, the signing command may fail until the review submission is updated and Grafana approves that ID.
+
+### Grafana review submission
+
+Grafana does not require the first public review submission to be signed. For the initial review, package the plugin ZIP, run the validator, and submit the plugin through Grafana's plugin publishing flow with:
+
+- Plugin ZIP URL
+- ZIP SHA1 hash
+- Source code URL
+- Testing guidance
+- Provisioning details from [REVIEW.md](./REVIEW.md)
+
+After Grafana approves the plugin and grants its public signature level, cut a release tag so the release workflow can sign and publish the catalog-ready ZIP.
 
 ### Verify Installation
 
 ```bash
 # Check plugin files exist
-ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
+ls -la /var/lib/grafana/plugins/nominal-nominalds-datasource/
 
 # Expected files:
 # - module.js (frontend)
@@ -156,7 +170,7 @@ ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
 Then in Grafana UI:
 1. Go to **Configuration > Data sources**
 2. Click **Add data source**
-3. Search for **Nominal Data Source**
+3. Search for **Nominal**
 4. Configure with your Nominal API key and base URL
 
 ## API Testing
@@ -236,4 +250,6 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
 
   - Package https://grafana.com/developers/plugin-tools/publish-a-plugin/package-a-plugin
   - Publish a plugin - signing https://grafana.com/developers/plugin-tools/publish-a-plugin/sign-a-plugin
+  - Publish or update a plugin https://grafana.com/developers/plugin-tools/publish-a-plugin/publish-a-plugin
+  - Publish a plugin FAQs https://grafana.com/developers/plugin-tools/publish-a-plugin/publish-faqs
   - Plugin policies https://grafana.com/legal/plugins/#what-are-the-different-classifications-of-plugins

@@ -11,7 +11,7 @@
     "lint:fix": "pnpm run lint --fix && prettier --write --list-different .",
     "e2e": "playwright test",
     "server": "docker compose up --build",
-    "sign": "sh -c 'if [ -z \"$GRAFANA_PLUGIN_ROOT_URLS\" ]; then echo \"GRAFANA_PLUGIN_ROOT_URLS is required for private signing\" >&2; exit 1; fi; npx --yes @grafana/sign-plugin@latest --signatureType private --rootUrls \"$GRAFANA_PLUGIN_ROOT_URLS\"'",
+    "sign": "npx --yes @grafana/sign-plugin@latest",
     "postinstall": "find node_modules -name '*.go' -delete 2>/dev/null || true"
   },
   "author": "Nominal inc",

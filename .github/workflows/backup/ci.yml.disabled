@@ -21,8 +21,6 @@ jobs:
       plugin-version: ${{ steps.metadata.outputs.plugin-version }}
       has-e2e: ${{ steps.check-for-e2e.outputs.has-e2e }}
       has-backend: ${{ steps.check-for-backend.outputs.has-backend }}
-    env:
-      GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,10 +81,6 @@ jobs:
           then
             echo "has-e2e=true" >> $GITHUB_OUTPUT
           fi
-
-      - name: Sign plugin
-        run: pnpm run sign
-        if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
 
       - name: Get plugin metadata
         id: metadata
@@ -214,7 +208,7 @@ jobs:
       - name: Docker logs
         if: ${{ always() && steps.run-tests.outcome == 'failure' }}
         run: |
-          docker logs nominaltest-nominalds-datasource >& grafana-server.log
+          docker logs nominal-nominalds-datasource >& grafana-server.log
 
       - name: Stop grafana docker
         run: docker compose down

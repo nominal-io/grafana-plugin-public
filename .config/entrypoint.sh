@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # # Create symlink for the plugin executable
-# PLUGIN_DIR="/var/lib/grafana/plugins/nominaltest-nominalds-datasource"
+# PLUGIN_DIR="/var/lib/grafana/plugins/nominal-nominalds-datasource"
 # if [ -d "$PLUGIN_DIR" ]; then
 #     cd "$PLUGIN_DIR"
     
@@ -39,4 +39,3 @@ else
     echo 'ERROR: Unsupported base image'
     exit 1
 fi
-
