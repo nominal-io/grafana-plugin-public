@@ -22,7 +22,7 @@ pnpm run server
 
 4. In data source settings:
 
-![Nominal Data Source Settings](./assets/review-datasource-example.png)
+![Nominal Settings](./assets/review-datasource-example.png)
 
 - Set `Base URL` to `https://api-staging.gov.nominal.io/api`.
 - Set API key from shared reviewer credentials.

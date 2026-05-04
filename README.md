@@ -49,7 +49,7 @@ After starting the container, verify the plugin is installed:
 
 ```sh
 # Check if plugin directory exists
-docker exec <container-name> ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
+docker exec <container-name> ls -la /var/lib/grafana/plugins/nominal-nominalds-datasource/
 
 # Should show:
 # - module.js (frontend)
@@ -68,7 +68,7 @@ docker exec <container-name> ls -la /var/lib/grafana/plugins/nominaltest-nominal
   1. Login with your configured credentials
   2. Go to **Configuration > Data sources**
   3. Click **Add data source**
-  4. Look for **Nominal Data Source** in the list
+  4. Look for **Nominal** in the list
 
 ### Reviewer bootstrap
 
@@ -94,7 +94,7 @@ Releases are cut automatically via release-please when conventional commits land
 ```bash
 # Download the latest release (replace VERSION with the GitHub release version)
 VERSION="0.11.0"
-curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominaltest-nominalds-datasource-${VERSION}.zip" \
+curl -L "https://github.com/nominal-io/grafana-plugin-public/releases/download/${VERSION}/nominal-nominalds-datasource-${VERSION}.zip" \
   -o plugin.zip
 
 # Extract to Grafana plugins directory
@@ -114,10 +114,10 @@ Older unsigned ZIP files still require Grafana to explicitly allow the plugin:
 ```ini
 # In grafana.ini or via environment variable
 [plugins]
-allow_loading_unsigned_plugins = nominaltest-nominalds-datasource
+allow_loading_unsigned_plugins = nominal-nominalds-datasource
 
 # Or as environment variable:
-# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominaltest-nominalds-datasource
+# GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominal-nominalds-datasource
 ```
 
 ### Public release signing
@@ -139,7 +139,7 @@ The local command maps `GRAFANA_PLUGIN_ACCESS_KEY` to `GRAFANA_ACCESS_POLICY_TOK
 
 Do not commit tokens or generated signing output from `dist/`.
 
-Signing without `rootUrls` is the public plugin path. If Grafana has not approved the plugin for public signing yet, the signing command may fail until the review is complete.
+Signing without `rootUrls` is the public plugin path. Grafana approval is tied to the plugin ID, so if the plugin ID changes, the signing command may fail until the review submission is updated and Grafana approves that ID.
 
 ### Grafana review submission
 
@@ -157,7 +157,7 @@ After Grafana approves the plugin and grants its public signature level, cut a r
 
 ```bash
 # Check plugin files exist
-ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
+ls -la /var/lib/grafana/plugins/nominal-nominalds-datasource/
 
 # Expected files:
 # - module.js (frontend)
@@ -170,7 +170,7 @@ ls -la /var/lib/grafana/plugins/nominaltest-nominalds-datasource/
 Then in Grafana UI:
 1. Go to **Configuration > Data sources**
 2. Click **Add data source**
-3. Search for **Nominal Data Source**
+3. Search for **Nominal**
 4. Configure with your Nominal API key and base URL
 
 ## API Testing

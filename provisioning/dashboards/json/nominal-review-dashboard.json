@@ -29,7 +29,7 @@
   "panels": [
     {
       "datasource": {
-        "type": "nominaltest-nominalds-datasource",
+        "type": "nominal-nominalds-datasource",
         "uid": "nominal"
       },
       "description": "Deterministic backend sanity query. This does not require Nominal API data and is useful to verify plugin wiring.",
@@ -122,7 +122,7 @@
     },
     {
       "datasource": {
-        "type": "nominaltest-nominalds-datasource",
+        "type": "nominal-nominalds-datasource",
         "uid": "nominal"
       },
       "description": "Live staging query — pre-configured with a continuously updated dataset. Should render non-empty series at any time.",
