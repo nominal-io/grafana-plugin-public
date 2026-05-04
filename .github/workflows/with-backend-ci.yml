@@ -100,12 +100,6 @@ jobs:
             echo "has-e2e=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check private signing config
-        if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' && env.GRAFANA_PLUGIN_ROOT_URLS == '' }}
-        run: |
-          echo "::error::GRAFANA_PLUGIN_ROOT_URLS is required when signing private plugin builds."
-          exit 1
-
       - name: Sign plugin (optional)
         if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' && env.GRAFANA_PLUGIN_ROOT_URLS != '' }}
         run: pnpm run sign
