@@ -124,7 +124,7 @@ allow_loading_unsigned_plugins = nominaltest-nominalds-datasource
 
 Private signing follows Grafana's signing flow and keeps sensitive values out of the repository. Configure these GitHub secrets before cutting a release tag:
 
-- `GRAFANA_PLUGIN_ACCESS_KEY`: the Grafana access policy token with `plugins:write` scope. `GRAFANA_ACCESS_POLICY_TOKEN` also works if that name is already used.
+- `GRAFANA_PLUGIN_ACCESS_KEY`: the Grafana access policy token with `plugins:write` scope.
 - `GRAFANA_PLUGIN_ROOT_URLS`: comma-separated Grafana root URLs where the private plugin will be installed. These must match each instance's Grafana `root_url` setting.
 
 For a local signing check, build the plugin first and then run:
@@ -134,6 +134,8 @@ export GRAFANA_PLUGIN_ROOT_URLS="https://your-grafana.example.com"
 GRAFANA_ACCESS_POLICY_TOKEN="$GRAFANA_PLUGIN_ACCESS_KEY" \
   pnpm run sign
 ```
+
+The local command maps `GRAFANA_PLUGIN_ACCESS_KEY` to `GRAFANA_ACCESS_POLICY_TOKEN` because that is the environment variable name Grafana's signing tool reads.
 
 Do not commit tokens, root URL values, or generated signing output from `dist/`.
 

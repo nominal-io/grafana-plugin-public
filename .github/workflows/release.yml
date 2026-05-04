@@ -46,7 +46,7 @@ jobs:
             contents: write
         runs-on: depot-ubuntu-24.04-8
         env:
-            GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN || secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
+            GRAFANA_PLUGIN_ACCESS_KEY: ${{ secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
             GRAFANA_PLUGIN_ROOT_URLS: ${{ secrets.GRAFANA_PLUGIN_ROOT_URLS }}
         steps:
             - name: Checkout
@@ -65,8 +65,8 @@ jobs:
             - name: Check private signing secrets
               run: |
                   missing=0
-                  if [ -z "$GRAFANA_ACCESS_POLICY_TOKEN" ]; then
-                    echo "::error::Missing Grafana access policy token secret. Set GRAFANA_ACCESS_POLICY_TOKEN or GRAFANA_PLUGIN_ACCESS_KEY."
+                  if [ -z "$GRAFANA_PLUGIN_ACCESS_KEY" ]; then
+                    echo "::error::Missing GRAFANA_PLUGIN_ACCESS_KEY. Private plugin releases need a Grafana access policy token."
                     missing=1
                   fi
                   if [ -z "$GRAFANA_PLUGIN_ROOT_URLS" ]; then
@@ -81,7 +81,7 @@ jobs:
               with:
                   go-version: "1.25.7"
                   node-version: "22"
-                  policy_token: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN || secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
+                  policy_token: ${{ secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
 
             - name: Show package outputs
               run: |
