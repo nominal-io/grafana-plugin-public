@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.11.3](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.2...nominal-grafana-plugin@0.11.3) (2026-05-04)
+
+
+### Bug Fixes
+
+* rename Grafana plugin id for public signing ([#64](https://github.com/nominal-io/grafana-plugin-public/issues/64)) ([94e054c](https://github.com/nominal-io/grafana-plugin-public/commit/94e054caf46966453d6da8f84a648b4e024f7bd8))
+
 ## [0.11.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.1...nominal-grafana-plugin@0.11.2) (2026-05-04)
 
 
