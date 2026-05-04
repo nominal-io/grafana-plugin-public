@@ -107,7 +107,9 @@ sudo systemctl restart grafana-server
 
 ### Configuration
 
-After installation, configure Grafana to allow the unsigned plugin:
+Release artifacts created after private signing is enabled include a Grafana private plugin signature. Install those ZIP files normally and make sure the Grafana instance URL matches the private signing root URL configured for the release.
+
+Older unsigned ZIP files still require Grafana to explicitly allow the plugin:
 
 ```ini
 # In grafana.ini or via environment variable
@@ -117,6 +119,23 @@ allow_loading_unsigned_plugins = nominaltest-nominalds-datasource
 # Or as environment variable:
 # GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=nominaltest-nominalds-datasource
 ```
+
+### Private release signing
+
+Private signing follows Grafana's signing flow and keeps sensitive values out of the repository. Configure these GitHub secrets before cutting a release tag:
+
+- `GRAFANA_PLUGIN_ACCESS_KEY`: the Grafana access policy token with `plugins:write` scope. `GRAFANA_ACCESS_POLICY_TOKEN` also works if that name is already used.
+- `GRAFANA_PLUGIN_ROOT_URLS`: comma-separated Grafana root URLs where the private plugin will be installed. These must match each instance's Grafana `root_url` setting.
+
+For a local signing check, build the plugin first and then run:
+
+```bash
+export GRAFANA_PLUGIN_ROOT_URLS="https://your-grafana.example.com"
+GRAFANA_ACCESS_POLICY_TOKEN="$GRAFANA_PLUGIN_ACCESS_KEY" \
+  pnpm run sign
+```
+
+Do not commit tokens, root URL values, or generated signing output from `dist/`.
 
 ### Verify Installation
 
