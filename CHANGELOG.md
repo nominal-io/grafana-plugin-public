@@ -2,6 +2,13 @@
 
 > Note: Historical entries were migrated from an internal repository; links may not resolve in this public repo.
 
+## [0.11.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.1...nominal-grafana-plugin@0.11.2) (2026-05-04)
+
+
+### Bug Fixes
+
+* sign Grafana releases privately ([#62](https://github.com/nominal-io/grafana-plugin-public/issues/62)) ([ec79ee1](https://github.com/nominal-io/grafana-plugin-public/commit/ec79ee16379e7c0f0672de1ca85958dbc7ad729f))
+
 ## [0.11.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.0...nominal-grafana-plugin@0.11.1) (2026-05-01)
 
 
