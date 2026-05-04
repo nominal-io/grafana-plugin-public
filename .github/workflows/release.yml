@@ -37,7 +37,7 @@ jobs:
               run: |
                   echo "## Plugin Build Summary" >> $GITHUB_STEP_SUMMARY
                   echo "- Build: Completed successfully" >> $GITHUB_STEP_SUMMARY
-                  echo "- Plugin ID: nominaltest-nominalds-datasource" >> $GITHUB_STEP_SUMMARY
+                  echo "- Plugin ID: nominal-nominalds-datasource" >> $GITHUB_STEP_SUMMARY
 
     # Full release job for tags - builds and creates GitHub Release
     release:
