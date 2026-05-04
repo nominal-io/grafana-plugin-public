@@ -64,7 +64,7 @@ jobs:
             - name: Check public signing secret
               run: |
                   if [ -z "$GRAFANA_PLUGIN_ACCESS_KEY" ]; then
-                    echo "::error::Missing GRAFANA_PLUGIN_ACCESS_KEY. Public plugin releases need a Grafana access policy token after Grafana approval."
+                    echo "::error::Missing GRAFANA_PLUGIN_ACCESS_KEY. Public plugin releases need a Grafana access policy token."
                     exit 1
                   fi
 
@@ -106,7 +106,7 @@ jobs:
                   args: buildAll
                   workdir: .
 
-            - name: Sign public plugin
+            - name: Sign plugin
               env:
                   GRAFANA_ACCESS_POLICY_TOKEN: ${{ env.GRAFANA_PLUGIN_ACCESS_KEY }}
               run: pnpm run sign

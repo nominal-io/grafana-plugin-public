@@ -22,6 +22,8 @@ jobs:
   build:
     name: Build, lint and unit tests
     runs-on: ubuntu-latest
+    env:
+      GRAFANA_PLUGIN_ACCESS_KEY: ${{ secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
     outputs:
       plugin-id: ${{ steps.metadata.outputs.plugin-id }}
       plugin-version: ${{ steps.metadata.outputs.plugin-version }}
@@ -96,6 +98,12 @@ jobs:
           if [ -f "playwright.config.ts" ]; then
             echo "has-e2e=true" >> $GITHUB_OUTPUT
           fi
+
+      - name: Sign plugin (optional)
+        if: ${{ env.GRAFANA_PLUGIN_ACCESS_KEY != '' }}
+        env:
+          GRAFANA_ACCESS_POLICY_TOKEN: ${{ env.GRAFANA_PLUGIN_ACCESS_KEY }}
+        run: pnpm run sign
 
       - name: Get plugin metadata
         id: metadata
