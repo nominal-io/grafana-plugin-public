@@ -23,7 +23,8 @@ jobs:
     name: Build, lint and unit tests
     runs-on: ubuntu-latest
     env:
-      GRAFANA_ACCESS_POLICY_TOKEN: ${{ secrets.GRAFANA_ACCESS_POLICY_TOKEN }}
+      GRAFANA_PLUGIN_ACCESS_KEY: ${{ secrets.GRAFANA_PLUGIN_ACCESS_KEY }}
+      GRAFANA_PLUGIN_ROOT_URLS: ${{ secrets.GRAFANA_PLUGIN_ROOT_URLS }}
     outputs:
       plugin-id: ${{ steps.metadata.outputs.plugin-id }}
       plugin-version: ${{ steps.metadata.outputs.plugin-version }}
@@ -100,7 +101,9 @@ jobs:
           fi
 
       - name: Sign plugin (optional)
-        if: ${{ env.GRAFANA_ACCESS_POLICY_TOKEN != '' }}
+        if: ${{ env.GRAFANA_PLUGIN_ACCESS_KEY != '' && env.GRAFANA_PLUGIN_ROOT_URLS != '' }}
+        env:
+          GRAFANA_ACCESS_POLICY_TOKEN: ${{ env.GRAFANA_PLUGIN_ACCESS_KEY }}
         run: pnpm run sign
 
       - name: Get plugin metadata
