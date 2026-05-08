@@ -94,20 +94,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
 
-  // Tracks the aggregation value from the last query execution (or initial load).
-  // onBlur compares the current selection against this to decide whether to re-run.
-  const committedAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
-  // Tracks the current (possibly uncommitted) selection synchronously.
-  // onChange updates this immediately so onBlur can read the latest value
-  // without waiting for React to re-render query.aggregations.
-  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
-  // Sync pending ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
-  // Do NOT sync committedAggRef here — it should only update when onBlur actually fires a query.
-  // Otherwise the effect runs between onChange and onBlur, making them equal before the comparison.
-  useEffect(() => {
-    pendingAggRef.current = query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS];
-  }, [query.aggregations]);
-
   // Ref to latest query — used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange→query→effect cycles)
   const queryRef = useRef(query);
@@ -435,6 +421,17 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
+
+  // Debounced re-run on aggregation changes — coalesces rapid toggles into a single requery.
+  useEffect(() => {
+    const q = queryRef.current;
+    if (!q?.assetRid || !q.channel || !q.dataScopeName) {
+      return;
+    }
+    const t = setTimeout(() => onRunQuery(), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query?.aggregations, onRunQuery]);
 
   const onAssetSelect = (selection: SelectableValue<string>) => {
     setHasUserInteracted(true);
@@ -817,15 +814,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       onChange={(selected) => {
                         const values = selected.map(s => s.value).filter((v): v is string => v != null);
                         const aggs = values.length > 0 ? values : [...DEFAULT_AGGREGATIONS];
-                        pendingAggRef.current = aggs;
                         onChange({ ...query, aggregations: aggs });
-                      }}
-                      onBlur={() => {
-                        const current = pendingAggRef.current;
-                        if (JSON.stringify(current) !== JSON.stringify(committedAggRef.current)) {
-                          committedAggRef.current = current;
-                          onRunQuery();
-                        }
                       }}
                       placeholder="Select aggregations..."
                       width={35}
