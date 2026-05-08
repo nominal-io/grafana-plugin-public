@@ -31,11 +31,7 @@ const scope = (name: string, dataSource: DataScope['dataSource']): DataScope => 
 });
 
 const buildAsset = (overrides: Partial<Asset> = {}): Asset => ({
-  rid: 'ri.scout.main.asset.abc',
-  title: 'Test Asset',
-  labels: [],
-  dataScopes: [],
-  properties: {},
+  ...createBasicAsset('ri.scout.main.asset.abc', 'Test Asset'),
   ...overrides,
 });
 
