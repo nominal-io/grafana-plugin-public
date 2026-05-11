@@ -1,12 +1,11 @@
 import React from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, render, waitFor } from '@testing-library/react';
-import { fetchAssetByRid, QueryEditor } from './QueryEditor';
+import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
 import { DataSource } from '../datasource';
 
 const DATASOURCE_URL = '/api/datasources/uid/test/resources';
-const VALID_RID = 'ri.scout.main.asset.abc-123';
 const ASSET_RID = 'ri.scout.main.asset.abc123';
 const LOG_DS_RID = 'ri.logset.main.log-set.xyz';
 
@@ -22,9 +21,7 @@ const ASSET = {
   ],
 };
 
-// Shared `post` mock. Unit tests (fetchAssetByRid) set per-test responses
-// via mockResolvedValue/mockRejectedValue. Component tests install a
-// URL-routing implementation below in their describe block.
+// Component tests install a URL-routing implementation in their describe block.
 const post = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
@@ -42,64 +39,6 @@ jest.mock('@grafana/runtime', () => ({
 
 beforeEach(() => {
   post.mockReset();
-});
-
-describe('fetchAssetByRid', () => {
-  it('returns null for empty RID', async () => {
-    const result = await fetchAssetByRid(DATASOURCE_URL, '');
-    expect(result).toBeNull();
-    expect(post).not.toHaveBeenCalled();
-  });
-
-  it('returns null for RID not starting with "ri."', async () => {
-    const result = await fetchAssetByRid(DATASOURCE_URL, 'not-a-valid-rid');
-    expect(result).toBeNull();
-    expect(post).not.toHaveBeenCalled();
-  });
-
-  it('calls batch lookup endpoint with correct URL and payload', async () => {
-    post.mockResolvedValue({});
-    await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
-    expect(post).toHaveBeenCalledWith(
-      `${DATASOURCE_URL}/scout/v1/asset/multiple`,
-      [VALID_RID]
-    );
-  });
-
-  it('returns the asset when found with dataScopes', async () => {
-    const asset = {
-      rid: VALID_RID,
-      title: 'Test Asset',
-      labels: [],
-      dataScopes: [{ dataScopeName: 'ds1', dataSource: { type: 'dataset' } }],
-    };
-    post.mockResolvedValue({ [VALID_RID]: asset });
-
-    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
-    expect(result).toEqual(asset);
-  });
-
-  it('returns null when asset has empty dataScopes', async () => {
-    post.mockResolvedValue({
-      [VALID_RID]: { rid: VALID_RID, title: 'Empty', dataScopes: [] },
-    });
-
-    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
-    expect(result).toBeNull();
-  });
-
-  it('returns null when RID is not in response map', async () => {
-    post.mockResolvedValue({});
-
-    const result = await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
-    expect(result).toBeNull();
-  });
-
-  it('propagates API errors to caller', async () => {
-    post.mockRejectedValue(new Error('Network error'));
-
-    await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
-  });
 });
 
 describe('channel data type inference effect', () => {

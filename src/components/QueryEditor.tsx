@@ -1,11 +1,22 @@
-import React, { useState, useEffect, useRef, ChangeEvent, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, ChangeEvent, useCallback } from 'react';
 import { css, keyframes } from '@emotion/css';
 import { debounce } from 'lodash';
 import { InlineField, Input, Stack, Select, MultiCombobox, RadioButtonGroup, useStyles2, useTheme2 } from '@grafana/ui';
 import { AppEvents, GrafanaTheme2, QueryEditorProps, SelectableValue } from '@grafana/data';
-import { getAppEvents, getBackendSrv, getTemplateSrv } from '@grafana/runtime';
+import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
 import { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
+import {
+  Asset,
+  assetToOption,
+  createBasicAsset,
+  fetchAssetByRid,
+  getSupportedScopes,
+  getSupportedScopeNames,
+  resolveDataSourceRids,
+  searchAssets,
+  searchChannels,
+} from '../utils/api';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -49,30 +60,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-interface Asset {
-  rid: string;
-  title: string;
-  description?: string;
-  labels: string[];
-  dataScopes: Array<{
-    dataScopeName: string;
-    dataSource: {
-      type: string;
-      dataset?: string;
-      video?: string;
-      connection?: string;
-      logSet?: string;
-    };
-    offset?: any;
-    timestampType?: string;
-    seriesTags?: Record<string, any>;
-  }>;
-  properties?: Record<string, any>;
-  createdBy?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
 type AssetInputMethod = 'search' | 'direct';
 
 const NUMERIC_AGG_OPTIONS = [
@@ -84,55 +71,6 @@ const NUMERIC_AGG_OPTIONS = [
   { label: 'First', value: AggregationType.FirstPoint },
   { label: 'Last', value: AggregationType.LastPoint },
 ];
-
-/** Data source types that support channel queries */
-const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
-
-/** Returns the rid for a data source, or undefined if the type is unsupported or the rid field is missing. */
-const getDataSourceRid = (
-  ds: Asset['dataScopes'][number]['dataSource']
-): string | undefined => {
-  if (ds.type === 'dataset') {
-    return ds.dataset;
-  }
-  if (ds.type === 'connection') {
-    return ds.connection;
-  }
-  if (ds.type === 'logSet') {
-    return ds.logSet;
-  }
-  return undefined;
-};
-
-/** Creates a minimal asset placeholder when the actual asset can't be fetched.
- *  dataScopes is intentionally empty — we don't fabricate scope data. */
-const createBasicAsset = (rid: string, title: string): Asset => ({
-  rid,
-  title,
-  labels: [],
-  dataScopes: [],
-});
-
-/** Fetches a single asset by its exact RID using the batch lookup endpoint */
-export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
-  // Validate RID format - must start with "ri." to be a valid resource identifier
-  if (!rid || !rid.startsWith('ri.')) {
-    return null;
-  }
-
-  // Use the efficient batch lookup endpoint instead of searching all assets
-  const response = await getBackendSrv().post(
-    `${datasourceUrl}/scout/v1/asset/multiple`,
-    [rid] // API expects an array of RIDs
-  );
-
-  // Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
-  const asset = response?.[rid];
-  if (asset && asset.dataScopes?.length > 0) {
-    return asset;
-  }
-  return null;
-};
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const theme = useTheme2();
@@ -155,20 +93,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [channelsLoading, setChannelsLoading] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
-
-  // Tracks the aggregation value from the last query execution (or initial load).
-  // onBlur compares the current selection against this to decide whether to re-run.
-  const committedAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
-  // Tracks the current (possibly uncommitted) selection synchronously.
-  // onChange updates this immediately so onBlur can read the latest value
-  // without waiting for React to re-render query.aggregations.
-  const pendingAggRef = useRef<string[]>(query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS]);
-  // Sync pending ref when query.aggregations changes externally (e.g., dashboard JSON edit, query duplication).
-  // Do NOT sync committedAggRef here — it should only update when onBlur actually fires a query.
-  // Otherwise the effect runs between onChange and onBlur, making them equal before the comparison.
-  useEffect(() => {
-    pendingAggRef.current = query.aggregations?.length ? query.aggregations : [...DEFAULT_AGGREGATIONS];
-  }, [query.aggregations]);
 
   // Ref to latest query — used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange→query→effect cycles)
@@ -210,33 +134,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const loadAssets = useCallback(async () => {
     setIsLoading(true);
     try {
-      // Use the backend proxy to search for assets
-      const response = await getBackendSrv().post(`${datasource.url}/scout/v1/search-assets`, {
-        query: {
-          searchText: searchQuery || '',
-          type: 'searchText',
-        },
-        sort: {
-          field: 'CREATED_AT',
-          isDescending: false,
-        },
-        pageSize: 50,
-      });
-
-      if (response && response.results) {
-        // Filter assets to only include those with supported data source types
-        const filteredAssets = response.results.filter((asset: Asset) => {
-          return (
-            asset.dataScopes &&
-            asset.dataScopes.length > 0 &&
-            asset.dataScopes.some((scope) => SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type))
-          );
-        });
-
-        setAssets(filteredAssets);
-      } else {
-        setAssets([]);
-      }
+      setAssets(await searchAssets(datasource.url, searchQuery));
     } catch {
       notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
       setAssets([]);
@@ -252,34 +150,16 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         return [];
       }
       const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-      const scopes = (selectedAsset.dataScopes || []).filter(
-        (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
-      );
-      const dataSourceRids: string[] = [];
-      for (const scope of scopes) {
-        if (!scope.dataSource) {
-          continue;
-        }
-        const rid = getDataSourceRid(scope.dataSource);
-        if (rid) {
-          dataSourceRids.push(rid);
-        }
-      }
-      if (dataSourceRids.length === 0) {
-        return [];
-      }
+      const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
       try {
-        const response = await getBackendSrv().post(`${datasource.url}/channels`, { dataSourceRids, searchText });
-        if (response?.channels) {
-          return response.channels.map((ch: any) => ({
-            label: ch.name,
-            value: ch.name,
-            description: ch.description || `Channel: ${ch.name}`,
-            dataType: ch.dataType || '',
-            icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
-          }));
-        }
-        return [];
+        const channels = await searchChannels(datasource.url, dataSourceRids, searchText);
+        return channels.map((ch) => ({
+          label: ch.name,
+          value: ch.name,
+          description: ch.description || `Channel: ${ch.name}`,
+          dataType: ch.dataType || '',
+          icon: ch.dataType ? DATA_TYPE_ICONS[ch.dataType] : undefined,
+        }));
       } catch {
         notifyError('Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.');
         return [];
@@ -325,9 +205,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
    *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
-      if (!datasource.url) {
-        return;
-      }
       try {
         const foundAsset = await fetchAssetByRid(datasource.url, resolvedRid);
         if (signal?.aborted) {
@@ -335,10 +212,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         }
         if (foundAsset) {
           setSelectedAsset(foundAsset);
-          const validScopes = foundAsset.dataScopes.filter((scope) =>
-            SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-          );
-          setDataScopes(validScopes.map((scope) => scope.dataScopeName));
+          setDataScopes(getSupportedScopeNames(foundAsset));
         } else {
           setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
           setDataScopes([]);
@@ -467,11 +341,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   // Update dependent fields when asset changes
   useEffect(() => {
     if (selectedAsset) {
-      // Extract data scope names from supported data source types
-      const validScopes = selectedAsset.dataScopes.filter((scope) =>
-        SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-      );
-      const scopeNames = validScopes.map((scope) => scope.dataScopeName);
+      const scopeNames = getSupportedScopeNames(selectedAsset);
       setDataScopes(scopeNames);
 
       // Only auto-update query if user has interacted with the query builder
@@ -519,31 +389,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-    const scopes = (selectedAsset.dataScopes || []).filter(
-      (scope) => !resolvedScope || scope.dataScopeName === resolvedScope
-    );
-    const dataSourceRids: string[] = [];
-    for (const scope of scopes) {
-      if (!scope.dataSource) {
-        continue;
-      }
-      const rid = getDataSourceRid(scope.dataSource);
-      if (rid) {
-        dataSourceRids.push(rid);
-      }
-    }
+    const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
     if (dataSourceRids.length === 0) {
       return;
     }
 
     let cancelled = false;
-    getBackendSrv()
-      .post(`${datasource.url}/channels`, { dataSourceRids, searchText: resolvedChannel })
-      .then((response) => {
-        if (cancelled || !response?.channels) {
+    searchChannels(datasource.url, dataSourceRids, resolvedChannel)
+      .then((channels) => {
+        if (cancelled) {
           return;
         }
-        const match = response.channels.find((ch: any) => ch.name === resolvedChannel);
+        const match = channels.find((ch) => ch.name === resolvedChannel);
         if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
           onChange({ ...queryRef.current, channelDataType: match.dataType });
         }
@@ -564,6 +421,17 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
+
+  // Debounced re-run on aggregation changes — coalesces rapid toggles into a single requery.
+  useEffect(() => {
+    const q = queryRef.current;
+    if (!q?.assetRid || !q.channel || !q.dataScopeName) {
+      return;
+    }
+    const t = setTimeout(() => onRunQuery(), 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query?.aggregations, onRunQuery]);
 
   const onAssetSelect = (selection: SelectableValue<string>) => {
     setHasUserInteracted(true);
@@ -612,20 +480,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
   };
 
-  // Convert asset to dropdown option
-  const assetToOption = (asset: Asset): SelectableValue<string> => {
-    const supportedScopes = asset.dataScopes.filter((scope) =>
-      SUPPORTED_DATA_SOURCE_TYPES.includes(scope.dataSource.type)
-    );
-    return {
-      label: asset.title,
-      value: asset.rid,
-      description: `${asset.labels.join(', ') || 'No labels'} - ${supportedScopes.length} data scope(s)`,
-    };
-  };
-
   // Prepare asset options for dropdown
-  const assetOptions: Array<SelectableValue<string>> = (() => {
+  const assetOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = assets.map(assetToOption);
 
     // Include the currently selected asset if it's not in the search results
@@ -648,20 +504,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [assets, selectedAsset, query?.assetRid]);
 
   // Compute asset select value - show variable if set, otherwise match by resolved RID
-  const assetSelectValue = (() => {
+  const assetSelectValue = useMemo(() => {
     const currentValue = query?.assetRid || '';
     if (currentValue.includes('$')) {
       return currentValue;
     }
     return assetOptions.some((opt) => opt.value === resolvedAssetRid) ? resolvedAssetRid : '';
-  })();
+  }, [query?.assetRid, assetOptions, resolvedAssetRid]);
 
   // Prepare data scope options for dropdown
   // Include template variable option if the current value is a variable
-  const dataScopeOptions: Array<SelectableValue<string>> = (() => {
+  const dataScopeOptions = useMemo<Array<SelectableValue<string>>>(() => {
     const options = dataScopes.map((scope) => ({
       label: scope,
       value: scope,
@@ -686,11 +542,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
 
     return options;
-  })();
+  }, [dataScopes, query?.dataScopeName, resolvedDataScopeName]);
 
   // Prepare channel options for dropdown
   // Include template variable option if the current value is a variable
-  const channelOptions: ChannelOption[] = (() => {
+  const channelOptions = useMemo<ChannelOption[]>(() => {
     const options = [...channelResults];
     const currentValue = query?.channel || '';
     if (currentValue.includes('$') && !options.some(o => o.value === currentValue)) {
@@ -702,7 +558,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       options.unshift({ label, value: currentValue });
     }
     return options;
-  })();
+  }, [channelResults, query?.channel, resolvedChannel]);
 
   const handleAssetInputMethodChange = (method: AssetInputMethod) => {
     setHasUserInteracted(true);
@@ -958,15 +814,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       onChange={(selected) => {
                         const values = selected.map(s => s.value).filter((v): v is string => v != null);
                         const aggs = values.length > 0 ? values : [...DEFAULT_AGGREGATIONS];
-                        pendingAggRef.current = aggs;
                         onChange({ ...query, aggregations: aggs });
-                      }}
-                      onBlur={() => {
-                        const current = pendingAggRef.current;
-                        if (JSON.stringify(current) !== JSON.stringify(committedAggRef.current)) {
-                          committedAggRef.current = current;
-                          onRunQuery();
-                        }
                       }}
                       placeholder="Select aggregations..."
                       width={35}
@@ -1055,7 +903,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 marginLeft: theme.spacing(0.5),
               }}
             >
-              {selectedAsset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type)).length}
+              {getSupportedScopes(selectedAsset).length}
             </span>
           </div>
         )}
