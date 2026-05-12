@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -124,183 +123,6 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	return ds, nil
 }
 
-// interpolateTemplateVariables replaces template variables in strings.
-// It supports both ${var} and $var syntax. The ${var} form is processed first
-// so that a bare $var replacement cannot accidentally corrupt a ${othervar}
-// token that happens to share a prefix (e.g. key "o" must not match inside
-// "${othervar}"). The bare $var form uses a word-boundary regex so it only
-// matches when the key name ends at a non-word character (or end-of-string).
-func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
-	if variables == nil {
-		return input
-	}
-
-	result := input
-	for key, value := range variables {
-		valueStr := fmt.Sprintf("%v", value)
-
-		// Replace ${var} form first (unambiguous).
-		result = strings.ReplaceAll(result, fmt.Sprintf("${%s}", key), valueStr)
-
-		// Replace bare $var form only as a whole token: must not be immediately
-		// followed by a word character so that $foo does not match inside $foobar.
-		bareRe := regexp.MustCompile(`\$` + regexp.QuoteMeta(key) + `(\W|$)`)
-		result = bareRe.ReplaceAllStringFunc(result, func(match string) string {
-			// Preserve any trailing non-word character that was part of the match.
-			suffix := match[len("$"+key):]
-			return valueStr + suffix
-		})
-	}
-
-	return result
-}
-
-// applyTemplateVariables applies template variable interpolation to query fields.
-//
-// Defense-in-depth: Grafana's SDK resolves dashboard template variables before
-// the query JSON reaches the backend in most panel flows, so by the time
-// QueryData is called the variables in qm.AssetRid / qm.Channel etc. are
-// usually already substituted. However, variables passed explicitly via the
-// TemplateVariables field of the query model (populated by the frontend for
-// variable-panel queries and programmatic calls) are NOT resolved by the SDK,
-// so this server-side pass is still needed for those paths.
-func (d *Datasource) applyTemplateVariables(qm *NominalQueryModel) {
-	if qm.TemplateVariables == nil {
-		return
-	}
-
-	qm.AssetRid = interpolateTemplateVariables(qm.AssetRid, qm.TemplateVariables)
-	qm.Channel = interpolateTemplateVariables(qm.Channel, qm.TemplateVariables)
-	qm.DataScopeName = interpolateTemplateVariables(qm.DataScopeName, qm.TemplateVariables)
-	qm.QueryText = interpolateTemplateVariables(qm.QueryText, qm.TemplateVariables)
-}
-
-// validateQuery validates query parameters similar to pure-ts implementation
-func (d *Datasource) validateQuery(qm NominalQueryModel) error {
-	// Check if we have either Nominal-specific fields or legacy fields
-	hasNominalQuery := qm.AssetRid != "" && qm.Channel != ""
-	hasLegacyQuery := qm.QueryText != ""
-	hasConstantQuery := qm.Constant != 0
-
-	if !hasNominalQuery && !hasLegacyQuery && !hasConstantQuery {
-		return fmt.Errorf("query must have either asset/channel parameters, query text, or constant value")
-	}
-
-	// Validate Nominal query fields
-	if hasNominalQuery {
-		if strings.TrimSpace(qm.AssetRid) == "" {
-			return fmt.Errorf("assetRid cannot be empty")
-		}
-		if strings.TrimSpace(qm.Channel) == "" {
-			return fmt.Errorf("channel cannot be empty")
-		}
-		// DataScopeName is required — the compute API needs it to locate the channel.
-		// The frontend filterQuery also enforces this; this is defense-in-depth.
-		if strings.TrimSpace(qm.DataScopeName) == "" {
-			return fmt.Errorf("dataScopeName is required for asset/channel queries")
-		}
-		// Validate bucket count
-		if qm.Buckets < 0 {
-			return fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
-		}
-		if qm.Buckets > 10000 {
-			log.DefaultLogger.Warn("Large bucket count may impact performance", "buckets", qm.Buckets)
-		}
-	}
-
-	return nil
-}
-
-// inferChannelDataType verifies (or backfills) channelDataType against the
-// actual channel metadata from the API. The frontend-supplied type may be stale
-// when a multi-select template variable expands $channel to a mix of numeric
-// and string channels — every expanded query inherits the same saved type.
-// The instance-level cache keeps repeated lookups cheap.
-func (d *Datasource) inferChannelDataType(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
-	if qm == nil || d.datasourceService == nil {
-		return
-	}
-	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
-		return
-	}
-
-	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
-
-	// Check instance-level TTL cache.
-	d.channelTypeCacheMu.Lock()
-	if d.channelTypeCache == nil {
-		d.channelTypeCache = make(map[string]channelTypeCacheEntry)
-	}
-	if entry, ok := d.channelTypeCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-		d.channelTypeCacheMu.Unlock()
-		if entry.channelType != "" {
-			qm.ChannelDataType = entry.channelType
-		}
-		return
-	}
-	d.channelTypeCacheMu.Unlock()
-
-	asset, err := d.fetchAssetByRid(ctx, config, qm.AssetRid)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to fetch asset for channel type inference", "assetRid", qm.AssetRid, "error", err)
-		return
-	}
-	if asset == nil {
-		return
-	}
-
-	var dataSourceRids []rids.DataSourceRid
-	for _, scope := range asset.DataScopes {
-		if scope.DataScopeName != qm.DataScopeName {
-			continue
-		}
-
-		ridStr, ok := dataSourceRidFor(scope.DataSource)
-		if !ok {
-			continue
-		}
-
-		parsedRid, err := rid.ParseRID(ridStr)
-		if err != nil {
-			log.DefaultLogger.Warn("Failed to parse datasource RID for channel type inference", "rid", ridStr, "error", err)
-			continue
-		}
-		dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
-	}
-	if len(dataSourceRids) == 0 {
-		return
-	}
-
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{qm.Channel},
-		DataSources: dataSourceRids,
-	}
-	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to search channels for channel type inference", "assetRid", qm.AssetRid, "dataScopeName", qm.DataScopeName, "channel", qm.Channel, "error", err)
-		return
-	}
-
-	for _, channel := range channelsResponse.Results {
-		if string(channel.Name) != qm.Channel {
-			continue
-		}
-		if inferredType := getChannelDataType(channel); inferredType != "" {
-			qm.ChannelDataType = inferredType
-			d.channelTypeCacheMu.Lock()
-			d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: inferredType, fetchedAt: time.Now()}
-			d.channelTypeCacheMu.Unlock()
-			return
-		}
-	}
-
-	// Cache the miss so we don't re-search for the same combo.
-	d.channelTypeCacheMu.Lock()
-	d.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: "", fetchedAt: time.Now()}
-	d.channelTypeCacheMu.Unlock()
-}
-
 // Datasource is the Nominal datasource implementation
 type Datasource struct {
 	settings          backend.DataSourceInstanceSettings
@@ -339,8 +161,8 @@ func (d *Datasource) Dispose() {
 // The QueryDataResponse contains a map of RefID to the response for each query, and each response
 // contains Frames ([]*Frame).
 //
-// This implementation batches eligible queries (asset+channel) into a single API call for performance.
-// Non-batchable queries (connectionTest, legacy) are handled individually.
+// Query execution itself lives behind NominalQueryExecution so Datasource stays
+// focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	response := backend.NewQueryDataResponse()
 
@@ -368,128 +190,17 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		return response, nil
 	}
 
-	// Collect batchable queries
-	var batchableQueries []backend.DataQuery
-	var batchableModels []NominalQueryModel
-
-	for _, q := range req.Queries {
-		// Parse query model
-		var qm NominalQueryModel
-		if err := json.Unmarshal(q.JSON, &qm); err != nil {
-			response.Responses[q.RefID] = backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("json unmarshal: %v", err),
-			)
-			continue
-		}
-
-		// Apply template variable interpolation
-		d.applyTemplateVariables(&qm)
-
-		// Handle connection test immediately (not batchable)
-		if qm.QueryType == "connectionTest" {
-			response.Responses[q.RefID] = d.handleConnectionTestQuery(ctx, config)
-			continue
-		}
-
-		// Validate query
-		if err := d.validateQuery(qm); err != nil {
-			log.DefaultLogger.Error("Query validation failed", "error", err)
-			response.Responses[q.RefID] = backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("Query validation failed: %v", err),
-			)
-			continue
-		}
-
-		d.inferChannelDataType(ctx, config, &qm)
-
-		// Default aggregations to ["MEAN"] for backward compat with saved dashboards.
-		// For enum channels, aggregations are not used — skip validation.
-		qm.ExplicitAggregations = len(qm.Aggregations) > 0
-		if qm.ChannelDataType != "string" && qm.ChannelDataType != "log" {
-			if !qm.ExplicitAggregations {
-				qm.Aggregations = []string{AggMean}
-			} else if deduped, badAgg := validateAndDedup(qm.Aggregations); badAgg != "" {
-				response.Responses[q.RefID] = backend.ErrDataResponse(
-					backend.StatusBadRequest,
-					fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
-				)
-				continue
-			} else {
-				qm.Aggregations = deduped
-			}
-		}
-
-		// Check if this is a batchable query (has asset and channel)
-		if qm.AssetRid != "" && qm.Channel != "" {
-			batchableQueries = append(batchableQueries, q)
-			batchableModels = append(batchableModels, qm)
-		} else {
-			// Legacy query - handle individually
-			response.Responses[q.RefID] = d.handleLegacyQuery(qm, q.TimeRange)
-		}
-	}
-
-	if len(batchableQueries) == 0 {
-		return response, nil
-	}
-
-	// Partition into log and non-log queries. When both partitions are non-empty,
-	// execute them in parallel so log queries (paged, uncacheable) don't delay
-	// numeric/enum results. When only one partition has queries, the other
-	// goroutine short-circuits via runBatch's empty-slice check.
-	var logQueries, otherQueries []backend.DataQuery
-	var logQMs, otherQMs []NominalQueryModel
-	for i, qm := range batchableModels {
-		if qm.ChannelDataType == "log" {
-			logQueries = append(logQueries, batchableQueries[i])
-			logQMs = append(logQMs, qm)
-		} else {
-			otherQueries = append(otherQueries, batchableQueries[i])
-			otherQMs = append(otherQMs, qm)
-		}
-	}
-
-	runBatch := func(label string, queries []backend.DataQuery, qms []NominalQueryModel) map[string]backend.DataResponse {
-		if len(queries) == 0 {
-			return nil
-		}
-		log.DefaultLogger.Debug("Executing batch query", "partition", label, "count", len(queries))
-		return d.executeBatchQuery(ctx, config, queries, qms)
-	}
-
-	var wg sync.WaitGroup
-	var logResults, otherResults map[string]backend.DataResponse
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		logResults = runBatch("log", logQueries, logQMs)
-	}()
-	go func() {
-		defer wg.Done()
-		otherResults = runBatch("other", otherQueries, otherQMs)
-	}()
-	wg.Wait()
-
-	for refID, res := range logResults {
-		response.Responses[refID] = res
-	}
-	for refID, res := range otherResults {
-		response.Responses[refID] = res
-	}
-
-	return response, nil
+	return newNominalQueryExecution(d, config).Execute(ctx, req.Queries), nil
 }
 
 // handleConnectionTestQuery handles the connectionTest query type
-func (d *Datasource) handleConnectionTestQuery(ctx context.Context, config *models.PluginSettings) backend.DataResponse {
+func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) backend.DataResponse {
 	var response backend.DataResponse
 
 	log.DefaultLogger.Debug("Processing connectionTest query")
 
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-	profile, err := d.authService.GetMyProfile(ctx, bearerToken)
+	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
 		log.DefaultLogger.Error("Connection test failed", "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
@@ -508,7 +219,7 @@ func (d *Datasource) handleConnectionTestQuery(ctx context.Context, config *mode
 }
 
 // handleLegacyQuery handles legacy queries that don't have asset/channel
-func (d *Datasource) handleLegacyQuery(qm NominalQueryModel, timeRange backend.TimeRange) backend.DataResponse {
+func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRange backend.TimeRange) backend.DataResponse {
 	var response backend.DataResponse
 
 	log.DefaultLogger.Debug("Using legacy query support")
@@ -523,37 +234,12 @@ func (d *Datasource) handleLegacyQuery(qm NominalQueryModel, timeRange backend.T
 	return response
 }
 
-// NominalQueryModel represents a query to the Nominal API
-type NominalQueryModel struct {
-	// Asset information
-	AssetRid        string `json:"assetRid"`
-	Channel         string `json:"channel"`
-	DataScopeName   string `json:"dataScopeName"`
-	ChannelDataType string `json:"channelDataType"`
-
-	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
-	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
-	Aggregations         []string `json:"aggregations,omitempty"`
-	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
-
-	// Query parameters
-	Buckets   int    `json:"buckets"`
-	QueryType string `json:"queryType"`
-
-	// Template variables support
-	TemplateVariables map[string]interface{} `json:"templateVariables,omitempty"`
-
-	// Legacy support
-	QueryText string  `json:"queryText"`
-	Constant  float64 `json:"constant"`
-}
-
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 // This is extracted to enable reuse for both single and batch compute calls.
 // Branches on ChannelDataType: "string" produces enum series, "log" produces log series, all others numeric.
 // maxDataPoints from Grafana reflects the panel's pixel width; when positive it overrides qm.Buckets
 // so the compute API only returns as many points as the panel can actually display.
-func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
+func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
@@ -562,7 +248,7 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	if qm.ChannelDataType == "string" {
 		// Enum path for string channels
 		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
-			Input: d.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			Input: e.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
 			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 				Seconds: safelong.SafeLong(0),
 				Nanos:   safelong.SafeLong(0),
@@ -574,14 +260,14 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	} else if qm.ChannelDataType == "log" {
 		// Log path — no bucketing, no aggregation, no TimeShift needed
 		channelSeries := computeapi.NewChannelSeriesFromAsset(
-			d.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			e.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
 		)
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series = computeapi1.NewSeriesFromLog(logSeries)
 	} else {
 		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
-			Input: d.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			Input: e.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
 			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 				Seconds: safelong.SafeLong(0),
 				Nanos:   safelong.SafeLong(0),
@@ -640,7 +326,7 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	node := computeapi1.NewComputableNodeFromSeries(seriesNode)
 
 	// Build context with variables
-	computeContext := d.buildComputeContext(qm, startSeconds, endSeconds)
+	computeContext := e.buildComputeContext(qm, startSeconds, endSeconds)
 
 	return computeapi1.ComputeNodeRequest{
 		Start: api.Timestamp{
@@ -658,96 +344,16 @@ func (d *Datasource) buildComputeRequest(qm NominalQueryModel, timeRange backend
 	}
 }
 
-// executeBatchQuery executes multiple queries in a single batch API call.
-// Returns a map of RefID to DataResponse for each query.
-func (d *Datasource) executeBatchQuery(
-	ctx context.Context,
-	config *models.PluginSettings,
-	queries []backend.DataQuery,
-	queryModels []NominalQueryModel,
-) map[string]backend.DataResponse {
-	results := make(map[string]backend.DataResponse)
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-
-	if len(queries) != len(queryModels) {
-		for _, q := range queries {
-			results[q.RefID] = backend.ErrDataResponse(
-				backend.StatusInternal,
-				"Batch query internal error: query/model count mismatch",
-			)
-		}
-		return results
-	}
-
-	for chunkStart := 0; chunkStart < len(queries); chunkStart += maxBatchComputeSubrequests {
-		chunkEnd := chunkStart + maxBatchComputeSubrequests
-		if chunkEnd > len(queries) {
-			chunkEnd = len(queries)
-		}
-
-		chunkQueries := queries[chunkStart:chunkEnd]
-		chunkModels := queryModels[chunkStart:chunkEnd]
-		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
-		for i, qm := range chunkModels {
-			computeRequests[i] = d.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
-		}
-
-		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
-			Requests: computeRequests,
-		}
-
-		log.DefaultLogger.Debug(
-			"Making batch compute API call",
-			"chunkStart", chunkStart,
-			"chunkEnd", chunkEnd,
-			"queryCount", len(computeRequests),
-		)
-
-		batchResponse, err := d.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
-		if err != nil {
-			log.DefaultLogger.Error("Batch compute API call failed", "error", err, "chunkStart", chunkStart, "chunkEnd", chunkEnd)
-			for _, q := range chunkQueries {
-				results[q.RefID] = backend.ErrDataResponse(
-					backend.StatusInternal,
-					fmt.Sprintf("Batch compute failed: %v", err),
-				)
-			}
-			continue
-		}
-
-		log.DefaultLogger.Debug(
-			"Batch compute successful",
-			"chunkStart", chunkStart,
-			"chunkEnd", chunkEnd,
-			"resultCount", len(batchResponse.Results),
-		)
-
-		for i, q := range chunkQueries {
-			if i >= len(batchResponse.Results) {
-				results[q.RefID] = backend.ErrDataResponse(
-					backend.StatusInternal,
-					"Missing result in batch response",
-				)
-				continue
-			}
-
-			results[q.RefID] = d.transformBatchResult(batchResponse.Results[i], chunkModels[i])
-		}
-	}
-
-	return results
-}
-
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
 // Handles both success and error cases from the ComputeNodeResult union type.
-func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
+func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
 	var response backend.DataResponse
 
 	// ComputeNodeResult is a union type - use AcceptFuncs to handle success/error
 	err := result.ComputeResult.AcceptFuncs(
 		// successFunc - called when compute succeeded
 		func(computeResponse computeapi.ComputeNodeResponse) error {
-			result, transformErr := d.transformNominalResponseFromClient(computeResponse, qm)
+			result, transformErr := e.transformNominalResponseFromClient(computeResponse, qm)
 			if transformErr != nil {
 				response = backend.ErrDataResponse(
 					backend.StatusInternal,
@@ -927,7 +533,7 @@ func (d *Datasource) transformBatchResult(result computeapi.ComputeWithUnitsResu
 }
 
 // buildAssetChannel constructs the shared AssetChannel used by both numeric and enum series builders.
-func (d *Datasource) buildAssetChannel(assetRid, channel, dataScopeName string) computeapi.AssetChannel {
+func (e *NominalQueryExecution) buildAssetChannel(assetRid, channel, dataScopeName string) computeapi.AssetChannel {
 	return computeapi.AssetChannel{
 		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
 		Channel:        computeapi.NewStringConstantFromLiteral(channel),
@@ -939,19 +545,19 @@ func (d *Datasource) buildAssetChannel(assetRid, channel, dataScopeName string) 
 }
 
 // buildChannelSeries creates a numeric channel series for the given asset/channel.
-func (d *Datasource) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
+func (e *NominalQueryExecution) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
 	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
 }
 
 // buildEnumChannelSeries creates an enum channel series for the given asset/channel.
-func (d *Datasource) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi1.EnumSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(d.buildAssetChannel(assetRid, channel, dataScopeName))
+func (e *NominalQueryExecution) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi1.EnumSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
 	return computeapi1.NewEnumSeriesFromChannel(channelSeries)
 }
 
 // buildComputeContext creates the context with variables for the compute request
-func (d *Datasource) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
+func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
 	variables := map[computeapi.VariableName]computeapi1.VariableValue{
 		computeapi.VariableName("assetRid"): computeapi1.NewVariableValueFromString(qm.AssetRid),
 	}
@@ -1011,7 +617,7 @@ func marshalLogArgs(args map[string]string) json.RawMessage {
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
-func (d *Datasource) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
+func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
 	var result TransformResult
@@ -1022,7 +628,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		nil, // rangesSummaryFunc
 		nil, // rangeValueFunc
 		func(numeric computeapi.NumericPlot) error {
-			timePoints, values, err := d.extractNumericDataFromConjure(numeric)
+			timePoints, values, err := e.extractNumericDataFromConjure(numeric)
 			if err != nil {
 				return err
 			}
@@ -1032,7 +638,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 			return nil
 		},
 		func(bucketed computeapi.BucketedNumericPlot) error {
-			timePoints, values, err := d.extractBucketedDataFromConjure(bucketed)
+			timePoints, values, err := e.extractBucketedDataFromConjure(bucketed)
 			if err != nil {
 				return err
 			}
@@ -1069,7 +675,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		// enumFunc - maps integer indices to category strings
 		func(enum computeapi.EnumPlot) error {
-			timePoints, values, err := d.extractEnumDataFromConjure(enum)
+			timePoints, values, err := e.extractEnumDataFromConjure(enum)
 			if err != nil {
 				return err
 			}
@@ -1093,7 +699,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 		},
 		// bucketedEnumFunc - bucketed enum response (returned by SummarizeSeries with buckets)
 		func(bucketed computeapi.BucketedEnumPlot) error {
-			timePoints, values, err := d.extractBucketedEnumDataFromConjure(bucketed)
+			timePoints, values, err := e.extractBucketedEnumDataFromConjure(bucketed)
 			if err != nil {
 				return err
 			}
@@ -1164,7 +770,7 @@ func (d *Datasource) transformNominalResponseFromClient(response computeapi.Comp
 }
 
 // Helper methods for extracting data from conjure types
-func (d *Datasource) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []*float64, error) {
+func (e *NominalQueryExecution) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []*float64, error) {
 	var timePoints []time.Time
 	var values []*float64
 
@@ -1185,7 +791,7 @@ func (d *Datasource) extractNumericDataFromConjure(numeric computeapi.NumericPlo
 	return timePoints, values, nil
 }
 
-func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []*float64, error) {
+func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []*float64, error) {
 	var timePoints []time.Time
 	var values []*float64
 
@@ -1212,7 +818,7 @@ func (d *Datasource) extractBucketedDataFromConjure(bucketed computeapi.Bucketed
 // extractEnumDataFromConjure converts an EnumPlot response to time/string slices.
 // Maps integer indices to category strings with bounds checking.
 // Out-of-bounds indices produce "unknown(N)" rather than panicking.
-func (d *Datasource) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
+func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
 	var timePoints []time.Time
 	var values []string
 
@@ -1243,7 +849,7 @@ func (d *Datasource) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([
 // extractBucketedEnumDataFromConjure converts a BucketedEnumPlot response to time/string slices.
 // Uses the histogram mode (most frequent category) as the representative value for each bucket,
 // which is the categorical equivalent of the numeric path's Mean aggregate.
-func (d *Datasource) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
+func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
 	var timePoints []time.Time
 	var values []string
 

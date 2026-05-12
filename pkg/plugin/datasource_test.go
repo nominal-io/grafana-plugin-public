@@ -19,6 +19,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
@@ -30,6 +31,15 @@ import (
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 )
+
+func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *NominalQueryExecution {
+	if config == nil {
+		config = &models.PluginSettings{
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+	}
+	return newNominalQueryExecution(ds, config)
+}
 
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
@@ -83,7 +93,7 @@ func TestBuildComputeContext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := ds.buildComputeContext(tt.qm, tt.startSeconds, tt.endSeconds)
+			ctx := newTestQueryExecution(ds, nil).buildComputeContext(tt.qm, tt.startSeconds, tt.endSeconds)
 
 			if len(ctx.Variables) != tt.expectedVars {
 				t.Errorf("expected %d variables, got %d", tt.expectedVars, len(ctx.Variables))
@@ -108,6 +118,272 @@ func TestBuildComputeContext(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.T) {
+	ds := &Datasource{}
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	query := backend.DataQuery{
+		RefID: "A",
+		JSON: mustMarshal(NominalQueryModel{
+			AssetRid:      "${asset}",
+			Channel:       "$channel",
+			DataScopeName: "$scope",
+			Buckets:       100,
+			TemplateVariables: map[string]interface{}{
+				"asset":   "ri.scout.main.asset.1",
+				"channel": "temperature",
+				"scope":   "default",
+			},
+		}),
+	}
+
+	prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+	if prepErr != nil {
+		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
+	}
+
+	if prepared.Kind != preparedQueryBatchable {
+		t.Fatalf("expected batchable query, got kind %d", prepared.Kind)
+	}
+	if prepared.Model.AssetRid != "ri.scout.main.asset.1" {
+		t.Errorf("AssetRid = %q, want resolved asset RID", prepared.Model.AssetRid)
+	}
+	if prepared.Model.Channel != "temperature" {
+		t.Errorf("Channel = %q, want temperature", prepared.Model.Channel)
+	}
+	if prepared.Model.DataScopeName != "default" {
+		t.Errorf("DataScopeName = %q, want default", prepared.Model.DataScopeName)
+	}
+	if prepared.Model.ExplicitAggregations {
+		t.Error("expected defaulted aggregations to be marked implicit")
+	}
+	if len(prepared.Model.Aggregations) != 1 || prepared.Model.Aggregations[0] != AggMean {
+		t.Fatalf("Aggregations = %v, want [%s]", prepared.Model.Aggregations, AggMean)
+	}
+}
+
+func TestPrepareQueryAggregationRules(t *testing.T) {
+	ds := &Datasource{}
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+
+	tests := []struct {
+		name                  string
+		model                 NominalQueryModel
+		wantErr               string
+		wantAggregations      []string
+		wantExplicit          bool
+		wantPreparedQueryKind preparedQueryKind
+	}{
+		{
+			name: "explicit numeric aggregations are deduped in order",
+			model: NominalQueryModel{
+				AssetRid:        "ri.scout.main.asset.1",
+				Channel:         "temperature",
+				DataScopeName:   "default",
+				ChannelDataType: "numeric",
+				Aggregations:    []string{AggMin, AggMax, AggMin},
+				Buckets:         100,
+			},
+			wantAggregations:      []string{AggMin, AggMax},
+			wantExplicit:          true,
+			wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name: "invalid numeric aggregation is rejected",
+			model: NominalQueryModel{
+				AssetRid:        "ri.scout.main.asset.1",
+				Channel:         "temperature",
+				DataScopeName:   "default",
+				ChannelDataType: "numeric",
+				Aggregations:    []string{"BOGUS"},
+				Buckets:         100,
+			},
+			wantErr: "unsupported aggregation \"BOGUS\"",
+		},
+		{
+			name: "string channels skip numeric aggregation validation",
+			model: NominalQueryModel{
+				AssetRid:        "ri.scout.main.asset.1",
+				Channel:         "state",
+				DataScopeName:   "default",
+				ChannelDataType: "string",
+				Aggregations:    []string{"BOGUS"},
+				Buckets:         100,
+			},
+			wantAggregations:      []string{"BOGUS"},
+			wantExplicit:          true,
+			wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name: "log channels skip numeric aggregation validation",
+			model: NominalQueryModel{
+				AssetRid:        "ri.scout.main.asset.1",
+				Channel:         "app.logs",
+				DataScopeName:   "default",
+				ChannelDataType: "log",
+				Aggregations:    []string{"BOGUS"},
+				Buckets:         100,
+			},
+			wantAggregations:      []string{"BOGUS"},
+			wantExplicit:          true,
+			wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name: "connection test skips normal validation",
+			model: NominalQueryModel{
+				QueryType: "connectionTest",
+			},
+			wantPreparedQueryKind: preparedQueryConnectionTest,
+		},
+		{
+			name: "legacy constant query is prepared as legacy",
+			model: NominalQueryModel{
+				Constant: 42,
+			},
+			wantAggregations:      []string{AggMean},
+			wantPreparedQueryKind: preparedQueryLegacy,
+		},
+		{
+			name: "asset channel query without data scope is rejected",
+			model: NominalQueryModel{
+				AssetRid: "ri.scout.main.asset.1",
+				Channel:  "temperature",
+				Buckets:  100,
+			},
+			wantErr: "dataScopeName is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query := backend.DataQuery{RefID: "A", JSON: mustMarshal(tt.model)}
+			prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+
+			if tt.wantErr != "" {
+				if prepErr == nil {
+					t.Fatalf("expected preparation error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(prepErr.Error.Error(), tt.wantErr) {
+					t.Fatalf("preparation error = %v, want containing %q", prepErr.Error, tt.wantErr)
+				}
+				return
+			}
+			if prepErr != nil {
+				t.Fatalf("unexpected preparation error: %v", prepErr.Error)
+			}
+			if prepared.Kind != tt.wantPreparedQueryKind {
+				t.Fatalf("prepared kind = %d, want %d", prepared.Kind, tt.wantPreparedQueryKind)
+			}
+			if prepared.Model.ExplicitAggregations != tt.wantExplicit {
+				t.Errorf("ExplicitAggregations = %v, want %v", prepared.Model.ExplicitAggregations, tt.wantExplicit)
+			}
+			if fmt.Sprint(prepared.Model.Aggregations) != fmt.Sprint(tt.wantAggregations) {
+				t.Errorf("Aggregations = %v, want %v", prepared.Model.Aggregations, tt.wantAggregations)
+			}
+		})
+	}
+}
+
+func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
+	assetRid := "ri.scout.main.asset.prepare1"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("state"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	ds := &Datasource{
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	}
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+	query := backend.DataQuery{
+		RefID: "A",
+		JSON: mustMarshal(NominalQueryModel{
+			AssetRid:        assetRid,
+			Channel:         "state",
+			DataScopeName:   "default",
+			ChannelDataType: "numeric",
+			Aggregations:    []string{AggMean},
+			Buckets:         100,
+		}),
+	}
+
+	prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+	if prepErr != nil {
+		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
+	}
+	if prepared.Model.ChannelDataType != "string" {
+		t.Fatalf("ChannelDataType = %q, want string", prepared.Model.ChannelDataType)
+	}
+	if mockDS.searchChannelsCalls != 1 {
+		t.Fatalf("expected one channel lookup, got %d", mockDS.searchChannelsCalls)
+	}
+}
+
+func TestPartitionPreparedQueriesKeepsQueryModelPairs(t *testing.T) {
+	prepared := []preparedQuery{
+		{
+			Query: backend.DataQuery{RefID: "numeric"},
+			Model: NominalQueryModel{Channel: "temperature", ChannelDataType: "numeric"},
+			Kind:  preparedQueryBatchable,
+		},
+		{
+			Query: backend.DataQuery{RefID: "logs"},
+			Model: NominalQueryModel{Channel: "app.logs", ChannelDataType: "log"},
+			Kind:  preparedQueryBatchable,
+		},
+		{
+			Query: backend.DataQuery{RefID: "string"},
+			Model: NominalQueryModel{Channel: "state", ChannelDataType: "string"},
+			Kind:  preparedQueryBatchable,
+		},
+	}
+
+	logBatch, otherBatch := partitionPreparedQueries(prepared)
+
+	if len(logBatch.queries) != 1 || len(logBatch.models) != 1 {
+		t.Fatalf("expected one log query/model pair, got %d queries and %d models", len(logBatch.queries), len(logBatch.models))
+	}
+	if logBatch.queries[0].RefID != "logs" || logBatch.models[0].Channel != "app.logs" {
+		t.Fatalf("log pair was not preserved: query=%v model=%v", logBatch.queries[0].RefID, logBatch.models[0].Channel)
+	}
+
+	if len(otherBatch.queries) != 2 || len(otherBatch.models) != 2 {
+		t.Fatalf("expected two non-log query/model pairs, got %d queries and %d models", len(otherBatch.queries), len(otherBatch.models))
+	}
+	for i := range otherBatch.queries {
+		if otherBatch.queries[i].RefID == "numeric" && otherBatch.models[i].Channel != "temperature" {
+			t.Fatalf("numeric query/model pair was not preserved: model=%v", otherBatch.models[i].Channel)
+		}
+		if otherBatch.queries[i].RefID == "string" && otherBatch.models[i].Channel != "state" {
+			t.Fatalf("string query/model pair was not preserved: model=%v", otherBatch.models[i].Channel)
+		}
 	}
 }
 
@@ -364,7 +640,7 @@ func TestBuildComputeRequest(t *testing.T) {
 		To:   time.Unix(1704153600, 0), // 2024-01-02 00:00:00 UTC
 	}
 
-	req := ds.buildComputeRequest(qm, timeRange, 0)
+	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange, 0)
 
 	// Verify start and end times
 	if int64(req.Start.Seconds) != 1704067200 {
@@ -406,7 +682,7 @@ func TestBuildChannelSeries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ds.buildChannelSeries(tt.assetRid, tt.channel, tt.dataScopeName)
+			result := newTestQueryExecution(ds, nil).buildChannelSeries(tt.assetRid, tt.channel, tt.dataScopeName)
 
 			// Serialize to JSON to inspect the structure
 			// This is more maintainable than using the visitor pattern with 35+ nil arguments
@@ -1318,7 +1594,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			Channel:  "temperature",
 			AssetRid: "ri.nominal.asset.test",
 		}
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error == nil {
 			t.Fatal("expected error response")
 		}
@@ -1339,7 +1615,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			Channel:  "pressure",
 			AssetRid: "ri.nominal.asset.test",
 		}
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error == nil {
 			t.Fatal("expected error response")
 		}
@@ -1361,7 +1637,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			AssetRid:        "ri.nominal.asset.test",
 			ChannelDataType: "string",
 		}
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error == nil {
 			t.Fatal("expected error response")
 		}
@@ -1381,7 +1657,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			AssetRid:        "ri.nominal.asset.test",
 			ChannelDataType: "",
 		}
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error == nil {
 			t.Fatal("expected error response")
 		}
@@ -1398,7 +1674,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 			AssetRid:        "ri.nominal.asset.test",
 			ChannelDataType: "",
 		}
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error == nil {
 			t.Fatal("expected error response")
 		}
@@ -1420,7 +1696,7 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1457,7 +1733,7 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1476,7 +1752,7 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1599,7 +1875,7 @@ func TestEnumPlotTransformation(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -1641,7 +1917,7 @@ func TestEnumPlotTransformation(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -1672,7 +1948,7 @@ func TestEnumPlotTransformation(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -1700,7 +1976,7 @@ func TestEnumPointTransformation(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -1729,7 +2005,7 @@ func TestEnumPointTransformation(t *testing.T) {
 			ChannelDataType: "string",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -1757,7 +2033,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1785,7 +2061,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1808,7 +2084,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1835,7 +2111,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 			AssetRid: "ri.nominal.asset.test",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
@@ -1868,7 +2144,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("string ChannelDataType produces enum series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = "string"
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		// The request should have a valid node
 		if req.Node == (computeapi1.ComputableNode{}) {
@@ -1902,7 +2178,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("numeric ChannelDataType produces numeric series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = "numeric"
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for numeric request")
@@ -1926,7 +2202,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("empty ChannelDataType defaults to numeric series", func(t *testing.T) {
 		qm := baseQM
 		qm.ChannelDataType = ""
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for default request")
@@ -1953,7 +2229,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("missing ChannelDataType defaults to numeric series", func(t *testing.T) {
 		qm := baseQM
 		// ChannelDataType is zero-value ""
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for missing ChannelDataType request")
@@ -1963,11 +2239,11 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 	t.Run("string and numeric produce structurally different requests", func(t *testing.T) {
 		stringQM := baseQM
 		stringQM.ChannelDataType = "string"
-		stringReq := ds.buildComputeRequest(stringQM, baseTimeRange, 0)
+		stringReq := newTestQueryExecution(ds, nil).buildComputeRequest(stringQM, baseTimeRange, 0)
 
 		numericQM := baseQM
 		numericQM.ChannelDataType = "numeric"
-		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange, 0)
+		numericReq := newTestQueryExecution(ds, nil).buildComputeRequest(numericQM, baseTimeRange, 0)
 
 		stringJSON, _ := json.Marshal(stringReq.Node)
 		numericJSON, _ := json.Marshal(numericReq.Node)
@@ -2013,7 +2289,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			DataScopeName: "default",
 			Buckets:       1000,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 500)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 500)
 		if got := extractBuckets(t, req); got != 500 {
 			t.Errorf("buckets = %d, want 500", got)
 		}
@@ -2026,7 +2302,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			DataScopeName: "default",
 			Buckets:       500,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 1000)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 1000)
 		if got := extractBuckets(t, req); got != 500 {
 			t.Errorf("buckets = %d, want 500", got)
 		}
@@ -2039,7 +2315,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			DataScopeName: "default",
 			Buckets:       0,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 800)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 800)
 		if got := extractBuckets(t, req); got != 800 {
 			t.Errorf("buckets = %d, want 800", got)
 		}
@@ -2052,7 +2328,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			DataScopeName: "default",
 			Buckets:       1000,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 		if got := extractBuckets(t, req); got != 1000 {
 			t.Errorf("buckets = %d, want 1000", got)
 		}
@@ -2063,7 +2339,7 @@ func TestBuildEnumChannelSeries(t *testing.T) {
 	ds := &Datasource{}
 
 	t.Run("returns non-nil enum series", func(t *testing.T) {
-		enumSeries := ds.buildEnumChannelSeries("ri.nominal.asset.test", "status", "default")
+		enumSeries := newTestQueryExecution(ds, nil).buildEnumChannelSeries("ri.nominal.asset.test", "status", "default")
 		// Serialize to JSON to verify the structure
 		jsonBytes, err := json.Marshal(enumSeries)
 		if err != nil {
@@ -2087,8 +2363,8 @@ func TestBuildEnumChannelSeries(t *testing.T) {
 	t.Run("mirrors buildChannelSeries asset channel structure", func(t *testing.T) {
 		// Both builders should produce the same AssetChannel structure;
 		// verify by checking the channel and dataScopeName appear identically.
-		enumSeries := ds.buildEnumChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
-		numericSeries := ds.buildChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
+		enumSeries := newTestQueryExecution(ds, nil).buildEnumChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
+		numericSeries := newTestQueryExecution(ds, nil).buildChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
 
 		enumJSON, _ := json.Marshal(enumSeries)
 		numericJSON, _ := json.Marshal(numericSeries)
@@ -2127,7 +2403,7 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ds.buildComputeContext(qm, 1704067200, 1704153600)
+		newTestQueryExecution(ds, nil).buildComputeContext(qm, 1704067200, 1704153600)
 	}
 }
 
@@ -3481,7 +3757,7 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 
 	ds := &Datasource{}
 	qm := NominalQueryModel{Aggregations: []string{"MEAN"}}
-	result, err := ds.transformNominalResponseFromClient(response, qm)
+	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3574,7 +3850,7 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 
 	ds := &Datasource{}
 	qm := NominalQueryModel{Aggregations: []string{"MEAN", "MIN", "MAX"}}
-	result, err := ds.transformNominalResponseFromClient(response, qm)
+	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3693,7 +3969,7 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 
 	ds := &Datasource{}
 	qm := NominalQueryModel{Aggregations: []string{"FIRST_POINT", "LAST_POINT"}}
-	result, err := ds.transformNominalResponseFromClient(response, qm)
+	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3799,7 +4075,7 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 
 	ds := &Datasource{}
 	qm := NominalQueryModel{Aggregations: []string{"MEAN", "FIRST_POINT"}}
-	result, err := ds.transformNominalResponseFromClient(response, qm)
+	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3832,7 +4108,7 @@ func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
 	response := computeapi.NewComputeNodeResponseFromArrowNumeric(arrowPlot)
 
 	ds := &Datasource{}
-	_, err := ds.transformNominalResponseFromClient(response, NominalQueryModel{})
+	_, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, NominalQueryModel{})
 	if err == nil {
 		t.Fatal("expected error for ArrowNumericPlot, got nil")
 	}
@@ -3857,7 +4133,7 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{"MEAN"},
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		jsonBytes, err := json.Marshal(req.Node)
 		if err != nil {
@@ -3881,7 +4157,7 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{"MEAN"},
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		jsonBytes, _ := json.Marshal(req.Node)
 		jsonStr := string(jsonBytes)
@@ -3899,7 +4175,7 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		jsonBytes, _ := json.Marshal(req.Node)
 		jsonStr := string(jsonBytes)
@@ -3981,7 +4257,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			ChannelDataType: "log",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -4039,7 +4315,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			ChannelDataType: "log",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -4059,7 +4335,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			ChannelDataType: "log",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -4085,7 +4361,7 @@ func TestLogPointTransformation(t *testing.T) {
 			ChannelDataType: "log",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if len(resp.Frames) != 1 {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
@@ -4112,7 +4388,7 @@ func TestLogPointTransformation(t *testing.T) {
 			ChannelDataType: "log",
 		}
 
-		resp := ds.transformBatchResult(result, qm)
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		labelsField := resp.Frames[0].Fields[3]
 		raw := labelsField.At(0).(json.RawMessage)
 		if string(raw) != "{}" {
@@ -4136,7 +4412,7 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		req := ds.buildComputeRequest(qm, baseTimeRange, 0)
+		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		jsonBytes, err := json.Marshal(req.Node)
 		if err != nil {
@@ -4172,8 +4448,8 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 			Aggregations:    []string{"MEAN"},
 		}
 
-		logReq := ds.buildComputeRequest(logQM, baseTimeRange, 0)
-		numericReq := ds.buildComputeRequest(numericQM, baseTimeRange, 0)
+		logReq := newTestQueryExecution(ds, nil).buildComputeRequest(logQM, baseTimeRange, 0)
+		numericReq := newTestQueryExecution(ds, nil).buildComputeRequest(numericQM, baseTimeRange, 0)
 
 		logJSON, _ := json.Marshal(logReq.Node)
 		numericJSON, _ := json.Marshal(numericReq.Node)
