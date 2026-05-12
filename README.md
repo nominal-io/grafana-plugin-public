@@ -43,6 +43,46 @@ pnpm run e2e              # Run Playwright tests
 
 > **Note**: Use `pnpm run server` (development Docker) for testing - it includes pre-configured datasources that Playwright tests expect. The production build starts with unconfigured datasources and will cause test failures.
 
+### Backend integration tests
+
+The Go backend tests run without live Nominal credentials by default:
+
+```sh
+go test ./pkg/...
+```
+
+Live Nominal API checks are opt-in so normal CI and local unit tests do not
+depend on external data or credentials.
+
+Run the live health-check integration test with:
+
+```sh
+NOMINAL_LIVE_TESTS=1 \
+NOMINAL_API_KEY=... \
+go test -count=1 ./pkg/plugin -run TestLiveNominal
+```
+
+`NOMINAL_BASE_URL` is optional and defaults to `https://api.gov.nominal.io/api`.
+
+To also run the live `QueryData` integration path, provide a real query target:
+
+```sh
+NOMINAL_LIVE_TESTS=1 \
+NOMINAL_API_KEY=... \
+NOMINAL_QUERY_ASSET_RID=... \
+NOMINAL_QUERY_DATA_SCOPE_NAME=... \
+NOMINAL_QUERY_CHANNEL=... \
+go test -count=1 ./pkg/plugin -run TestLiveNominalQueryDataIntegration
+```
+
+Optional query controls:
+
+- `NOMINAL_QUERY_CHANNEL_DATA_TYPE`: `numeric`, `string`, or `log`; leave empty
+  to exercise backend channel-type inference.
+- `NOMINAL_QUERY_BUCKETS`: bucket count, default `100`.
+- `NOMINAL_QUERY_FROM` and `NOMINAL_QUERY_TO`: RFC3339 timestamps, default to
+  the last 15 minutes.
+
 ### Verify Plugin Installation
 
 After starting the container, verify the plugin is installed:

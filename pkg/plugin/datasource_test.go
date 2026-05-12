@@ -1585,6 +1585,78 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 	}
 }
 
+func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}),
+				createMockArrowComputeResult([]float64{4.0, 5.0, 6.0}),
+				createMockArrowComputeResult([]float64{7.0, 8.0, 9.0}),
+				createMockArrowComputeResult([]float64{10.0, 11.0, 12.0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
+		},
+		computeService: mockService,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	queries := []backend.DataQuery{
+		{
+			RefID:     "A",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			TimeRange: timeRange,
+		},
+		{
+			RefID:     "B",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			TimeRange: timeRange,
+		},
+		{
+			RefID:     "C",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
+			TimeRange: timeRange,
+		},
+	}
+
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: queries,
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mockService.lastBatchRequest.Requests) != len(queries) {
+		t.Fatalf("expected %d compute requests, got %d", len(queries), len(mockService.lastBatchRequest.Requests))
+	}
+	if len(resp.Responses) != len(queries) {
+		t.Fatalf("expected %d responses, got %d", len(queries), len(resp.Responses))
+	}
+	for _, q := range queries {
+		response := resp.Responses[q.RefID]
+		if response.Error != nil {
+			t.Fatalf("expected no error for %s, got %v", q.RefID, response.Error)
+		}
+		if len(response.Frames) != 1 {
+			t.Fatalf("expected 1 frame for %s, got %d", q.RefID, len(response.Frames))
+		}
+	}
+}
+
 func TestErrorMessageFormatPreservation(t *testing.T) {
 	ds := &Datasource{}
 
