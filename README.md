@@ -75,24 +75,33 @@ NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
 go test -count=1 ./pkg/plugin -run TestLiveNominalCheckHealthIntegration -v
 ```
 
-To also run the live `QueryData` integration path, provide a real query target:
+To also run the live `QueryData` integration path, point the test at staging.
+The test creates a temporary asset, data scope, dataset, and numeric CSV channel,
+queries that channel through the plugin, and archives the temporary asset and
+dataset during cleanup.
 
 ```sh
+set -a
+. /Users/leogalindofrias/code/grafana-plugin-public/.env
+set +a
+
 NOMINAL_LIVE_TESTS=1 \
-NOMINAL_API_KEY=... \
-NOMINAL_QUERY_ASSET_RID=... \
-NOMINAL_QUERY_DATA_SCOPE_NAME=... \
-NOMINAL_QUERY_CHANNEL=... \
-go test -count=1 ./pkg/plugin -run TestLiveNominalQueryDataIntegration
+NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
+go test -count=1 ./pkg/plugin -run TestLiveNominalQueryDataIntegration -v
 ```
 
 Optional query controls:
 
-- `NOMINAL_QUERY_CHANNEL_DATA_TYPE`: `numeric`, `string`, or `log`; leave empty
-  to exercise backend channel-type inference.
 - `NOMINAL_QUERY_BUCKETS`: bucket count, default `100`.
+- `NOMINAL_QUERY_ASSET_RID`, `NOMINAL_QUERY_DATA_SCOPE_NAME`, and
+  `NOMINAL_QUERY_CHANNEL`: use an existing query target instead of creating
+  temporary test data. Set all three together.
 - `NOMINAL_QUERY_FROM` and `NOMINAL_QUERY_TO`: RFC3339 timestamps, default to
-  the last 15 minutes.
+  the temporary CSV range for self-provisioned data or the last 15 minutes for
+  an existing query target.
+- `NOMINAL_ALLOW_DEFAULT_LIVE_WRITES=1`: allows the self-provisioning query
+  test to create temporary resources against the default production base URL.
+  Without this, set `NOMINAL_BASE_URL` explicitly for writeful live tests.
 
 ### Verify Plugin Installation
 

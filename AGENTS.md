@@ -54,6 +54,8 @@ Use live tests when the change affects real request construction, response parsi
 
 Do not commit Nominal API keys or print them in logs, shell output, PR bodies, or final summaries. Prefer explicit opt-in environment variables over implicit secret discovery.
 
+For writeful query integration coverage, prefer self-provisioned test data over known staging fixtures. Create temporary assets, data scopes, datasets, and channels inside the test, assert against data the test ingested, and archive temporary resources during cleanup. Known existing assets are acceptable for manual diagnostics, but they should not be the default proof for PR verification.
+
 Known local credential sources may exist outside this worktree:
 
 - `/Users/leogalindofrias/code/grafana-plugin-public/.env` can provide `NOMINAL_API_KEY`.
