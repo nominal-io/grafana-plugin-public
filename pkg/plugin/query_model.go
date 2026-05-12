@@ -4,10 +4,42 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/nominal-io/nominal-api-go/api/rids"
+	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
+	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 )
+
+// NominalQueryModel represents a query to the Nominal API
+type NominalQueryModel struct {
+	// Asset information
+	AssetRid        string `json:"assetRid"`
+	Channel         string `json:"channel"`
+	DataScopeName   string `json:"dataScopeName"`
+	ChannelDataType string `json:"channelDataType"`
+
+	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
+	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
+	Aggregations         []string `json:"aggregations,omitempty"`
+	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
+
+	// Query parameters
+	Buckets   int    `json:"buckets"`
+	QueryType string `json:"queryType"`
+
+	// Template variables support
+	TemplateVariables map[string]interface{} `json:"templateVariables,omitempty"`
+
+	// Legacy support
+	QueryText string  `json:"queryText"`
+	Constant  float64 `json:"constant"`
+}
 
 type preparedQueryKind int
 
@@ -23,24 +55,15 @@ type preparedQuery struct {
 	Kind  preparedQueryKind
 }
 
-type queryPreparationError struct {
-	response backend.DataResponse
-}
-
-func (e *queryPreparationError) dataResponse() backend.DataResponse {
-	return e.response
-}
-
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
-func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.DataQuery) (preparedQuery, *queryPreparationError) {
+func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.DataQuery) (preparedQuery, *backend.DataResponse) {
 	var qm NominalQueryModel
 	if err := json.Unmarshal(q.JSON, &qm); err != nil {
-		return preparedQuery{}, &queryPreparationError{
-			response: backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("json unmarshal: %v", err),
-			),
-		}
+		response := backend.ErrDataResponse(
+			backend.StatusBadRequest,
+			fmt.Sprintf("json unmarshal: %v", err),
+		)
+		return preparedQuery{}, &response
 	}
 
 	e.applyTemplateVariables(&qm)
@@ -51,12 +74,11 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 
 	if err := e.validateQuery(qm); err != nil {
 		log.DefaultLogger.Error("Query validation failed", "error", err)
-		return preparedQuery{}, &queryPreparationError{
-			response: backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("Query validation failed: %v", err),
-			),
-		}
+		response := backend.ErrDataResponse(
+			backend.StatusBadRequest,
+			fmt.Sprintf("Query validation failed: %v", err),
+		)
+		return preparedQuery{}, &response
 	}
 
 	e.inferChannelDataType(ctx, &qm)
@@ -71,7 +93,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 	return preparedQuery{Query: q, Model: qm, Kind: preparedQueryLegacy}, nil
 }
 
-func normalizeAggregations(qm *NominalQueryModel) *queryPreparationError {
+func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 	qm.ExplicitAggregations = len(qm.Aggregations) > 0
 	if qm.ChannelDataType == "string" || qm.ChannelDataType == "log" {
 		return nil
@@ -84,13 +106,189 @@ func normalizeAggregations(qm *NominalQueryModel) *queryPreparationError {
 
 	deduped, badAgg := validateAndDedup(qm.Aggregations)
 	if badAgg != "" {
-		return &queryPreparationError{
-			response: backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
-			),
-		}
+		response := backend.ErrDataResponse(
+			backend.StatusBadRequest,
+			fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
+		)
+		return &response
 	}
 	qm.Aggregations = deduped
 	return nil
+}
+
+// interpolateTemplateVariables replaces template variables in strings.
+// It supports both ${var} and $var syntax. The ${var} form is processed first
+// so that a bare $var replacement cannot accidentally corrupt a ${othervar}
+// token that happens to share a prefix (e.g. key "o" must not match inside
+// "${othervar}"). The bare $var form uses a word-boundary regex so it only
+// matches when the key name ends at a non-word character (or end-of-string).
+func interpolateTemplateVariables(input string, variables map[string]interface{}) string {
+	if variables == nil {
+		return input
+	}
+
+	result := input
+	for key, value := range variables {
+		valueStr := fmt.Sprintf("%v", value)
+
+		// Replace ${var} form first (unambiguous).
+		result = strings.ReplaceAll(result, fmt.Sprintf("${%s}", key), valueStr)
+
+		// Replace bare $var form only as a whole token: must not be immediately
+		// followed by a word character so that $foo does not match inside $foobar.
+		bareRe := regexp.MustCompile(`\$` + regexp.QuoteMeta(key) + `(\W|$)`)
+		result = bareRe.ReplaceAllStringFunc(result, func(match string) string {
+			// Preserve any trailing non-word character that was part of the match.
+			suffix := match[len("$"+key):]
+			return valueStr + suffix
+		})
+	}
+
+	return result
+}
+
+// applyTemplateVariables applies template variable interpolation to query fields.
+//
+// Defense-in-depth: Grafana's SDK resolves dashboard template variables before
+// the query JSON reaches the backend in most panel flows, so by the time
+// QueryData is called the variables in qm.AssetRid / qm.Channel etc. are
+// usually already substituted. However, variables passed explicitly via the
+// TemplateVariables field of the query model (populated by the frontend for
+// variable-panel queries and programmatic calls) are NOT resolved by the SDK,
+// so this server-side pass is still needed for those paths.
+func (e *NominalQueryExecution) applyTemplateVariables(qm *NominalQueryModel) {
+	if qm.TemplateVariables == nil {
+		return
+	}
+
+	qm.AssetRid = interpolateTemplateVariables(qm.AssetRid, qm.TemplateVariables)
+	qm.Channel = interpolateTemplateVariables(qm.Channel, qm.TemplateVariables)
+	qm.DataScopeName = interpolateTemplateVariables(qm.DataScopeName, qm.TemplateVariables)
+	qm.QueryText = interpolateTemplateVariables(qm.QueryText, qm.TemplateVariables)
+}
+
+// validateQuery validates query parameters similar to pure-ts implementation
+func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
+	// Check if we have either Nominal-specific fields or legacy fields
+	hasNominalQuery := qm.AssetRid != "" && qm.Channel != ""
+	hasLegacyQuery := qm.QueryText != ""
+	hasConstantQuery := qm.Constant != 0
+
+	if !hasNominalQuery && !hasLegacyQuery && !hasConstantQuery {
+		return fmt.Errorf("query must have either asset/channel parameters, query text, or constant value")
+	}
+
+	// Validate Nominal query fields
+	if hasNominalQuery {
+		if strings.TrimSpace(qm.AssetRid) == "" {
+			return fmt.Errorf("assetRid cannot be empty")
+		}
+		if strings.TrimSpace(qm.Channel) == "" {
+			return fmt.Errorf("channel cannot be empty")
+		}
+		// DataScopeName is required — the compute API needs it to locate the channel.
+		// The frontend filterQuery also enforces this; this is defense-in-depth.
+		if strings.TrimSpace(qm.DataScopeName) == "" {
+			return fmt.Errorf("dataScopeName is required for asset/channel queries")
+		}
+		// Validate bucket count
+		if qm.Buckets < 0 {
+			return fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
+		}
+		if qm.Buckets > 10000 {
+			log.DefaultLogger.Warn("Large bucket count may impact performance", "buckets", qm.Buckets)
+		}
+	}
+
+	return nil
+}
+
+// inferChannelDataType verifies (or backfills) channelDataType against the
+// actual channel metadata from the API. The frontend-supplied type may be stale
+// when a multi-select template variable expands $channel to a mix of numeric
+// and string channels — every expanded query inherits the same saved type.
+// The instance-level cache keeps repeated lookups cheap.
+func (e *NominalQueryExecution) inferChannelDataType(ctx context.Context, qm *NominalQueryModel) {
+	if qm == nil || e.datasource.datasourceService == nil {
+		return
+	}
+	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
+		return
+	}
+
+	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
+
+	// Check instance-level TTL cache.
+	e.datasource.channelTypeCacheMu.Lock()
+	if e.datasource.channelTypeCache == nil {
+		e.datasource.channelTypeCache = make(map[string]channelTypeCacheEntry)
+	}
+	if entry, ok := e.datasource.channelTypeCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		e.datasource.channelTypeCacheMu.Unlock()
+		if entry.channelType != "" {
+			qm.ChannelDataType = entry.channelType
+		}
+		return
+	}
+	e.datasource.channelTypeCacheMu.Unlock()
+
+	asset, err := e.datasource.fetchAssetByRid(ctx, e.config, qm.AssetRid)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to fetch asset for channel type inference", "assetRid", qm.AssetRid, "error", err)
+		return
+	}
+	if asset == nil {
+		return
+	}
+
+	var dataSourceRids []rids.DataSourceRid
+	for _, scope := range asset.DataScopes {
+		if scope.DataScopeName != qm.DataScopeName {
+			continue
+		}
+
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
+			continue
+		}
+
+		parsedRid, err := rid.ParseRID(ridStr)
+		if err != nil {
+			log.DefaultLogger.Warn("Failed to parse datasource RID for channel type inference", "rid", ridStr, "error", err)
+			continue
+		}
+		dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
+	}
+	if len(dataSourceRids) == 0 {
+		return
+	}
+
+	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+	searchRequest := datasourceapi.SearchChannelsRequest{
+		ExactMatch:  []string{qm.Channel},
+		DataSources: dataSourceRids,
+	}
+	channelsResponse, err := e.datasource.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to search channels for channel type inference", "assetRid", qm.AssetRid, "dataScopeName", qm.DataScopeName, "channel", qm.Channel, "error", err)
+		return
+	}
+
+	for _, channel := range channelsResponse.Results {
+		if string(channel.Name) != qm.Channel {
+			continue
+		}
+		if inferredType := getChannelDataType(channel); inferredType != "" {
+			qm.ChannelDataType = inferredType
+			e.datasource.channelTypeCacheMu.Lock()
+			e.datasource.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: inferredType, fetchedAt: time.Now()}
+			e.datasource.channelTypeCacheMu.Unlock()
+			return
+		}
+	}
+
+	// Cache the miss so we don't re-search for the same combo.
+	e.datasource.channelTypeCacheMu.Lock()
+	e.datasource.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: "", fetchedAt: time.Now()}
+	e.datasource.channelTypeCacheMu.Unlock()
 }

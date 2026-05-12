@@ -33,7 +33,7 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
-			response.Responses[q.RefID] = prepErr.dataResponse()
+			response.Responses[q.RefID] = *prepErr
 			continue
 		}
 

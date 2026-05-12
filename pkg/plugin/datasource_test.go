@@ -32,6 +32,15 @@ import (
 	"github.com/palantir/pkg/safelong"
 )
 
+func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *NominalQueryExecution {
+	if config == nil {
+		config = &models.PluginSettings{
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+	}
+	return newNominalQueryExecution(ds, config)
+}
+
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
 
@@ -132,7 +141,7 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 
 	prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
 	if prepErr != nil {
-		t.Fatalf("unexpected preparation error: %v", prepErr.dataResponse().Error)
+		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
 	}
 
 	if prepared.Kind != preparedQueryBatchable {
@@ -256,13 +265,13 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				if prepErr == nil {
 					t.Fatalf("expected preparation error containing %q, got nil", tt.wantErr)
 				}
-				if !strings.Contains(prepErr.dataResponse().Error.Error(), tt.wantErr) {
-					t.Fatalf("preparation error = %v, want containing %q", prepErr.dataResponse().Error, tt.wantErr)
+				if !strings.Contains(prepErr.Error.Error(), tt.wantErr) {
+					t.Fatalf("preparation error = %v, want containing %q", prepErr.Error, tt.wantErr)
 				}
 				return
 			}
 			if prepErr != nil {
-				t.Fatalf("unexpected preparation error: %v", prepErr.dataResponse().Error)
+				t.Fatalf("unexpected preparation error: %v", prepErr.Error)
 			}
 			if prepared.Kind != tt.wantPreparedQueryKind {
 				t.Fatalf("prepared kind = %d, want %d", prepared.Kind, tt.wantPreparedQueryKind)
@@ -327,7 +336,7 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 
 	prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
 	if prepErr != nil {
-		t.Fatalf("unexpected preparation error: %v", prepErr.dataResponse().Error)
+		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
 	}
 	if prepared.Model.ChannelDataType != "string" {
 		t.Fatalf("ChannelDataType = %q, want string", prepared.Model.ChannelDataType)
