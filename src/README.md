@@ -22,7 +22,7 @@ Grafana stores the API key as an encrypted secret and uses it only from the back
 
 The query editor follows a three-step pattern:
 
-1. Search for an asset by name, or paste a Nominal resource identifier (RID) like `ri.scout.<instance>.asset.<uuid>`.
+1. Search for an asset by name, or paste a Nominal resource identifier (RID).
 2. Pick a data scope from the asset.
 3. Pick a channel from the data scope.
 
