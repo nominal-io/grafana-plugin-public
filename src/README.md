@@ -1,7 +1,5 @@
 # Nominal
 
-![Nominal dashboard with multiple panels for one asset](./img/dashboard-hero.png)
-
 The Nominal data source for Grafana connects dashboards, Explore, and template variables to Nominal time-series data. Use it to search Nominal assets, pick data scopes and channels, and visualize numeric, string, and log channels alongside the rest of your Grafana telemetry.
 
 ## Requirements
@@ -12,8 +10,6 @@ The Nominal data source for Grafana connects dashboards, Explore, and template v
 
 ## Install and configure
 
-![Nominal data source configuration](./img/datasource-config.png)
-
 1. In Grafana, go to **Connections** > **Data sources**.
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
@@ -23,8 +19,6 @@ The Nominal data source for Grafana connects dashboards, Explore, and template v
 Grafana stores the API key securely and sends it only to the Nominal backend plugin. The health check verifies that Grafana can reach Nominal and authenticate with the configured key.
 
 ## Query basics
-
-![Numeric channel query showing asset, data scope, and channel](./img/query-editor-basic.png)
 
 The query editor follows a three-step pattern:
 
@@ -50,43 +44,32 @@ Numeric channels expose an **Aggregation(s)** picker. Each selected aggregation 
 
 String channels are locked to **Mode** (most-frequent value in the bucket). Log channels return raw entries without aggregation.
 
-![Min, max, and mean as three separate series](./img/numeric-multi-aggregation.png)
-
-Selecting multiple aggregations at once returns each as its own series, so a single panel can show min, max, and mean together.
-
-![Mean line with a min/max band overlay](./img/numeric-banded.png)
-
-Rendered as a banded series, the same min/max/mean output highlights variance around the mean.
-
-![Numeric channel values in a Table panel](./img/numeric-table.png)
-
-Reach for a Table panel for exact values, spot-checks, or embedding numeric data inside summary dashboards.
+Selecting multiple aggregations at once returns each as its own series, so a single Time series panel can render min, max, and mean as three lines. To turn the same selection into a shaded min/max envelope around the mean, add a Grafana **Fill below to** field override on the min series (filling to max), which produces a banded view without changing the query. For exact values, spot-checks, or embedding numbers inside summary dashboards, swap the visualization to a Table panel.
 
 ### String
 
 Categorical telemetry: states, modes, fault codes.
 
-![String channel rendered as State Timeline](./img/string-state-timeline.png)
-
-State Timeline colors each segment by string value over time, making state transitions visible at a glance.
-
-![String channel values in a Table panel](./img/string-table.png)
-
-A Table panel lists each value change with its timestamp, which reads cleanly when transitions are infrequent.
+A **State Timeline** panel colors each segment by string value over time, making state transitions visible at a glance. It's the right default for any signal that spends meaningful time in each state. For infrequent transitions or audit-style readouts, a **Table** panel reads more cleanly, with one row per value change and its timestamp.
 
 ### Log
 
-Event-style records with a message field.
-
-![Log channel rendered in Grafana's Logs panel](./img/log-logs-panel.png)
-
-Grafana's Logs panel renders Nominal log records inline with other telemetry from the same dashboard.
+Event-style records with a message field. Grafana's **Logs** panel renders Nominal log records inline with other telemetry from the same dashboard; pair it with a numeric or string panel above for an at-a-glance correlation between signal and message.
 
 ## Dashboards and template variables
 
-![Dashboard with asset, data scope, and channel selectors](./img/dashboard-template-variables.png)
+Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so one dashboard can switch Nominal contexts without editing each panel.
 
-Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so one dashboard can switch Nominal contexts without editing each panel. Use any of the following in a Grafana **Variables** definition.
+### Where to define variable queries
+
+1. Open your dashboard and click the gear icon, then **Variables**.
+2. Select **New variable**.
+3. Set **Type** to **Query**.
+4. Set **Data source** to your Nominal data source.
+5. In the **Query** field, enter one of the strings below (for example, `assets`).
+6. Click **Run query** to preview, then **Apply**.
+
+Chain variables by referencing earlier ones with `${var}`. For example, define `asset` first, then a `datascope` variable whose query is `datascopes(${asset})`. Grafana re-runs the child query whenever the parent changes.
 
 ### Variable queries
 
@@ -120,4 +103,3 @@ Nominal supports Grafana dashboard variables for assets, data scopes, and channe
 - Nominal: https://www.nominal.io/
 - Documentation: https://docs.nominal.io/
 - Source repository: https://github.com/nominal-io/grafana-plugin-public
-- Grafana plugin development documentation: https://grafana.com/developers/plugin-tools
