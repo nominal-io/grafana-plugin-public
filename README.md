@@ -63,6 +63,17 @@ go test -count=1 ./pkg/plugin -run TestLiveNominal
 ```
 
 `NOMINAL_BASE_URL` is optional and defaults to `https://api.gov.nominal.io/api`.
+For the shared local plugin `.env` credentials, use the staging API URL:
+
+```sh
+set -a
+. /Users/leogalindofrias/code/grafana-plugin-public/.env
+set +a
+
+NOMINAL_LIVE_TESTS=1 \
+NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
+go test -count=1 ./pkg/plugin -run TestLiveNominalCheckHealthIntegration -v
+```
 
 To also run the live `QueryData` integration path, provide a real query target:
 
