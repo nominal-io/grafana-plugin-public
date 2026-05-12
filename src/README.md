@@ -1,6 +1,6 @@
 # Nominal
 
-The Nominal data source for Grafana connects dashboards, Explore, and template variables to Nominal time-series data. Use it to search Nominal assets, pick data scopes and channels, and visualize numeric, string, and log channels alongside the rest of your Grafana telemetry.
+Bring Nominal time-series data into Grafana dashboards and Explore, with template-variable support for asset, data scope, and channel selectors. Use it to search Nominal assets, pick data scopes and channels, and visualize numeric, string, and log channels alongside the rest of your Grafana telemetry.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ The Nominal data source for Grafana connects dashboards, Explore, and template v
 4. Enter your Nominal API key in **API Key**.
 5. Select **Save & test**.
 
-Grafana stores the API key securely and sends it only to the Nominal backend plugin. The health check verifies that Grafana can reach Nominal and authenticate with the configured key.
+Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key.
 
 ## Query basics
 
@@ -26,7 +26,7 @@ The query editor follows a three-step pattern:
 2. Pick a data scope from the asset.
 3. Pick a channel from the data scope.
 
-Queries return Grafana data frames usable in dashboards and Explore.
+Queries can be used in any Grafana panel or in Explore.
 
 ## Channel types
 
@@ -38,11 +38,11 @@ Numeric channels expose an **Aggregation(s)** picker. Each selected aggregation 
 
 - **Mean** — overall shape and trend. The default, and what most line charts want.
 - **Min** / **Max** — catch extrema that a mean smooths away. Pair with Mean to render a banded series (min/max envelope around the mean).
-- **First** / **Last** — the actual sample value and its real timestamp inside each bucket, not a derived statistic. Use when you need a true `(value, time)` pair for State panels, sparse signals, or correlating with external events.
+- **First** / **Last** — the actual first or last sample value (and its real timestamp) inside each bucket, not a derived statistic. Use when you need a true `(value, time)` pair for sparse signals, or to correlate precisely with external events.
 - **Count** — number of samples per bucket. Useful for sanity-checking decimation, spotting gaps, or detecting changes in sample rate.
 - **Variance** — within-bucket spread. Flags noisy or unstable intervals without leaving the panel.
 
-String channels are locked to **Mode** (most-frequent value in the bucket). Log channels return raw entries without aggregation.
+String channels always aggregate by **Mode** (the most-frequent value in each bucket); the aggregation picker doesn't apply. Log channels return raw entries without aggregation.
 
 Selecting multiple aggregations at once returns each as its own series, so a single Time series panel can render min, max, and mean as three lines. To turn the same selection into a shaded min/max envelope around the mean, add a Grafana **Fill below to** field override on the min series (filling to max), which produces a banded view without changing the query. For exact values, spot-checks, or embedding numbers inside summary dashboards, swap the visualization to a Table panel.
 
@@ -54,11 +54,11 @@ A **State Timeline** panel colors each segment by string value over time, making
 
 ### Log
 
-Event-style records with a message field. Grafana's **Logs** panel renders Nominal log records inline with other telemetry from the same dashboard; pair it with a numeric or string panel above for an at-a-glance correlation between signal and message.
+Event-style records with a message field. Grafana's **Logs** panel renders Nominal log records inline with other telemetry from the same dashboard; pair it with a numeric or string panel for an at-a-glance correlation between signals and logs.
 
 ## Dashboards and template variables
 
-Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so one dashboard can switch Nominal contexts without editing each panel.
+Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so dashboards can be re-pointed at a different asset, data scope, or channel without editing every panel individually.
 
 ### Where to define variable queries
 
@@ -81,13 +81,13 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 ### Common patterns
 
-**Single-asset multi-channel monitoring.** One named asset, several panels, no template variables. Each panel shows one or more channels from the asset's data scopes. The most common shape for a dedicated operations dashboard like "Engine A1 Live" or "Battery Pack 7".
+**Single-asset multi-channel monitoring.** One named asset, several panels, no template variables. Each panel shows one or more channels from the asset's data scopes. This is the most common layout for a dedicated operations dashboard like "Test stand monitoring", "Motor qualification", or "Vehicle road test".
 
-**Single-asset deep-dive.** Three chained variables (`assets`, `datascopes(${asset})`, `channels(${asset}, ${datascope})`) drive every panel. Switching the asset cascades through scopes and channels automatically. Use this when you want one reusable dashboard for any asset of a given shape.
+**Single-asset deep-dive.** Three chained variables (`assets`, `datascopes(${asset})`, `channels(${asset}, ${datascope})`) drive every panel. Switching the asset cascades through scopes and channels automatically. Use this when you want one reusable dashboard that works for any asset with the same data scope and channel schema.
 
 **Fleet view.** One filtered asset variable (e.g. `assets(engine)`) set to multi-value, plus `channels(${asset})` for a flat channel picker. Each panel shows the same channel as multiple series, one per selected asset. This pattern assumes every asset in the fleet exposes the same channel under the same data scope name; pin that scope as a literal in each panel's **Data scope** field rather than parameterizing it.
 
-**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope})` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard resizes itself to the analyst's selection. The same repeat trick works on a multi-value asset variable when you want one panel per asset instead of one panel with multiple series.
+**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope})` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset instead of one panel with multiple series.
 
 ## Troubleshooting
 
