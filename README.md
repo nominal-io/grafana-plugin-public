@@ -67,7 +67,7 @@ For the shared local plugin `.env` credentials, use the staging API URL:
 
 ```sh
 set -a
-. /Users/leogalindofrias/code/grafana-plugin-public/.env
+. "$HOME/code/grafana-plugin-public/.env"
 set +a
 
 NOMINAL_LIVE_TESTS=1 \
@@ -82,7 +82,7 @@ dataset during cleanup.
 
 ```sh
 set -a
-. /Users/leogalindofrias/code/grafana-plugin-public/.env
+. "$HOME/code/grafana-plugin-public/.env"
 set +a
 
 NOMINAL_LIVE_TESTS=1 \

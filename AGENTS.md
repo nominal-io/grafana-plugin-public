@@ -58,7 +58,7 @@ For writeful query integration coverage, prefer self-provisioned test data over 
 
 Known local credential sources may exist outside this worktree:
 
-- `/Users/leogalindofrias/code/grafana-plugin-public/.env` can provide `NOMINAL_API_KEY`.
+- `$HOME/code/grafana-plugin-public/.env` can provide `NOMINAL_API_KEY`.
 - `~/.config/nominal/config.yml` can provide Nominal client profiles.
 
 These sources are not automatically correct for every API environment. Pair the key with the matching base URL before treating a live test failure as a product failure. For the local Grafana plugin `.env` key, the verified staging base URL is:
