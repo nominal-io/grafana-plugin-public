@@ -39,12 +39,40 @@
     ],
     "screenshots": [
       {
-        "name": "Datasource Configuration",
+        "name": "Dashboard overview",
+        "path": "img/dashboard.png"
+      },
+      {
+        "name": "Data source configuration",
         "path": "img/datasource-config.png"
       },
       {
-        "name": "Query Editor",
+        "name": "Query editor",
         "path": "img/query-editor.png"
+      },
+      {
+        "name": "Multiple aggregations",
+        "path": "img/numeric-multi-aggregation.png"
+      },
+      {
+        "name": "Banded series",
+        "path": "img/numeric-banded.png"
+      },
+      {
+        "name": "Numeric table",
+        "path": "img/numeric-table.png"
+      },
+      {
+        "name": "State timeline",
+        "path": "img/string-state-timeline.png"
+      },
+      {
+        "name": "Log channels",
+        "path": "img/log-channels.png"
+      },
+      {
+        "name": "Template variables",
+        "path": "img/template-variables.png"
       }
     ],
     "version": "0.11.3",
