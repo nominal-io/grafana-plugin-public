@@ -47,10 +47,6 @@
         "path": "img/datasource-config.png"
       },
       {
-        "name": "Query editor",
-        "path": "img/query-editor.png"
-      },
-      {
         "name": "Multiple aggregations",
         "path": "img/numeric-multi-aggregation.png"
       },
