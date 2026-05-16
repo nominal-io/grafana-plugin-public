@@ -27,6 +27,7 @@ import (
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
@@ -344,6 +345,203 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("expected one channel lookup, got %d", mockDS.searchChannelsCalls)
 	}
+}
+
+// TestPrepareQueryInfersChannelUnit guards the unit branch of inferChannelMetadata.
+// Covers the cases the plan specifies: type + unit, nil unit, nil DataType + unit,
+// and no name match (all cached).
+func TestPrepareQueryInfersChannelUnit(t *testing.T) {
+	assetRid := "ri.scout.main.asset.unitprobe"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+	setupServer := func(t *testing.T) *httptest.Server {
+		return newTestAssetServer(t, map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Test Asset",
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+				},
+			},
+		}, nil)
+	}
+
+	dsRid := rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))
+	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
+
+	t.Run("non-nil DataType + non-nil Unit: both populated, cache hit restores both", func(t *testing.T) {
+		server := setupServer(t)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:       api.Channel("engine_temp"),
+						DataSource: dsRid,
+						DataType:   &numericType,
+						Unit:       &runapi.Unit{Symbol: "Cel"},
+					},
+				},
+			},
+		}
+		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+		config := &models.PluginSettings{
+			BaseUrl: server.URL,
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+		query := backend.DataQuery{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
+				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+			}),
+		}
+
+		prep1, err1 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if err1 != nil {
+			t.Fatalf("first prepare: %v", err1.Error)
+		}
+		if prep1.Model.ChannelUnit != "Cel" {
+			t.Errorf("ChannelUnit = %q, want %q", prep1.Model.ChannelUnit, "Cel")
+		}
+		if prep1.Model.ChannelDataType != "numeric" {
+			t.Errorf("ChannelDataType = %q, want %q", prep1.Model.ChannelDataType, "numeric")
+		}
+
+		// Second call should hit the cache — no new SearchChannels call.
+		prep2, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if err2 != nil {
+			t.Fatalf("second prepare: %v", err2.Error)
+		}
+		if prep2.Model.ChannelUnit != "Cel" {
+			t.Errorf("cache hit: ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, "Cel")
+		}
+		if mockDS.searchChannelsCalls != 1 {
+			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+		}
+	})
+
+	t.Run("non-nil DataType + nil Unit: ChannelUnit stays empty", func(t *testing.T) {
+		server := setupServer(t)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:       api.Channel("engine_temp"),
+						DataSource: dsRid,
+						DataType:   &numericType,
+						// Unit deliberately nil
+					},
+				},
+			},
+		}
+		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+		config := &models.PluginSettings{
+			BaseUrl: server.URL,
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+		query := backend.DataQuery{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
+				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+			}),
+		}
+
+		prep, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if prepErr != nil {
+			t.Fatalf("prepare: %v", prepErr.Error)
+		}
+		if prep.Model.ChannelUnit != "" {
+			t.Errorf("ChannelUnit = %q, want empty", prep.Model.ChannelUnit)
+		}
+	})
+
+	t.Run("nil DataType + non-nil Unit: ChannelUnit still populated (cache-write ordering guard)", func(t *testing.T) {
+		// Regression guard for the ordering bug-class: getChannelDataType returning ""
+		// must NOT short-circuit the unit write. Today qm.ChannelDataType is left as
+		// the frontend-supplied value, but ChannelUnit is assigned unconditionally.
+		server := setupServer(t)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:       api.Channel("engine_temp"),
+						DataSource: dsRid,
+						// DataType deliberately nil
+						Unit: &runapi.Unit{Symbol: "psia"},
+					},
+				},
+			},
+		}
+		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+		config := &models.PluginSettings{
+			BaseUrl: server.URL,
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+		query := backend.DataQuery{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
+				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+			}),
+		}
+
+		prep, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if prepErr != nil {
+			t.Fatalf("prepare: %v", prepErr.Error)
+		}
+		if prep.Model.ChannelUnit != "psia" {
+			t.Errorf("ChannelUnit = %q, want %q", prep.Model.ChannelUnit, "psia")
+		}
+		// Frontend-supplied type stands when ChannelMetadata.DataType is nil.
+		if prep.Model.ChannelDataType != "numeric" {
+			t.Errorf("ChannelDataType = %q, want %q (preserved)", prep.Model.ChannelDataType, "numeric")
+		}
+	})
+
+	t.Run("no name match: empty cache entry written, no re-search on second call", func(t *testing.T) {
+		server := setupServer(t)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{}, // empty results
+			},
+		}
+		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+		config := &models.PluginSettings{
+			BaseUrl: server.URL,
+			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		}
+		query := backend.DataQuery{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid: assetRid, Channel: "missing_channel", DataScopeName: "default",
+				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+			}),
+		}
+
+		prep1, err1 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if err1 != nil {
+			t.Fatalf("first prepare: %v", err1.Error)
+		}
+		if prep1.Model.ChannelUnit != "" {
+			t.Errorf("ChannelUnit = %q, want empty", prep1.Model.ChannelUnit)
+		}
+
+		// Second call: cached miss should prevent a second SearchChannels call.
+		if _, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query); err2 != nil {
+			t.Fatalf("second prepare: %v", err2.Error)
+		}
+		if mockDS.searchChannelsCalls != 1 {
+			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+		}
+	})
 }
 
 func TestPartitionPreparedQueriesKeepsQueryModelPairs(t *testing.T) {
@@ -1039,7 +1237,7 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 
 // TestMixedTypeTemplateVariableWithExplicitAggregations verifies that a saved
 // numeric query with explicit aggregations correctly handles expansion into both
-// string and numeric channels. inferChannelDataType must override the saved type
+// string and numeric channels. inferChannelMetadata must override the saved type
 // per-query so the string channel gets an enum request (not Arrow numeric).
 func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	assetRid := "ri.scout.main.asset.abc123"
@@ -2122,6 +2320,188 @@ func TestDisplayNameFromDS(t *testing.T) {
 		}
 		if valueField.Config.DisplayNameFromDS != "state" {
 			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "state")
+		}
+	})
+}
+
+// TestFieldConfigUnit verifies FieldConfig.Unit wiring through the real
+// transformBatchResult frame-construction path (the six call sites in
+// datasource.go: 423/430 multi-agg, 456/463 enum, 477/484 legacy).
+//
+// Complements field_config_test.go which covers the builders in isolation —
+// these tests guard the wire-up.
+func TestFieldConfigUnit(t *testing.T) {
+	ds := &Datasource{}
+
+	// assertTimeFieldUnitFree confirms the unit lands only on the value field,
+	// never on the time axis. Grafana ignores Unit on time fields today, but the
+	// negative assertion guards against a future bug where the builder applies
+	// FieldConfig to the wrong field.
+	assertTimeFieldUnitFree := func(t *testing.T, frame *data.Frame) {
+		t.Helper()
+		if cfg := frame.Fields[0].Config; cfg != nil && cfg.Unit != "" {
+			t.Errorf("time field must have no Unit, got %q", cfg.Unit)
+		}
+	}
+
+	t.Run("legacy numeric path on Cel channel sets FieldConfig.Unit=celsius", func(t *testing.T) {
+		// Exercises datasource.go:477 (the "data present" legacy branch).
+		result := createMockComputeResult([]float64{1.0, 2.0})
+		qm := NominalQueryModel{
+			Channel:     "engine_temp",
+			AssetRid:    "ri.nominal.asset.test",
+			ChannelUnit: "Cel",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		valueField := resp.Frames[0].Fields[1]
+		if valueField.Config.Unit != "celsius" {
+			t.Errorf("Unit = %q, want %q", valueField.Config.Unit, "celsius")
+		}
+		if valueField.Config.DisplayNameFromDS != "engine_temp" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "engine_temp")
+		}
+		assertTimeFieldUnitFree(t, resp.Frames[0])
+	})
+
+	t.Run("legacy numeric path with empty data still sets Unit=celsius", func(t *testing.T) {
+		// Exercises datasource.go:484 (the "no data" legacy branch).
+		result := createMockComputeResult([]float64{})
+		qm := NominalQueryModel{
+			Channel:     "engine_temp",
+			AssetRid:    "ri.nominal.asset.test",
+			ChannelUnit: "Cel",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		valueField := resp.Frames[0].Fields[1]
+		if valueField.Config.Unit != "celsius" {
+			t.Errorf("Unit = %q, want %q", valueField.Config.Unit, "celsius")
+		}
+		assertTimeFieldUnitFree(t, resp.Frames[0])
+	})
+
+	t.Run("legacy numeric path with empty ChannelUnit leaves Unit empty", func(t *testing.T) {
+		result := createMockComputeResult([]float64{1.0})
+		qm := NominalQueryModel{
+			Channel:  "engine_temp",
+			AssetRid: "ri.nominal.asset.test",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		valueField := resp.Frames[0].Fields[1]
+		if valueField.Config.Unit != "" {
+			t.Errorf("Unit = %q, want empty", valueField.Config.Unit)
+		}
+		assertTimeFieldUnitFree(t, resp.Frames[0])
+	})
+
+	t.Run("enum path on Cel-tagged channel does NOT set Unit", func(t *testing.T) {
+		// Exercises datasource.go:456 (the "data present" enum branch).
+		// Even with ChannelUnit set, enum/string frames must not carry a unit —
+		// numeric formatting is meaningless for string values.
+		result := createMockEnumComputeResult([]string{"on", "off"}, []int{0, 1})
+		qm := NominalQueryModel{
+			Channel:     "engine_state",
+			AssetRid:    "ri.nominal.asset.test",
+			ChannelUnit: "Cel", // would be wrong on an enum; builder must ignore it
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		valueField := resp.Frames[0].Fields[1]
+		if valueField.Config.Unit != "" {
+			t.Errorf("Unit = %q, want empty (enum frames carry no unit)", valueField.Config.Unit)
+		}
+		if valueField.Config.DisplayNameFromDS != "engine_state" {
+			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "engine_state")
+		}
+		assertTimeFieldUnitFree(t, resp.Frames[0])
+	})
+
+	t.Run("enum path with empty data does NOT set Unit", func(t *testing.T) {
+		// Exercises datasource.go:463 (the "no data" enum branch).
+		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
+		qm := NominalQueryModel{
+			Channel:     "engine_state",
+			AssetRid:    "ri.nominal.asset.test",
+			ChannelUnit: "Cel",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		valueField := resp.Frames[0].Fields[1]
+		if valueField.Config.Unit != "" {
+			t.Errorf("Unit = %q, want empty", valueField.Config.Unit)
+		}
+		assertTimeFieldUnitFree(t, resp.Frames[0])
+	})
+
+	t.Run("multi-agg MEAN+COUNT+VARIANCE on Cel channel: MEAN has unit, COUNT/VARIANCE do not", func(t *testing.T) {
+		// Exercises datasource.go:423 (the "data present" multi-agg branch).
+		ts := []int64{1000000000000, 2000000000000}
+		columns := map[string][]float64{
+			"mean":     {10.0, 20.0},
+			"count":    {5, 5},
+			"variance": {1.5, 2.5},
+		}
+		arrowBytes := createTestArrowMultiAgg(ts, columns)
+		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		result := computeapi.ComputeWithUnitsResult{
+			ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+				computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot),
+			),
+		}
+		qm := NominalQueryModel{
+			Channel:              "engine_temp",
+			AssetRid:             "ri.nominal.asset.test",
+			ChannelUnit:          "Cel",
+			Aggregations:         []string{AggMean, AggCount, AggVariance},
+			ExplicitAggregations: true,
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		if len(resp.Frames) != 3 {
+			t.Fatalf("expected 3 frames (mean, count, variance), got %d", len(resp.Frames))
+		}
+
+		// Frame order matches qm.Aggregations: [MEAN, COUNT, VARIANCE].
+		expected := []struct {
+			displayName string
+			wantUnit    string
+		}{
+			{"engine_temp (mean)", "celsius"},
+			{"engine_temp (count)", ""},
+			{"engine_temp (variance)", ""},
+		}
+		for i, exp := range expected {
+			valueField := resp.Frames[i].Fields[1]
+			if valueField.Config == nil {
+				t.Fatalf("frame[%d]: nil Config", i)
+			}
+			if valueField.Config.Unit != exp.wantUnit {
+				t.Errorf("frame[%d] (%s).Unit = %q, want %q", i, exp.displayName, valueField.Config.Unit, exp.wantUnit)
+			}
+			if valueField.Config.DisplayNameFromDS != exp.displayName {
+				t.Errorf("frame[%d].DisplayNameFromDS = %q, want %q", i, valueField.Config.DisplayNameFromDS, exp.displayName)
+			}
+			assertTimeFieldUnitFree(t, resp.Frames[i])
 		}
 	})
 }
@@ -3792,8 +4172,8 @@ func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) [
 	fields := []arrow.Field{
 		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
 	}
-	// Deterministic column order: mean, min, max
-	colOrder := []string{"mean", "min", "max"}
+	// Deterministic column order across all standard aggregations.
+	colOrder := []string{"mean", "min", "max", "count", "variance"}
 	var orderedNames []string
 	for _, name := range colOrder {
 		if _, ok := columns[name]; ok {

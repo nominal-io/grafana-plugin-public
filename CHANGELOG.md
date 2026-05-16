@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* Channels carrying Nominal-canonical units (e.g. `Cel`, `[degF]`, `psia`, `mph`) now render with appropriate Y-axis tick formatting and tooltip suffixes automatically — no panel configuration required. Channels with display-only or unrecognized units render the symbol verbatim as a suffix.
+
 ## [0.11.3](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.2...nominal-grafana-plugin@0.11.3) (2026-05-04)
 
 

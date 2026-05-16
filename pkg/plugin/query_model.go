@@ -39,6 +39,10 @@ type NominalQueryModel struct {
 	// Legacy support
 	QueryText string  `json:"queryText"`
 	Constant  float64 `json:"constant"`
+
+	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
+	// json:"-" prevents inferred values from persisting into saved dashboards.
+	ChannelUnit string `json:"-"`
 }
 
 type preparedQueryKind int
@@ -81,7 +85,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 		return preparedQuery{}, &response
 	}
 
-	e.inferChannelDataType(ctx, &qm)
+	e.inferChannelMetadata(ctx, &qm)
 	if prepErr := normalizeAggregations(&qm); prepErr != nil {
 		return preparedQuery{}, prepErr
 	}
@@ -203,12 +207,19 @@ func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
 	return nil
 }
 
-// inferChannelDataType verifies (or backfills) channelDataType against the
-// actual channel metadata from the API. The frontend-supplied type may be stale
-// when a multi-select template variable expands $channel to a mix of numeric
-// and string channels — every expanded query inherits the same saved type.
-// The instance-level cache keeps repeated lookups cheap.
-func (e *NominalQueryExecution) inferChannelDataType(ctx context.Context, qm *NominalQueryModel) {
+// inferChannelMetadata verifies (or backfills) channel metadata — both data type
+// and unit symbol — against the actual ChannelMetadata returned by SearchChannels.
+//
+// Why this exists:
+//   - ChannelDataType: the frontend-supplied value may be stale when a multi-select
+//     template variable expands $channel to a mix of numeric and string channels;
+//     every expanded query inherits the same saved type.
+//   - ChannelUnit: never persisted on the query (transient runtime field); resolved
+//     here so FieldConfig.Unit can be set at frame-construction time without an
+//     extra round trip.
+//
+// Both lookups ride on the same cached SearchChannels exact-match call.
+func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *NominalQueryModel) {
 	if qm == nil || e.datasource.datasourceService == nil {
 		return
 	}
@@ -219,22 +230,25 @@ func (e *NominalQueryExecution) inferChannelDataType(ctx context.Context, qm *No
 	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
 
 	// Check instance-level TTL cache.
-	e.datasource.channelTypeCacheMu.Lock()
-	if e.datasource.channelTypeCache == nil {
-		e.datasource.channelTypeCache = make(map[string]channelTypeCacheEntry)
+	e.datasource.channelMetadataCacheMu.Lock()
+	if e.datasource.channelMetadataCache == nil {
+		e.datasource.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
-	if entry, ok := e.datasource.channelTypeCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-		e.datasource.channelTypeCacheMu.Unlock()
-		if entry.channelType != "" {
-			qm.ChannelDataType = entry.channelType
+	if entry, ok := e.datasource.channelMetadataCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		e.datasource.channelMetadataCacheMu.Unlock()
+		if entry.channelDataType != "" {
+			qm.ChannelDataType = entry.channelDataType
+		}
+		if entry.unit != "" {
+			qm.ChannelUnit = entry.unit
 		}
 		return
 	}
-	e.datasource.channelTypeCacheMu.Unlock()
+	e.datasource.channelMetadataCacheMu.Unlock()
 
 	asset, err := e.datasource.fetchAssetByRid(ctx, e.config, qm.AssetRid)
 	if err != nil {
-		log.DefaultLogger.Warn("Failed to fetch asset for channel type inference", "assetRid", qm.AssetRid, "error", err)
+		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
 		return
 	}
 	if asset == nil {
@@ -254,7 +268,7 @@ func (e *NominalQueryExecution) inferChannelDataType(ctx context.Context, qm *No
 
 		parsedRid, err := rid.ParseRID(ridStr)
 		if err != nil {
-			log.DefaultLogger.Warn("Failed to parse datasource RID for channel type inference", "rid", ridStr, "error", err)
+			log.DefaultLogger.Warn("Failed to parse datasource RID for channel metadata inference", "rid", ridStr, "error", err)
 			continue
 		}
 		dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
@@ -270,25 +284,41 @@ func (e *NominalQueryExecution) inferChannelDataType(ctx context.Context, qm *No
 	}
 	channelsResponse, err := e.datasource.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
-		log.DefaultLogger.Warn("Failed to search channels for channel type inference", "assetRid", qm.AssetRid, "dataScopeName", qm.DataScopeName, "channel", qm.Channel, "error", err)
+		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
 		return
 	}
 
+	// Nominal enforces unique DataScopeName per asset (CreateAssetDataScope conjure
+	// doc + DuplicateDataScopeNames error), so SearchChannels-exact-match returns
+	// at most one case-exact result. Pick the first match.
 	for _, channel := range channelsResponse.Results {
 		if string(channel.Name) != qm.Channel {
 			continue
 		}
-		if inferredType := getChannelDataType(channel); inferredType != "" {
-			qm.ChannelDataType = inferredType
-			e.datasource.channelTypeCacheMu.Lock()
-			e.datasource.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: inferredType, fetchedAt: time.Now()}
-			e.datasource.channelTypeCacheMu.Unlock()
-			return
+		inferredType := getChannelDataType(channel) // "" if ChannelMetadata.DataType is nil
+		inferredUnit := getChannelUnit(channel)     // "" if Unit is nil
+		// Skip metadata-less records so a single information-free match doesn't cache an empty result.
+		if inferredType == "" && inferredUnit == "" {
+			continue
 		}
+		if inferredType != "" {
+			qm.ChannelDataType = inferredType
+		}
+		qm.ChannelUnit = inferredUnit
+		// Either field may be "". The cache-read path above guards each field with
+		// `if entry.X != ""`, so empty cached values don't clobber zero values.
+		e.datasource.channelMetadataCacheMu.Lock()
+		e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{
+			channelDataType: inferredType,
+			unit:            inferredUnit,
+			fetchedAt:       time.Now(),
+		}
+		e.datasource.channelMetadataCacheMu.Unlock()
+		return
 	}
 
-	// Cache the miss so we don't re-search for the same combo.
-	e.datasource.channelTypeCacheMu.Lock()
-	e.datasource.channelTypeCache[cacheKey] = channelTypeCacheEntry{channelType: "", fetchedAt: time.Now()}
-	e.datasource.channelTypeCacheMu.Unlock()
+	// No name match — cache the miss so a re-query doesn't re-search.
+	e.datasource.channelMetadataCacheMu.Lock()
+	e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{fetchedAt: time.Now()}
+	e.datasource.channelMetadataCacheMu.Unlock()
 }

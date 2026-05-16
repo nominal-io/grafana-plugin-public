@@ -27,10 +27,15 @@ const (
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
 // Each series carries its own timestamps. Most aggregations share end_bucket_timestamp,
 // but FIRST_POINT/LAST_POINT use their own timestamp columns (first_timestamp, last_timestamp).
+//
+// Unitless mirrors the source aggColumnSpec.Unitless flag so downstream frame
+// builders (fieldConfigForNumeric) can decide whether to attach the channel unit
+// without re-looking up the spec by name.
 type AggregationSeries struct {
-	Name       string      // display name: "mean", "min", "max", "first", "last"
+	Name       string // display name: "mean", "min", "max", "first", "last"
 	TimePoints []time.Time
 	Values     []*float64
+	Unitless   bool
 }
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
@@ -40,6 +45,10 @@ type aggColumnSpec struct {
 	Name         string // display name for the series (e.g. "mean", "first")
 	ValueCol     string // Arrow column name for values (e.g. "mean", "first_value")
 	TimestampCol string // Arrow column name for timestamps; empty means use shared end_bucket_timestamp
+	// Unitless is true for aggregations whose output does not carry the channel
+	// unit: COUNT (dimensionless) and VARIANCE (unit², would mislead). When true,
+	// FieldConfig.Unit must NOT be set on the resulting frame.
+	Unitless bool
 }
 
 // aggSpecs is the single source of truth for all supported aggregations.
@@ -50,8 +59,8 @@ var aggSpecs = map[string]aggColumnSpec{
 	AggMean:       {Name: "mean", ValueCol: "mean"},
 	AggMin:        {Name: "min", ValueCol: "min"},
 	AggMax:        {Name: "max", ValueCol: "max"},
-	AggCount:      {Name: "count", ValueCol: "count"},
-	AggVariance:   {Name: "variance", ValueCol: "variance"},
+	AggCount:      {Name: "count", ValueCol: "count", Unitless: true},
+	AggVariance:   {Name: "variance", ValueCol: "variance", Unitless: true},
 	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
 	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
 }
@@ -175,6 +184,7 @@ func extractArrowBucketedNumericSeries(
 	seriesData := make([]AggregationSeries, len(specs))
 	for i, spec := range specs {
 		seriesData[i].Name = spec.Name
+		seriesData[i].Unitless = spec.Unitless
 		seriesData[i].Values = []*float64{}
 	}
 	sharedTimePoints := []time.Time{}

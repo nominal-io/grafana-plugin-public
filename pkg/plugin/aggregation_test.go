@@ -681,3 +681,93 @@ func TestValidateAndDedup(t *testing.T) {
 		t.Errorf("unexpected order: %v", deduped)
 	}
 }
+
+// TestAggSpecsUnitlessFlag guards the Unitless flag on aggSpecs entries.
+// COUNT is dimensionless, VARIANCE is in unit² (squared) — both must be marked
+// Unitless so FieldConfig.Unit is suppressed on those frames. Every other
+// aggregation must NOT be marked Unitless: MEAN/MIN/MAX/FIRST/LAST all return
+// values in the base channel unit.
+//
+// A future STDDEV (sqrt of variance — returns to base unit) or P95 must be
+// forced to make the call when added; this test prevents accidental inheritance
+// of the wrong flag by copy-paste.
+func TestAggSpecsUnitlessFlag(t *testing.T) {
+	cases := map[string]bool{
+		AggMean:       false,
+		AggMin:        false,
+		AggMax:        false,
+		AggCount:      true,
+		AggVariance:   true,
+		AggFirstPoint: false,
+		AggLastPoint:  false,
+	}
+	for agg, wantUnitless := range cases {
+		spec, ok := aggSpecs[agg]
+		if !ok {
+			t.Errorf("aggSpecs[%q] missing", agg)
+			continue
+		}
+		if spec.Unitless != wantUnitless {
+			t.Errorf("aggSpecs[%q].Unitless = %v, want %v", agg, spec.Unitless, wantUnitless)
+		}
+	}
+	// Reverse direction: every aggSpecs entry must have an expectation above.
+	// Without this check, adding a new aggregation (e.g. STDDEV, P95) to aggSpecs
+	// would silently pass the test — defeating the "force a deliberate decision"
+	// guarantee that the doc comment promises. New aggregations must be added
+	// to `cases` with an explicit true/false, not inherit a default.
+	for agg := range aggSpecs {
+		if _, ok := cases[agg]; !ok {
+			t.Errorf("aggSpecs[%q] has no Unitless expectation in this test — "+
+				"add it to `cases` above with an explicit true/false to force "+
+				"a deliberate decision about whether this aggregation carries "+
+				"the base channel unit (e.g. STDDEV→false, P95→false, "+
+				"VARIANCE→true because it's unit²)", agg)
+		}
+	}
+}
+
+// TestAggregationSeriesUnitlessPropagation guards the contract that
+// extractArrowBucketedNumericSeries copies aggColumnSpec.Unitless onto each
+// produced AggregationSeries. fieldConfigForNumeric reads this bit directly
+// rather than re-looking up the spec by display name; the wire-up must hold.
+func TestAggregationSeriesUnitlessPropagation(t *testing.T) {
+	ts := []int64{1000000000000, 2000000000000}
+	columns := map[string][]float64{
+		"mean":     {10.0, 20.0},
+		"count":    {5, 5},
+		"variance": {1.5, 2.5},
+	}
+	arrowBytes := createTestArrowMultiAgg(ts, columns)
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+
+	specs := []aggColumnSpec{
+		aggColumnSpecFromEnum(AggMean),
+		aggColumnSpecFromEnum(AggCount),
+		aggColumnSpecFromEnum(AggVariance),
+	}
+	series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 3 {
+		t.Fatalf("expected 3 series, got %d", len(series))
+	}
+
+	want := []struct {
+		name     string
+		unitless bool
+	}{
+		{"mean", false},
+		{"count", true},
+		{"variance", true},
+	}
+	for i, w := range want {
+		if series[i].Name != w.name {
+			t.Errorf("series[%d].Name = %q, want %q", i, series[i].Name, w.name)
+		}
+		if series[i].Unitless != w.unitless {
+			t.Errorf("series[%d] (%s).Unitless = %v, want %v", i, w.name, series[i].Unitless, w.unitless)
+		}
+	}
+}
