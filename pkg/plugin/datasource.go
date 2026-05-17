@@ -1264,6 +1264,20 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	}
 }
 
+// unitless = true for COUNT/VARIANCE aggregations, which have no meaningful unit.
+func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, unitless bool) *data.FieldConfig {
+	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
+	if unitless {
+		return cfg
+	}
+	cfg.Unit = mapToGrafanaUnit(qm.ChannelUnit)
+	return cfg
+}
+
+func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
+	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+}
+
 // isSupportedDataSourceType returns true for data source types that support channel queries.
 func isSupportedDataSourceType(dsType string) bool {
 	return dsType == "dataset" || dsType == "connection" || dsType == "logSet"
