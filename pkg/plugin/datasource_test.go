@@ -457,6 +457,14 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 		if prep.Model.ChannelUnit != "" {
 			t.Errorf("ChannelUnit = %q, want empty", prep.Model.ChannelUnit)
 		}
+
+		// Second call: type-only result must still be cached (no re-search).
+		if _, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query); err2 != nil {
+			t.Fatalf("second prepare: %v", err2.Error)
+		}
+		if mockDS.searchChannelsCalls != 1 {
+			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+		}
 	})
 
 	t.Run("nil DataType + non-nil Unit: ChannelUnit still populated (cache-write ordering guard)", func(t *testing.T) {
@@ -501,6 +509,19 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 		// Frontend-supplied type stands when ChannelMetadata.DataType is nil.
 		if prep.Model.ChannelDataType != "numeric" {
 			t.Errorf("ChannelDataType = %q, want %q (preserved)", prep.Model.ChannelDataType, "numeric")
+		}
+
+		// Second call: unit-only result must still be cached (no re-search), and the
+		// cache-read path must restore the unit while leaving the frontend type alone.
+		prep2, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+		if err2 != nil {
+			t.Fatalf("second prepare: %v", err2.Error)
+		}
+		if prep2.Model.ChannelUnit != "psia" {
+			t.Errorf("cache hit: ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, "psia")
+		}
+		if mockDS.searchChannelsCalls != 1 {
+			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
 		}
 	})
 
@@ -5097,11 +5118,11 @@ func TestFieldConfigForNumeric(t *testing.T) {
 			wantDispName: "engine_temp",
 		},
 		{
-			name:         "legacy path on display-only unit falls through verbatim",
+			name:         "legacy path on display-only unit falls through as explicit suffix",
 			channelUnit:  "asdfsdfs",
 			displayName:  "weird_channel",
 			unitless:     false,
-			wantUnit:     "asdfsdfs",
+			wantUnit:     "suffix:asdfsdfs",
 			wantDispName: "weird_channel",
 		},
 	}

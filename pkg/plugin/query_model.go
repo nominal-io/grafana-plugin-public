@@ -304,9 +304,12 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		if inferredType != "" {
 			qm.ChannelDataType = inferredType
 		}
-		qm.ChannelUnit = inferredUnit
+		if inferredUnit != "" {
+			qm.ChannelUnit = inferredUnit
+		}
 		// Either field may be "". The cache-read path above guards each field with
 		// `if entry.X != ""`, so empty cached values don't clobber zero values.
+		// The fresh-write path is symmetric.
 		e.datasource.channelMetadataCacheMu.Lock()
 		e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{
 			channelDataType: inferredType,

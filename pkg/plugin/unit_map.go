@@ -108,12 +108,16 @@ var unitSymbolToGrafanaID = map[string]string{
 }
 
 // mapToGrafanaUnit resolves a Nominal canonical unit symbol to a Grafana unit ID,
-// returning the input verbatim when unmapped (Grafana renders unknown IDs as
-// plain suffixes, which is the desired fallthrough). Case-sensitive: UCUM is
-// case-significant (Cel ≠ cel, m=meter vs M=mega-).
+// returning "suffix:<symbol>" when unmapped so Grafana renders the symbol as an
+// explicit literal suffix rather than relying on registry-miss fallthrough (which
+// would silently change behavior if a Grafana plugin ever registered a colliding
+// ID). Case-sensitive: UCUM is case-significant (Cel ≠ cel, m=meter vs M=mega-).
 func mapToGrafanaUnit(symbol string) string {
+	if symbol == "" {
+		return ""
+	}
 	if id, ok := unitSymbolToGrafanaID[symbol]; ok {
 		return id
 	}
-	return symbol
+	return "suffix:" + symbol
 }

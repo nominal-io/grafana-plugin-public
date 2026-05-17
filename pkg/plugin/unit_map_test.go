@@ -26,16 +26,16 @@ func TestMapToGrafanaUnit(t *testing.T) {
 		{"knot bracketed", "[kn_i]", "velocityknot"},
 
 		// Suffix-mode fallthrough — canonical UCUM with no Grafana ID.
-		{"W/m^2 falls through", "W/m^2", "W/m^2"},
-		{"kg/s falls through", "kg/s", "kg/s"},
-		{"MPa falls through", "MPa", "MPa"}, // canonical but no Grafana pressurempa ID
-		{"atm falls through", "atm", "atm"}, // canonical but no Grafana pressureatm ID
+		{"W/m^2 falls through", "W/m^2", "suffix:W/m^2"},
+		{"kg/s falls through", "kg/s", "suffix:kg/s"},
+		{"MPa falls through", "MPa", "suffix:MPa"}, // canonical but no Grafana pressurempa ID
+		{"atm falls through", "atm", "suffix:atm"}, // canonical but no Grafana pressureatm ID
 
 		// Display-only / unrecognized — also falls through.
 		{"empty stays empty", "", ""},
-		{"degC display-only falls through", "degC", "degC"},
-		{"pct display-only falls through", "pct", "pct"},
-		{"random user input falls through", "asdfsdfs", "asdfsdfs"},
+		{"degC display-only falls through", "degC", "suffix:degC"},
+		{"pct display-only falls through", "pct", "suffix:pct"},
+		{"random user input falls through", "asdfsdfs", "suffix:asdfsdfs"},
 	}
 
 	for _, tt := range tests {
