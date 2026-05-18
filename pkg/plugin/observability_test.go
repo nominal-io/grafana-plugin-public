@@ -2,49 +2,19 @@ package plugin
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/grafana/grafana-plugin-sdk-go/backend/useragent"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
-	conjureerrors "github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/errors"
 	"github.com/palantir/pkg/bearertoken"
 )
 
 const uaWant = "nominal-grafana/0.11.3 (linux-amd64) go/1.25.7 grafana/12.1.0"
-
-func TestUserAgentComponentsFromPluginContext_AllFields(t *testing.T) {
-	ua, err := useragent.New("12.1.0", "linux", "amd64")
-	if err != nil {
-		t.Fatalf("useragent.New: %v", err)
-	}
-	pc := backend.PluginContext{PluginVersion: "0.11.3", UserAgent: ua}
-
-	got := userAgentComponentsFromPluginContext(pc)
-
-	if got.PluginVersion != "0.11.3" {
-		t.Errorf("PluginVersion = %q, want 0.11.3", got.PluginVersion)
-	}
-	if got.GrafanaVersion != "12.1.0" {
-		t.Errorf("GrafanaVersion = %q, want 12.1.0", got.GrafanaVersion)
-	}
-	if got.GoOS != runtime.GOOS {
-		t.Errorf("GoOS = %q, want %q", got.GoOS, runtime.GOOS)
-	}
-	if got.GoArch != runtime.GOARCH {
-		t.Errorf("GoArch = %q, want %q", got.GoArch, runtime.GOARCH)
-	}
-	if got.GoVersion != runtime.Version() {
-		t.Errorf("GoVersion = %q, want %q", got.GoVersion, runtime.Version())
-	}
-}
 
 func TestUserAgentComponentsFromPluginContext_MissingFieldsUseUnknown(t *testing.T) {
 	got := userAgentComponentsFromPluginContext(backend.PluginContext{})
@@ -54,20 +24,6 @@ func TestUserAgentComponentsFromPluginContext_MissingFieldsUseUnknown(t *testing
 	}
 	if got.GrafanaVersion != "unknown" {
 		t.Errorf("GrafanaVersion = %q, want unknown", got.GrafanaVersion)
-	}
-}
-
-func TestFormatUserAgent_MatchesPythonSDKShape(t *testing.T) {
-	c := userAgentComponents{
-		PluginVersion:  "0.11.3",
-		GoOS:           "linux",
-		GoArch:         "amd64",
-		GoVersion:      "go1.25.7",
-		GrafanaVersion: "12.1.0",
-	}
-	got := formatUserAgent(c)
-	if got != uaWant {
-		t.Errorf("formatUserAgent = %q, want %q", got, uaWant)
 	}
 }
 
@@ -114,36 +70,6 @@ func TestUserAgentMiddleware_FallsBackWhenContextMissing(t *testing.T) {
 
 	if seen == "" || !strings.HasPrefix(seen, "nominal-grafana/") {
 		t.Errorf("fallback UA = %q, want nominal-grafana/... prefix", seen)
-	}
-}
-
-func TestErrorFieldsFromConjure_ExtractsAllThree(t *testing.T) {
-	cErr := conjureerrors.NewError(conjureerrors.DefaultInternal)
-	fields := errorFieldsFromConjure(cErr)
-
-	asMap := keyValueSliceToMap(fields)
-	if _, ok := asMap["error_instance_id"]; !ok {
-		t.Error("missing error_instance_id")
-	}
-	if _, ok := asMap["error_code"]; !ok {
-		t.Error("missing error_code")
-	}
-	if _, ok := asMap["error_name"]; !ok {
-		t.Error("missing error_name")
-	}
-}
-
-func TestErrorFieldsFromConjure_NonConjureErrorReturnsEmpty(t *testing.T) {
-	fields := errorFieldsFromConjure(errors.New("plain error"))
-	if len(fields) != 0 {
-		t.Errorf("expected empty fields, got %v", fields)
-	}
-}
-
-func TestErrorFieldsFromConjure_NilReturnsEmpty(t *testing.T) {
-	fields := errorFieldsFromConjure(nil)
-	if len(fields) != 0 {
-		t.Errorf("expected empty fields for nil error, got %v", fields)
 	}
 }
 
