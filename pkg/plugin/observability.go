@@ -95,12 +95,12 @@ func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 
 // logErrorWithConjureFields logs at error level with structured Conjure error
 // taxonomy (instance ID, code, name) appended. extra is the caller's existing
-// key/value fields, applied before the standard "error" + Conjure fields.
+// key/value fields, applied after the standard "error" + Conjure fields.
 func logErrorWithConjureFields(msg string, err error, extra ...any) {
 	fields := make([]any, 0, len(extra)+2+6)
-	fields = append(fields, extra...)
 	fields = append(fields, "error", err)
 	fields = append(fields, errorFieldsFromConjure(err)...)
+	fields = append(fields, extra...)
 	log.DefaultLogger.Error(msg, fields...)
 }
 

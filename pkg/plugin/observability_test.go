@@ -19,11 +19,11 @@ const uaWant = "nominal-grafana/0.11.3 (linux-amd64) go/1.25.7 grafana/12.1.0"
 func TestUserAgentComponentsFromPluginContext_MissingFieldsUseUnknown(t *testing.T) {
 	got := userAgentComponentsFromPluginContext(backend.PluginContext{})
 
-	if got.PluginVersion != "unknown" {
-		t.Errorf("PluginVersion = %q, want unknown", got.PluginVersion)
+	if got.PluginVersion != unknownComponent {
+		t.Errorf("PluginVersion = %q, want %q", got.PluginVersion, unknownComponent)
 	}
-	if got.GrafanaVersion != "unknown" {
-		t.Errorf("GrafanaVersion = %q, want unknown", got.GrafanaVersion)
+	if got.GrafanaVersion != unknownComponent {
+		t.Errorf("GrafanaVersion = %q, want %q", got.GrafanaVersion, unknownComponent)
 	}
 }
 

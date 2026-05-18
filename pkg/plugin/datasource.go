@@ -1434,8 +1434,8 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	// Fetch assets with pagination
 	assetResponses, err := d.fetchAssetsForVariable(ctx, config, searchRequest.SearchText, searchRequest.MaxResults)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch assets", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch assets"})
+		logErrorWithConjureFields("Failed to fetch assets", err)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch assets", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1556,8 +1556,8 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	// Fetch asset by RID to get its datascopes
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
+		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1675,8 +1675,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	// Fetch asset by RID to get its datascopes and datasource RIDs
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
+		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
