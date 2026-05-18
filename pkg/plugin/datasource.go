@@ -100,11 +100,13 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create resource HTTP client: %v", err)
 	}
 	resourceHTTPClient.Timeout = 30 * time.Second
+	resourceHTTPClient.Transport = newUserAgentTransport(resourceHTTPClient.Transport)
 
 	// Generated Conjure clients still require their own client type, so keep this
 	// wrapper for those service integrations.
 	conjureClient, err := conjurehttpclient.NewClient(
 		conjurehttpclient.WithBaseURLs([]string{baseURL}),
+		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
@@ -164,6 +166,7 @@ func (d *Datasource) Dispose() {
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
@@ -202,8 +205,9 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
-		log.DefaultLogger.Error("Connection test failed", "error", err)
-		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
+		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
+		log.DefaultLogger.Error("Connection test failed", logFields...)
+		return backend.ErrDataResponse(backend.StatusInternal, formatUserVisibleError("Connection test failed", err))
 	}
 
 	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
@@ -889,6 +893,7 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
 	log.DefaultLogger.Debug("CheckHealth called")
 
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -934,7 +939,8 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 	if err != nil {
-		log.DefaultLogger.Error("Health check failed", "error", err)
+		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
+		log.DefaultLogger.Error("Health check failed", logFields...)
 		// Return a more specific error message based on the error type
 		errorMsg := "Failed to connect to Nominal API"
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
@@ -944,6 +950,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 		}
+		errorMsg = formatUserVisibleError(errorMsg, err)
 
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
@@ -961,6 +968,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 // CallResource handles HTTP requests sent to the plugin
 // This handles all proxy requests from /api/datasources/proxy/uid/{uid}/...
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
 	// Debug logging to see what requests are coming in
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
@@ -1180,7 +1188,8 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	// Make the API call using the datasource service
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 	if err != nil {
-		log.DefaultLogger.Error("Channels search API call failed", "error", err)
+		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
+		log.DefaultLogger.Error("Channels search API call failed", logFields...)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
@@ -1342,7 +1351,6 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 	// Use the datasource API key for all proxied upstream requests.
 	proxyReq.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 
-	proxyReq.Header.Set("User-Agent", "grafana-nominal-plugin/1.0.0")
 	log.DefaultLogger.Debug("Using API key for proxy request")
 
 	// Ensure Content-Type is set for POST requests
@@ -1735,7 +1743,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 		if err != nil {
-			log.DefaultLogger.Error("Channels search API call failed", "error", err)
+			logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
+			log.DefaultLogger.Error("Channels search API call failed", logFields...)
 			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,
