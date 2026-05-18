@@ -8,7 +8,7 @@ func TestMapToGrafanaUnit(t *testing.T) {
 		symbol string
 		want   string
 	}{
-		// Representative canonical mappings — one per category exercised in the plan.
+		// Representative canonical mappings — one per UnitProperty category.
 		{"velocity mph", "mph", "velocitymph"},
 		{"temperature celsius", "Cel", "celsius"},
 		{"pressure psi absolute", "psia", "pressurepsi"},
@@ -48,8 +48,8 @@ func TestMapToGrafanaUnit(t *testing.T) {
 	}
 }
 
-// TestUnitMapMinuteMeterCollision is a targeted tripwire for the UCUM/Grafana
-// short-symbol collision documented in the plan's Risks section:
+// TestUnitMapMinuteMeterCollision is a targeted tripwire for a UCUM/Grafana
+// short-symbol collision:
 //
 //   - In UCUM, "m" means meter and "min" means minute.
 //   - In Grafana, the ID "m" means minutes and the ID "lengthm" means meters.
@@ -85,15 +85,8 @@ func TestUnitMapMicrosecondUnicode(t *testing.T) {
 }
 
 // validGrafanaUnitIDs is a frozen snapshot of unit IDs from Grafana 12.3.1
-// (packages/grafana-data/src/valueFormats/categories.ts). It enforces the
-// file-header claim in unit_map.go that mapped values are real Grafana IDs —
-// the test below asserts every value in unitSymbolToGrafanaID is in this set.
-//
-// When adding a new unit, verify the target ID exists in Grafana's
-// categories.ts and add it here if missing. When bumping Grafana versions,
-// re-verify this snapshot. The snapshot is intentionally broader than the
-// current mapping so additions to unit_map.go don't always require
-// snapshot updates — just verification.
+// (packages/grafana-data/src/valueFormats/categories.ts), used by the test
+// below to assert every value in unitSymbolToGrafanaID is a real Grafana ID.
 var validGrafanaUnitIDs = map[string]bool{
 	// Misc
 	"none": true, "string": true, "short": true, "percent": true, "percentunit": true,

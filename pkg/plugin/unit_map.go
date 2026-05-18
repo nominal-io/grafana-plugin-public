@@ -4,8 +4,9 @@
 //
 // Keys are Nominal canonical (typically UCUM: Cel not °C, [ft_i] not ft),
 // but Nominal canonicalizes a few non-UCUM-pure shorthands (mph, psia).
-// Source of truth: cmd/unitprobe --list-units. Symbols not in this table
-// fall through to suffix mode via mapToGrafanaUnit.
+// Source of truth: Nominal's `GET /units/v1/units` (GetAllUnits) — the canonical
+// catalog grouped by UnitProperty. Symbols not in this table fall through to
+// suffix mode via mapToGrafanaUnit.
 //
 // Values are enforced against a Grafana ID snapshot in unit_map_test.go.
 package plugin
@@ -32,7 +33,7 @@ var unitSymbolToGrafanaID = map[string]string{
 	// Length
 	"mm":     "lengthmm",
 	"cm":     "lengthcm",
-	"m":      "lengthm", // ⚠️ UCUM m=meter; UCUM min=minute. See "min" below. Tripwire test in unit_map_test.go.
+	"m":      "lengthm", // UCUM m=meter (UCUM min=minute, mapped separately)
 	"km":     "lengthkm",
 	"[ft_i]": "lengthft", // UCUM international foot — NOT "ft"
 	"[in_i]": "lengthin", // UCUM international inch — NOT "in"
@@ -73,12 +74,8 @@ var unitSymbolToGrafanaID = map[string]string{
 	// Force
 	"N": "forceN",
 
-	// Information — Nominal's canonical names ("kilobyte", "megabyte", "gigabyte"
-	// per GetAllUnits) are the SI/decimal forms, not the IEC binary forms
-	// (kibibyte/mebibyte/gibibyte are NOT in Nominal's catalog). Mapped to
-	// Grafana's "dec*" family accordingly. The symbols themselves are not
-	// UCUM-pure — strict UCUM would be `kBy`/`MBy`/`GBy` — but Nominal canonicalizes
-	// the practical conventions, same as `mph` and `psia`.
+	// Information — Nominal's canonical forms are SI/decimal (kilobyte,
+	// megabyte, gigabyte), not IEC binary, so values map to Grafana's "dec*" family.
 	"By":  "decbytes", // UCUM atomic byte (UCUM `B`=bel, hence `By`); decimal-family lineage
 	"KB":  "deckbytes",
 	"MB":  "decmbytes",
@@ -95,7 +92,7 @@ var unitSymbolToGrafanaID = map[string]string{
 	"ms":  "ms",
 	"us":  "µs", // Nominal canonical is ASCII "us"; print-form µs / Greek μs are NOT canonical
 	"ns":  "ns",
-	"min": "m", // UCUM min=minute; Grafana ID m=minutes. See "m" above. Tripwire test in unit_map_test.go.
+	"min": "m", // UCUM min=minute; Grafana ID m=minutes
 	"h":   "h", // hour
 	"d":   "d", // day
 
@@ -109,9 +106,8 @@ var unitSymbolToGrafanaID = map[string]string{
 
 // mapToGrafanaUnit resolves a Nominal canonical unit symbol to a Grafana unit ID,
 // returning "suffix:<symbol>" when unmapped so Grafana renders the symbol as an
-// explicit literal suffix rather than relying on registry-miss fallthrough (which
-// would silently change behavior if a Grafana plugin ever registered a colliding
-// ID). Case-sensitive: UCUM is case-significant (Cel ≠ cel, m=meter vs M=mega-).
+// explicit literal suffix. Case-sensitive: UCUM is case-significant
+// (Cel ≠ cel, m=meter vs M=mega-).
 func mapToGrafanaUnit(symbol string) string {
 	if symbol == "" {
 		return ""

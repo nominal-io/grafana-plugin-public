@@ -688,9 +688,8 @@ func TestValidateAndDedup(t *testing.T) {
 // aggregation must NOT be marked Unitless: MEAN/MIN/MAX/FIRST/LAST all return
 // values in the base channel unit.
 //
-// A future STDDEV (sqrt of variance — returns to base unit) or P95 must be
-// forced to make the call when added; this test prevents accidental inheritance
-// of the wrong flag by copy-paste.
+// The reverse-direction check below forces any new aggregation to declare its
+// Unitless value explicitly, rather than inheriting a default by copy-paste.
 func TestAggSpecsUnitlessFlag(t *testing.T) {
 	cases := map[string]bool{
 		AggMean:       false,
@@ -711,18 +710,12 @@ func TestAggSpecsUnitlessFlag(t *testing.T) {
 			t.Errorf("aggSpecs[%q].Unitless = %v, want %v", agg, spec.Unitless, wantUnitless)
 		}
 	}
-	// Reverse direction: every aggSpecs entry must have an expectation above.
-	// Without this check, adding a new aggregation (e.g. STDDEV, P95) to aggSpecs
-	// would silently pass the test — defeating the "force a deliberate decision"
-	// guarantee that the doc comment promises. New aggregations must be added
-	// to `cases` with an explicit true/false, not inherit a default.
+	// Reverse direction: every aggSpecs entry must have an expectation above,
+	// so adding a new aggregation can't silently pass this test.
 	for agg := range aggSpecs {
 		if _, ok := cases[agg]; !ok {
 			t.Errorf("aggSpecs[%q] has no Unitless expectation in this test — "+
-				"add it to `cases` above with an explicit true/false to force "+
-				"a deliberate decision about whether this aggregation carries "+
-				"the base channel unit (e.g. STDDEV→false, P95→false, "+
-				"VARIANCE→true because it's unit²)", agg)
+				"add it to `cases` with an explicit true/false", agg)
 		}
 	}
 }

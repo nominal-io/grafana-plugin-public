@@ -348,8 +348,8 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 }
 
 // TestPrepareQueryInfersChannelUnit guards the unit branch of inferChannelMetadata.
-// Covers the cases the plan specifies: type + unit, nil unit, nil DataType + unit,
-// and no name match (all cached).
+// Covers the SearchChannels result shapes inferChannelMetadata must handle:
+// type + unit, nil unit, nil DataType + unit, and no name match (all cached).
 func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	assetRid := "ri.scout.main.asset.unitprobe"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
@@ -2346,8 +2346,8 @@ func TestDisplayNameFromDS(t *testing.T) {
 }
 
 // TestFieldConfigUnit verifies FieldConfig.Unit wiring through the real
-// transformBatchResult frame-construction path (the six call sites in
-// datasource.go: 423/430 multi-agg, 456/463 enum, 477/484 legacy).
+// transformBatchResult frame-construction path across its three branches:
+// multi-agg, enum, and legacy single-numeric.
 //
 // Complements field_config_test.go which covers the builders in isolation —
 // these tests guard the wire-up.
@@ -2366,7 +2366,7 @@ func TestFieldConfigUnit(t *testing.T) {
 	}
 
 	t.Run("legacy numeric path on Cel channel sets FieldConfig.Unit=celsius", func(t *testing.T) {
-		// Exercises datasource.go:477 (the "data present" legacy branch).
+		// Legacy single-numeric branch, data present.
 		result := createMockComputeResult([]float64{1.0, 2.0})
 		qm := NominalQueryModel{
 			Channel:     "engine_temp",
@@ -2389,7 +2389,7 @@ func TestFieldConfigUnit(t *testing.T) {
 	})
 
 	t.Run("legacy numeric path with empty data still sets Unit=celsius", func(t *testing.T) {
-		// Exercises datasource.go:484 (the "no data" legacy branch).
+		// Legacy single-numeric branch, no data.
 		result := createMockComputeResult([]float64{})
 		qm := NominalQueryModel{
 			Channel:     "engine_temp",
@@ -2427,9 +2427,8 @@ func TestFieldConfigUnit(t *testing.T) {
 	})
 
 	t.Run("enum path on Cel-tagged channel does NOT set Unit", func(t *testing.T) {
-		// Exercises datasource.go:456 (the "data present" enum branch).
-		// Even with ChannelUnit set, enum/string frames must not carry a unit —
-		// numeric formatting is meaningless for string values.
+		// Enum branch, data present. Even with ChannelUnit set, enum/string
+		// frames must not carry a unit — numeric formatting is meaningless.
 		result := createMockEnumComputeResult([]string{"on", "off"}, []int{0, 1})
 		qm := NominalQueryModel{
 			Channel:     "engine_state",
@@ -2452,7 +2451,7 @@ func TestFieldConfigUnit(t *testing.T) {
 	})
 
 	t.Run("enum path with empty data does NOT set Unit", func(t *testing.T) {
-		// Exercises datasource.go:463 (the "no data" enum branch).
+		// Enum branch, no data.
 		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
 		qm := NominalQueryModel{
 			Channel:     "engine_state",
@@ -2472,7 +2471,7 @@ func TestFieldConfigUnit(t *testing.T) {
 	})
 
 	t.Run("multi-agg MEAN+COUNT+VARIANCE on Cel channel: MEAN has unit, COUNT/VARIANCE do not", func(t *testing.T) {
-		// Exercises datasource.go:423 (the "data present" multi-agg branch).
+		// Multi-agg branch, data present.
 		ts := []int64{1000000000000, 2000000000000}
 		columns := map[string][]float64{
 			"mean":     {10.0, 20.0},
