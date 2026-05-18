@@ -220,10 +220,51 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatal("expected DataResponse.Error, got nil")
 	}
-	// handleConnectionTestQuery preserves its prior shape: Sprintf("...: %v", err).
-	// Conjure's Error() trails with "(<instanceID>)", so the ID surfaces unlabeled.
-	if !strings.Contains(resp.Error.Error(), failingInstanceID) {
-		t.Errorf("DataResponse.Error = %q, missing instance id %s",
-			resp.Error.Error(), failingInstanceID)
+	wantLabel := "errorInstanceId: " + failingInstanceID
+	if !strings.Contains(resp.Error.Error(), wantLabel) {
+		t.Errorf("DataResponse.Error = %q, missing labeled instance id %q",
+			resp.Error.Error(), wantLabel)
+	}
+}
+
+func TestCheckHealth_SurfacesInstanceID(t *testing.T) {
+	const failingInstanceID = "33333333-4444-5555-6666-777777777777"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(conjureErrorBody(failingInstanceID)))
+	}))
+	defer srv.Close()
+
+	conjureClient, err := conjurehttpclient.NewClient(
+		conjurehttpclient.WithBaseURLs([]string{srv.URL}),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ds := &Datasource{
+		authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
+	}
+
+	settings := backend.DataSourceInstanceSettings{
+		JSONData: []byte(`{"baseUrl": "` + srv.URL + `"}`),
+		DecryptedSecureJSONData: map[string]string{
+			"apiKey": "x",
+		},
+	}
+	result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &settings,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CheckHealth returned err: %v", err)
+	}
+	if result.Status != backend.HealthStatusError {
+		t.Fatalf("Status = %v, want HealthStatusError", result.Status)
+	}
+	wantLabel := "errorInstanceId: " + failingInstanceID
+	if !strings.Contains(result.Message, wantLabel) {
+		t.Errorf("Message = %q, missing labeled instance id %q", result.Message, wantLabel)
 	}
 }

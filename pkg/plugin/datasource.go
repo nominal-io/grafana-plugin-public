@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +28,6 @@ import (
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
-	conjureerrors "github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/errors"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
@@ -210,7 +208,7 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
 		logErrorWithConjureFields("Connection test failed", err)
-		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
+		return backend.ErrDataResponse(backend.StatusInternal, formatUserError("Connection test failed", err))
 	}
 
 	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
@@ -952,13 +950,9 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 		}
-		var cErr conjureerrors.Error
-		if errors.As(err, &cErr) {
-			errorMsg += fmt.Sprintf(" (errorInstanceId: %s)", cErr.InstanceID())
-		}
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: errorMsg,
+			Message: appendInstanceID(errorMsg, err),
 		}, nil
 	}
 
@@ -1193,12 +1187,13 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 	if err != nil {
 		logErrorWithConjureFields("Channels search API call failed", err)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Channels search failed"}`),
+			Body: errBody,
 		})
 	}
 
@@ -1747,7 +1742,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 		if err != nil {
 			logErrorWithConjureFields("Channels search API call failed", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed"})
+			errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},

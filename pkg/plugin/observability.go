@@ -60,8 +60,6 @@ var fallbackUserAgentString = formatUserAgent(userAgentComponents{
 	GrafanaVersion: unknownComponent,
 })
 
-func fallbackUserAgent() string { return fallbackUserAgentString }
-
 type uaContextKey struct{}
 
 func contextWithUserAgentComponents(ctx context.Context, c userAgentComponents) context.Context {
@@ -87,7 +85,7 @@ func newUserAgentTransport(next http.RoundTripper) http.RoundTripper {
 func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Clone the request before mutating headers — RoundTripper contract.
 	r := req.Clone(req.Context())
-	ua := fallbackUserAgent()
+	ua := fallbackUserAgentString
 	if c, ok := userAgentComponentsFromContext(r.Context()); ok {
 		ua = formatUserAgent(c)
 	}
@@ -116,6 +114,33 @@ func errorFieldsFromConjure(err error) []any {
 		"error_code", cErr.Code().String(),
 		"error_name", cErr.Name(),
 	}
+}
+
+// appendInstanceID returns msg with " (errorInstanceId: <id>)" appended when
+// err carries a Conjure error instance ID. Returns msg unchanged otherwise.
+// Used for user-facing error strings so support reps can grep screenshots for
+// the trace ID by label. Use this only when msg does not already include the
+// underlying error's stringified form — Conjure's Error() trails with an
+// unlabeled (id), which would duplicate. Use formatUserError instead when
+// interpolating err itself.
+func appendInstanceID(msg string, err error) string {
+	var cErr conjureerrors.Error
+	if !errors.As(err, &cErr) {
+		return msg
+	}
+	return fmt.Sprintf("%s (errorInstanceId: %s)", msg, cErr.InstanceID())
+}
+
+// formatUserError builds a "<prefix>: <details>" message with a labeled
+// trace ID for Conjure errors, avoiding the duplicate ID that "%v" on a
+// Conjure error would produce. Falls back to fmt.Sprintf("%s: %v", ...) for
+// non-Conjure errors.
+func formatUserError(prefix string, err error) string {
+	var cErr conjureerrors.Error
+	if errors.As(err, &cErr) {
+		return fmt.Sprintf("%s: %s %s (errorInstanceId: %s)", prefix, cErr.Code(), cErr.Name(), cErr.InstanceID())
+	}
+	return fmt.Sprintf("%s: %v", prefix, err)
 }
 
 func userAgentMiddleware() conjurehttpclient.Middleware {
