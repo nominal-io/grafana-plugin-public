@@ -1064,7 +1064,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 
 	if err != nil {
-		log.DefaultLogger.Error("Test connection failed", "error", err)
+		logErrorWithConjureFields("Test connection failed", err)
 		// Return more specific error messages
 		errorMsg := "Failed to connect to Nominal API"
 		statusCode := http.StatusServiceUnavailable
@@ -1080,7 +1080,7 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 			statusCode = http.StatusBadGateway
 		}
 
-		errBody, _ := json.Marshal(map[string]string{"error": errorMsg})
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID(errorMsg, err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
