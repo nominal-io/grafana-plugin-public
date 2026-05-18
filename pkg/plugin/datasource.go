@@ -168,7 +168,7 @@ func (d *Datasource) Dispose() {
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
-	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
@@ -894,7 +894,7 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	log.DefaultLogger.Debug("CheckHealth called")
 
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -941,18 +941,10 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 	if err != nil {
 		logErrorWithConjureFields("Health check failed", err)
-		// Return a more specific error message based on the error type
-		errorMsg := "Failed to connect to Nominal API"
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
-			errorMsg = "Invalid API key - authentication failed"
-		} else if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
-			errorMsg = "Connection timeout - unable to reach Nominal API"
-		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-			errorMsg = "Unable to connect to Nominal API - check base URL"
-		}
+		message, _ := classifyConnectionError(err)
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: appendInstanceID(errorMsg, err),
+			Message: message,
 		}, nil
 	}
 
@@ -966,7 +958,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 // CallResource handles HTTP requests sent to the plugin
 // This handles all proxy requests from /api/datasources/proxy/uid/{uid}/...
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	// Debug logging to see what requests are coming in
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
@@ -1065,22 +1057,8 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 
 	if err != nil {
 		logErrorWithConjureFields("Test connection failed", err)
-		// Return more specific error messages
-		errorMsg := "Failed to connect to Nominal API"
-		statusCode := http.StatusServiceUnavailable
-
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
-			errorMsg = "Invalid API key - authentication failed"
-			statusCode = http.StatusUnauthorized
-		} else if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
-			errorMsg = "Connection timeout - unable to reach Nominal API"
-			statusCode = http.StatusRequestTimeout
-		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-			errorMsg = "Unable to connect to Nominal API - check base URL"
-			statusCode = http.StatusBadGateway
-		}
-
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID(errorMsg, err)})
+		message, statusCode := classifyConnectionError(err)
+		errBody, _ := json.Marshal(map[string]string{"error": message})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
@@ -1874,7 +1852,7 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(errBody))
+		return nil, newAPIError(resp.StatusCode, errBody)
 	}
 
 	// Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
@@ -1958,7 +1936,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 		if resp.StatusCode != http.StatusOK {
 			errBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(errBody))
+			return nil, newAPIError(resp.StatusCode, errBody)
 		}
 
 		var assetResp AssetResponse

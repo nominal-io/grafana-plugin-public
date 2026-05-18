@@ -72,6 +72,18 @@ func userAgentComponentsFromContext(ctx context.Context) (userAgentComponents, b
 	return c, ok
 }
 
+// contextWithPluginRequestIdentity decorates ctx with the User-Agent
+// components derived from a Grafana PluginContext, so any downstream HTTP
+// client (Conjure middleware or raw transport) carries identifying headers.
+// Every Grafana entry point — QueryData, CheckHealth, CallResource — should
+// call this at the top of its handler. New entry points that skip it will
+// silently fall back to the "unknown" UA, which makes outbound traffic
+// indistinguishable from a misconfigured caller; tests in observability_test.go
+// guard against that regression for the three known entry points.
+func contextWithPluginRequestIdentity(ctx context.Context, pc backend.PluginContext) context.Context {
+	return contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(pc))
+}
+
 type userAgentTransport struct {
 	next http.RoundTripper
 }
@@ -105,16 +117,28 @@ func logErrorWithConjureFields(msg string, err error, extra ...any) {
 	log.DefaultLogger.Error(msg, fields...)
 }
 
+// errorFieldsFromConjure returns structured Conjure-error fields for either
+// the typed generated-client path or the raw-HTTP path (via *apiError). Both
+// emit the same triple {error_instance_id, error_code, error_name} so log
+// consumers don't have to special-case by source.
 func errorFieldsFromConjure(err error) []any {
 	var cErr conjureerrors.Error
-	if !errors.As(err, &cErr) {
-		return nil
+	if errors.As(err, &cErr) {
+		return []any{
+			"error_instance_id", cErr.InstanceID().String(),
+			"error_code", cErr.Code().String(),
+			"error_name", cErr.Name(),
+		}
 	}
-	return []any{
-		"error_instance_id", cErr.InstanceID().String(),
-		"error_code", cErr.Code().String(),
-		"error_name", cErr.Name(),
+	var apiErr *apiError
+	if errors.As(err, &apiErr) && (apiErr.InstanceID != "" || apiErr.ErrorCode != "" || apiErr.ErrorName != "") {
+		return []any{
+			"error_instance_id", apiErr.InstanceID,
+			"error_code", apiErr.ErrorCode,
+			"error_name", apiErr.ErrorName,
+		}
 	}
+	return nil
 }
 
 // appendInstanceID returns msg with " (errorInstanceId: <id>)" appended when
@@ -129,9 +153,9 @@ func appendInstanceID(msg string, err error) string {
 	return fmt.Sprintf("%s (errorInstanceId: %s)", msg, id)
 }
 
-// instanceIDFromError returns the Conjure errorInstanceId carried by err.
-// Tries the typed Conjure error first, then scans err.Error() for an embedded
-// Conjure JSON body. Returns "" when neither is present.
+// instanceIDFromError returns the Conjure errorInstanceId carried by err,
+// reading from either the typed Conjure error or the raw-HTTP *apiError type.
+// Returns "" when neither is present.
 func instanceIDFromError(err error) string {
 	if err == nil {
 		return ""
@@ -140,18 +164,85 @@ func instanceIDFromError(err error) string {
 	if errors.As(err, &cErr) {
 		return cErr.InstanceID().String()
 	}
-	msg := err.Error()
-	start := strings.Index(msg, "{")
-	if start < 0 {
-		return ""
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return apiErr.InstanceID
 	}
-	var body struct {
+	return ""
+}
+
+// apiError is the typed error returned by the raw-HTTP fetchers. It carries
+// only the Conjure classification triple (errorCode, errorName, errorInstanceId)
+// — never the response body's free-form text or the `parameters` map, both of
+// which can include user-supplied values. This is the structural fix that
+// makes raw-HTTP error logging match the generated-client path without
+// re-leaking body content.
+type apiError struct {
+	Status     int
+	ErrorCode  string
+	ErrorName  string
+	InstanceID string
+}
+
+func (e *apiError) Error() string {
+	switch {
+	case e.InstanceID != "":
+		return fmt.Sprintf("API returned status %d: %s %s (errorInstanceId: %s)",
+			e.Status, e.ErrorCode, e.ErrorName, e.InstanceID)
+	case e.ErrorCode != "" || e.ErrorName != "":
+		return fmt.Sprintf("API returned status %d: %s %s", e.Status, e.ErrorCode, e.ErrorName)
+	default:
+		return fmt.Sprintf("API returned status %d", e.Status)
+	}
+}
+
+// newAPIError parses a Conjure error body when present and returns an
+// *apiError carrying status + classification fields. Body content beyond the
+// three classification fields is deliberately discarded.
+func newAPIError(status int, body []byte) *apiError {
+	e := &apiError{Status: status}
+	var parsed struct {
+		ErrorCode       string `json:"errorCode"`
+		ErrorName       string `json:"errorName"`
 		ErrorInstanceID string `json:"errorInstanceId"`
 	}
-	if jsonErr := json.Unmarshal([]byte(msg[start:]), &body); jsonErr != nil {
-		return ""
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		e.ErrorCode = parsed.ErrorCode
+		e.ErrorName = parsed.ErrorName
+		e.InstanceID = parsed.ErrorInstanceID
 	}
-	return body.ErrorInstanceID
+	return e
+}
+
+// classifyConnectionError categorizes a connect-time failure and returns the
+// user-facing message (with errorInstanceId labeled when present) plus the
+// HTTP status code to surface from CallResource. CheckHealth uses only the
+// message — it always returns HealthStatusError — but the same classification
+// keeps the wording consistent across both surfaces.
+//
+// Recognized buckets:
+//   - 401 / "unauthorized"                          -> 401 + auth message
+//   - "timeout" / "context deadline exceeded"       -> 408 + timeout message
+//   - "connection refused" / "no such host"         -> 502 + connectivity message
+//   - anything else                                 -> 503 + generic message
+func classifyConnectionError(err error) (message string, httpStatus int) {
+	msg := "Failed to connect to Nominal API"
+	status := http.StatusServiceUnavailable
+
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized"):
+		msg = "Invalid API key - authentication failed"
+		status = http.StatusUnauthorized
+	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "context deadline exceeded"):
+		msg = "Connection timeout - unable to reach Nominal API"
+		status = http.StatusRequestTimeout
+	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no such host"):
+		msg = "Unable to connect to Nominal API - check base URL"
+		status = http.StatusBadGateway
+	}
+
+	return appendInstanceID(msg, err), status
 }
 
 // formatUserError builds a "<prefix>: <details>" message with a labeled
