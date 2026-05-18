@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
+	conjureerrors "github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/errors"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
@@ -166,6 +168,8 @@ func (d *Datasource) Dispose() {
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	// UA components live in ctx so any downstream HTTP picks them up; safe to set
+	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(req.PluginContext))
 	response := backend.NewQueryDataResponse()
 
@@ -205,9 +209,8 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
-		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
-		log.DefaultLogger.Error("Connection test failed", logFields...)
-		return backend.ErrDataResponse(backend.StatusInternal, formatUserVisibleError("Connection test failed", err))
+		logErrorWithConjureFields("Connection test failed", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
 	}
 
 	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
@@ -939,8 +942,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 	if err != nil {
-		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
-		log.DefaultLogger.Error("Health check failed", logFields...)
+		logErrorWithConjureFields("Health check failed", err)
 		// Return a more specific error message based on the error type
 		errorMsg := "Failed to connect to Nominal API"
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
@@ -950,8 +952,10 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
 			errorMsg = "Unable to connect to Nominal API - check base URL"
 		}
-		errorMsg = formatUserVisibleError(errorMsg, err)
-
+		var cErr conjureerrors.Error
+		if errors.As(err, &cErr) {
+			errorMsg += fmt.Sprintf(" (errorInstanceId: %s)", cErr.InstanceID())
+		}
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: errorMsg,
@@ -1188,8 +1192,7 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	// Make the API call using the datasource service
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 	if err != nil {
-		logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
-		log.DefaultLogger.Error("Channels search API call failed", logFields...)
+		logErrorWithConjureFields("Channels search API call failed", err)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
@@ -1743,8 +1746,7 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 		if err != nil {
-			logFields := append([]any{"error", err}, errorFieldsFromConjure(err)...)
-			log.DefaultLogger.Error("Channels search API call failed", logFields...)
+			logErrorWithConjureFields("Channels search API call failed", err)
 			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed"})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,

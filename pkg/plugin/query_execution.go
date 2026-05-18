@@ -154,11 +154,8 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
 		if err != nil {
-			logFields := append(
-				[]any{"error", err, "chunkStart", chunkStart, "chunkEnd", chunkEnd},
-				errorFieldsFromConjure(err)...,
-			)
-			log.DefaultLogger.Error("Batch compute API call failed", logFields...)
+			logErrorWithConjureFields("Batch compute API call failed", err,
+				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
 			for _, q := range chunkQueries {
 				results[q.RefID] = backend.ErrDataResponse(
 					backend.StatusInternal,

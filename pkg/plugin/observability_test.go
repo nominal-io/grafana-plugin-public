@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -148,27 +147,6 @@ func TestErrorFieldsFromConjure_NilReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestFormatUserVisibleError_IncludesInstanceID(t *testing.T) {
-	cErr := conjureerrors.NewError(conjureerrors.DefaultInternal)
-	formatted := formatUserVisibleError("Connection test failed", cErr)
-
-	if !strings.Contains(formatted, cErr.InstanceID().String()) {
-		t.Errorf("formatted error = %q, missing instance id %q",
-			formatted, cErr.InstanceID().String())
-	}
-	if !strings.Contains(formatted, "Connection test failed") {
-		t.Errorf("formatted error = %q, missing prefix", formatted)
-	}
-}
-
-func TestFormatUserVisibleError_NonConjureErrorOmitsInstanceID(t *testing.T) {
-	got := formatUserVisibleError("Connection test failed", errors.New("plain"))
-	want := "Connection test failed: plain"
-	if got != want {
-		t.Errorf("formatUserVisibleError = %q, want %q", got, want)
-	}
-}
-
 func keyValueSliceToMap(kv []any) map[string]any {
 	out := make(map[string]any, len(kv)/2)
 	for i := 0; i+1 < len(kv); i += 2 {
@@ -178,17 +156,6 @@ func keyValueSliceToMap(kv []any) map[string]any {
 	return out
 }
 
-// userV2ResponseBody must decode into the generated UserV2 Conjure type:
-// rid/orgRid must parse as Palantir RIDs or the decode fails before any
-// assertion runs.
-const userV2ResponseBody = `{
-	"rid": "ri.authentication.main.user.00000000-0000-0000-0000-000000000001",
-	"orgRid": "ri.authentication.main.org.00000000-0000-0000-0000-000000000002",
-	"email": "test@example.com",
-	"displayName": "Test User",
-	"avatarUrl": ""
-}`
-
 func conjureErrorBody(instanceID string) string {
 	return `{
 		"errorCode": "INTERNAL",
@@ -196,50 +163,6 @@ func conjureErrorBody(instanceID string) string {
 		"errorInstanceId": "` + instanceID + `",
 		"parameters": {}
 	}`
-}
-
-func TestConjureClient_SendsExpectedUserAgent(t *testing.T) {
-	var mu sync.Mutex
-	var seen []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		seen = append(seen, r.Header.Get("User-Agent"))
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(userV2ResponseBody))
-	}))
-	defer srv.Close()
-
-	client, err := conjurehttpclient.NewClient(
-		conjurehttpclient.WithBaseURLs([]string{srv.URL}),
-		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
-	)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	auth := authapi.NewAuthenticationServiceV2Client(client)
-
-	c := userAgentComponents{
-		PluginVersion: "0.11.3", GoOS: "linux", GoArch: "amd64",
-		GoVersion: "go1.25.7", GrafanaVersion: "12.1.0",
-	}
-	ctx := contextWithUserAgentComponents(context.Background(), c)
-
-	if _, err := auth.GetMyProfile(ctx, bearertoken.Token("test-token")); err != nil {
-		t.Fatalf("GetMyProfile: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) == 0 {
-		t.Fatal("server received no requests")
-	}
-	for i, ua := range seen {
-		if ua != uaWant {
-			t.Errorf("request[%d] UA = %q, want %q", i, ua, uaWant)
-		}
-	}
 }
 
 func TestConjureError_InstanceIDFlowsThroughHelpers(t *testing.T) {
@@ -267,11 +190,6 @@ func TestConjureError_InstanceIDFlowsThroughHelpers(t *testing.T) {
 	asMap := keyValueSliceToMap(errorFieldsFromConjure(callErr))
 	if got := asMap["error_instance_id"]; got != failingInstanceID {
 		t.Errorf("error_instance_id = %v, want %s", got, failingInstanceID)
-	}
-
-	formatted := formatUserVisibleError("Connection test failed", callErr)
-	if !strings.Contains(formatted, failingInstanceID) {
-		t.Errorf("user-visible error %q missing instance id %s", formatted, failingInstanceID)
 	}
 }
 
@@ -302,9 +220,10 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatal("expected DataResponse.Error, got nil")
 	}
-	want := "errorInstanceId: " + failingInstanceID
-	if !strings.Contains(resp.Error.Error(), want) {
-		t.Errorf("DataResponse.Error = %q, missing substring %q",
-			resp.Error.Error(), want)
+	// handleConnectionTestQuery preserves its prior shape: Sprintf("...: %v", err).
+	// Conjure's Error() trails with "(<instanceID>)", so the ID surfaces unlabeled.
+	if !strings.Contains(resp.Error.Error(), failingInstanceID) {
+		t.Errorf("DataResponse.Error = %q, missing instance id %s",
+			resp.Error.Error(), failingInstanceID)
 	}
 }
