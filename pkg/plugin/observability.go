@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -117,18 +118,40 @@ func errorFieldsFromConjure(err error) []any {
 }
 
 // appendInstanceID returns msg with " (errorInstanceId: <id>)" appended when
-// err carries a Conjure error instance ID. Returns msg unchanged otherwise.
-// Used for user-facing error strings so support reps can grep screenshots for
-// the trace ID by label. Use this only when msg does not already include the
-// underlying error's stringified form — Conjure's Error() trails with an
-// unlabeled (id), which would duplicate. Use formatUserError instead when
-// interpolating err itself.
+// err carries one. Use only when msg does not already include err.Error() —
+// Conjure errors trail with an unlabeled "(id)" that would duplicate. Use
+// formatUserError instead when interpolating err itself.
 func appendInstanceID(msg string, err error) string {
-	var cErr conjureerrors.Error
-	if !errors.As(err, &cErr) {
+	id := instanceIDFromError(err)
+	if id == "" {
 		return msg
 	}
-	return fmt.Sprintf("%s (errorInstanceId: %s)", msg, cErr.InstanceID())
+	return fmt.Sprintf("%s (errorInstanceId: %s)", msg, id)
+}
+
+// instanceIDFromError returns the Conjure errorInstanceId carried by err.
+// Tries the typed Conjure error first, then scans err.Error() for an embedded
+// Conjure JSON body. Returns "" when neither is present.
+func instanceIDFromError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var cErr conjureerrors.Error
+	if errors.As(err, &cErr) {
+		return cErr.InstanceID().String()
+	}
+	msg := err.Error()
+	start := strings.Index(msg, "{")
+	if start < 0 {
+		return ""
+	}
+	var body struct {
+		ErrorInstanceID string `json:"errorInstanceId"`
+	}
+	if jsonErr := json.Unmarshal([]byte(msg[start:]), &body); jsonErr != nil {
+		return ""
+	}
+	return body.ErrorInstanceID
 }
 
 // formatUserError builds a "<prefix>: <details>" message with a labeled

@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,6 +152,20 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	if !strings.Contains(resp.Error.Error(), wantLabel) {
 		t.Errorf("DataResponse.Error = %q, missing labeled instance id %q",
 			resp.Error.Error(), wantLabel)
+	}
+}
+
+func TestInstanceIDFromError_ExtractsFromJSONBody(t *testing.T) {
+	const id = "abcd1234-5678-90ab-cdef-000000000001"
+	raw := fmt.Errorf("API returned status 500: %s", conjureErrorBody(id))
+	if got := instanceIDFromError(raw); got != id {
+		t.Errorf("instanceIDFromError(raw) = %q, want %q", got, id)
+	}
+	if got := instanceIDFromError(errors.New("no body here")); got != "" {
+		t.Errorf("instanceIDFromError(no body) = %q, want empty", got)
+	}
+	if got := instanceIDFromError(nil); got != "" {
+		t.Errorf("instanceIDFromError(nil) = %q, want empty", got)
 	}
 }
 
