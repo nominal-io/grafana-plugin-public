@@ -1646,6 +1646,7 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 	if len(resp.Responses) != len(queries) {
 		t.Fatalf("expected %d responses, got %d", len(queries), len(resp.Responses))
 	}
+	expectedFirst := map[string]float64{"A": 1.0, "B": 4.0, "C": 7.0}
 	for _, q := range queries {
 		response := resp.Responses[q.RefID]
 		if response.Error != nil {
@@ -1653,6 +1654,13 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 		}
 		if len(response.Frames) != 1 {
 			t.Fatalf("expected 1 frame for %s, got %d", q.RefID, len(response.Frames))
+		}
+		v, ok := response.Frames[0].Fields[1].At(0).(*float64)
+		if !ok || v == nil {
+			t.Fatalf("expected %s first value %v, got %v", q.RefID, expectedFirst[q.RefID], v)
+		}
+		if *v != expectedFirst[q.RefID] {
+			t.Fatalf("expected %s first value %v, got %v", q.RefID, expectedFirst[q.RefID], *v)
 		}
 	}
 }

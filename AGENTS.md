@@ -56,9 +56,9 @@ Do not commit Nominal API keys or print them in logs, shell output, PR bodies, o
 
 For writeful query integration coverage, prefer self-provisioned test data over known staging fixtures. Create temporary assets, data scopes, datasets, and channels inside the test, assert against data the test ingested, and archive temporary resources during cleanup. Known existing assets are acceptable for manual diagnostics, but they should not be the default proof for PR verification.
 
-Known local credential sources may exist outside this worktree:
+Known local credential sources may exist in or near this worktree:
 
-- `$HOME/code/grafana-plugin-public/.env` can provide `NOMINAL_API_KEY`.
+- `./.env` can provide `NOMINAL_API_KEY`.
 - `~/.config/nominal/config.yml` can provide Nominal client profiles.
 
 These sources are not automatically correct for every API environment. Pair the key with the matching base URL before treating a live test failure as a product failure. For the local Grafana plugin `.env` key, the verified staging base URL is:
