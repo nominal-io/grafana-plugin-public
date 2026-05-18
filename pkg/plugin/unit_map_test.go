@@ -48,15 +48,8 @@ func TestMapToGrafanaUnit(t *testing.T) {
 	}
 }
 
-// TestUnitMapMinuteMeterCollision is a targeted tripwire for a UCUM/Grafana
-// short-symbol collision:
-//
-//   - In UCUM, "m" means meter and "min" means minute.
-//   - In Grafana, the ID "m" means minutes and the ID "lengthm" means meters.
-//
-// The mapping table correctly inverts these (m → lengthm; min → m), but a
-// hurried edit could swap them. If this test fails, the mapping table has been
-// edited carelessly.
+// TestUnitMapMinuteMeterCollision guards a UCUM/Grafana short-symbol swap:
+// UCUM "m" = meter, "min" = minute; Grafana "m" = minutes, "lengthm" = meters.
 func TestUnitMapMinuteMeterCollision(t *testing.T) {
 	if got := mapToGrafanaUnit("m"); got != "lengthm" {
 		t.Errorf("UCUM m (meter) must map to Grafana lengthm, got %q", got)
@@ -66,16 +59,9 @@ func TestUnitMapMinuteMeterCollision(t *testing.T) {
 	}
 }
 
-// TestUnitMapMicrosecondUnicode is a tripwire for an ASCII↔unicode trap.
-// The mapping is "us" → "µs" where:
-//   - The KEY is ASCII (Nominal canonicalizes the print-form µs as ASCII "us")
-//   - The VALUE contains U+00B5 MICRO SIGN — Grafana's actual unit ID character
-//
-// U+00B5 (micro sign) and U+03BC (Greek small letter mu) render identically in
-// most fonts but are different code points. A refactor or copy-paste that
-// substitutes Greek mu would silently break rendering — Grafana wouldn't match
-// the ID and would fall through to suffix mode with the Greek-mu glyph.
-// Asserting the exact byte sequence catches the swap.
+// TestUnitMapMicrosecondUnicode guards the "us" → "µs" mapping: the value must
+// be U+00B5 MICRO SIGN, not U+03BC GREEK SMALL LETTER MU. Glyphs are identical
+// in most fonts but Grafana matches by code point.
 func TestUnitMapMicrosecondUnicode(t *testing.T) {
 	const wantMicroSign = "µs" // U+00B5 (micro sign) + s — NOT U+03BC (Greek mu)
 	got := mapToGrafanaUnit("us")
@@ -203,24 +189,14 @@ var validGrafanaUnitIDs = map[string]bool{
 	"hertzkilo": true, "hertzmega": true, "hertzgiga": true,
 }
 
-// TestUnitMapValuesAreValidGrafanaIDs enforces the unit_map.go file-header
-// promise that "Grafana IDs verified against @grafana/data" is not aspirational.
-// Every value in unitSymbolToGrafanaID must appear in validGrafanaUnitIDs.
-//
-// This catches the class of bug where a plausible-looking-but-nonexistent
-// Grafana ID (e.g. "pressurempa", "pressureatm") is added to the map: those
-// IDs don't exist in Grafana's categories.ts, so Grafana renders them as the
-// literal string suffix instead of formatting the value. The map is supposed
-// to either produce a real Grafana ID or fall through to suffix mode — never
-// produce a fake ID that hits the wrong code path.
+// TestUnitMapValuesAreValidGrafanaIDs asserts every value in unitSymbolToGrafanaID
+// is a real Grafana ID. Catches plausible-but-fake IDs (e.g. "pressurempa") that
+// would hit Grafana's registry-miss path instead of our suffix-mode fallthrough.
 func TestUnitMapValuesAreValidGrafanaIDs(t *testing.T) {
 	for symbol, id := range unitSymbolToGrafanaID {
 		if !validGrafanaUnitIDs[id] {
-			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not a known Grafana unit ID. "+
-				"Verify against @grafana/data/src/valueFormats/categories.ts. "+
-				"If %q is real, add it to validGrafanaUnitIDs. If it isn't, "+
-				"remove the entry so the symbol falls through to suffix mode.",
-				symbol, id, id)
+			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not in validGrafanaUnitIDs; "+
+				"either add the ID to the snapshot or remove the mapping", symbol, id)
 		}
 	}
 }

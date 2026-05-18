@@ -297,9 +297,8 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		}
 		inferredType := getChannelDataType(channel) // "" if ChannelMetadata.DataType is nil
 		inferredUnit := getChannelUnit(channel)     // "" if Unit is nil
-		// Skip metadata-less records so a single information-free match doesn't cache an empty result.
 		if inferredType == "" && inferredUnit == "" {
-			continue
+			continue // don't cache an empty match; fall through to the no-match write below
 		}
 		if inferredType != "" {
 			qm.ChannelDataType = inferredType
@@ -307,9 +306,6 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		if inferredUnit != "" {
 			qm.ChannelUnit = inferredUnit
 		}
-		// Either field may be "". The cache-read path above guards each field with
-		// `if entry.X != ""`, so empty cached values don't clobber zero values.
-		// The fresh-write path is symmetric.
 		e.datasource.channelMetadataCacheMu.Lock()
 		e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{
 			channelDataType: inferredType,

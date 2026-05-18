@@ -468,9 +468,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	})
 
 	t.Run("nil DataType + non-nil Unit: ChannelUnit still populated (cache-write ordering guard)", func(t *testing.T) {
-		// Regression guard for the ordering bug-class: getChannelDataType returning ""
-		// must NOT short-circuit the unit write. Today qm.ChannelDataType is left as
-		// the frontend-supplied value, but ChannelUnit is assigned unconditionally.
+		// An empty inferred type must not short-circuit the unit write.
 		server := setupServer(t)
 		defer server.Close()
 
