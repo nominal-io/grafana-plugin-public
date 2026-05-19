@@ -5059,75 +5059,75 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 
 func TestFieldConfigForNumeric(t *testing.T) {
 	tests := []struct {
-		name         string
-		channelUnit  string
-		displayName  string
-		unitless     bool
-		wantUnit     string
-		wantDispName string
+		name               string
+		channelUnit        string
+		displayName        string
+		carriesChannelUnit bool
+		wantUnit           string
+		wantDispName       string
 	}{
 		{
-			name:         "multi-agg MEAN on Cel channel applies unit",
-			channelUnit:  "Cel",
-			displayName:  "engine_temp (mean)",
-			unitless:     false,
-			wantUnit:     "celsius",
-			wantDispName: "engine_temp (mean)",
+			name:               "multi-agg MEAN on Cel channel applies unit",
+			channelUnit:        "Cel",
+			displayName:        "engine_temp (mean)",
+			carriesChannelUnit: true,
+			wantUnit:           "celsius",
+			wantDispName:       "engine_temp (mean)",
 		},
 		{
-			name:         "multi-agg COUNT on Cel channel suppresses unit (Unitless)",
-			channelUnit:  "Cel",
-			displayName:  "engine_temp (count)",
-			unitless:     true,
-			wantUnit:     "",
-			wantDispName: "engine_temp (count)",
+			name:               "multi-agg COUNT on Cel channel suppresses unit (dimensionless)",
+			channelUnit:        "Cel",
+			displayName:        "engine_temp (count)",
+			carriesChannelUnit: false,
+			wantUnit:           "",
+			wantDispName:       "engine_temp (count)",
 		},
 		{
-			name:         "multi-agg VARIANCE on Cel channel suppresses unit (Unitless)",
-			channelUnit:  "Cel",
-			displayName:  "engine_temp (variance)",
-			unitless:     true,
-			wantUnit:     "",
-			wantDispName: "engine_temp (variance)",
+			name:               "multi-agg VARIANCE on Cel channel suppresses unit (unit²)",
+			channelUnit:        "Cel",
+			displayName:        "engine_temp (variance)",
+			carriesChannelUnit: false,
+			wantUnit:           "",
+			wantDispName:       "engine_temp (variance)",
 		},
 		{
-			name:         "multi-agg FIRST on Cel channel applies unit (unit-bearing)",
-			channelUnit:  "Cel",
-			displayName:  "engine_temp (first)",
-			unitless:     false,
-			wantUnit:     "celsius",
-			wantDispName: "engine_temp (first)",
+			name:               "multi-agg FIRST on Cel channel applies unit (unit-bearing)",
+			channelUnit:        "Cel",
+			displayName:        "engine_temp (first)",
+			carriesChannelUnit: true,
+			wantUnit:           "celsius",
+			wantDispName:       "engine_temp (first)",
 		},
 		{
-			name:         "legacy path (unitless=false) on Cel channel applies unit",
-			channelUnit:  "Cel",
-			displayName:  "engine_temp",
-			unitless:     false,
-			wantUnit:     "celsius",
-			wantDispName: "engine_temp",
+			name:               "legacy path on Cel channel applies unit",
+			channelUnit:        "Cel",
+			displayName:        "engine_temp",
+			carriesChannelUnit: true,
+			wantUnit:           "celsius",
+			wantDispName:       "engine_temp",
 		},
 		{
-			name:         "legacy path on channel with empty unit produces empty unit",
-			channelUnit:  "",
-			displayName:  "engine_temp",
-			unitless:     false,
-			wantUnit:     "",
-			wantDispName: "engine_temp",
+			name:               "legacy path on channel with empty unit produces empty unit",
+			channelUnit:        "",
+			displayName:        "engine_temp",
+			carriesChannelUnit: true,
+			wantUnit:           "",
+			wantDispName:       "engine_temp",
 		},
 		{
-			name:         "legacy path on display-only unit falls through as explicit suffix",
-			channelUnit:  "asdfsdfs",
-			displayName:  "weird_channel",
-			unitless:     false,
-			wantUnit:     "suffix:asdfsdfs",
-			wantDispName: "weird_channel",
+			name:               "legacy path on display-only unit falls through as explicit suffix",
+			channelUnit:        "asdfsdfs",
+			displayName:        "weird_channel",
+			carriesChannelUnit: true,
+			wantUnit:           "suffix:asdfsdfs",
+			wantDispName:       "weird_channel",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := &NominalQueryModel{ChannelUnit: tt.channelUnit, Channel: "engine_temp"}
-			got := fieldConfigForNumeric(qm, tt.displayName, tt.unitless)
+			got := fieldConfigForNumeric(qm, tt.displayName, tt.carriesChannelUnit)
 			if got.Unit != tt.wantUnit {
 				t.Errorf("Unit = %q, want %q", got.Unit, tt.wantUnit)
 			}

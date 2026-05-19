@@ -682,49 +682,50 @@ func TestValidateAndDedup(t *testing.T) {
 	}
 }
 
-// TestAggSpecsUnitlessFlag guards the Unitless flag on aggSpecs entries.
-// COUNT is dimensionless, VARIANCE is in unit² (squared) — both must be marked
-// Unitless so FieldConfig.Unit is suppressed on those frames. Every other
-// aggregation must NOT be marked Unitless: MEAN/MIN/MAX/FIRST/LAST all return
-// values in the base channel unit.
+// TestAggSpecsCarriesChannelUnitFlag guards the CarriesChannelUnit flag on
+// aggSpecs entries. MEAN/MIN/MAX/FIRST/LAST return values in the base channel
+// unit and must be marked true. COUNT (dimensionless) and VARIANCE (unit²) do
+// not carry the channel unit and must be marked false so FieldConfig.Unit is
+// suppressed on those frames.
 //
 // The reverse-direction check below forces any new aggregation to declare its
-// Unitless value explicitly, rather than inheriting a default by copy-paste.
-func TestAggSpecsUnitlessFlag(t *testing.T) {
+// CarriesChannelUnit value explicitly, rather than inheriting a default by
+// copy-paste.
+func TestAggSpecsCarriesChannelUnitFlag(t *testing.T) {
 	cases := map[string]bool{
-		AggMean:       false,
-		AggMin:        false,
-		AggMax:        false,
-		AggCount:      true,
-		AggVariance:   true,
-		AggFirstPoint: false,
-		AggLastPoint:  false,
+		AggMean:       true,
+		AggMin:        true,
+		AggMax:        true,
+		AggCount:      false,
+		AggVariance:   false,
+		AggFirstPoint: true,
+		AggLastPoint:  true,
 	}
-	for agg, wantUnitless := range cases {
+	for agg, wantCarries := range cases {
 		spec, ok := aggSpecs[agg]
 		if !ok {
 			t.Errorf("aggSpecs[%q] missing", agg)
 			continue
 		}
-		if spec.Unitless != wantUnitless {
-			t.Errorf("aggSpecs[%q].Unitless = %v, want %v", agg, spec.Unitless, wantUnitless)
+		if spec.CarriesChannelUnit != wantCarries {
+			t.Errorf("aggSpecs[%q].CarriesChannelUnit = %v, want %v", agg, spec.CarriesChannelUnit, wantCarries)
 		}
 	}
 	// Reverse direction: every aggSpecs entry must have an expectation above,
 	// so adding a new aggregation can't silently pass this test.
 	for agg := range aggSpecs {
 		if _, ok := cases[agg]; !ok {
-			t.Errorf("aggSpecs[%q] has no Unitless expectation in this test — "+
+			t.Errorf("aggSpecs[%q] has no CarriesChannelUnit expectation in this test — "+
 				"add it to `cases` with an explicit true/false", agg)
 		}
 	}
 }
 
-// TestAggregationSeriesUnitlessPropagation guards the contract that
-// extractArrowBucketedNumericSeries copies aggColumnSpec.Unitless onto each
-// produced AggregationSeries. fieldConfigForNumeric reads this bit directly
+// TestAggregationSeriesCarriesChannelUnitPropagation guards the contract that
+// extractArrowBucketedNumericSeries copies aggColumnSpec.CarriesChannelUnit onto
+// each produced AggregationSeries. fieldConfigForNumeric reads this bit directly
 // rather than re-looking up the spec by display name; the wire-up must hold.
-func TestAggregationSeriesUnitlessPropagation(t *testing.T) {
+func TestAggregationSeriesCarriesChannelUnitPropagation(t *testing.T) {
 	ts := []int64{1000000000000, 2000000000000}
 	columns := map[string][]float64{
 		"mean":     {10.0, 20.0},
@@ -748,19 +749,19 @@ func TestAggregationSeriesUnitlessPropagation(t *testing.T) {
 	}
 
 	want := []struct {
-		name     string
-		unitless bool
+		name    string
+		carries bool
 	}{
-		{"mean", false},
-		{"count", true},
-		{"variance", true},
+		{"mean", true},
+		{"count", false},
+		{"variance", false},
 	}
 	for i, w := range want {
 		if series[i].Name != w.name {
 			t.Errorf("series[%d].Name = %q, want %q", i, series[i].Name, w.name)
 		}
-		if series[i].Unitless != w.unitless {
-			t.Errorf("series[%d] (%s).Unitless = %v, want %v", i, w.name, series[i].Unitless, w.unitless)
+		if series[i].CarriesChannelUnit != w.carries {
+			t.Errorf("series[%d] (%s).CarriesChannelUnit = %v, want %v", i, w.name, series[i].CarriesChannelUnit, w.carries)
 		}
 	}
 }

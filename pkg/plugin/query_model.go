@@ -316,7 +316,7 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		return
 	}
 
-	// No name match — cache the miss so a re-query doesn't re-search.
+	// No usable metadata — cache the miss so a re-query doesn't re-search.
 	e.datasource.channelMetadataCacheMu.Lock()
 	e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{fetchedAt: time.Now()}
 	e.datasource.channelMetadataCacheMu.Unlock()

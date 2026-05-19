@@ -421,14 +421,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
 						valueField := data.NewField("value", nil, agg.Values)
-						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.Unitless)
+						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, agg.TimePoints),
 							valueField,
 						)
 					} else {
 						valueField := data.NewField("value", nil, []*float64{})
-						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.Unitless)
+						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, []time.Time{}),
 							valueField,
@@ -475,14 +475,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				frame.Name = qm.Channel
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, false)
+					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, true)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, false)
+					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, true)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -1245,7 +1245,7 @@ func getChannelUnit(channel datasourceapi.ChannelMetadata) string {
 	if channel.Unit == nil {
 		return ""
 	}
-	return channel.Unit.Symbol
+	return strings.TrimSpace(channel.Unit.Symbol)
 }
 
 // getChannelDataType normalizes the API's SeriesDataType to "string", "log", or "numeric".
@@ -1264,10 +1264,11 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	}
 }
 
-// unitless = true for COUNT/VARIANCE aggregations, which have no meaningful unit.
-func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, unitless bool) *data.FieldConfig {
+// carriesChannelUnit = false for COUNT (dimensionless) and VARIANCE (unit²),
+// suppressing the channel unit on the resulting frame.
+func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesChannelUnit bool) *data.FieldConfig {
 	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
-	if unitless {
+	if !carriesChannelUnit {
 		return cfg
 	}
 	cfg.Unit = mapToGrafanaUnit(qm.ChannelUnit)
