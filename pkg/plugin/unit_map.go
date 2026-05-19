@@ -1,68 +1,50 @@
 // Package plugin — unit_map.go
 //
-// Maps Nominal channel unit symbols to Grafana unit IDs.
+// Maps channel unit symbols (ChannelMetadata.Unit.Symbol) to Grafana unit IDs.
 //
-// What counts as a key:
+// Keying:
+//   - Keys are UCUM-based and case-significant (Cel ≠ cel, m=meter vs M=mega-).
+//   - SI-prefixed forms (mg, kW, mV, kN, nF, …) are valid keys even when not
+//     in the published browse catalog — the upstream parser accepts standard
+//     SI-prefix composition on metric atoms, and real channels arrive with
+//     these forms. Include them.
+//   - A few non-UCUM shorthands (mph, psia, psig, rpm) are canonical at the
+//     source and included as-is.
 //
-//	A channel's Unit.Symbol is whatever Nominal's UCUM-based parser accepted
-//	and round-tripped at upload time. That set is strictly larger than what
-//	the public browse endpoint GET /units/v1/units enumerates — in particular,
-//	SI-prefixed forms (mg, kW, mV, kN, nF, …) are parseable via standard
-//	UCUM SI-prefix composition on metric atoms (g, W, V, N, F, …) even when
-//	they are not listed in the browse catalog. Keys here intentionally include
-//	those SI-prefixed forms alongside the catalog symbols themselves.
+// Values are Grafana unit IDs pinned to the 12.1.0 floor (plugin.json's
+// grafanaDependency) and enforced by a snapshot test in unit_map_test.go.
+// Unmapped symbols fall through to "suffix:<symbol>" (rendered verbatim,
+// e.g. "12.3 MPa") — always safe, just less rich.
 //
-//	UCUM is case-significant (Cel ≠ cel, m=meter vs M=mega-). Keys also include
-//	the few non-UCUM-pure shorthands Nominal canonicalizes (mph, psia, psig, rpm).
-//
-// Values are enforced against a Grafana 12.1.0 ID snapshot in unit_map_test.go.
-// Anything not in this table falls through to suffix mode via mapToGrafanaUnit
-// (rendered verbatim as "12.3 <symbol>") — always safe, just less rich.
-//
-// Verification:
-//
-//	Browse catalog audited via cmd/unitprobe --list-units on 2026-05-18
-//	(282 enumerated symbols across 59 properties). Entries here that are
-//	absent from that audit (mg, kW, mV, kN, nF, microF, …) are SI-prefix
-//	composites the parser accepts; round-trip behavior verified via
-//	cmd/unitprobe --round-trip (POST /units/v1/units/get-batch-units) on
-//	2026-05-18 — every key in this table either round-trips identically
-//	or is the canonical form the server resolves common variants to.
-//
-//	Micro-prefix rule (surfaced by the round-trip probe): "us" is the ONLY
-//	canonical ASCII-u form; for every other property the canonical form is
-//	spelled-out "micro<atom>" (microF, microH, microPa, microm, microg, …),
-//	with both "u<X>" and the Unicode "µ<X>" rejected or rewritten. The
-//	"us" entry below has a guardrail comment; don't generalize from it.
+// Editing this table:
+//   - Verify candidate symbols are actually emitted by the source API before
+//     adding rows; an entry for a symbol the API never produces is dead code.
+//   - Micro-prefix trap: "us" is the ONLY ASCII-u canonical form. Everywhere
+//     else the canonical form is spelled-out "micro<atom>" (microF, microH,
+//     …); both "u<X>" and Unicode "µ<X>" are non-canonical and never reach
+//     the map. Don't generalize the "us" row.
 package plugin
 
-// unitSymbolToGrafanaID maps Nominal canonical UCUM symbols to Grafana unit IDs.
-// See file header for keying convention and fallthrough behavior.
+// unitSymbolToGrafanaID maps source-canonical UCUM symbols to Grafana unit IDs.
+// See file header for keying convention and fall-through behavior.
 var unitSymbolToGrafanaID = map[string]string{
 	// Temperature
 	"Cel":    "celsius",    // UCUM uses Cel, not °C
 	"[degF]": "fahrenheit", // bracketed; UCUM uses [degF], not °F
 	"K":      "kelvin",
 
-	// Pressure
-	// Note: MPa and atm are Nominal canonical but have no Grafana unit ID — they
-	// fall through to suffix mode (rendered verbatim, e.g. "23.4 MPa") rather
-	// than producing an invalid Grafana ID that renders as the literal string.
-	// Note: hPa is parser-accepted but the server canonicalizes it to mbar
-	// (1 hPa = 1 mbar; verified via /units/v1/units/get-batch-units, 2026-05-18).
-	// Real channels always arrive as "mbar", so no "hPa" row is needed.
+	// Pressure — MPa and atm are canonical but Grafana 12.x has no ID for them,
+	// so they fall through to suffix mode. hPa is server-canonicalized to mbar
+	// (1 hPa = 1 mbar) and never reaches the map.
 	"Pa":   "pressurepa",
 	"kPa":  "pressurekpa",
 	"mbar": "pressurembar",
 	"bar":  "pressurebar",
 	"psia": "pressurepsi", // UCUM absolute psi; Grafana has no abs/gauge distinction
-	"psig": "pressurepsi", // UCUM gauge psi; same target. Bare "psi" is NOT Nominal canonical
+	"psig": "pressurepsi", // UCUM gauge psi; same target. Bare "psi" is NOT canonical.
 
-	// Length
-	// Note: cm is Nominal canonical but has no Grafana unit ID in 12.x — Grafana
-	// added `lengthcm` post-12.4 (PR #122489, milestone 13.1.x), so on supported
-	// versions it falls through to suffix mode (rendered "12.3 cm"). Re-add the
-	// "cm": "lengthcm" mapping once the minimum supported Grafana is 13.1+.
+	// Length — cm falls through on Grafana 12.x (lengthcm lands in 13.1+,
+	// grafana#122489). Re-add "cm": "lengthcm" once the floor reaches 13.1.
 	"mm":     "lengthmm",
 	"m":      "lengthm", // UCUM m=meter (UCUM min=minute, mapped separately)
 	"km":     "lengthkm",
@@ -71,8 +53,8 @@ var unitSymbolToGrafanaID = map[string]string{
 	"[mi_i]": "lengthmi", // UCUM international mile
 
 	// Mass
-	"mg":      "massmg", // SI-prefix composite; parser-accepted (see header)
-	"g":       "massg",  // UCUM g=gram; gravity is [g] (bracketed). No ambiguity.
+	"mg":      "massmg",
+	"g":       "massg", // UCUM g=gram; gravity is [g] (bracketed). No ambiguity.
 	"kg":      "masskg",
 	"t":       "masst",  // metric tonne
 	"[lb_av]": "masslb", // UCUM avoirdupois pound — NOT "lb"
@@ -80,37 +62,34 @@ var unitSymbolToGrafanaID = map[string]string{
 	// Velocity
 	"m/s":    "velocityms",
 	"km/h":   "velocitykmh",
-	"mph":    "velocitymph", // Nominal canonical; UCUM-pure [mi_i]/h is NOT in Nominal catalog
+	"mph":    "velocitymph", // canonical shorthand; UCUM-pure [mi_i]/h is not canonical
 	"[kn_i]": "velocityknot",
 
 	// Acceleration
-	"m/s^2": "accMS2", // Nominal canonical uses caret form; "m/s2" is NOT canonical
+	"m/s^2": "accMS2", // canonical caret form; "m/s2" is not canonical
 	"[g]":   "accG",   // bracketed = standard gravity (distinct from gram "g")
 
 	// Frequency
 	"Hz": "hertz",
 
-	// Electrical
-	// SI-prefixed entries here are parser-accepted composites (see header).
-	// Prefixed Ohm forms (kOhm/MOhm/mOhm) are deliberately omitted — UCUM treats
-	// "Ohm" as a multi-letter atom and JSR-385 SI-prefix handling on multi-letter
-	// atoms isn't verified for this deployment; add once empirically confirmed.
-	"V":   "volt",
-	"mV":  "mvolt",
-	"kV":  "kvolt",
-	"A":   "amp",
-	"mA":  "mamp",
-	"kA":  "kamp",
-	"Ohm": "ohm",    // UCUM uses Ohm, not Ω. Base form only.
+	// Electrical — prefixed Ohm forms (kOhm/MOhm/mOhm) are intentionally omitted
+	// because UCUM treats "Ohm" as a multi-letter atom and SI-prefix handling on
+	// multi-letter atoms isn't verified for this deployment.
+	"V":      "volt",
+	"mV":     "mvolt",
+	"kV":     "kvolt",
+	"A":      "amp",
+	"mA":     "mamp",
+	"kA":     "kamp",
+	"Ohm":    "ohm",    // UCUM uses Ohm, not Ω. Base form only.
 	"F":      "farad",  // UCUM F=farad (capacitance); fahrenheit is [degF], no ambiguity
-	"microF": "µfarad", // spelled-out micro-prefix. Nominal rejects "uF" and canonicalizes "µF" → "microF" (probed 2026-05-18). Time is the only category where ASCII "u" is canonical (us); for everything else micro<atom> is the canonical form.
+	"microF": "µfarad", // spelled-out micro-prefix; see header
 	"nF":     "nfarad",
 	"pF":     "pfarad",
-	"microH": "µhenry", // inductance; same spelled-out micro rule as microF
+	"microH": "µhenry", // spelled-out micro-prefix; see header
 
-	// Energy / power
-	// W prefixes are parser-accepted composites (see header); J/eV have no
-	// prefixed Grafana IDs in 12.1, so we map only the base forms.
+	// Energy / power — J and eV have no prefixed Grafana IDs in 12.x, so only
+	// the base forms are mapped.
 	"J":  "joule",
 	"eV": "ev",
 	"W":  "watt",
@@ -123,34 +102,37 @@ var unitSymbolToGrafanaID = map[string]string{
 	"N":  "forceN",
 	"kN": "forcekN",
 
-	// Information — Nominal's canonical forms are SI/decimal (kilobyte,
-	// megabyte, gigabyte), not IEC binary, so values map to Grafana's "dec*" family.
-	"By":  "decbytes", // UCUM atomic byte (UCUM `B`=bel, hence `By`); decimal-family lineage
+	// Information — canonical forms are SI/decimal (kilobyte, megabyte, gigabyte),
+	// not IEC binary, so values map to Grafana's "dec*" family.
+	"By":  "decbytes", // UCUM atomic byte (UCUM `B`=bel, hence `By`)
 	"KB":  "deckbytes",
 	"MB":  "decmbytes",
 	"GB":  "decgbytes",
 	"bit": "bits",
 
-	// Rotation
-	"rpm":   "rotrpm", // Nominal canonical; Grafana 'rpm' is reads/min (throughput), 'rotrpm' is revolutions/min
+	// Rotation — Grafana 'rpm' is reads/min (throughput); 'rotrpm' is the
+	// rotational-speed ID we actually want.
+	"rpm":   "rotrpm",
 	"rad/s": "rotrads",
-	"deg/s": "rotdegs", // Nominal canonical
+	"deg/s": "rotdegs",
 
-	// Time
+	// Time — "us" is the only category where ASCII "u"-prefix is canonical;
+	// elsewhere the canonical form is spelled-out "micro<atom>" (see header).
+	// Do not generalize this row.
 	"s":   "s",
 	"ms":  "ms",
-	"us":  "µs", // Time is the ONLY category where ASCII "u"-prefix is canonical. Nominal canonicalizes "µs"/"μs" → "us" but everywhere else (µF→microF, µA→microA, µH→microH, etc.) it spells out the micro- prefix. Don't generalize this row to other units.
+	"us":  "µs",
 	"ns":  "ns",
 	"min": "m", // UCUM min=minute; Grafana ID m=minutes
-	"h":   "h", // hour
-	"d":   "d", // day
+	"h":   "h",
+	"d":   "d",
 
 	// Misc
 	"%":            "percent",
 	"deg":          "degree", // UCUM uses deg, not °
 	"rad":          "radian",
-	"lx":           "lux",     // UCUM lux
-	"[gal_us]/min": "flowgpm", // US gallons per minute
+	"lx":           "lux",
+	"[gal_us]/min": "flowgpm",
 }
 
 // mapToGrafanaUnit resolves a Nominal canonical unit symbol to a Grafana unit ID,
