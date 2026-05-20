@@ -1823,20 +1823,23 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 	return asset, nil
 }
 
-func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+// postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
+// with the standard Authorization and Content-Type headers. On non-2xx the
+// response body is read, closed, and returned as a typed *apiError. On 2xx
+// the caller owns closing resp.Body.
+func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	// Use the batch lookup endpoint with a single RID
-	bodyBytes, err := json.Marshal([]string{assetRid})
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/scout/v1/asset/multiple", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -1848,24 +1851,31 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
 		return nil, newAPIError(resp.StatusCode, errBody)
 	}
 
-	// Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
+	return resp, nil
+}
+
+func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	resp, err := d.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
 	var assetMap map[string]SingleAssetResponse
 	if err := json.NewDecoder(resp.Body).Decode(&assetMap); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Look up the specific asset
 	if asset, ok := assetMap[assetRid]; ok {
 		return &asset, nil
 	}
-
 	return nil, nil
 }
 
@@ -1890,14 +1900,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	pageSize := 50
 	totalFetched := 0
 
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" {
-		baseURL = defaultAPIBaseURL
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
 	for totalFetched < maxResults {
-		// Build request body matching the format used by QueryEditor
 		requestBody := map[string]interface{}{
 			"query": map[string]interface{}{
 				"searchText": searchText,
@@ -1909,47 +1912,25 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 			},
 			"pageSize": pageSize,
 		}
-
 		if pageToken != "" {
 			requestBody["nextPageToken"] = pageToken
 		}
 
-		bodyBytes, err := json.Marshal(requestBody)
+		resp, err := d.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request: %w", err)
-		}
-
-		// Make HTTP request
-		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/scout/v1/search-assets", bytes.NewReader(bodyBytes))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := d.getResourceHTTPClient().Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("request failed: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, newAPIError(resp.StatusCode, errBody)
+			return nil, err
 		}
 
 		var assetResp AssetResponse
-		if err := json.NewDecoder(resp.Body).Decode(&assetResp); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode response: %w", err)
-		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&assetResp)
 		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", decodeErr)
+		}
 
 		allResults = append(allResults, assetResp)
 		totalFetched += len(assetResp.Results)
 
-		// Check for more pages
 		if assetResp.NextPageToken == "" || len(assetResp.Results) < pageSize {
 			break
 		}
