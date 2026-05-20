@@ -106,6 +106,48 @@ func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.next.RoundTrip(r)
 }
 
+// errorDetails carries the Conjure classification triple extracted from an
+// error, regardless of whether it arrived via the generated Conjure client
+// (typed conjureerrors.Error) or one of the raw-HTTP fetchers (typed
+// *apiError). All user-facing and log-side helpers below project from this
+// single representation, so the {instance, code, name} vocabulary lives in
+// one place.
+type errorDetails struct {
+	InstanceID string
+	Code       string
+	Name       string
+}
+
+func (d errorDetails) empty() bool {
+	return d.InstanceID == "" && d.Code == "" && d.Name == ""
+}
+
+// extractErrorDetails parses err into its Conjure classification triple,
+// returning the zero value when err carries no Nominal classification (e.g.
+// transport-level failures or plain errors).
+func extractErrorDetails(err error) errorDetails {
+	if err == nil {
+		return errorDetails{}
+	}
+	var cErr conjureerrors.Error
+	if errors.As(err, &cErr) {
+		return errorDetails{
+			InstanceID: cErr.InstanceID().String(),
+			Code:       cErr.Code().String(),
+			Name:       cErr.Name(),
+		}
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return errorDetails{
+			InstanceID: apiErr.InstanceID,
+			Code:       apiErr.ErrorCode,
+			Name:       apiErr.ErrorName,
+		}
+	}
+	return errorDetails{}
+}
+
 // logErrorWithConjureFields logs at error level with structured Conjure error
 // taxonomy (instance ID, code, name) appended. extra is the caller's existing
 // key/value fields, applied after the standard "error" + Conjure fields.
@@ -122,23 +164,15 @@ func logErrorWithConjureFields(msg string, err error, extra ...any) {
 // emit the same triple {error_instance_id, error_code, error_name} so log
 // consumers don't have to special-case by source.
 func errorFieldsFromConjure(err error) []any {
-	var cErr conjureerrors.Error
-	if errors.As(err, &cErr) {
-		return []any{
-			"error_instance_id", cErr.InstanceID().String(),
-			"error_code", cErr.Code().String(),
-			"error_name", cErr.Name(),
-		}
+	d := extractErrorDetails(err)
+	if d.empty() {
+		return nil
 	}
-	var apiErr *apiError
-	if errors.As(err, &apiErr) && (apiErr.InstanceID != "" || apiErr.ErrorCode != "" || apiErr.ErrorName != "") {
-		return []any{
-			"error_instance_id", apiErr.InstanceID,
-			"error_code", apiErr.ErrorCode,
-			"error_name", apiErr.ErrorName,
-		}
+	return []any{
+		"error_instance_id", d.InstanceID,
+		"error_code", d.Code,
+		"error_name", d.Name,
 	}
-	return nil
 }
 
 // appendInstanceID returns msg with " (errorInstanceId: <id>)" appended when
@@ -146,7 +180,7 @@ func errorFieldsFromConjure(err error) []any {
 // Conjure errors trail with an unlabeled "(id)" that would duplicate. Use
 // formatUserError instead when interpolating err itself.
 func appendInstanceID(msg string, err error) string {
-	id := instanceIDFromError(err)
+	id := extractErrorDetails(err).InstanceID
 	if id == "" {
 		return msg
 	}
@@ -157,18 +191,7 @@ func appendInstanceID(msg string, err error) string {
 // reading from either the typed Conjure error or the raw-HTTP *apiError type.
 // Returns "" when neither is present.
 func instanceIDFromError(err error) string {
-	if err == nil {
-		return ""
-	}
-	var cErr conjureerrors.Error
-	if errors.As(err, &cErr) {
-		return cErr.InstanceID().String()
-	}
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		return apiErr.InstanceID
-	}
-	return ""
+	return extractErrorDetails(err).InstanceID
 }
 
 // apiError is the typed error returned by the raw-HTTP fetchers. It carries
@@ -246,15 +269,16 @@ func classifyConnectionError(err error) (message string, httpStatus int) {
 }
 
 // formatUserError builds a "<prefix>: <details>" message with a labeled
-// trace ID for Conjure errors, avoiding the duplicate ID that "%v" on a
-// Conjure error would produce. Falls back to fmt.Sprintf("%s: %v", ...) for
-// non-Conjure errors.
+// trace ID for any error carrying the Conjure classification triple (typed
+// Conjure errors or raw-HTTP *apiError), avoiding the duplicate ID that "%v"
+// on a Conjure error would produce. Falls back to fmt.Sprintf("%s: %v", ...)
+// for transport-level and other unclassified errors.
 func formatUserError(prefix string, err error) string {
-	var cErr conjureerrors.Error
-	if errors.As(err, &cErr) {
-		return fmt.Sprintf("%s: %s %s (errorInstanceId: %s)", prefix, cErr.Code(), cErr.Name(), cErr.InstanceID())
+	d := extractErrorDetails(err)
+	if d.empty() {
+		return fmt.Sprintf("%s: %v", prefix, err)
 	}
-	return fmt.Sprintf("%s: %v", prefix, err)
+	return fmt.Sprintf("%s: %s %s (errorInstanceId: %s)", prefix, d.Code, d.Name, d.InstanceID)
 }
 
 func userAgentMiddleware() conjurehttpclient.Middleware {
