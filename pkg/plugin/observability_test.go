@@ -154,6 +154,19 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	}
 }
 
+// TestFormatUserError_StatusOnlyError covers the branch where extractErrorDetails
+// returns a non-zero Status but no Conjure classification fields — e.g. a Conjure
+// werror from a non-Conjure 401 response (proxy auth page, empty body). Before
+// the fix this produced "prefix:   (errorInstanceId: )" or dumped the raw werror.
+func TestFormatUserError_StatusOnlyError(t *testing.T) {
+	err := conjureHTTP401NoBody(t)
+	got := formatUserError("Connection test failed", err)
+	want := "Connection test failed: API returned status 401"
+	if got != want {
+		t.Errorf("formatUserError = %q, want %q", got, want)
+	}
+}
+
 func TestInstanceIDFromError_ReadsFromAPIError(t *testing.T) {
 	const id = "abcd1234-5678-90ab-cdef-000000000001"
 	apiErr := newAPIError(http.StatusInternalServerError, []byte(conjureErrorBody(id)))
@@ -219,6 +232,26 @@ func TestAPIError_UnstructuredBodyDroppedFromError(t *testing.T) {
 	}
 }
 
+// conjureHTTP401NoBody returns the error a Conjure client produces when the
+// server (or a proxy in front of it) responds 401 with an empty body — a
+// werror with statusCode=401 rather than a typed conjureerrors.Error.
+func conjureHTTP401NoBody(t *testing.T) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := conjurehttpclient.NewClient(conjurehttpclient.WithBaseURLs([]string{srv.URL}))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, callErr := authapi.NewAuthenticationServiceV2Client(client).GetMyProfile(context.Background(), bearertoken.Token("x"))
+	if callErr == nil {
+		t.Fatal("expected 401 error, got nil")
+	}
+	return callErr
+}
+
 func TestClassifyConnectionError(t *testing.T) {
 	const id = "11111111-1111-1111-1111-111111111111"
 	apiErrWithStatus := func(status int, code, name string) error {
@@ -264,6 +297,14 @@ func TestClassifyConnectionError(t *testing.T) {
 			err:         errors.New("something else went wrong"),
 			wantMessage: "Failed to connect to Nominal API",
 			wantStatus:  http.StatusServiceUnavailable,
+		},
+		{
+			// Conjure 401 with empty/non-Conjure body (e.g., proxy auth page)
+			// — runtime returns a werror with statusCode=401, not a conjureerrors.Error.
+			name:        "werror with statusCode=401 -> auth message",
+			err:         conjureHTTP401NoBody(t),
+			wantMessage: "Invalid API key - authentication failed",
+			wantStatus:  http.StatusUnauthorized,
 		},
 	}
 

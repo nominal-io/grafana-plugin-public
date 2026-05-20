@@ -144,6 +144,13 @@ func extractErrorDetails(err error) errorDetails {
 			Name:       apiErr.ErrorName,
 		}
 	}
+	// Conjure wraps non-Conjure error responses (empty body, non-JSON, malformed
+	// JSON) as a werror carrying a typed `statusCode` param rather than a
+	// conjureerrors.Error — so a proxy-served 401 HTML page still classifies as
+	// 401 here without reaching string matching.
+	if status, ok := conjurehttpclient.StatusCodeFromError(err); ok {
+		return errorDetails{Status: status}
+	}
 	return errorDetails{}
 }
 
@@ -273,10 +280,14 @@ func classifyConnectionError(err error) (message string, httpStatus int) {
 // for transport-level and other unclassified errors.
 func formatUserError(prefix string, err error) string {
 	d := extractErrorDetails(err)
-	if d.empty() {
+	switch {
+	case d.Code != "" || d.Name != "" || d.InstanceID != "":
+		return fmt.Sprintf("%s: %s %s (errorInstanceId: %s)", prefix, d.Code, d.Name, d.InstanceID)
+	case d.Status != 0:
+		return fmt.Sprintf("%s: API returned status %d", prefix, d.Status)
+	default:
 		return fmt.Sprintf("%s: %v", prefix, err)
 	}
-	return fmt.Sprintf("%s: %s %s (errorInstanceId: %s)", prefix, d.Code, d.Name, d.InstanceID)
 }
 
 func userAgentMiddleware() conjurehttpclient.Middleware {

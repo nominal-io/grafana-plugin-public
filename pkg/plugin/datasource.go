@@ -208,7 +208,8 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
 		logErrorWithConjureFields("Connection test failed", err)
-		return backend.ErrDataResponse(backend.StatusInternal, formatUserError("Connection test failed", err))
+		message, _ := classifyConnectionError(err)
+		return backend.ErrDataResponse(backend.StatusInternal, message)
 	}
 
 	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
@@ -1824,8 +1825,8 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
-// with the standard Authorization and Content-Type headers. On non-2xx the
-// response body is read, closed, and returned as a typed *apiError. On 2xx
+// with the standard Authorization and Content-Type headers. On non-200 the
+// response body is read, closed, and returned as a typed *apiError. On 200
 // the caller owns closing resp.Body.
 func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
 	baseURL := config.GetAPIBaseURL()
