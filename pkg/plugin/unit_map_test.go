@@ -1,6 +1,10 @@
 package plugin
 
-import "testing"
+import (
+	"os"
+	"regexp"
+	"testing"
+)
 
 func TestMapToGrafanaUnit(t *testing.T) {
 	tests := []struct {
@@ -83,144 +87,58 @@ func TestUnitMapMicrosecondUnicode(t *testing.T) {
 	}
 }
 
-// validGrafanaUnitIDs is a frozen snapshot of unit IDs from Grafana 12.1.0
-// (https://github.com/grafana/grafana/blob/v12.1.0/packages/grafana-data/src/valueFormats/categories.ts).
+// grafanaCategoriesFixture is the upstream Grafana 12.1.0 unit registry source,
+// pinned to the plugin's minimum supported version (plugin.json grafanaDependency
+// >=12.1.0). The fixture is the raw categories.ts file — no hand-transcription —
+// and loadValidGrafanaUnitIDs parses every `id: '…'` from it.
 //
-// v12.1.0 is the minimum supported Grafana version (see plugin.json grafanaDependency
-// >=12.1.0). The unit registry is invariant across v12.1.0–v12.4.x (verified by
-// diffing categories.ts between tags), so this snapshot is also valid for the
-// latest 12.x patch. Pinning to the floor catches mappings that would break on the
-// oldest supported runtime — a value that's valid in 12.4 but absent in 12.1 would
-// silently render with no unit for users still on 12.1.
+// v12.1.0 is the floor because a value valid in a later patch but absent in 12.1
+// would silently render with no unit for users still on 12.1. The unit registry
+// is invariant across v12.1.0–v12.4.x (verified by diffing categories.ts between
+// tags), so pinning the floor is sufficient.
 //
-// TestUnitMapValuesAreValidGrafanaIDs uses this snapshot to assert every value in
-// unitSymbolToGrafanaID is a real Grafana ID.
-var validGrafanaUnitIDs = map[string]bool{
-	// Misc
-	"none": true, "string": true, "short": true, "sishort": true, "percent": true,
-	"percentunit": true, "humidity": true, "dB": true, "candela": true, "hex0x": true,
-	"hex": true, "sci": true, "locale": true, "pixel": true,
+// To refresh against a newer minimum version: bump the v12.1.0 tag in the
+// go:generate directive below (and the filename if you change it), then run
+// `go generate ./pkg/plugin/...`.
+//
+//go:generate curl -sS -o testdata/grafana_categories_v12_1_0.ts https://raw.githubusercontent.com/grafana/grafana/v12.1.0/packages/grafana-data/src/valueFormats/categories.ts
+const grafanaCategoriesFixture = "testdata/grafana_categories_v12_1_0.ts"
 
-	// Acceleration
-	"accMS2": true, "accFS2": true, "accG": true,
+// grafanaIDPattern matches every `id: '<id>'` in categories.ts. The upstream file
+// uses this single form on every format entry (272 matches in v12.1.0; verified
+// no `id:` lines deviate from the pattern).
+var grafanaIDPattern = regexp.MustCompile(`id: '([^']+)'`)
 
-	// Angle
-	"degree": true, "radian": true, "grad": true, "arcmin": true, "arcsec": true,
-
-	// Area
-	"areaM2": true, "areaF2": true, "areaMI2": true, "acres": true, "hectares": true,
-
-	// Computation
-	"flops": true, "mflops": true, "gflops": true, "tflops": true, "pflops": true,
-	"eflops": true, "zflops": true, "yflops": true,
-
-	// Concentration
-	"ppm": true, "conppb": true, "conngm3": true, "conngNm3": true, "conμgm3": true,
-	"conμgNm3": true, "conmgm3": true, "conmgNm3": true, "congm3": true, "congNm3": true,
-	"conmgdL": true, "conmmolL": true,
-
-	// Currency
-	"currencyUSD": true, "currencyGBP": true, "currencyEUR": true, "currencyJPY": true,
-	"currencyRUB": true, "currencyUAH": true, "currencyBRL": true, "currencyDKK": true,
-	"currencyISK": true, "currencyNOK": true, "currencySEK": true, "currencyCZK": true,
-	"currencyCHF": true, "currencyPLN": true, "currencyBTC": true, "currencymBTC": true,
-	"currencyμBTC": true, "currencyZAR": true, "currencyINR": true, "currencyKRW": true,
-	"currencyIDR": true, "currencyPHP": true, "currencyVND": true, "currencyTRY": true,
-	"currencyMYR": true, "currencyXPF": true, "currencyBGN": true, "currencyPYG": true,
-	"currencyUYU": true, "currencyILS": true,
-
-	// Data
-	"bytes": true, "decbytes": true, "bits": true, "decbits": true, "kbytes": true,
-	"deckbytes": true, "mbytes": true, "decmbytes": true, "gbytes": true,
-	"decgbytes": true, "tbytes": true, "dectbytes": true, "pbytes": true,
-	"decpbytes": true,
-
-	// Data rate
-	"pps": true, "binBps": true, "Bps": true, "binbps": true, "bps": true, "KiBs": true,
-	"Kibits": true, "KBs": true, "Kbits": true, "MiBs": true, "Mibits": true, "MBs": true,
-	"Mbits": true, "GiBs": true, "Gibits": true, "GBs": true, "Gbits": true, "TiBs": true,
-	"Tibits": true, "TBs": true, "Tbits": true, "PiBs": true, "Pibits": true, "PBs": true,
-	"Pbits": true,
-
-	// Date & time
-	"dateTimeAsIso": true, "dateTimeAsIsoNoDateIfToday": true, "dateTimeAsUS": true,
-	"dateTimeAsUSNoDateIfToday": true, "dateTimeAsLocal": true,
-	"dateTimeAsLocalNoDateIfToday": true, "dateTimeAsSystem": true,
-	"dateTimeFromNow": true,
-
-	// Energy
-	"watt": true, "kwatt": true, "megwatt": true, "gwatt": true, "mwatt": true,
-	"Wm2": true, "voltamp": true, "kvoltamp": true, "voltampreact": true,
-	"kvoltampreact": true, "watth": true, "watthperkg": true, "kwatth": true,
-	"kwattm": true, "mwatth": true, "amph": true, "kamph": true, "mamph": true,
-	"joule": true, "ev": true, "amp": true, "kamp": true, "mamp": true, "volt": true,
-	"kvolt": true, "mvolt": true, "dBm": true, "mohm": true, "ohm": true, "kohm": true,
-	"Mohm": true, "farad": true, "µfarad": true, "nfarad": true, "pfarad": true,
-	"ffarad": true, "henry": true, "mhenry": true, "µhenry": true, "lumens": true,
-
-	// Flow
-	"flowgpm": true, "flowcms": true, "flowcfs": true, "flowcfm": true, "litreh": true,
-	"flowlpm": true, "flowmlpm": true, "lux": true,
-
-	// Force
-	"forceNm": true, "forcekNm": true, "forceN": true, "forcekN": true,
-
-	// Hash rate
-	"Hs": true, "KHs": true, "MHs": true, "GHs": true, "THs": true, "PHs": true,
-	"EHs": true,
-
-	// Mass
-	"massmg": true, "massg": true, "masslb": true, "masskg": true, "masst": true,
-
-	// Length
-	"lengthmm": true, "lengthin": true, "lengthft": true, "lengthm": true,
-	"lengthkm": true, "lengthmi": true,
-
-	// Pressure
-	"pressurembar": true, "pressurebar": true, "pressurekbar": true, "pressurepa": true,
-	"pressurehpa": true, "pressurekpa": true, "pressurehg": true, "pressurepsi": true,
-
-	// Radiation
-	"radbq": true, "radci": true, "radgy": true, "radrad": true, "radsv": true,
-	"radmsv": true, "radusv": true, "radrem": true, "radexpckg": true, "radr": true,
-	"radsvh": true, "radmsvh": true, "radusvh": true,
-
-	// Rotational Speed
-	"rotrpm": true, "rothz": true, "rotkhz": true, "rotmhz": true, "rotghz": true,
-	"rotrads": true, "rotdegs": true,
-
-	// Temperature
-	"celsius": true, "fahrenheit": true, "kelvin": true,
-
-	// Time
-	"hertz": true, "ns": true, "µs": true, "ms": true, "s": true, "m": true, "h": true,
-	"d": true, "dtdurationms": true, "dtdurations": true, "dthms": true, "dtdhms": true,
-	"timeticks": true, "clockms": true, "clocks": true,
-
-	// Throughput
-	"cps": true, "ops": true, "reqps": true, "rps": true, "wps": true, "iops": true,
-	"eps": true, "mps": true, "recps": true, "rowsps": true, "cpm": true, "opm": true,
-	"reqpm": true, "rpm": true, "wpm": true, "epm": true, "mpm": true, "recpm": true,
-	"rowspm": true,
-
-	// Velocity
-	"velocityms": true, "velocitykmh": true, "velocitymph": true, "velocityknot": true,
-
-	// Volume
-	"mlitre": true, "litre": true, "m3": true, "Nm3": true, "dm3": true, "gallons": true,
-
-	// Boolean
-	"bool": true, "bool_yes_no": true, "bool_on_off": true,
+// loadValidGrafanaUnitIDs parses the pinned categories.ts fixture and returns the
+// set of every Grafana unit ID it declares. TestUnitMapValuesAreValidGrafanaIDs
+// uses this to assert every value in unitSymbolToGrafanaID is a real Grafana ID.
+func loadValidGrafanaUnitIDs(t *testing.T) map[string]bool {
+	t.Helper()
+	src, err := os.ReadFile(grafanaCategoriesFixture)
+	if err != nil {
+		t.Fatalf("read %s: %v", grafanaCategoriesFixture, err)
+	}
+	matches := grafanaIDPattern.FindAllSubmatch(src, -1)
+	if len(matches) == 0 {
+		t.Fatalf("no Grafana unit IDs found in %s — fixture likely corrupt or format changed", grafanaCategoriesFixture)
+	}
+	ids := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		ids[string(m[1])] = true
+	}
+	return ids
 }
 
 // TestUnitMapValuesAreValidGrafanaIDs asserts every value in unitSymbolToGrafanaID
 // is a real Grafana ID. Catches plausible-but-fake IDs (e.g. "pressurempa") that
 // would hit Grafana's registry-miss path instead of our suffix-mode fallthrough.
 func TestUnitMapValuesAreValidGrafanaIDs(t *testing.T) {
+	validIDs := loadValidGrafanaUnitIDs(t)
 	for symbol, id := range unitSymbolToGrafanaID {
-		if !validGrafanaUnitIDs[id] {
-			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not in validGrafanaUnitIDs; "+
-				"either add the ID to the snapshot or remove the mapping", symbol, id)
+		if !validIDs[id] {
+			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not a valid Grafana unit ID in %s; "+
+				"either remove the mapping or refresh the fixture against a Grafana version that defines it",
+				symbol, id, grafanaCategoriesFixture)
 		}
 	}
 }
