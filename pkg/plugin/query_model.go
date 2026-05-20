@@ -229,13 +229,7 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 
 	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
 
-	// Check instance-level TTL cache.
-	e.datasource.channelMetadataCacheMu.Lock()
-	if e.datasource.channelMetadataCache == nil {
-		e.datasource.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
-	}
-	if entry, ok := e.datasource.channelMetadataCache[cacheKey]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-		e.datasource.channelMetadataCacheMu.Unlock()
+	if entry, hit := e.datasource.lookupChannelMetadata(cacheKey); hit {
 		if entry.channelDataType != "" {
 			qm.ChannelDataType = entry.channelDataType
 		}
@@ -244,7 +238,6 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		}
 		return
 	}
-	e.datasource.channelMetadataCacheMu.Unlock()
 
 	asset, err := e.datasource.fetchAssetByRid(ctx, e.config, qm.AssetRid)
 	if err != nil {
@@ -255,24 +248,7 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		return
 	}
 
-	var dataSourceRids []rids.DataSourceRid
-	for _, scope := range asset.DataScopes {
-		if scope.DataScopeName != qm.DataScopeName {
-			continue
-		}
-
-		ridStr, ok := dataSourceRidFor(scope.DataSource)
-		if !ok {
-			continue
-		}
-
-		parsedRid, err := rid.ParseRID(ridStr)
-		if err != nil {
-			log.DefaultLogger.Warn("Failed to parse datasource RID for channel metadata inference", "rid", ridStr, "error", err)
-			continue
-		}
-		dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
-	}
+	dataSourceRids := collectDataSourceRidsForScope(asset, qm.DataScopeName)
 	if len(dataSourceRids) == 0 {
 		return
 	}
@@ -306,18 +282,64 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		if inferredUnit != "" {
 			qm.ChannelUnit = inferredUnit
 		}
-		e.datasource.channelMetadataCacheMu.Lock()
-		e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{
+		e.datasource.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{
 			channelDataType: inferredType,
 			unit:            inferredUnit,
 			fetchedAt:       time.Now(),
-		}
-		e.datasource.channelMetadataCacheMu.Unlock()
+		})
 		return
 	}
 
 	// No usable metadata — cache the miss so a re-query doesn't re-search.
-	e.datasource.channelMetadataCacheMu.Lock()
-	e.datasource.channelMetadataCache[cacheKey] = channelMetadataCacheEntry{fetchedAt: time.Now()}
-	e.datasource.channelMetadataCacheMu.Unlock()
+	e.datasource.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
+}
+
+// lookupChannelMetadata returns a cached channel metadata entry if present and
+// not yet expired. Lazily initializes the cache map on first call. Caller must
+// apply the entry to its query model on hit.
+func (d *Datasource) lookupChannelMetadata(cacheKey string) (channelMetadataCacheEntry, bool) {
+	d.channelMetadataCacheMu.Lock()
+	defer d.channelMetadataCacheMu.Unlock()
+	if d.channelMetadataCache == nil {
+		d.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
+	}
+	entry, ok := d.channelMetadataCache[cacheKey]
+	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
+		return channelMetadataCacheEntry{}, false
+	}
+	return entry, true
+}
+
+// storeChannelMetadata writes (or overwrites) a cache entry. Lazily initializes
+// the cache map so this is safe even when called before any lookup.
+func (d *Datasource) storeChannelMetadata(cacheKey string, entry channelMetadataCacheEntry) {
+	d.channelMetadataCacheMu.Lock()
+	defer d.channelMetadataCacheMu.Unlock()
+	if d.channelMetadataCache == nil {
+		d.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
+	}
+	d.channelMetadataCache[cacheKey] = entry
+}
+
+// collectDataSourceRidsForScope returns the parsed DataSource RIDs from every
+// data scope on the asset matching dataScopeName. Returns nil if no scopes match
+// or none have a parseable RID for a supported data source type.
+func collectDataSourceRidsForScope(asset *SingleAssetResponse, dataScopeName string) []rids.DataSourceRid {
+	var out []rids.DataSourceRid
+	for _, scope := range asset.DataScopes {
+		if scope.DataScopeName != dataScopeName {
+			continue
+		}
+		ridStr, ok := dataSourceRidFor(scope.DataSource)
+		if !ok {
+			continue
+		}
+		parsedRid, err := rid.ParseRID(ridStr)
+		if err != nil {
+			log.DefaultLogger.Warn("Failed to parse datasource RID for channel metadata inference", "rid", ridStr, "error", err)
+			continue
+		}
+		out = append(out, rids.DataSourceRid(parsedRid))
+	}
+	return out
 }
