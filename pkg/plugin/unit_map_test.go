@@ -50,8 +50,8 @@ func TestMapToGrafanaUnit(t *testing.T) {
 		// Suffix-mode fallthrough — canonical UCUM with no Grafana ID.
 		{"W/m^2 falls through", "W/m^2", "suffix:W/m^2"},
 		{"kg/s falls through", "kg/s", "suffix:kg/s"},
-		{"MPa falls through", "MPa", "suffix:MPa"}, // canonical but no Grafana pressurempa ID
-		{"atm falls through", "atm", "suffix:atm"}, // canonical but no Grafana pressureatm ID
+		{"MPa falls through", "MPa", "suffix:MPa"},                   // canonical but no Grafana pressurempa ID
+		{"atm falls through", "atm", "suffix:atm"},                   // canonical but no Grafana pressureatm ID
 		{"cm falls through (no Grafana 12.x ID)", "cm", "suffix:cm"}, // lengthcm lands in 13.1+
 
 		// Micro-prefix mappings (probed 2026-05-18 — see file header).

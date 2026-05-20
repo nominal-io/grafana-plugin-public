@@ -5,9 +5,8 @@
 // snapshot is consumed via //go:embed in pkg/plugin/unit_map_test.go to validate
 // that every entry in unitSymbolToGrafanaID maps to a real Grafana ID.
 //
-// Usage: go run gen.go <grafana-tag>  (e.g. v12.1.0)
-// Refresh: edit the //go:generate directive below and run
-// `go generate ./pkg/plugin/grafanaunits/`.
+// Refresh: cd pkg/plugin/grafanaunits && go run gen.go <grafana-tag>
+// (e.g. go run gen.go v12.1.0).
 //
 // v12.1.0 is the floor because plugin.json's grafanaDependency is >=12.1.0:
 // a value valid in a later patch but absent in 12.1 would silently render with
@@ -18,8 +17,6 @@
 // Upstream copyright Grafana Labs, licensed Apache-2.0. The emitted file contains
 // only unit-ID strings extracted from the value-format registry — none of the
 // upstream code, structure, or expression is reproduced.
-//
-//go:generate go run gen.go v12.1.0
 package main
 
 import (
