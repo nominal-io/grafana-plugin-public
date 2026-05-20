@@ -5058,6 +5058,10 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 }
 
 func TestFieldConfigForNumeric(t *testing.T) {
+	// End-to-end frame-building paths are covered by TestFieldConfigUnit above.
+	// This test exercises only the helper's unique behavior: mapped unit applied,
+	// unit suppressed when the aggregation does not carry it, and suffix fallthrough
+	// for symbols not in unitSymbolToGrafanaID.
 	tests := []struct {
 		name               string
 		channelUnit        string
@@ -5067,7 +5071,7 @@ func TestFieldConfigForNumeric(t *testing.T) {
 		wantDispName       string
 	}{
 		{
-			name:               "multi-agg MEAN on Cel channel applies unit",
+			name:               "applies mapped Grafana unit",
 			channelUnit:        "Cel",
 			displayName:        "engine_temp (mean)",
 			carriesChannelUnit: true,
@@ -5075,7 +5079,7 @@ func TestFieldConfigForNumeric(t *testing.T) {
 			wantDispName:       "engine_temp (mean)",
 		},
 		{
-			name:               "multi-agg COUNT on Cel channel suppresses unit (dimensionless)",
+			name:               "suppresses unit when aggregation does not carry channel unit",
 			channelUnit:        "Cel",
 			displayName:        "engine_temp (count)",
 			carriesChannelUnit: false,
@@ -5083,39 +5087,7 @@ func TestFieldConfigForNumeric(t *testing.T) {
 			wantDispName:       "engine_temp (count)",
 		},
 		{
-			name:               "multi-agg VARIANCE on Cel channel suppresses unit (unit²)",
-			channelUnit:        "Cel",
-			displayName:        "engine_temp (variance)",
-			carriesChannelUnit: false,
-			wantUnit:           "",
-			wantDispName:       "engine_temp (variance)",
-		},
-		{
-			name:               "multi-agg FIRST on Cel channel applies unit (unit-bearing)",
-			channelUnit:        "Cel",
-			displayName:        "engine_temp (first)",
-			carriesChannelUnit: true,
-			wantUnit:           "celsius",
-			wantDispName:       "engine_temp (first)",
-		},
-		{
-			name:               "legacy path on Cel channel applies unit",
-			channelUnit:        "Cel",
-			displayName:        "engine_temp",
-			carriesChannelUnit: true,
-			wantUnit:           "celsius",
-			wantDispName:       "engine_temp",
-		},
-		{
-			name:               "legacy path on channel with empty unit produces empty unit",
-			channelUnit:        "",
-			displayName:        "engine_temp",
-			carriesChannelUnit: true,
-			wantUnit:           "",
-			wantDispName:       "engine_temp",
-		},
-		{
-			name:               "legacy path on display-only unit falls through as explicit suffix",
+			name:               "falls through to explicit suffix for unmapped symbol",
 			channelUnit:        "asdfsdfs",
 			displayName:        "weird_channel",
 			carriesChannelUnit: true,
