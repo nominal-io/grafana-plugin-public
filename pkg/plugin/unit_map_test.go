@@ -1,8 +1,6 @@
 package plugin
 
 import (
-	"os"
-	"regexp"
 	"testing"
 )
 
@@ -87,58 +85,27 @@ func TestUnitMapMicrosecondUnicode(t *testing.T) {
 	}
 }
 
-// grafanaCategoriesFixture is the upstream Grafana 12.1.0 unit registry source,
-// pinned to the plugin's minimum supported version (plugin.json grafanaDependency
-// >=12.1.0). The fixture is the raw categories.ts file — no hand-transcription —
-// and loadValidGrafanaUnitIDs parses every `id: '…'` from it.
+// The validGrafanaUnitIDs set used below is generated from Grafana's
+// value-format registry at a pinned tag. Refresh it by bumping the tag in the
+// directive below and running `go generate ./pkg/plugin/`.
 //
-// v12.1.0 is the floor because a value valid in a later patch but absent in 12.1
-// would silently render with no unit for users still on 12.1. The unit registry
-// is invariant across v12.1.0–v12.4.x (verified by diffing categories.ts between
-// tags), so pinning the floor is sufficient.
+// v12.1.0 is the floor because plugin.json's grafanaDependency is >=12.1.0:
+// a value valid in a later patch but absent in 12.1 would silently render with
+// no unit for users still on 12.1. The unit registry is invariant across
+// v12.1.0–v12.4.x (verified by diffing categories.ts between tags), so pinning
+// the floor is sufficient.
 //
-// To refresh against a newer minimum version: bump the v12.1.0 tag in the
-// go:generate directive below (and the filename if you change it), then run
-// `go generate ./pkg/plugin/...`.
-//
-//go:generate curl -sS -o testdata/grafana_categories_v12_1_0.ts https://raw.githubusercontent.com/grafana/grafana/v12.1.0/packages/grafana-data/src/valueFormats/categories.ts
-const grafanaCategoriesFixture = "testdata/grafana_categories_v12_1_0.ts"
-
-// grafanaIDPattern matches every `id: '<id>'` in categories.ts. The upstream file
-// uses this single form on every format entry (272 matches in v12.1.0; verified
-// no `id:` lines deviate from the pattern).
-var grafanaIDPattern = regexp.MustCompile(`id: '([^']+)'`)
-
-// loadValidGrafanaUnitIDs parses the pinned categories.ts fixture and returns the
-// set of every Grafana unit ID it declares. TestUnitMapValuesAreValidGrafanaIDs
-// uses this to assert every value in unitSymbolToGrafanaID is a real Grafana ID.
-func loadValidGrafanaUnitIDs(t *testing.T) map[string]bool {
-	t.Helper()
-	src, err := os.ReadFile(grafanaCategoriesFixture)
-	if err != nil {
-		t.Fatalf("read %s: %v", grafanaCategoriesFixture, err)
-	}
-	matches := grafanaIDPattern.FindAllSubmatch(src, -1)
-	if len(matches) == 0 {
-		t.Fatalf("no Grafana unit IDs found in %s — fixture likely corrupt or format changed", grafanaCategoriesFixture)
-	}
-	ids := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		ids[string(m[1])] = true
-	}
-	return ids
-}
+//go:generate go run gen_unitids.go v12.1.0
 
 // TestUnitMapValuesAreValidGrafanaIDs asserts every value in unitSymbolToGrafanaID
 // is a real Grafana ID. Catches plausible-but-fake IDs (e.g. "pressurempa") that
 // would hit Grafana's registry-miss path instead of our suffix-mode fallthrough.
 func TestUnitMapValuesAreValidGrafanaIDs(t *testing.T) {
-	validIDs := loadValidGrafanaUnitIDs(t)
 	for symbol, id := range unitSymbolToGrafanaID {
-		if !validIDs[id] {
-			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not a valid Grafana unit ID in %s; "+
-				"either remove the mapping or refresh the fixture against a Grafana version that defines it",
-				symbol, id, grafanaCategoriesFixture)
+		if _, ok := validGrafanaUnitIDs[id]; !ok {
+			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not a valid Grafana unit ID at the pinned version; "+
+				"either remove the mapping or refresh validGrafanaUnitIDs against a Grafana version that defines it",
+				symbol, id)
 		}
 	}
 }
