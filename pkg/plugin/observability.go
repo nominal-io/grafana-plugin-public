@@ -167,11 +167,17 @@ func errorFieldsFromConjure(err error) []any {
 	if d.empty() {
 		return nil
 	}
-	return []any{
-		"error_instance_id", d.InstanceID,
-		"error_code", d.Code,
-		"error_name", d.Name,
+	fields := make([]any, 0, 6)
+	if d.InstanceID != "" {
+		fields = append(fields, "error_instance_id", d.InstanceID)
 	}
+	if d.Code != "" {
+		fields = append(fields, "error_code", d.Code)
+	}
+	if d.Name != "" {
+		fields = append(fields, "error_name", d.Name)
+	}
+	return fields
 }
 
 // appendInstanceID returns msg with " (errorInstanceId: <id>)" appended when
