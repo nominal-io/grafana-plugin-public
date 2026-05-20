@@ -475,14 +475,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				frame.Name = qm.Channel
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, true)
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumeric(&qm, qm.Channel, true)
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -1265,7 +1265,10 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 }
 
 // carriesChannelUnit = false for COUNT (dimensionless) and VARIANCE (unit²),
-// suppressing the channel unit on the resulting frame.
+// suppressing the channel unit on the resulting frame. Multi-agg call sites
+// pass agg.CarriesChannelUnit directly; non-aggregated call sites should use
+// fieldConfigForNumericWithChannelUnit instead so the rule is explicit at the
+// call site rather than encoded as a literal true.
 func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesChannelUnit bool) *data.FieldConfig {
 	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
 	if !carriesChannelUnit {
@@ -1273,6 +1276,12 @@ func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesCha
 	}
 	cfg.Unit = mapToGrafanaUnit(qm.ChannelUnit)
 	return cfg
+}
+
+// fieldConfigForNumericWithChannelUnit is the call-site-clear wrapper for
+// non-aggregated numeric frames, which always carry the channel unit.
+func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName string) *data.FieldConfig {
+	return fieldConfigForNumeric(qm, displayName, true)
 }
 
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
