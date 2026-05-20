@@ -1,8 +1,28 @@
 package plugin
 
 import (
+	_ "embed"
+	"strings"
 	"testing"
 )
+
+// validGrafanaUnitIDs is a snapshot of every unit ID declared in Grafana's
+// value-format registry at the pinned version (see grafanaunits/gen.go for the
+// pin rationale and refresh instructions).
+//
+//go:embed grafanaunits/unitids.txt
+var grafanaUnitIDsRaw string
+
+var validGrafanaUnitIDs = func() map[string]struct{} {
+	m := make(map[string]struct{})
+	for _, line := range strings.Split(grafanaUnitIDsRaw, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		m[line] = struct{}{}
+	}
+	return m
+}()
 
 func TestMapToGrafanaUnit(t *testing.T) {
 	tests := []struct {
@@ -85,18 +105,6 @@ func TestUnitMapMicrosecondUnicode(t *testing.T) {
 	}
 }
 
-// The validGrafanaUnitIDs set used below is generated from Grafana's
-// value-format registry at a pinned tag. Refresh it by bumping the tag in the
-// directive below and running `go generate ./pkg/plugin/`.
-//
-// v12.1.0 is the floor because plugin.json's grafanaDependency is >=12.1.0:
-// a value valid in a later patch but absent in 12.1 would silently render with
-// no unit for users still on 12.1. The unit registry is invariant across
-// v12.1.0–v12.4.x (verified by diffing categories.ts between tags), so pinning
-// the floor is sufficient.
-//
-//go:generate go run gen_unitids.go v12.1.0
-
 // TestUnitMapValuesAreValidGrafanaIDs asserts every value in unitSymbolToGrafanaID
 // is a real Grafana ID. Catches plausible-but-fake IDs (e.g. "pressurempa") that
 // would hit Grafana's registry-miss path instead of our suffix-mode fallthrough.
@@ -104,7 +112,7 @@ func TestUnitMapValuesAreValidGrafanaIDs(t *testing.T) {
 	for symbol, id := range unitSymbolToGrafanaID {
 		if _, ok := validGrafanaUnitIDs[id]; !ok {
 			t.Errorf("unitSymbolToGrafanaID[%q] = %q is not a valid Grafana unit ID at the pinned version; "+
-				"either remove the mapping or refresh validGrafanaUnitIDs against a Grafana version that defines it",
+				"either remove the mapping or refresh grafanaunits/unitids.txt against a Grafana version that defines it",
 				symbol, id)
 		}
 	}
