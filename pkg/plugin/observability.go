@@ -106,25 +106,22 @@ func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.next.RoundTrip(r)
 }
 
-// errorDetails carries the Conjure classification triple extracted from an
-// error, regardless of whether it arrived via the generated Conjure client
-// (typed conjureerrors.Error) or one of the raw-HTTP fetchers (typed
-// *apiError). All user-facing and log-side helpers below project from this
-// single representation, so the {instance, code, name} vocabulary lives in
-// one place.
+// errorDetails is the unified projection of an error's Nominal classification,
+// extracted from either a typed conjureerrors.Error or a raw-HTTP *apiError.
+// Status is 0 for transport-level failures that never received an HTTP response.
 type errorDetails struct {
+	Status     int
 	InstanceID string
 	Code       string
 	Name       string
 }
 
 func (d errorDetails) empty() bool {
-	return d.InstanceID == "" && d.Code == "" && d.Name == ""
+	return d.Status == 0 && d.InstanceID == "" && d.Code == "" && d.Name == ""
 }
 
-// extractErrorDetails parses err into its Conjure classification triple,
-// returning the zero value when err carries no Nominal classification (e.g.
-// transport-level failures or plain errors).
+// extractErrorDetails returns the zero value when err carries no Nominal
+// classification (transport-level failures or plain errors).
 func extractErrorDetails(err error) errorDetails {
 	if err == nil {
 		return errorDetails{}
@@ -132,6 +129,7 @@ func extractErrorDetails(err error) errorDetails {
 	var cErr conjureerrors.Error
 	if errors.As(err, &cErr) {
 		return errorDetails{
+			Status:     cErr.Code().StatusCode(),
 			InstanceID: cErr.InstanceID().String(),
 			Code:       cErr.Code().String(),
 			Name:       cErr.Name(),
@@ -140,6 +138,7 @@ func extractErrorDetails(err error) errorDetails {
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		return errorDetails{
+			Status:     apiErr.Status,
 			InstanceID: apiErr.InstanceID,
 			Code:       apiErr.ErrorCode,
 			Name:       apiErr.ErrorName,
@@ -237,35 +236,28 @@ func newAPIError(status int, body []byte) *apiError {
 	return e
 }
 
-// classifyConnectionError categorizes a connect-time failure and returns the
-// user-facing message (with errorInstanceId labeled when present) plus the
-// HTTP status code to surface from CallResource. CheckHealth uses only the
-// message — it always returns HealthStatusError — but the same classification
-// keeps the wording consistent across both surfaces.
-//
-// Recognized buckets:
-//   - 401 / "unauthorized"                          -> 401 + auth message
-//   - "timeout" / "context deadline exceeded"       -> 408 + timeout message
-//   - "connection refused" / "no such host"         -> 502 + connectivity message
-//   - anything else                                 -> 503 + generic message
+// classifyConnectionError returns a user-facing message (with errorInstanceId
+// labeled when present) and an HTTP status for a connect-time failure.
+// HTTP-backed errors are classified by typed status; transport-level errors
+// fall to string matching since net.Error variants don't expose a uniform
+// typed surface.
 func classifyConnectionError(err error) (message string, httpStatus int) {
-	msg := "Failed to connect to Nominal API"
-	status := http.StatusServiceUnavailable
+	if d := extractErrorDetails(err); d.Status != 0 {
+		if d.Status == http.StatusUnauthorized {
+			return appendInstanceID("Invalid API key - authentication failed", err), http.StatusUnauthorized
+		}
+		return appendInstanceID("Failed to connect to Nominal API", err), http.StatusServiceUnavailable
+	}
 
 	errStr := err.Error()
 	switch {
-	case strings.Contains(errStr, "401") || strings.Contains(errStr, "unauthorized"):
-		msg = "Invalid API key - authentication failed"
-		status = http.StatusUnauthorized
 	case strings.Contains(errStr, "timeout") || strings.Contains(errStr, "context deadline exceeded"):
-		msg = "Connection timeout - unable to reach Nominal API"
-		status = http.StatusRequestTimeout
+		return appendInstanceID("Connection timeout - unable to reach Nominal API", err), http.StatusRequestTimeout
 	case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no such host"):
-		msg = "Unable to connect to Nominal API - check base URL"
-		status = http.StatusBadGateway
+		return appendInstanceID("Unable to connect to Nominal API - check base URL", err), http.StatusBadGateway
 	}
 
-	return appendInstanceID(msg, err), status
+	return appendInstanceID("Failed to connect to Nominal API", err), http.StatusServiceUnavailable
 }
 
 // formatUserError builds a "<prefix>: <details>" message with a labeled

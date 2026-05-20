@@ -221,14 +221,11 @@ func TestAPIError_UnstructuredBodyDroppedFromError(t *testing.T) {
 
 func TestClassifyConnectionError(t *testing.T) {
 	const id = "11111111-1111-1111-1111-111111111111"
-	conjureWrap := func(inner string) error {
-		// Mimic raw-HTTP path producing *apiError that also matches one of the
-		// classification keywords via Error(). The instance ID should still append.
-		return newAPIError(http.StatusInternalServerError, []byte(`{
-			"errorCode": "INTERNAL",
-			"errorName": "Default:Internal",
-			"errorInstanceId": "`+id+`",
-			"parameters": {"hint": "`+inner+`"}
+	apiErrWithStatus := func(status int, code, name string) error {
+		return newAPIError(status, []byte(`{
+			"errorCode": "`+code+`",
+			"errorName": "`+name+`",
+			"errorInstanceId": "`+id+`"
 		}`))
 	}
 
@@ -239,10 +236,16 @@ func TestClassifyConnectionError(t *testing.T) {
 		wantStatus  int
 	}{
 		{
-			name:        "401 unauthorized",
-			err:         errors.New("got 401 from upstream"),
-			wantMessage: "Invalid API key - authentication failed",
+			name:        "apiError status 401 -> auth message",
+			err:         apiErrWithStatus(http.StatusUnauthorized, "UNAUTHORIZED", "Default:Unauthorized"),
+			wantMessage: "Invalid API key - authentication failed (errorInstanceId: " + id + ")",
 			wantStatus:  http.StatusUnauthorized,
+		},
+		{
+			name:        "apiError non-401 status falls to generic",
+			err:         apiErrWithStatus(http.StatusInternalServerError, "INTERNAL", "Default:Internal"),
+			wantMessage: "Failed to connect to Nominal API (errorInstanceId: " + id + ")",
+			wantStatus:  http.StatusServiceUnavailable,
 		},
 		{
 			name:        "context deadline exceeded",
@@ -260,12 +263,6 @@ func TestClassifyConnectionError(t *testing.T) {
 			name:        "generic fallthrough",
 			err:         errors.New("something else went wrong"),
 			wantMessage: "Failed to connect to Nominal API",
-			wantStatus:  http.StatusServiceUnavailable,
-		},
-		{
-			name:        "apiError instance id appended on generic fallthrough",
-			err:         conjureWrap("ignored"),
-			wantMessage: "Failed to connect to Nominal API (errorInstanceId: " + id + ")",
 			wantStatus:  http.StatusServiceUnavailable,
 		},
 	}
