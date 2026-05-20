@@ -351,15 +351,18 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 // Covers the SearchChannels result shapes inferChannelMetadata must handle:
 // type + unit, nil unit, nil DataType + unit, and no name match (all cached).
 func TestPrepareQueryInfersChannelUnit(t *testing.T) {
-	assetRid := "ri.scout.main.asset.unitprobe"
-	dataSourceRid := "ri.scout.main.data-source.ds1"
+	const (
+		assetRid      = "ri.scout.main.asset.unitprobe"
+		dataSourceRid = "ri.scout.main.data-source.ds1"
+	)
 	setupServer := func(t *testing.T) *httptest.Server {
+		dsRidRef := dataSourceRid
 		return newTestAssetServer(t, map[string]SingleAssetResponse{
 			assetRid: {
 				Rid:   assetRid,
 				Title: "Test Asset",
 				DataScopes: []AssetDataScope{
-					{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+					{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dsRidRef}},
 				},
 			},
 		}, nil)
@@ -368,199 +371,110 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	dsRid := rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))
 	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
 
-	t.Run("non-nil DataType + non-nil Unit: both populated, cache hit restores both", func(t *testing.T) {
-		server := setupServer(t)
-		defer server.Close()
+	// Every case exercises the same flow: prepareQuery twice → assert the model
+	// shape from the first call and that the second call hits the cache (no
+	// second SearchChannels). The varying inputs are the SearchChannels response
+	// and the queried channel name; the varying outputs are the resolved
+	// ChannelUnit and ChannelDataType.
+	tests := []struct {
+		name           string
+		queryChannel   string
+		searchChannels []datasourceapi.ChannelMetadata
+		wantUnit       string
+		wantDataType   string // expected ChannelDataType on the prepared model
+	}{
+		{
+			name:         "non-nil DataType + non-nil Unit: both populated, cache hit restores both",
+			queryChannel: "engine_temp",
+			searchChannels: []datasourceapi.ChannelMetadata{{
+				Name:       api.Channel("engine_temp"),
+				DataSource: dsRid,
+				DataType:   &numericType,
+				Unit:       &runapi.Unit{Symbol: "Cel"},
+			}},
+			wantUnit:     "Cel",
+			wantDataType: "numeric",
+		},
+		{
+			name:         "non-nil DataType + nil Unit: ChannelUnit stays empty",
+			queryChannel: "engine_temp",
+			searchChannels: []datasourceapi.ChannelMetadata{{
+				Name:       api.Channel("engine_temp"),
+				DataSource: dsRid,
+				DataType:   &numericType,
+				// Unit deliberately nil
+			}},
+			wantUnit:     "",
+			wantDataType: "numeric",
+		},
+		{
+			name:         "nil DataType + non-nil Unit: ChannelUnit still populated (cache-write ordering guard)",
+			queryChannel: "engine_temp",
+			searchChannels: []datasourceapi.ChannelMetadata{{
+				Name:       api.Channel("engine_temp"),
+				DataSource: dsRid,
+				// DataType deliberately nil
+				Unit: &runapi.Unit{Symbol: "psia"},
+			}},
+			// An empty inferred type must not short-circuit the unit write.
+			wantUnit:     "psia",
+			wantDataType: "numeric", // frontend-supplied type stands when ChannelMetadata.DataType is nil
+		},
+		{
+			name:           "no name match: empty cache entry written, no re-search on second call",
+			queryChannel:   "missing_channel",
+			searchChannels: []datasourceapi.ChannelMetadata{}, // empty results
+			wantUnit:       "",
+			wantDataType:   "numeric", // unchanged from the frontend-supplied value
+		},
+	}
 
-		mockDS := &mockDatasourceService{
-			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-				Results: []datasourceapi.ChannelMetadata{
-					{
-						Name:       api.Channel("engine_temp"),
-						DataSource: dsRid,
-						DataType:   &numericType,
-						Unit:       &runapi.Unit{Symbol: "Cel"},
-					},
-				},
-			},
-		}
-		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
-		config := &models.PluginSettings{
-			BaseUrl: server.URL,
-			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
-		}
-		query := backend.DataQuery{
-			RefID: "A",
-			JSON: mustMarshal(NominalQueryModel{
-				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
-				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
-			}),
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := setupServer(t)
+			defer server.Close()
 
-		prep1, err1 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if err1 != nil {
-			t.Fatalf("first prepare: %v", err1.Error)
-		}
-		if prep1.Model.ChannelUnit != "Cel" {
-			t.Errorf("ChannelUnit = %q, want %q", prep1.Model.ChannelUnit, "Cel")
-		}
-		if prep1.Model.ChannelDataType != "numeric" {
-			t.Errorf("ChannelDataType = %q, want %q", prep1.Model.ChannelDataType, "numeric")
-		}
+			mockDS := &mockDatasourceService{
+				searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: tt.searchChannels},
+			}
+			ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+			config := &models.PluginSettings{
+				BaseUrl: server.URL,
+				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+			}
+			query := backend.DataQuery{
+				RefID: "A",
+				JSON: mustMarshal(NominalQueryModel{
+					AssetRid: assetRid, Channel: tt.queryChannel, DataScopeName: "default",
+					ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+				}),
+			}
 
-		// Second call should hit the cache — no new SearchChannels call.
-		prep2, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if err2 != nil {
-			t.Fatalf("second prepare: %v", err2.Error)
-		}
-		if prep2.Model.ChannelUnit != "Cel" {
-			t.Errorf("cache hit: ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, "Cel")
-		}
-		if mockDS.searchChannelsCalls != 1 {
-			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
-		}
-	})
+			prep1, err1 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+			if err1 != nil {
+				t.Fatalf("first prepare: %v", err1.Error)
+			}
+			if prep1.Model.ChannelUnit != tt.wantUnit {
+				t.Errorf("first call ChannelUnit = %q, want %q", prep1.Model.ChannelUnit, tt.wantUnit)
+			}
+			if prep1.Model.ChannelDataType != tt.wantDataType {
+				t.Errorf("first call ChannelDataType = %q, want %q", prep1.Model.ChannelDataType, tt.wantDataType)
+			}
 
-	t.Run("non-nil DataType + nil Unit: ChannelUnit stays empty", func(t *testing.T) {
-		server := setupServer(t)
-		defer server.Close()
-
-		mockDS := &mockDatasourceService{
-			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-				Results: []datasourceapi.ChannelMetadata{
-					{
-						Name:       api.Channel("engine_temp"),
-						DataSource: dsRid,
-						DataType:   &numericType,
-						// Unit deliberately nil
-					},
-				},
-			},
-		}
-		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
-		config := &models.PluginSettings{
-			BaseUrl: server.URL,
-			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
-		}
-		query := backend.DataQuery{
-			RefID: "A",
-			JSON: mustMarshal(NominalQueryModel{
-				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
-				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
-			}),
-		}
-
-		prep, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if prepErr != nil {
-			t.Fatalf("prepare: %v", prepErr.Error)
-		}
-		if prep.Model.ChannelUnit != "" {
-			t.Errorf("ChannelUnit = %q, want empty", prep.Model.ChannelUnit)
-		}
-
-		// Second call: type-only result must still be cached (no re-search).
-		if _, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query); err2 != nil {
-			t.Fatalf("second prepare: %v", err2.Error)
-		}
-		if mockDS.searchChannelsCalls != 1 {
-			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
-		}
-	})
-
-	t.Run("nil DataType + non-nil Unit: ChannelUnit still populated (cache-write ordering guard)", func(t *testing.T) {
-		// An empty inferred type must not short-circuit the unit write.
-		server := setupServer(t)
-		defer server.Close()
-
-		mockDS := &mockDatasourceService{
-			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-				Results: []datasourceapi.ChannelMetadata{
-					{
-						Name:       api.Channel("engine_temp"),
-						DataSource: dsRid,
-						// DataType deliberately nil
-						Unit: &runapi.Unit{Symbol: "psia"},
-					},
-				},
-			},
-		}
-		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
-		config := &models.PluginSettings{
-			BaseUrl: server.URL,
-			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
-		}
-		query := backend.DataQuery{
-			RefID: "A",
-			JSON: mustMarshal(NominalQueryModel{
-				AssetRid: assetRid, Channel: "engine_temp", DataScopeName: "default",
-				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
-			}),
-		}
-
-		prep, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if prepErr != nil {
-			t.Fatalf("prepare: %v", prepErr.Error)
-		}
-		if prep.Model.ChannelUnit != "psia" {
-			t.Errorf("ChannelUnit = %q, want %q", prep.Model.ChannelUnit, "psia")
-		}
-		// Frontend-supplied type stands when ChannelMetadata.DataType is nil.
-		if prep.Model.ChannelDataType != "numeric" {
-			t.Errorf("ChannelDataType = %q, want %q (preserved)", prep.Model.ChannelDataType, "numeric")
-		}
-
-		// Second call: unit-only result must still be cached (no re-search), and the
-		// cache-read path must restore the unit while leaving the frontend type alone.
-		prep2, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if err2 != nil {
-			t.Fatalf("second prepare: %v", err2.Error)
-		}
-		if prep2.Model.ChannelUnit != "psia" {
-			t.Errorf("cache hit: ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, "psia")
-		}
-		if mockDS.searchChannelsCalls != 1 {
-			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
-		}
-	})
-
-	t.Run("no name match: empty cache entry written, no re-search on second call", func(t *testing.T) {
-		server := setupServer(t)
-		defer server.Close()
-
-		mockDS := &mockDatasourceService{
-			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-				Results: []datasourceapi.ChannelMetadata{}, // empty results
-			},
-		}
-		ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
-		config := &models.PluginSettings{
-			BaseUrl: server.URL,
-			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
-		}
-		query := backend.DataQuery{
-			RefID: "A",
-			JSON: mustMarshal(NominalQueryModel{
-				AssetRid: assetRid, Channel: "missing_channel", DataScopeName: "default",
-				ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
-			}),
-		}
-
-		prep1, err1 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-		if err1 != nil {
-			t.Fatalf("first prepare: %v", err1.Error)
-		}
-		if prep1.Model.ChannelUnit != "" {
-			t.Errorf("ChannelUnit = %q, want empty", prep1.Model.ChannelUnit)
-		}
-
-		// Second call: cached miss should prevent a second SearchChannels call.
-		if _, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query); err2 != nil {
-			t.Fatalf("second prepare: %v", err2.Error)
-		}
-		if mockDS.searchChannelsCalls != 1 {
-			t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
-		}
-	})
+			// Second call must hit the cache regardless of the first-call shape
+			// (populated, type-only, unit-only, or empty miss).
+			prep2, err2 := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+			if err2 != nil {
+				t.Fatalf("second prepare: %v", err2.Error)
+			}
+			if prep2.Model.ChannelUnit != tt.wantUnit {
+				t.Errorf("cache-hit ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, tt.wantUnit)
+			}
+			if mockDS.searchChannelsCalls != 1 {
+				t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+			}
+		})
+	}
 }
 
 func TestPartitionPreparedQueriesKeepsQueryModelPairs(t *testing.T) {
