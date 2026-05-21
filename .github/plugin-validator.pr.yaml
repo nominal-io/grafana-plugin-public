@@ -25,7 +25,7 @@ analyzers:
     archivename:
         enabled: false # dev archive naming differs from release naming
     sourcecode:
-        enabled: false # tautological when -sourceCodeUri is file://./ (source == zip source)
+        enabled: false # tautological when -sourceCodeUri points at the local checkout (source == zip source)
     codediff:
         enabled: false # nothing to diff against pre-publish
 
