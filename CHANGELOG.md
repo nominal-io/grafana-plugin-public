@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.0...nominal-grafana-plugin@0.12.1) (2026-05-21)
+
+
+### Chores
+
+* **deps:** bump protobufjs from 8.0.1 to 8.4.0 ([#74](https://github.com/nominal-io/grafana-plugin-public/issues/74)) ([5c7e487](https://github.com/nominal-io/grafana-plugin-public/commit/5c7e487b00608114eec18cd697a69a7c819d4e1a))
+
 ## [0.12.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.3...nominal-grafana-plugin@0.12.0) (2026-05-21)
 
 
