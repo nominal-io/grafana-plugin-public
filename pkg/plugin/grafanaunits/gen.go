@@ -5,8 +5,8 @@
 // snapshot is consumed via //go:embed in pkg/plugin/unit_map_test.go to validate
 // that every entry in unitSymbolToGrafanaID maps to a real Grafana ID.
 //
-// Refresh: cd pkg/plugin/grafanaunits && go run gen.go <grafana-tag>
-// (e.g. go run gen.go v12.1.0).
+// Refresh: cd pkg/plugin/grafanaunits && go run gen.go <grafana-tag> > unitids.txt
+// (e.g. go run gen.go v12.1.0 > unitids.txt).
 //
 // v12.1.0 is the floor because plugin.json's grafanaDependency is >=12.1.0:
 // a value valid in a later patch but absent in 12.1 would silently render with
@@ -31,7 +31,6 @@ import (
 )
 
 const upstreamURLFmt = "https://raw.githubusercontent.com/grafana/grafana/%s/packages/grafana-data/src/valueFormats/categories.ts"
-const outputPath = "unitids.txt"
 
 // idPattern matches every `id: '<id>'` declaration in categories.ts; upstream
 // uses this exact form on every format entry.
@@ -79,8 +78,8 @@ func main() {
 		out.WriteByte('\n')
 	}
 
-	if err := os.WriteFile(outputPath, out.Bytes(), 0o644); err != nil {
-		log.Fatalf("write %s: %v", outputPath, err)
+	if _, err := os.Stdout.Write(out.Bytes()); err != nil {
+		log.Fatalf("write stdout: %v", err)
 	}
-	log.Printf("wrote %s (%d IDs from grafana/grafana@%s)", outputPath, len(ids), tag)
+	log.Printf("emitted %d IDs from grafana/grafana@%s", len(ids), tag)
 }
