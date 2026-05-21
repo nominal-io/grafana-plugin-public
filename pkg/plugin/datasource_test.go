@@ -347,6 +347,101 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 	}
 }
 
+func TestApplyChannelMetadataPreservesOmittedFields(t *testing.T) {
+	qm := NominalQueryModel{
+		ChannelDataType: "numeric",
+		ChannelUnit:     "Cel",
+	}
+
+	applyChannelMetadata(&qm, channelMetadataCacheEntry{unit: "psia"})
+	if qm.ChannelDataType != "numeric" {
+		t.Errorf("ChannelDataType = %q, want existing numeric type preserved", qm.ChannelDataType)
+	}
+	if qm.ChannelUnit != "psia" {
+		t.Errorf("ChannelUnit = %q, want psia", qm.ChannelUnit)
+	}
+
+	applyChannelMetadata(&qm, channelMetadataCacheEntry{channelDataType: "string"})
+	if qm.ChannelDataType != "string" {
+		t.Errorf("ChannelDataType = %q, want string", qm.ChannelDataType)
+	}
+	if qm.ChannelUnit != "psia" {
+		t.Errorf("ChannelUnit = %q, want existing psia unit preserved", qm.ChannelUnit)
+	}
+}
+
+func TestChannelMetadataEntryForExactMatch(t *testing.T) {
+	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
+
+	tests := []struct {
+		name        string
+		channels    []datasourceapi.ChannelMetadata
+		channelName string
+		wantEntry   channelMetadataCacheEntry
+		wantOK      bool
+	}{
+		{
+			name: "exact match returns normalized type and trimmed unit",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name:     api.Channel("engine_temp"),
+				DataType: &numericType,
+				Unit:     &runapi.Unit{Symbol: " Cel "},
+			}},
+			channelName: "engine_temp",
+			wantEntry: channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				unit:            "Cel",
+			},
+			wantOK: true,
+		},
+		{
+			name: "case mismatch is ignored",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name:     api.Channel("Engine_Temp"),
+				DataType: &numericType,
+				Unit:     &runapi.Unit{Symbol: "Cel"},
+			}},
+			channelName: "engine_temp",
+			wantOK:      false,
+		},
+		{
+			name: "exact match with no usable metadata is ignored",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name: api.Channel("engine_temp"),
+			}},
+			channelName: "engine_temp",
+			wantOK:      false,
+		},
+		{
+			name: "unit-only exact match returns entry",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name: api.Channel("engine_temp"),
+				Unit: &runapi.Unit{Symbol: "psia"},
+			}},
+			channelName: "engine_temp",
+			wantEntry: channelMetadataCacheEntry{
+				unit: "psia",
+			},
+			wantOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := channelMetadataEntryForExactMatch(tt.channels, tt.channelName)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got.channelDataType != tt.wantEntry.channelDataType {
+				t.Errorf("channelDataType = %q, want %q", got.channelDataType, tt.wantEntry.channelDataType)
+			}
+			if got.unit != tt.wantEntry.unit {
+				t.Errorf("unit = %q, want %q", got.unit, tt.wantEntry.unit)
+			}
+		})
+	}
+}
+
 // TestPrepareQueryInfersChannelUnit guards the unit branch of inferChannelMetadata.
 // Covers the SearchChannels result shapes inferChannelMetadata must handle:
 // type + unit, nil unit, nil DataType + unit, and no name match (all cached).

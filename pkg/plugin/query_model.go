@@ -230,12 +230,7 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
 
 	if entry, hit := e.datasource.lookupChannelMetadata(cacheKey); hit {
-		if entry.channelDataType != "" {
-			qm.ChannelDataType = entry.channelDataType
-		}
-		if entry.unit != "" {
-			qm.ChannelUnit = entry.unit
-		}
+		applyChannelMetadata(qm, entry)
 		return
 	}
 
@@ -264,34 +259,44 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 		return
 	}
 
-	// Nominal enforces unique DataScopeName per asset (CreateAssetDataScope conjure
-	// doc + DuplicateDataScopeNames error), so SearchChannels-exact-match returns
-	// at most one case-exact result. Pick the first match.
-	for _, channel := range channelsResponse.Results {
-		if string(channel.Name) != qm.Channel {
-			continue
-		}
-		inferredType := getChannelDataType(channel) // "" if ChannelMetadata.DataType is nil
-		inferredUnit := getChannelUnit(channel)     // "" if Unit is nil
-		if inferredType == "" && inferredUnit == "" {
-			continue // don't cache an empty match; fall through to the no-match write below
-		}
-		if inferredType != "" {
-			qm.ChannelDataType = inferredType
-		}
-		if inferredUnit != "" {
-			qm.ChannelUnit = inferredUnit
-		}
-		e.datasource.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{
-			channelDataType: inferredType,
-			unit:            inferredUnit,
-			fetchedAt:       time.Now(),
-		})
+	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, qm.Channel); ok {
+		applyChannelMetadata(qm, entry)
+		entry.fetchedAt = time.Now()
+		e.datasource.storeChannelMetadata(cacheKey, entry)
 		return
 	}
 
 	// No usable metadata — cache the miss so a re-query doesn't re-search.
 	e.datasource.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
+}
+
+func applyChannelMetadata(qm *NominalQueryModel, entry channelMetadataCacheEntry) {
+	if entry.channelDataType != "" {
+		qm.ChannelDataType = entry.channelDataType
+	}
+	if entry.unit != "" {
+		qm.ChannelUnit = entry.unit
+	}
+}
+
+func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
+	// Nominal enforces unique DataScopeName per asset (CreateAssetDataScope conjure
+	// doc + DuplicateDataScopeNames error), so SearchChannels-exact-match returns
+	// at most one case-exact result. Pick the first match with usable metadata.
+	for _, channel := range channels {
+		if string(channel.Name) != channelName {
+			continue
+		}
+		entry := channelMetadataCacheEntry{
+			channelDataType: getChannelDataType(channel), // "" if ChannelMetadata.DataType is nil
+			unit:            getChannelUnit(channel),     // "" if Unit is nil
+		}
+		if entry.channelDataType == "" && entry.unit == "" {
+			continue
+		}
+		return entry, true
+	}
+	return channelMetadataCacheEntry{}, false
 }
 
 // lookupChannelMetadata returns a cached channel metadata entry if present and
