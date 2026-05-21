@@ -79,7 +79,7 @@ jobs:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
                   npx -y @grafana/plugin-validator@latest \
-                    -config .github/plugin-validator.yaml \
+                    -config .github/plugin-validator.pr.yaml \
                     -sourceCodeUri file://./ \
                     "$PLUGIN_ARCHIVE"
 
@@ -187,7 +187,6 @@ jobs:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
                   npx -y @grafana/plugin-validator@latest \
-                    -config .github/plugin-validator.yaml \
                     -sourceCodeUri file://./ \
                     "$PLUGIN_ARCHIVE"
 
