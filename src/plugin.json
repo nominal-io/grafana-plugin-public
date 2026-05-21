@@ -71,7 +71,7 @@
         "path": "img/template-variables.png"
       }
     ],
-    "version": "0.12.0",
+    "version": "0.12.1",
     "updated": "%TODAY%"
   },
   "dependencies": {
