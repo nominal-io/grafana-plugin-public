@@ -40,7 +40,7 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("gen: ")
 	if len(os.Args) != 2 {
-		log.Fatalf("usage: go run gen.go <grafana-tag>  (e.g. v12.1.0)")
+		log.Fatalf("usage: go run gen.go <grafana-tag> > unitids.txt  (e.g. go run gen.go v12.1.0 > unitids.txt)")
 	}
 	tag := os.Args[1]
 	url := fmt.Sprintf(upstreamURLFmt, tag)
