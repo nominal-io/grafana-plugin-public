@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"fmt"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -154,12 +153,11 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
 		if err != nil {
-			log.DefaultLogger.Error("Batch compute API call failed", "error", err, "chunkStart", chunkStart, "chunkEnd", chunkEnd)
+			logErrorWithConjureFields("Batch compute API call failed", err,
+				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
+			errMsg := formatUserError("Batch compute failed", err)
 			for _, q := range chunkQueries {
-				results[q.RefID] = backend.ErrDataResponse(
-					backend.StatusInternal,
-					fmt.Sprintf("Batch compute failed: %v", err),
-				)
+				results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal, errMsg)
 			}
 			continue
 		}

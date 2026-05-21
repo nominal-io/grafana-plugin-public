@@ -101,11 +101,13 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create resource HTTP client: %v", err)
 	}
 	resourceHTTPClient.Timeout = 30 * time.Second
+	resourceHTTPClient.Transport = newUserAgentTransport(resourceHTTPClient.Transport)
 
 	// Generated Conjure clients still require their own client type, so keep this
 	// wrapper for those service integrations.
 	conjureClient, err := conjurehttpclient.NewClient(
 		conjurehttpclient.WithBaseURLs([]string{baseURL}),
+		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
@@ -165,6 +167,9 @@ func (d *Datasource) Dispose() {
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	// UA components live in ctx so any downstream HTTP picks them up; safe to set
+	// before validation because the error short-circuit below performs no I/O.
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
@@ -203,8 +208,9 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
-		log.DefaultLogger.Error("Connection test failed", "error", err)
-		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("Connection test failed: %v", err))
+		logErrorWithConjureFields("Connection test failed", err)
+		message, _ := classifyConnectionError(err)
+		return backend.ErrDataResponse(backend.StatusInternal, message)
 	}
 
 	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
@@ -890,6 +896,7 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	log.DefaultLogger.Debug("CheckHealth called")
 
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -935,20 +942,11 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 	if err != nil {
-		log.DefaultLogger.Error("Health check failed", "error", err)
-		// Return a more specific error message based on the error type
-		errorMsg := "Failed to connect to Nominal API"
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
-			errorMsg = "Invalid API key - authentication failed"
-		} else if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
-			errorMsg = "Connection timeout - unable to reach Nominal API"
-		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-			errorMsg = "Unable to connect to Nominal API - check base URL"
-		}
-
+		logErrorWithConjureFields("Health check failed", err)
+		message, _ := classifyConnectionError(err)
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: errorMsg,
+			Message: message,
 		}, nil
 	}
 
@@ -962,6 +960,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 // CallResource handles HTTP requests sent to the plugin
 // This handles all proxy requests from /api/datasources/proxy/uid/{uid}/...
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
 	// Debug logging to see what requests are coming in
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
@@ -1059,23 +1058,9 @@ func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.Call
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 
 	if err != nil {
-		log.DefaultLogger.Error("Test connection failed", "error", err)
-		// Return more specific error messages
-		errorMsg := "Failed to connect to Nominal API"
-		statusCode := http.StatusServiceUnavailable
-
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "unauthorized") {
-			errorMsg = "Invalid API key - authentication failed"
-			statusCode = http.StatusUnauthorized
-		} else if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "context deadline exceeded") {
-			errorMsg = "Connection timeout - unable to reach Nominal API"
-			statusCode = http.StatusRequestTimeout
-		} else if strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "no such host") {
-			errorMsg = "Unable to connect to Nominal API - check base URL"
-			statusCode = http.StatusBadGateway
-		}
-
-		errBody, _ := json.Marshal(map[string]string{"error": errorMsg})
+		logErrorWithConjureFields("Test connection failed", err)
+		message, statusCode := classifyConnectionError(err)
+		errBody, _ := json.Marshal(map[string]string{"error": message})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: statusCode,
 			Headers: map[string][]string{
@@ -1181,13 +1166,14 @@ func (d *Datasource) handleChannelsSearch(ctx context.Context, req *backend.Call
 	// Make the API call using the datasource service
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 	if err != nil {
-		log.DefaultLogger.Error("Channels search API call failed", "error", err)
+		logErrorWithConjureFields("Channels search API call failed", err)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusInternalServerError,
 			Headers: map[string][]string{
 				"Content-Type": {"application/json"},
 			},
-			Body: []byte(`{"error": "Channels search failed"}`),
+			Body: errBody,
 		})
 	}
 
@@ -1376,7 +1362,6 @@ func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallRe
 	// Use the datasource API key for all proxied upstream requests.
 	proxyReq.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 
-	proxyReq.Header.Set("User-Agent", "grafana-nominal-plugin/1.0.0")
 	log.DefaultLogger.Debug("Using API key for proxy request")
 
 	// Ensure Content-Type is set for POST requests
@@ -1462,8 +1447,8 @@ func (d *Datasource) handleAssetsVariable(ctx context.Context, req *backend.Call
 	// Fetch assets with pagination
 	assetResponses, err := d.fetchAssetsForVariable(ctx, config, searchRequest.SearchText, searchRequest.MaxResults)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch assets", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch assets"})
+		logErrorWithConjureFields("Failed to fetch assets", err)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch assets", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1584,8 +1569,8 @@ func (d *Datasource) handleDatascopesVariable(ctx context.Context, req *backend.
 	// Fetch asset by RID to get its datascopes
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
+		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1703,8 +1688,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 	// Fetch asset by RID to get its datascopes and datasource RIDs
 	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
 	if err != nil {
-		log.DefaultLogger.Error("Failed to fetch asset", "error", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to fetch asset"})
+		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1769,8 +1754,8 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 		if err != nil {
-			log.DefaultLogger.Error("Channels search API call failed", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Channels search failed"})
+			logErrorWithConjureFields("Channels search API call failed", err)
+			errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -1873,20 +1858,23 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 	return asset, nil
 }
 
-func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+// postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
+// with the standard Authorization and Content-Type headers. On non-200 the
+// response body is read, closed, and returned as a typed *apiError. On 200
+// the caller owns closing resp.Body.
+func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
 	}
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
-	// Use the batch lookup endpoint with a single RID
-	bodyBytes, err := json.Marshal([]string{assetRid})
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/scout/v1/asset/multiple", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -1898,24 +1886,31 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(errBody))
+		resp.Body.Close()
+		return nil, newAPIError(resp.StatusCode, errBody)
 	}
 
-	// Response is a map: { "ri.scout...": { rid, title, dataScopes, ... } }
+	return resp, nil
+}
+
+func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	resp, err := d.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
 	var assetMap map[string]SingleAssetResponse
 	if err := json.NewDecoder(resp.Body).Decode(&assetMap); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Look up the specific asset
 	if asset, ok := assetMap[assetRid]; ok {
 		return &asset, nil
 	}
-
 	return nil, nil
 }
 
@@ -1940,14 +1935,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	pageSize := 50
 	totalFetched := 0
 
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" {
-		baseURL = defaultAPIBaseURL
-	}
-	baseURL = strings.TrimSuffix(baseURL, "/")
-
 	for totalFetched < maxResults {
-		// Build request body matching the format used by QueryEditor
 		requestBody := map[string]interface{}{
 			"query": map[string]interface{}{
 				"searchText": searchText,
@@ -1959,47 +1947,25 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 			},
 			"pageSize": pageSize,
 		}
-
 		if pageToken != "" {
 			requestBody["nextPageToken"] = pageToken
 		}
 
-		bodyBytes, err := json.Marshal(requestBody)
+		resp, err := d.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request: %w", err)
-		}
-
-		// Make HTTP request
-		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/scout/v1/search-assets", bytes.NewReader(bodyBytes))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := d.getResourceHTTPClient().Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("request failed: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			errBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(errBody))
+			return nil, err
 		}
 
 		var assetResp AssetResponse
-		if err := json.NewDecoder(resp.Body).Decode(&assetResp); err != nil {
-			resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode response: %w", err)
-		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&assetResp)
 		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", decodeErr)
+		}
 
 		allResults = append(allResults, assetResp)
 		totalFetched += len(assetResp.Results)
 
-		// Check for more pages
 		if assetResp.NextPageToken == "" || len(assetResp.Results) < pageSize {
 			break
 		}
