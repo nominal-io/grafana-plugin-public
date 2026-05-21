@@ -70,10 +70,18 @@ jobs:
                   mv dist "${PLUGIN_ID}"
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
 
-            - name: Validate plugin metadata
+            - name: Install semgrep
+              # code-rules analyzer silently no-ops without semgrep on PATH.
+              run: pipx install semgrep
+
+            - name: Validate plugin
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
-              run: npx -y @grafana/plugin-validator@latest -analyzer=metadatavalid "$PLUGIN_ARCHIVE"
+              run: |
+                  npx -y @grafana/plugin-validator@latest \
+                    -config .github/plugin-validator.yaml \
+                    -sourceCodeUri file://./ \
+                    "$PLUGIN_ARCHIVE"
 
             - name: Build summary
               run: |
@@ -170,10 +178,18 @@ jobs:
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
                   sha1sum "${PLUGIN_ARCHIVE}" | cut -f1 -d' ' > "${PLUGIN_ARCHIVE_SHA1SUM}"
 
+            - name: Install semgrep
+              # code-rules analyzer silently no-ops without semgrep on PATH.
+              run: pipx install semgrep
+
             - name: Validate plugin
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
-              run: npx -y @grafana/plugin-validator@latest -sourceCodeUri file://./ "$PLUGIN_ARCHIVE"
+              run: |
+                  npx -y @grafana/plugin-validator@latest \
+                    -config .github/plugin-validator.yaml \
+                    -sourceCodeUri file://./ \
+                    "$PLUGIN_ARCHIVE"
 
             - name: Show package outputs
               run: |
