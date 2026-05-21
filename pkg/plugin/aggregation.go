@@ -27,10 +27,15 @@ const (
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
 // Each series carries its own timestamps. Most aggregations share end_bucket_timestamp,
 // but FIRST_POINT/LAST_POINT use their own timestamp columns (first_timestamp, last_timestamp).
+//
+// CarriesChannelUnit mirrors the source aggColumnSpec.CarriesChannelUnit flag so
+// downstream frame builders (fieldConfigForNumeric) can decide whether to attach
+// the channel unit without re-looking up the spec by name.
 type AggregationSeries struct {
-	Name       string      // display name: "mean", "min", "max", "first", "last"
-	TimePoints []time.Time
-	Values     []*float64
+	Name               string // display name: "mean", "min", "max", "first", "last"
+	TimePoints         []time.Time
+	Values             []*float64
+	CarriesChannelUnit bool
 }
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
@@ -40,6 +45,12 @@ type aggColumnSpec struct {
 	Name         string // display name for the series (e.g. "mean", "first")
 	ValueCol     string // Arrow column name for values (e.g. "mean", "first_value")
 	TimestampCol string // Arrow column name for timestamps; empty means use shared end_bucket_timestamp
+	// CarriesChannelUnit is true when the aggregation's output is expressed in the
+	// base channel unit (MEAN/MIN/MAX/FIRST/LAST). It is false when the output is
+	// in a different unit-space: COUNT is dimensionless, and VARIANCE is unit²
+	// (rendering it with the channel unit would mislead). When false, the channel
+	// unit MUST NOT be attached to the resulting frame's FieldConfig.
+	CarriesChannelUnit bool
 }
 
 // aggSpecs is the single source of truth for all supported aggregations.
@@ -47,13 +58,13 @@ type aggColumnSpec struct {
 // Validation (validateAndDedup) and column mapping (aggColumnSpecFromEnum)
 // both derive from this table.
 var aggSpecs = map[string]aggColumnSpec{
-	AggMean:       {Name: "mean", ValueCol: "mean"},
-	AggMin:        {Name: "min", ValueCol: "min"},
-	AggMax:        {Name: "max", ValueCol: "max"},
-	AggCount:      {Name: "count", ValueCol: "count"},
-	AggVariance:   {Name: "variance", ValueCol: "variance"},
-	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
-	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
+	AggMean:       {Name: "mean", ValueCol: "mean", CarriesChannelUnit: true},
+	AggMin:        {Name: "min", ValueCol: "min", CarriesChannelUnit: true},
+	AggMax:        {Name: "max", ValueCol: "max", CarriesChannelUnit: true},
+	AggCount:      {Name: "count", ValueCol: "count"},       // dimensionless
+	AggVariance:   {Name: "variance", ValueCol: "variance"}, // unit² — channel unit would mislead
+	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp", CarriesChannelUnit: true},
+	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp", CarriesChannelUnit: true},
 }
 
 // aggColumnSpecFromEnum looks up the Arrow column spec for an aggregation enum value.
@@ -175,6 +186,7 @@ func extractArrowBucketedNumericSeries(
 	seriesData := make([]AggregationSeries, len(specs))
 	for i, spec := range specs {
 		seriesData[i].Name = spec.Name
+		seriesData[i].CarriesChannelUnit = spec.CarriesChannelUnit
 		seriesData[i].Values = []*float64{}
 	}
 	sharedTimePoints := []time.Time{}

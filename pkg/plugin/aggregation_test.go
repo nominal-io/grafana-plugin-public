@@ -681,3 +681,87 @@ func TestValidateAndDedup(t *testing.T) {
 		t.Errorf("unexpected order: %v", deduped)
 	}
 }
+
+// TestAggSpecsCarriesChannelUnitFlag guards the CarriesChannelUnit flag on
+// aggSpecs entries. MEAN/MIN/MAX/FIRST/LAST return values in the base channel
+// unit and must be marked true. COUNT (dimensionless) and VARIANCE (unit²) do
+// not carry the channel unit and must be marked false so FieldConfig.Unit is
+// suppressed on those frames.
+//
+// The reverse-direction check below forces any new aggregation to declare its
+// CarriesChannelUnit value explicitly, rather than inheriting a default by
+// copy-paste.
+func TestAggSpecsCarriesChannelUnitFlag(t *testing.T) {
+	cases := map[string]bool{
+		AggMean:       true,
+		AggMin:        true,
+		AggMax:        true,
+		AggCount:      false,
+		AggVariance:   false,
+		AggFirstPoint: true,
+		AggLastPoint:  true,
+	}
+	for agg, wantCarries := range cases {
+		spec, ok := aggSpecs[agg]
+		if !ok {
+			t.Errorf("aggSpecs[%q] missing", agg)
+			continue
+		}
+		if spec.CarriesChannelUnit != wantCarries {
+			t.Errorf("aggSpecs[%q].CarriesChannelUnit = %v, want %v", agg, spec.CarriesChannelUnit, wantCarries)
+		}
+	}
+	// Reverse direction: every aggSpecs entry must have an expectation above,
+	// so adding a new aggregation can't silently pass this test.
+	for agg := range aggSpecs {
+		if _, ok := cases[agg]; !ok {
+			t.Errorf("aggSpecs[%q] has no CarriesChannelUnit expectation in this test — "+
+				"add it to `cases` with an explicit true/false", agg)
+		}
+	}
+}
+
+// TestAggregationSeriesCarriesChannelUnitPropagation guards the contract that
+// extractArrowBucketedNumericSeries copies aggColumnSpec.CarriesChannelUnit onto
+// each produced AggregationSeries. fieldConfigForNumeric reads this bit directly
+// rather than re-looking up the spec by display name; the wire-up must hold.
+func TestAggregationSeriesCarriesChannelUnitPropagation(t *testing.T) {
+	ts := []int64{1000000000000, 2000000000000}
+	columns := map[string][]float64{
+		"mean":     {10.0, 20.0},
+		"count":    {5, 5},
+		"variance": {1.5, 2.5},
+	}
+	arrowBytes := createTestArrowMultiAgg(ts, columns)
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+
+	specs := []aggColumnSpec{
+		aggColumnSpecFromEnum(AggMean),
+		aggColumnSpecFromEnum(AggCount),
+		aggColumnSpecFromEnum(AggVariance),
+	}
+	series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 3 {
+		t.Fatalf("expected 3 series, got %d", len(series))
+	}
+
+	want := []struct {
+		name    string
+		carries bool
+	}{
+		{"mean", true},
+		{"count", false},
+		{"variance", false},
+	}
+	for i, w := range want {
+		if series[i].Name != w.name {
+			t.Errorf("series[%d].Name = %q, want %q", i, series[i].Name, w.name)
+		}
+		if series[i].CarriesChannelUnit != w.carries {
+			t.Errorf("series[%d] (%s).CarriesChannelUnit = %v, want %v", i, w.name, series[i].CarriesChannelUnit, w.carries)
+		}
+	}
+}

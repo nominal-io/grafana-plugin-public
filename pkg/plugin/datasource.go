@@ -69,10 +69,11 @@ type assetCacheEntry struct {
 	fetchedAt time.Time
 }
 
-// channelTypeCacheEntry holds a cached channel type inference result with its fetch time.
-type channelTypeCacheEntry struct {
-	channelType string // "string", "log", "numeric", or "" for searched-but-not-found
-	fetchedAt   time.Time
+// channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
+type channelMetadataCacheEntry struct {
+	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
+	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
+	fetchedAt       time.Time
 }
 
 // NewDatasource creates a new datasource instance.
@@ -111,13 +112,13 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 
 	ds := &Datasource{
-		settings:           settings,
-		resourceHTTPClient: resourceHTTPClient,
-		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
-		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
-		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
-		assetCache:         make(map[string]assetCacheEntry),
-		channelTypeCache:   make(map[string]channelTypeCacheEntry),
+		settings:             settings,
+		resourceHTTPClient:   resourceHTTPClient,
+		authService:          authapi.NewAuthenticationServiceV2Client(conjureClient),
+		computeService:       computeapi1.NewComputeServiceClient(conjureClient),
+		datasourceService:    datasourceservice.NewDataSourceServiceClient(conjureClient),
+		assetCache:           make(map[string]assetCacheEntry),
+		channelMetadataCache: make(map[string]channelMetadataCacheEntry),
 	}
 
 	return ds, nil
@@ -135,10 +136,10 @@ type Datasource struct {
 	assetCacheMu sync.Mutex
 	assetCache   map[string]assetCacheEntry
 
-	// channelTypeCache caches SearchChannels inference results with a TTL to avoid
-	// redundant HTTP calls across queries and dashboard refreshes.
-	channelTypeCacheMu sync.Mutex
-	channelTypeCache   map[string]channelTypeCacheEntry
+	// channelMetadataCache caches SearchChannels inference results (data type + unit) with a TTL
+	// to avoid redundant HTTP calls across queries and dashboard refreshes.
+	channelMetadataCacheMu sync.Mutex
+	channelMetadataCache   map[string]channelMetadataCacheEntry
 
 	resourceHTTPClient *http.Client
 }
@@ -420,14 +421,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
 						valueField := data.NewField("value", nil, agg.Values)
-						valueField.Config = &data.FieldConfig{DisplayNameFromDS: displayName}
+						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, agg.TimePoints),
 							valueField,
 						)
 					} else {
 						valueField := data.NewField("value", nil, []*float64{})
-						valueField.Config = &data.FieldConfig{DisplayNameFromDS: displayName}
+						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, []time.Time{}),
 							valueField,
@@ -453,14 +454,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				}
 				if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
 					valueField := data.NewField("value", nil, result.StringValues)
-					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+					valueField.Config = fieldConfigForEnum(&qm)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []string{})
-					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+					valueField.Config = fieldConfigForEnum(&qm)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -474,14 +475,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				frame.Name = qm.Channel
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,
@@ -1238,6 +1239,15 @@ func getChannelMetadataDescription(channel datasourceapi.ChannelMetadata) string
 	return fmt.Sprintf("Channel: %s", string(channel.Name))
 }
 
+// getChannelUnit extracts the raw UCUM symbol from channel metadata.
+// Returns "" if Unit is nil — treated as "no unit" downstream.
+func getChannelUnit(channel datasourceapi.ChannelMetadata) string {
+	if channel.Unit == nil {
+		return ""
+	}
+	return strings.TrimSpace(channel.Unit.Symbol)
+}
+
 // getChannelDataType normalizes the API's SeriesDataType to "string", "log", or "numeric".
 // Returns empty string if the metadata is not available (treated as numeric for backward compatibility).
 func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
@@ -1252,6 +1262,30 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	default:
 		return "numeric"
 	}
+}
+
+// carriesChannelUnit = false for COUNT (dimensionless) and VARIANCE (unit²),
+// suppressing the channel unit on the resulting frame. Multi-agg call sites
+// pass agg.CarriesChannelUnit directly; non-aggregated call sites should use
+// fieldConfigForNumericWithChannelUnit instead so the rule is explicit at the
+// call site rather than encoded as a literal true.
+func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesChannelUnit bool) *data.FieldConfig {
+	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
+	if !carriesChannelUnit {
+		return cfg
+	}
+	cfg.Unit = mapToGrafanaUnit(qm.ChannelUnit)
+	return cfg
+}
+
+// fieldConfigForNumericWithChannelUnit is the call-site-clear wrapper for
+// non-aggregated numeric frames, which always carry the channel unit.
+func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName string) *data.FieldConfig {
+	return fieldConfigForNumeric(qm, displayName, true)
+}
+
+func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
+	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 }
 
 // isSupportedDataSourceType returns true for data source types that support channel queries.

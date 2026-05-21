@@ -46,6 +46,8 @@ String channels always aggregate by **Mode** (the most-frequent value in each bu
 
 Selecting multiple aggregations at once returns each as its own series, so a single Time series panel can render min, max, and mean as three lines. To turn the same selection into a shaded min/max envelope around the mean, add a Grafana **Fill below to** field override on the min series (filling to max), which produces a banded view without changing the query. For exact values, spot-checks, or embedding numbers inside summary dashboards, swap the visualization to a Table panel.
 
+Numeric channels carry their unit from Nominal, so axes and tooltips render with the correct symbol and scaling (for example, `°C`, `psi`, `m/s`). Symbols outside Grafana's built-in unit registry are appended verbatim as a suffix.
+
 ### String
 
 Categorical telemetry: states, modes, fault codes.
