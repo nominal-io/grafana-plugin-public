@@ -70,18 +70,23 @@ jobs:
                   mv dist "${PLUGIN_ID}"
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
 
-            - name: Install semgrep
-              # code-rules analyzer silently no-ops without semgrep on PATH.
-              run: pipx install semgrep
-
             - name: Validate plugin
+              # Use the upstream Docker image so semgrep, osv-scanner, and any
+              # other bundled tooling match what the Grafana plugin review
+              # service runs. --pull=always tracks upstream; switch to a
+              # digest pin (grafana/plugin-validator-cli@sha256:...) if you
+              # need fully reproducible builds.
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
-                  npx -y @grafana/plugin-validator@latest \
-                    -config .github/plugin-validator.pr.yaml \
-                    -sourceCodeUri file://./ \
-                    "$PLUGIN_ARCHIVE"
+                  docker run --pull=always --rm \
+                    -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
+                    -v "$PWD/.github/plugin-validator.pr.yaml:/config.yaml:ro" \
+                    -v "$PWD:/src:ro" \
+                    grafana/plugin-validator-cli \
+                    -config /config.yaml \
+                    -sourceCodeUri file:///src \
+                    /archive.zip
 
             - name: Build summary
               run: |
@@ -178,17 +183,17 @@ jobs:
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
                   sha1sum "${PLUGIN_ARCHIVE}" | cut -f1 -d' ' > "${PLUGIN_ARCHIVE_SHA1SUM}"
 
-            - name: Install semgrep
-              # code-rules analyzer silently no-ops without semgrep on PATH.
-              run: pipx install semgrep
-
             - name: Validate plugin
+              # Use the upstream Docker image for parity with Grafana's review service.
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
-                  npx -y @grafana/plugin-validator@latest \
-                    -sourceCodeUri file://./ \
-                    "$PLUGIN_ARCHIVE"
+                  docker run --pull=always --rm \
+                    -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
+                    -v "$PWD:/src:ro" \
+                    grafana/plugin-validator-cli \
+                    -sourceCodeUri file:///src \
+                    /archive.zip
 
             - name: Show package outputs
               run: |
