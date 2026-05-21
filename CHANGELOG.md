@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.3...nominal-grafana-plugin@0.12.0) (2026-05-21)
+
+
+### Features
+
+* add unit support ([#71](https://github.com/nominal-io/grafana-plugin-public/issues/71)) ([b9a0ba9](https://github.com/nominal-io/grafana-plugin-public/commit/b9a0ba945e309940ed083c76586a21dd5c83499c))
+
+
+### Bug Fixes
+
+* trim Grafana catalog changelog ([#67](https://github.com/nominal-io/grafana-plugin-public/issues/67)) ([c3998e0](https://github.com/nominal-io/grafana-plugin-public/commit/c3998e0e381deb9eef50b7f4378be93ccc261def))
+
+
+### Chores
+
+* refresh plugin catalog README and screenshots ([#69](https://github.com/nominal-io/grafana-plugin-public/issues/69)) ([a5672dd](https://github.com/nominal-io/grafana-plugin-public/commit/a5672ddfc06e435695742a28fa338c90c243bdaa))
+* User-Agent identification and improved error tracing ([#72](https://github.com/nominal-io/grafana-plugin-public/issues/72)) ([d32bc34](https://github.com/nominal-io/grafana-plugin-public/commit/d32bc34518fc9bdce449ed7a795e0825c2913350))
+
 ## [0.11.3](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.11.2...nominal-grafana-plugin@0.11.3) (2026-05-04)
 
 
