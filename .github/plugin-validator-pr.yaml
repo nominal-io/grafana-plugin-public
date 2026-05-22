@@ -1,0 +1,37 @@
+# grafana/plugin-validator config for CI runs.
+#
+# Disables analyzers that don't make sense on an unmerged, unsigned,
+# work-in-progress PR.
+#
+# Schema: pkg/runner/runner.go in grafana/plugin-validator.
+
+global:
+    enabled: true
+    severity: error
+
+analyzers:
+    # Release/publish-time only — would fail on every run.
+    version:
+        enabled: false # version-not-greater-than-published; release-please bumps at release
+    signature:
+        enabled: false # PRs aren't signed; signing happens in the tag job after this step
+    manifest:
+        enabled: false # signed MANIFEST.txt only exists post-signing
+    provenance:
+        enabled: false # SLSA provenance only attached by the release pipeline
+    checksum:
+        enabled: false # compares against a published artifact that doesn't exist yet
+    archivename:
+        enabled: false # dev archive naming differs from release naming
+    sourcecode:
+        enabled: false # tautological when -sourceCodeUri points at the local checkout (source == zip source)
+    codediff:
+        enabled: false # nothing to diff against pre-publish
+
+    # Noise reducers — keep on but don't fail the build.
+    brokenlinks:
+        severity: warning # flaky on transient 5xx / rate limits
+    safelinks:
+        severity: warning # same
+    llmreview:
+        enabled: false # non-deterministic; treat as advisory only

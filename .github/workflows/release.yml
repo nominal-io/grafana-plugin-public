@@ -1,8 +1,10 @@
 # This GitHub Action automates the process of building Grafana plugins.
 # (For more information, see https://github.com/grafana/plugin-actions/blob/main/build-plugin/README.md)
 #
-# On PRs: Builds plugin to verify it compiles correctly (package-plugin)
-# On tags: Creates a GitHub Release with the plugin ZIP file attached (build-plugin)
+# On PRs:  builds + validates with plugin-validator-pr.yaml (skips analyzers
+#          that need a signed/published artifact).
+# On tags: builds, tests, signs, validates with the full analyzer suite, and
+#          publishes a GitHub Release.
 name: Release Plugin
 
 on:
@@ -70,10 +72,23 @@ jobs:
                   mv dist "${PLUGIN_ID}"
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
 
-            - name: Validate plugin metadata
+            - name: Validate plugin (PR)
+              # Relaxed config — release-only analyzers (signature, manifest,
+              # provenance, checksum, version) are disabled here and run in
+              # the release job below. Upstream Docker image for parity with
+              # Grafana's review service; pin by digest if you need
+              # reproducibility.
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
-              run: npx -y @grafana/plugin-validator@latest -analyzer=metadatavalid "$PLUGIN_ARCHIVE"
+              run: |
+                  docker run --pull=always --rm \
+                    -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
+                    -v "$PWD/.github/plugin-validator-pr.yaml:/config.yaml:ro" \
+                    -v "$PWD:/src:ro" \
+                    grafana/plugin-validator-cli \
+                    -config /config.yaml \
+                    -sourceCodeUri file:///src \
+                    /archive.zip
 
             - name: Build summary
               run: |
@@ -170,10 +185,19 @@ jobs:
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
                   sha1sum "${PLUGIN_ARCHIVE}" | cut -f1 -d' ' > "${PLUGIN_ARCHIVE_SHA1SUM}"
 
-            - name: Validate plugin
+            - name: Validate plugin (release)
+              # No -config: runs the full analyzer suite, including the
+              # signature/manifest/provenance/checksum/version checks that the
+              # PR job skips (the archive has just been signed above).
               env:
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
-              run: npx -y @grafana/plugin-validator@latest -sourceCodeUri file://./ "$PLUGIN_ARCHIVE"
+              run: |
+                  docker run --pull=always --rm \
+                    -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
+                    -v "$PWD:/src:ro" \
+                    grafana/plugin-validator-cli \
+                    -sourceCodeUri file:///src \
+                    /archive.zip
 
             - name: Show package outputs
               run: |
