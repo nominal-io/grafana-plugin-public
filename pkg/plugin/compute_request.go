@@ -137,7 +137,7 @@ func effectiveBucketCount(qm NominalQueryModel, maxDataPoints int64) int {
 }
 
 func numericOutputFields(aggregations []string) []computeapi.NumericOutputField {
-	outputFields := make([]computeapi.NumericOutputField, 0, len(aggregations))
+	var outputFields []computeapi.NumericOutputField
 	for _, agg := range aggregations {
 		outputFields = append(outputFields, computeapi.New_NumericOutputField(
 			computeapi.NumericOutputField_Value(agg),

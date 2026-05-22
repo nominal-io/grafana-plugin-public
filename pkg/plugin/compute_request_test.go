@@ -121,9 +121,10 @@ func TestEffectiveBucketCount(t *testing.T) {
 
 func TestNumericOutputFields(t *testing.T) {
 	tests := []struct {
-		name string
-		in   []string
-		want []computeapi.NumericOutputField_Value
+		name    string
+		in      []string
+		want    []computeapi.NumericOutputField_Value
+		wantNil bool
 	}{
 		{
 			name: "preserves aggregation order",
@@ -139,15 +140,25 @@ func TestNumericOutputFields(t *testing.T) {
 			},
 		},
 		{
-			name: "returns empty slice for empty aggregations",
-			in:   nil,
-			want: nil,
+			name:    "returns nil slice for nil aggregations",
+			in:      nil,
+			want:    nil,
+			wantNil: true,
+		},
+		{
+			name:    "returns nil slice for empty aggregations",
+			in:      []string{},
+			want:    nil,
+			wantNil: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := numericOutputFields(tt.in)
+			if tt.wantNil && got != nil {
+				t.Fatalf("numericOutputFields returned non-nil empty slice, want nil")
+			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("len(numericOutputFields) = %d, want %d; got %v", len(got), len(tt.want), got)
 			}
