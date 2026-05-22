@@ -81,7 +81,7 @@ jobs:
               run: |
                   docker run --pull=always --rm \
                     -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
-                    -v "$PWD/.github/plugin-validator.pr.yaml:/config.yaml:ro" \
+                    -v "$PWD/.github/plugin-validator-pr.yaml:/config.yaml:ro" \
                     -v "$PWD:/src:ro" \
                     grafana/plugin-validator-cli \
                     -config /config.yaml \
