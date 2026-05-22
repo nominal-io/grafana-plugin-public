@@ -4,7 +4,7 @@ import { act, render, screen, fireEvent, within, waitFor } from '@testing-librar
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 import { DataSource } from '../datasource';
-import { AGGREGATION_RUN_DELAY_MS } from './queryBuilder/queryBuilderRunPlanner';
+import { AGGREGATION_RUN_DELAY_MS } from './queryBuilder/useNominalQueryBuilder';
 
 // Mock Grafana runtime
 const post = jest.fn();

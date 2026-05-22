@@ -24,12 +24,19 @@ import {
   NUMERIC_AGG_OPTIONS,
   type ChannelOption,
 } from './queryBuilderOptions';
-import {
-  AGGREGATION_RUN_DELAY_MS,
-  shouldDebounceAggregationRun,
-  shouldRunCompleteQuery,
-} from './queryBuilderRunPlanner';
 import type { AssetInputMethod, QueryBuilderModel } from './queryBuilderTypes';
+
+type QueryCompletenessInput = Pick<NominalQuery, 'assetRid' | 'channel' | 'dataScopeName'> | undefined;
+
+export const AGGREGATION_RUN_DELAY_MS = 400;
+
+function shouldRunCompleteQuery(query: QueryCompletenessInput): boolean {
+  return Boolean(query?.assetRid && query.channel && query.dataScopeName);
+}
+
+function shouldDebounceAggregationRun(query: QueryCompletenessInput): boolean {
+  return shouldRunCompleteQuery(query);
+}
 
 interface UseNominalQueryBuilderArgs {
   query: NominalQuery;
