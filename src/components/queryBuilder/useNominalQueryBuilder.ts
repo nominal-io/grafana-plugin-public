@@ -81,6 +81,9 @@ export function useNominalQueryBuilder({
   // without re-triggering when query changes (avoids onChange -> query -> effect cycles)
   const queryRef = useRef(query);
   queryRef.current = query;
+  const onRunQueryRef = useRef(onRunQuery);
+  onRunQueryRef.current = onRunQuery;
+  const lastDebouncedAggregationsRef = useRef(query?.aggregations);
 
   // Ref for the "copied" tooltip hide-timer so it can be cleared on unmount.
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -193,6 +196,10 @@ export function useNominalQueryBuilder({
         });
     }, 300)
   ).current;
+
+  const openChannelMenu = useCallback(() => {
+    debouncedChannelSearch('');
+  }, [debouncedChannelSearch]);
 
   // Pre-load channel options when the channel dropdown becomes visible or the
   // underlying asset/datascope changes (mirrors the old defaultOptions behaviour).
@@ -422,12 +429,17 @@ export function useNominalQueryBuilder({
 
   // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
   useEffect(() => {
+    if (query?.aggregations === lastDebouncedAggregationsRef.current) {
+      return;
+    }
+    lastDebouncedAggregationsRef.current = query?.aggregations;
+
     if (!shouldDebounceAggregationRun(queryRef.current)) {
       return;
     }
-    const timer = setTimeout(() => onRunQuery(), AGGREGATION_RUN_DELAY_MS);
+    const timer = setTimeout(() => onRunQueryRef.current(), AGGREGATION_RUN_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [query?.aggregations, onRunQuery]);
+  }, [query?.aggregations]);
 
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
@@ -699,7 +711,7 @@ export function useNominalQueryBuilder({
       changeDirectRID,
       selectDataScope,
       searchChannels: debouncedChannelSearch,
-      openChannelMenu: () => debouncedChannelSearch(''),
+      openChannelMenu,
       selectChannel,
       changeAggregations,
       copySelectedAssetRid,

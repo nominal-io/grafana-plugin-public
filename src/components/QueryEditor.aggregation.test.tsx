@@ -117,6 +117,35 @@ describe('Aggregation widget', () => {
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('does not schedule an aggregation rerun on initial complete query mount', async () => {
+    jest.useFakeTimers();
+    const onRunQuery = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({
+          channel: 'temp',
+          channelDataType: 'numeric',
+          aggregations: [AggregationType.Mean],
+        })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
+    await settleInitialEffects();
+
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
+      await Promise.resolve();
+    });
+
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('aggregation blur without a query change does not add a rerun', async () => {
     const onRunQuery = jest.fn();
 

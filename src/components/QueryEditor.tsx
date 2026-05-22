@@ -114,17 +114,21 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     datasourceUrl: datasource.url,
   });
 
-  const aggregationOptions = state.aggregationState.options
-    .map((option): ComboboxOption<string> | null =>
-      option.value
-        ? {
-            label: option.label,
-            value: option.value,
-            description: option.description,
-          }
-        : null
-    )
-    .filter((option): option is ComboboxOption<string> => option !== null);
+  const aggregationOptions = React.useMemo(
+    () =>
+      state.aggregationState.options
+        .map((option): ComboboxOption<string> | null =>
+          option.value
+            ? {
+                label: option.label,
+                value: option.value,
+                description: option.description,
+              }
+            : null
+        )
+        .filter((option): option is ComboboxOption<string> => option !== null),
+    [state.aggregationState.options]
+  );
 
   return (
     <div className={styles.root}>
