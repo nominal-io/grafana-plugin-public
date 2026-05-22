@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.1...nominal-grafana-plugin@0.12.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* remove os.WriteFile from generator (plugin validation compliance) ([#79](https://github.com/nominal-io/grafana-plugin-public/issues/79)) ([a7fc8e8](https://github.com/nominal-io/grafana-plugin-public/commit/a7fc8e83b185f772934bc24610f48f6b95a41aa3))
+
+
+### Chores
+
+* **deps:** pin js-cookie to &gt;=3.0.7 to patch CVE-2026-46625 ([#81](https://github.com/nominal-io/grafana-plugin-public/issues/81)) ([7ff6e00](https://github.com/nominal-io/grafana-plugin-public/commit/7ff6e00d80d6364917558f6627248677f3a6a857))
+
 ## [0.12.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.0...nominal-grafana-plugin@0.12.1) (2026-05-21)
 
 
