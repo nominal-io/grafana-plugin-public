@@ -1,8 +1,10 @@
 import React from 'react';
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
+// eslint-disable-next-line @typescript-eslint/no-deprecated
+import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
 import { DataSource } from '../datasource';
+import { AGGREGATION_RUN_DELAY_MS } from './queryBuilder/queryBuilderRunPlanner';
 
 // Mock Grafana runtime
 const post = jest.fn();
@@ -49,6 +51,10 @@ describe('Aggregation widget', () => {
     post.mockResolvedValue({});
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('renders disabled Mode input for string channels', async () => {
     render(
       <QueryEditor
@@ -69,7 +75,8 @@ describe('Aggregation widget', () => {
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
-  it('blur with changed aggregations calls onRunQuery', async () => {
+  it('aggregation query changes trigger the current rerun path', async () => {
+    jest.useFakeTimers();
     const onRunQuery = jest.fn();
     const onChange = jest.fn();
 
@@ -82,6 +89,7 @@ describe('Aggregation widget', () => {
       />
     );
     await settleInitialEffects();
+    onRunQuery.mockClear();
 
     // Rerender with changed aggregations (simulating user selection via onChange callback)
     rerender(
@@ -98,10 +106,18 @@ describe('Aggregation widget', () => {
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
 
-    expect(onRunQuery).toHaveBeenCalled();
+    expect(onRunQuery).not.toHaveBeenCalled();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
+      await Promise.resolve();
+    });
+
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('blur without change does not call onRunQuery', async () => {
+  it('aggregation blur without a query change does not add a rerun', async () => {
     const onRunQuery = jest.fn();
 
     render(
