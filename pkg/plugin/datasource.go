@@ -26,7 +26,6 @@ import (
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
-	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
@@ -241,116 +240,6 @@ func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRang
 	return response
 }
 
-// buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
-// This is extracted to enable reuse for both single and batch compute calls.
-// Branches on ChannelDataType: "string" produces enum series, "log" produces log series, all others numeric.
-// maxDataPoints from Grafana reflects the panel's pixel width; when positive it overrides qm.Buckets
-// so the compute API only returns as many points as the panel can actually display.
-func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
-	startSeconds := timeRange.From.Unix()
-	endSeconds := timeRange.To.Unix()
-
-	// Build the series node - branch on channel data type
-	var series computeapi1.Series
-	if qm.ChannelDataType == "string" {
-		// Enum path for string channels
-		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
-			Input: e.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
-				Seconds: safelong.SafeLong(0),
-				Nanos:   safelong.SafeLong(0),
-				Picos:   nil,
-			}),
-		}
-		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
-		series = computeapi1.NewSeriesFromEnum(enumSeries)
-	} else if qm.ChannelDataType == "log" {
-		// Log path — no bucketing, no aggregation, no TimeShift needed
-		channelSeries := computeapi.NewChannelSeriesFromAsset(
-			e.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
-		)
-		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
-		series = computeapi1.NewSeriesFromLog(logSeries)
-	} else {
-		// Numeric path for numeric channels (default for empty/unknown ChannelDataType)
-		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
-			Input: e.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-			Duration: computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
-				Seconds: safelong.SafeLong(0),
-				Nanos:   safelong.SafeLong(0),
-				Picos:   nil,
-			}),
-		}
-		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
-		series = computeapi1.NewSeriesFromNumeric(numericSeries)
-	}
-
-	var seriesNode computeapi1.SummarizeSeries
-	if qm.ChannelDataType == "log" {
-		// Log path: PageStrategy instead of Buckets/OutputFormat/NumericOutputFields.
-		// 250 entries per page. Older entries are fetched on-demand via Grafana's
-		// "Show more" button, which re-queries with an older `to` timestamp using
-		// the boundary row (hence the descending sort in transformBatchResult).
-		pageInfo := computeapi.PageInfo{
-			PageSize: -250, // Negative = newest first; 250 is plenty for UX and keeps query times down
-		}
-		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
-		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
-		seriesNode = computeapi1.SummarizeSeries{
-			Input:                 series,
-			SummarizationStrategy: &summarizationStrategy,
-		}
-	} else {
-		buckets := int(qm.Buckets)
-		if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
-			buckets = int(maxDataPoints)
-		}
-		if qm.ChannelDataType == "string" {
-			// Enum path: no OutputFormat or NumericOutputFields
-			seriesNode = computeapi1.SummarizeSeries{
-				Input:   series,
-				Buckets: &buckets,
-			}
-		} else {
-			// Numeric path: Arrow format with user-selected aggregation fields.
-			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-			var outputFields []computeapi.NumericOutputField
-			for _, agg := range qm.Aggregations {
-				outputFields = append(outputFields, computeapi.New_NumericOutputField(
-					computeapi.NumericOutputField_Value(agg),
-				))
-			}
-			seriesNode = computeapi1.SummarizeSeries{
-				Input:               series,
-				Buckets:             &buckets,
-				OutputFormat:        &arrowFormat,
-				NumericOutputFields: &outputFields,
-			}
-		}
-	}
-
-	// Create computable node
-	node := computeapi1.NewComputableNodeFromSeries(seriesNode)
-
-	// Build context with variables
-	computeContext := e.buildComputeContext(qm, startSeconds, endSeconds)
-
-	return computeapi1.ComputeNodeRequest{
-		Start: api.Timestamp{
-			Seconds: safelong.SafeLong(startSeconds),
-			Nanos:   safelong.SafeLong(0),
-			Picos:   nil,
-		},
-		End: api.Timestamp{
-			Seconds: safelong.SafeLong(endSeconds),
-			Nanos:   safelong.SafeLong(0),
-			Picos:   nil,
-		},
-		Node:    node,
-		Context: computeContext,
-	}
-}
-
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
 // Handles both success and error cases from the ComputeNodeResult union type.
 func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
@@ -537,51 +426,6 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 	}
 
 	return response
-}
-
-// buildAssetChannel constructs the shared AssetChannel used by both numeric and enum series builders.
-func (e *NominalQueryExecution) buildAssetChannel(assetRid, channel, dataScopeName string) computeapi.AssetChannel {
-	return computeapi.AssetChannel{
-		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
-		Channel:        computeapi.NewStringConstantFromLiteral(channel),
-		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
-		AdditionalTags: map[string]computeapi.StringConstant{},
-		TagsToGroupBy:  []string{},
-		GroupByTags:    []computeapi.StringConstant{},
-	}
-}
-
-// buildChannelSeries creates a numeric channel series for the given asset/channel.
-func (e *NominalQueryExecution) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
-	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
-}
-
-// buildEnumChannelSeries creates an enum channel series for the given asset/channel.
-func (e *NominalQueryExecution) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi1.EnumSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
-	return computeapi1.NewEnumSeriesFromChannel(channelSeries)
-}
-
-// buildComputeContext creates the context with variables for the compute request
-func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
-	variables := map[computeapi.VariableName]computeapi1.VariableValue{
-		computeapi.VariableName("assetRid"): computeapi1.NewVariableValueFromString(qm.AssetRid),
-	}
-
-	// Add template variables if present
-	if qm.TemplateVariables != nil {
-		for key, value := range qm.TemplateVariables {
-			if strValue, ok := value.(string); ok {
-				variables[computeapi.VariableName(key)] = computeapi1.NewVariableValueFromString(strValue)
-			}
-		}
-	}
-
-	return computeapi1.Context{
-		Variables:         variables,
-		FunctionVariables: nil,
-	}
 }
 
 type TransformResult struct {
