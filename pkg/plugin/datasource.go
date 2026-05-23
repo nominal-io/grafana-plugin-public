@@ -108,7 +108,7 @@ type Datasource struct {
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 
-	// assetCache caches fetchAssetByRid results with a TTL to avoid
+	// assetCache stores asset metadata with a TTL to avoid
 	// redundant HTTP calls across queries and dashboard refreshes.
 	assetCacheMu sync.Mutex
 	assetCache   map[string]assetCacheEntry
