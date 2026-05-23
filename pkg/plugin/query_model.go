@@ -10,10 +10,8 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
-	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/palantir/pkg/bearertoken"
-	"github.com/palantir/pkg/rid"
 )
 
 // NominalQueryModel represents a query to the Nominal API
@@ -333,27 +331,4 @@ func (d *Datasource) storeChannelMetadata(cacheKey string, entry channelMetadata
 		d.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	d.channelMetadataCache[cacheKey] = entry
-}
-
-// collectDataSourceRidsForScope returns the parsed DataSource RIDs from every
-// data scope on the asset matching dataScopeName. Returns nil if no scopes match
-// or none have a parseable RID for a supported data source type.
-func collectDataSourceRidsForScope(asset *SingleAssetResponse, dataScopeName string) []rids.DataSourceRid {
-	var out []rids.DataSourceRid
-	for _, scope := range asset.DataScopes {
-		if scope.DataScopeName != dataScopeName {
-			continue
-		}
-		ridStr, ok := dataSourceRidFor(scope.DataSource)
-		if !ok {
-			continue
-		}
-		parsedRid, err := rid.ParseRID(ridStr)
-		if err != nil {
-			log.DefaultLogger.Warn("Failed to parse datasource RID for channel metadata inference", "rid", ridStr, "error", err)
-			continue
-		}
-		out = append(out, rids.DataSourceRid(parsedRid))
-	}
-	return out
 }
