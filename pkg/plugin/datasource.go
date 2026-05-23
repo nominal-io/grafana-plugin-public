@@ -1,13 +1,10 @@
 package plugin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -43,14 +40,6 @@ var (
 	_ backend.CallResourceHandler   = (*Datasource)(nil)
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
-
-// proxyAllowedHeaders is the set of safe request headers forwarded to the
-// upstream Nominal API. Sensitive caller context like Cookie and
-// Authorization must never be relayed.
-var proxyAllowedHeaders = map[string]bool{
-	"Content-Type": true,
-	"Accept":       true,
-}
 
 // maxBatchComputeSubrequests matches the backend subrequest limit.
 // See scout ComputeResource.SUBREQUEST_LIMIT.
@@ -792,134 +781,12 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	}, nil
 }
 
-// CallResource handles HTTP requests sent to the plugin
-// This handles all proxy requests from /api/datasources/proxy/uid/{uid}/...
+// CallResource handles HTTP requests sent to the plugin.
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
-	// Debug logging to see what requests are coming in
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
-
-	// Handle test endpoint for frontend connection testing
-	if req.Path == "test" || req.Path == "/test" {
-		log.DefaultLogger.Debug("Handling test connection request")
-		return d.handleTestConnection(ctx, req, sender)
-	}
-
-	// Handle alternative test endpoint
-	if req.Path == "connection-test" {
-		log.DefaultLogger.Debug("Handling alternative test connection request")
-		return d.handleTestConnection(ctx, req, sender)
-	}
-
-	// Handle channels search endpoint
-	if req.Path == "channels" || req.Path == "/channels" {
-		log.DefaultLogger.Debug("Handling channels search request")
-		return d.handleChannelsSearch(ctx, req, sender)
-	}
-
-	// Handle assets variable endpoint for Grafana template variables
-	if req.Path == "assets" || req.Path == "/assets" {
-		log.DefaultLogger.Debug("Handling assets variable request")
-		return d.handleAssetsVariable(ctx, req, sender)
-	}
-
-	// Handle datascopes variable endpoint for Grafana template variables
-	if req.Path == "datascopes" || req.Path == "/datascopes" {
-		return d.handleDatascopesVariable(ctx, req, sender)
-	}
-
-	// Handle channel variables endpoint for Grafana template variables
-	if req.Path == "channelvariables" || req.Path == "/channelvariables" {
-		return d.handleChannelVariables(ctx, req, sender)
-	}
-
-	// Handle requests with /nominal prefix - strip it for API calls
-	if strings.HasPrefix(req.Path, "nominal/") {
-		// Remove the /nominal prefix for the actual API call
-		req.Path = strings.TrimPrefix(req.Path, "nominal/")
-		log.DefaultLogger.Debug("Stripped /nominal prefix", "newPath", req.Path)
-	}
-
-	// All other requests are proxied to Nominal API with authentication
-	log.DefaultLogger.Debug("Handling proxy request to Nominal API")
-	return d.handleNominalProxy(ctx, req, sender)
-}
-
-// handleTestConnection handles the test connection endpoint
-func (d *Datasource) handleTestConnection(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	// Add timeout to prevent hanging
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	// Load settings to get API key and base URL
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Test connection: failed to load settings", "error", err)
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Failed to load settings"}`),
-		})
-	}
-
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" {
-		log.DefaultLogger.Debug("Test connection: missing base URL")
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Base URL is required"}`),
-		})
-	}
-
-	if config.Secrets.ApiKey == "" {
-		log.DefaultLogger.Debug("Test connection: missing API key")
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "API key is required"}`),
-		})
-	}
-
-	// Test connection using conjure client with timeout
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
-
-	if err != nil {
-		logErrorWithConjureFields("Test connection failed", err)
-		message, statusCode := classifyConnectionError(err)
-		errBody, _ := json.Marshal(map[string]string{"error": message})
-		return sender.Send(&backend.CallResourceResponse{
-			Status: statusCode,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: errBody,
-		})
-	}
-
-	log.DefaultLogger.Debug("Test connection successful", "profileRid", profile.Rid)
-
-	// Connection successful
-	response := map[string]interface{}{
-		"status":  "success",
-		"message": "Successfully connected to Nominal API and retrieved user profile",
-	}
-	responseBytes, _ := json.Marshal(response)
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return newNominalResourceHandler(d).Handle(ctx, req, sender)
 }
 
 // handleChannelsSearch handles searching for channels in a data source
@@ -1074,103 +941,6 @@ func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName str
 
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
-}
-
-// handleNominalProxy handles proxying requests to Nominal API with secure API key injection
-func (d *Datasource) handleNominalProxy(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	// Load settings to get API key and base URL
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		return fmt.Errorf("failed to load settings: %v", err)
-	}
-
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" || config.Secrets.ApiKey == "" {
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Missing base URL or API key configuration"}`),
-		})
-	}
-
-	// The request path should be the API path (e.g., "api/compute/v2/compute")
-	targetPath := req.Path
-
-	// Construct the full target URL
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	targetURL := baseURL + "/" + targetPath
-
-	log.DefaultLogger.Debug("Proxy request", "fromPath", req.Path, "toURL", targetURL)
-
-	// Parse the target URL to ensure it's valid
-	parsedURL, err := url.Parse(targetURL)
-	if err != nil {
-		return fmt.Errorf("invalid target URL: %v", err)
-	}
-
-	// Create the proxied request
-	var body io.Reader
-	if req.Body != nil {
-		body = bytes.NewReader(req.Body)
-	}
-
-	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, parsedURL.String(), body)
-	if err != nil {
-		return fmt.Errorf("failed to create proxy request: %v", err)
-	}
-
-	// Set the Host header explicitly - only if we have a valid host
-	if parsedURL.Host != "" {
-		proxyReq.Host = parsedURL.Host
-	}
-
-	// Forward only the small allowlist of headers the upstream needs.
-	for key, values := range req.Headers {
-		if !proxyAllowedHeaders[http.CanonicalHeaderKey(key)] {
-			continue
-		}
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
-
-	// Use the datasource API key for all proxied upstream requests.
-	proxyReq.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
-
-	log.DefaultLogger.Debug("Using API key for proxy request")
-
-	// Ensure Content-Type is set for POST requests
-	if req.Method == "POST" && proxyReq.Header.Get("Content-Type") == "" {
-		proxyReq.Header.Set("Content-Type", "application/json")
-	}
-
-	// Make the request
-	resp, err := d.getResourceHTTPClient().Do(proxyReq)
-	if err != nil {
-		return fmt.Errorf("proxy request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	// Copy response headers
-	responseHeaders := make(map[string][]string)
-	for key, values := range resp.Header {
-		responseHeaders[key] = values
-	}
-
-	// Send the proxied response
-	return sender.Send(&backend.CallResourceResponse{
-		Status:  resp.StatusCode,
-		Headers: responseHeaders,
-		Body:    responseBody,
-	})
 }
 
 // handleAssetsVariable handles the assets endpoint for Grafana template variables

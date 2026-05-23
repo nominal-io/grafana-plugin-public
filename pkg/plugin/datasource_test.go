@@ -2727,6 +2727,105 @@ func TestCallResourceRouting(t *testing.T) {
 	}
 }
 
+func TestCallResourceRouteVariants(t *testing.T) {
+	mockAuth := &mockAuthService{
+		getMyProfileResponse: authapi.UserV2{
+			Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
+			DisplayName: "Test User",
+		},
+	}
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"proxied":true}`))
+	}))
+	defer proxyServer.Close()
+
+	ds := newTestDatasource(proxyServer.URL, mockAuth, &mockDatasourceService{})
+
+	tests := []struct {
+		name       string
+		path       string
+		method     string
+		body       []byte
+		wantStatus int
+	}{
+		{name: "test without slash", path: "test", method: "POST", wantStatus: http.StatusOK},
+		{name: "test with slash", path: "/test", method: "POST", wantStatus: http.StatusOK},
+		{name: "connection-test alias", path: "connection-test", method: "POST", wantStatus: http.StatusOK},
+		{name: "channels without slash", path: "channels", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "channels with slash", path: "/channels", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "assets without slash", path: "assets", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "assets with slash", path: "/assets", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "datascopes without slash", path: "datascopes", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "datascopes with slash", path: "/datascopes", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "channelvariables without slash", path: "channelvariables", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+		{name: "channelvariables with slash", path: "/channelvariables", method: "GET", wantStatus: http.StatusMethodNotAllowed},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{
+				Path:   tt.path,
+				Method: tt.method,
+				Body:   tt.body,
+			})
+			if resp.Status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.wantStatus, string(resp.Body))
+			}
+		})
+	}
+}
+
+func TestCallResourceProxyPaths(t *testing.T) {
+	tests := []struct {
+		name           string
+		requestPath    string
+		wantUpstream   string
+		wantReqPath    string
+		wantBodySubstr string
+	}{
+		{
+			name:         "nominal prefix strips only nominal segment",
+			requestPath:  "nominal/scout/v1/search-assets",
+			wantUpstream: "/scout/v1/search-assets",
+			wantReqPath:  "nominal/scout/v1/search-assets",
+		},
+		{
+			name:         "unknown path proxies normalized path",
+			requestPath:  "/scout/v1/raw",
+			wantUpstream: "/scout/v1/raw",
+			wantReqPath:  "/scout/v1/raw",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"ok":true}`))
+			}))
+			defer proxyServer.Close()
+
+			ds := newTestDatasource(proxyServer.URL, &mockAuthService{}, &mockDatasourceService{})
+			req := &backend.CallResourceRequest{Path: tt.requestPath, Method: "POST", Body: []byte(`{}`)}
+
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+			}
+			if gotPath != tt.wantUpstream {
+				t.Fatalf("upstream path = %q, want %q", gotPath, tt.wantUpstream)
+			}
+			if req.Path != tt.wantReqPath {
+				t.Fatalf("request path was mutated to %q, want %q", req.Path, tt.wantReqPath)
+			}
+		})
+	}
+}
+
 func TestProxyHeaderFiltering(t *testing.T) {
 	mockAuth := &mockAuthService{
 		getMyProfileResponse: authapi.UserV2{
