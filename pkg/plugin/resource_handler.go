@@ -42,14 +42,14 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleTestConnection(ctx, req, sender)
 	case "channels":
 		log.DefaultLogger.Debug("Handling channels search request")
-		return h.datasource.handleChannelsSearch(ctx, req, sender)
+		return h.handleChannelsSearch(ctx, req, sender)
 	case "assets":
 		log.DefaultLogger.Debug("Handling assets variable request")
-		return h.datasource.handleAssetsVariable(ctx, req, sender)
+		return h.handleAssetsVariable(ctx, req, sender)
 	case "datascopes":
-		return h.datasource.handleDatascopesVariable(ctx, req, sender)
+		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
-		return h.datasource.handleChannelVariables(ctx, req, sender)
+		return h.handleChannelVariables(ctx, req, sender)
 	}
 
 	if strings.HasPrefix(path, "nominal/") {
