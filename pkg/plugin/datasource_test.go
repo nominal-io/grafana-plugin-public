@@ -1074,12 +1074,9 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		t.Fatalf("unexpected response error: %v", response.Error)
 	}
 
-	jsonBytes, err := json.Marshal(mockCompute.lastBatchRequest.Requests[0].Node)
-	if err != nil {
-		t.Fatalf("failed to marshal compute node: %v", err)
-	}
-	if !strings.Contains(string(jsonBytes), `"type":"enum"`) {
-		t.Fatalf("expected enum compute request after inferring string type, got: %s", string(jsonBytes))
+	series := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[0].Node)
+	if kind := seriesKind(t, series.Input); kind != "enum" {
+		t.Fatalf("expected enum compute request after inferring string type, got series kind %q", kind)
 	}
 }
 
@@ -1218,18 +1215,21 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	}
 
 	// Verify the numeric query (temperature) built an Arrow request with output fields.
-	numericReqJSON, _ := json.Marshal(mockCompute.lastBatchRequest.Requests[0].Node)
-	if !strings.Contains(string(numericReqJSON), `"outputFormat"`) {
-		t.Errorf("expected numeric request with outputFormat, got: %s", string(numericReqJSON))
+	numericSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[0].Node)
+	if kind := seriesKind(t, numericSeries.Input); kind != "numeric" {
+		t.Errorf("expected numeric series, got kind %q", kind)
+	}
+	if !isArrowV3(numericSeries.OutputFormat) {
+		t.Errorf("expected numeric request with ARROW_V3 output format, got %v", numericSeries.OutputFormat)
 	}
 
-	// Verify the string query (state) built an enum request (no outputFormat).
-	enumReqJSON, _ := json.Marshal(mockCompute.lastBatchRequest.Requests[1].Node)
-	if strings.Contains(string(enumReqJSON), `"outputFormat"`) {
-		t.Errorf("expected enum request without outputFormat, got: %s", string(enumReqJSON))
+	// Verify the string query (state) built an enum request (no output format).
+	enumSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[1].Node)
+	if kind := seriesKind(t, enumSeries.Input); kind != "enum" {
+		t.Errorf("expected enum series, got kind %q", kind)
 	}
-	if !strings.Contains(string(enumReqJSON), `"type":"enum"`) {
-		t.Errorf("expected enum compute request type, got: %s", string(enumReqJSON))
+	if enumSeries.OutputFormat != nil {
+		t.Errorf("expected enum request without output format, got %v", enumSeries.OutputFormat)
 	}
 }
 

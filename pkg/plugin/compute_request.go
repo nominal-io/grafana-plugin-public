@@ -36,9 +36,10 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
 func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoints int64) computeapi1.SummarizeSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
+
 	switch qm.ChannelDataType {
 	case ChannelDataTypeString:
-		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
 			Input:    computeapi1.NewEnumSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),
@@ -53,7 +54,6 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		}
 
 	case ChannelDataTypeLog:
-		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
@@ -66,7 +66,6 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		}
 
 	default:
-		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),

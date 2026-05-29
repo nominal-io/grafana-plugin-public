@@ -77,6 +77,30 @@ func isArrowV3(format *computeapi.OutputFormat) bool {
 	return format != nil && format.Value() == computeapi.OutputFormat_ARROW_V3
 }
 
+// summarizeSeriesFromNode unwraps a ComputableNode to the SummarizeSeries it carries,
+// so integration tests holding only the request Node can assert on the planned series
+// kind and output format through the same typed inspectors as the unit tests.
+func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) computeapi1.SummarizeSeries {
+	t.Helper()
+	var series computeapi1.SummarizeSeries
+	err := node.AcceptFuncs(
+		func(computeapi1.SummarizeRanges) error { return fmt.Errorf("expected series node, got ranges") },
+		func(s computeapi1.SummarizeSeries) error { series = s; return nil },
+		func(computeapi1.SelectValue) error { return fmt.Errorf("expected series node, got value") },
+		func(computeapi1.SummarizeCartesian) error { return fmt.Errorf("expected series node, got cartesian") },
+		func(computeapi1.SummarizeCartesian3d) error { return fmt.Errorf("expected series node, got cartesian3d") },
+		func(computeapi1.FrequencyDomain) error { return fmt.Errorf("expected series node, got frequency") },
+		func(computeapi1.FrequencyDomainV2) error { return fmt.Errorf("expected series node, got frequencyV2") },
+		func(computeapi1.Histogram) error { return fmt.Errorf("expected series node, got histogram") },
+		func(computeapi1.CurveFit) error { return fmt.Errorf("expected series node, got curve") },
+		func(string) error { return fmt.Errorf("unknown computable node type") },
+	)
+	if err != nil {
+		t.Fatalf("inspecting computable node: %v", err)
+	}
+	return series
+}
+
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
 
