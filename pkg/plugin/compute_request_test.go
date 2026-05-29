@@ -2,8 +2,6 @@ package plugin
 
 import (
 	"encoding/json"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,14 +10,103 @@ import (
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 )
 
+// --- typed plan inspectors ---
+//
+// These decode the compute request into typed shapes so tests can assert the planned
+// series kind, buckets, output fields, and page strategy directly, instead of matching
+// brittle JSON substrings (which fail on field renames or serialization-layout changes
+// even when the compute model is correct). The Conjure union types expose only
+// unexported fields — typed introspection is via the verbose Accept visitor — so a
+// compact JSON decode is the pragmatic middle ground.
+
+type stringConstantView struct {
+	Type     string `json:"type"` // "literal" or "variable"
+	Literal  string `json:"literal"`
+	Variable string `json:"variable"`
+}
+
+type assetChannelView struct {
+	AssetRid      stringConstantView `json:"assetRid"`
+	Channel       stringConstantView `json:"channel"`
+	DataScopeName stringConstantView `json:"dataScopeName"`
+}
+
+// channelSeriesView decodes {"type":"channel","channel":{"type":"asset","asset":{...}}},
+// the shape shared by numeric and enum channel series.
+type channelSeriesView struct {
+	Type    string `json:"type"`
+	Channel struct {
+		Type  string           `json:"type"`
+		Asset assetChannelView `json:"asset"`
+	} `json:"channel"`
+}
+
+func decodeChannelSeries(t *testing.T, series interface{}) channelSeriesView {
+	t.Helper()
+	b, err := json.Marshal(series)
+	if err != nil {
+		t.Fatalf("failed to marshal series: %v", err)
+	}
+	var view channelSeriesView
+	if err := json.Unmarshal(b, &view); err != nil {
+		t.Fatalf("failed to unmarshal channel series: %v", err)
+	}
+	return view
+}
+
+// planView is a compact, typed projection of a SummarizeSeries node for assertions.
+type planView struct {
+	SeriesKind          string   // "numeric", "enum", or "log"
+	Buckets             *int     // nil when not set (e.g. the log path)
+	OutputFormat        string   // "" when not set
+	NumericOutputFields []string // nil when not set
+	PageSize            *int     // nil when not using a page strategy
+}
+
+func decodePlan(t *testing.T, node computeapi1.ComputableNode) planView {
+	t.Helper()
+	b, err := json.Marshal(node)
+	if err != nil {
+		t.Fatalf("failed to marshal node: %v", err)
+	}
+	var raw struct {
+		Series struct {
+			Input struct {
+				Type string `json:"type"`
+			} `json:"input"`
+			Buckets               *int     `json:"buckets"`
+			OutputFormat          string   `json:"outputFormat"`
+			NumericOutputFields   []string `json:"numericOutputFields"`
+			SummarizationStrategy *struct {
+				Page *struct {
+					PageInfo *struct {
+						PageSize *int `json:"pageSize"`
+					} `json:"pageInfo"`
+				} `json:"page"`
+			} `json:"summarizationStrategy"`
+		} `json:"series"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("failed to unmarshal node plan: %v", err)
+	}
+	view := planView{
+		SeriesKind:          raw.Series.Input.Type,
+		Buckets:             raw.Series.Buckets,
+		OutputFormat:        raw.Series.OutputFormat,
+		NumericOutputFields: raw.Series.NumericOutputFields,
+	}
+	if s := raw.Series.SummarizationStrategy; s != nil && s.Page != nil && s.Page.PageInfo != nil {
+		view.PageSize = s.Page.PageInfo.PageSize
+	}
+	return view
+}
+
 func TestBuildComputeContext(t *testing.T) {
 	ds := &Datasource{}
 
 	tests := []struct {
 		name         string
 		qm           NominalQueryModel
-		startSeconds int64
-		endSeconds   int64
 		expectedVars int
 	}{
 		{
@@ -28,8 +115,6 @@ func TestBuildComputeContext(t *testing.T) {
 				AssetRid: "ri.nominal.asset.12345",
 				Channel:  "temperature",
 			},
-			startSeconds: 1000,
-			endSeconds:   2000,
 			expectedVars: 1, // Just assetRid
 		},
 		{
@@ -42,8 +127,6 @@ func TestBuildComputeContext(t *testing.T) {
 					"region": "us-east",
 				},
 			},
-			startSeconds: 1000,
-			endSeconds:   2000,
 			expectedVars: 3, // assetRid + 2 template vars
 		},
 		{
@@ -56,22 +139,20 @@ func TestBuildComputeContext(t *testing.T) {
 					"intVar": 123, // non-string, should be ignored
 				},
 			},
-			startSeconds: 1000,
-			endSeconds:   2000,
 			expectedVars: 2, // assetRid + 1 string template var
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := newTestQueryExecution(ds, nil).buildComputeContext(tt.qm, tt.startSeconds, tt.endSeconds)
+			ctx := newTestQueryExecution(ds, nil).buildComputeContext(tt.qm)
 
 			if len(ctx.Variables) != tt.expectedVars {
 				t.Errorf("expected %d variables, got %d", tt.expectedVars, len(ctx.Variables))
 			}
 
 			// Verify assetRid is always present
-			if _, ok := ctx.Variables["assetRid"]; !ok {
+			if _, ok := ctx.Variables[assetRidVariableName]; !ok {
 				t.Error("expected assetRid variable to be present")
 			}
 
@@ -202,25 +283,21 @@ func TestBuildChannelSeries(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		assetRid      string
 		channel       string
 		dataScopeName string
 	}{
 		{
 			name:          "builds series with all parameters",
-			assetRid:      "ri.nominal.asset.123",
 			channel:       "temperature",
 			dataScopeName: "default",
 		},
 		{
 			name:          "builds series with empty dataScopeName",
-			assetRid:      "ri.nominal.asset.456",
 			channel:       "pressure",
 			dataScopeName: "",
 		},
 		{
 			name:          "builds series with special characters in channel",
-			assetRid:      "ri.nominal.asset.789",
 			channel:       "sensor/value-1",
 			dataScopeName: "scope_test",
 		},
@@ -228,44 +305,29 @@ func TestBuildChannelSeries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := newTestQueryExecution(ds, nil).buildChannelSeries(tt.assetRid, tt.channel, tt.dataScopeName)
+			result := newTestQueryExecution(ds, nil).buildChannelSeries(tt.channel, tt.dataScopeName)
+			view := decodeChannelSeries(t, result)
 
-			// Serialize to JSON to inspect the structure
-			// This is more maintainable than using the visitor pattern with 35+ nil arguments
-			jsonBytes, err := json.Marshal(result)
-			if err != nil {
-				t.Fatalf("failed to marshal NumericSeries: %v", err)
+			// Verify the series is an asset-based channel (timeShift is added by
+			// buildSeriesPlan, not here).
+			if view.Type != "channel" {
+				t.Errorf("series type = %q, want \"channel\"", view.Type)
+			}
+			if view.Channel.Type != "asset" {
+				t.Errorf("channel type = %q, want \"asset\"", view.Channel.Type)
 			}
 
-			jsonStr := string(jsonBytes)
-
-			// Verify the series is a channel type (timeShift is added by buildComputeRequest, not here)
-			if !strings.Contains(jsonStr, `"type":"channel"`) {
-				t.Errorf("expected channel series type in JSON, got: %s", jsonStr)
+			asset := view.Channel.Asset
+			if asset.Channel.Type != "literal" || asset.Channel.Literal != tt.channel {
+				t.Errorf("channel constant = %+v, want literal %q", asset.Channel, tt.channel)
 			}
-
-			// Verify it's an asset-based channel
-			if !strings.Contains(jsonStr, `"type":"asset"`) {
-				t.Errorf("expected asset channel type in JSON, got: %s", jsonStr)
+			if asset.DataScopeName.Type != "literal" || asset.DataScopeName.Literal != tt.dataScopeName {
+				t.Errorf("dataScopeName constant = %+v, want literal %q", asset.DataScopeName, tt.dataScopeName)
 			}
-
-			// Verify the channel name is present as a literal
-			expectedChannelLiteral := fmt.Sprintf(`"channel":{"type":"literal","literal":"%s"}`, tt.channel)
-			if !strings.Contains(jsonStr, expectedChannelLiteral) {
-				t.Errorf("expected channel literal %q in JSON, got: %s", tt.channel, jsonStr)
-			}
-
-			// Verify the dataScopeName is present as a literal
-			expectedDataScopeLiteral := fmt.Sprintf(`"dataScopeName":{"type":"literal","literal":"%s"}`, tt.dataScopeName)
-			if !strings.Contains(jsonStr, expectedDataScopeLiteral) {
-				t.Errorf("expected dataScopeName literal %q in JSON, got: %s", tt.dataScopeName, jsonStr)
-			}
-
-			// Verify the assetRid is a variable reference (not a literal)
-			// The actual assetRid value is passed via context variables
-			expectedAssetRidVar := `"assetRid":{"type":"variable","variable":"assetRid"}`
-			if !strings.Contains(jsonStr, expectedAssetRidVar) {
-				t.Errorf("expected assetRid to be variable reference in JSON, got: %s", jsonStr)
+			// assetRid is a variable reference (not a literal); the value is supplied
+			// via context variables.
+			if asset.AssetRid.Type != "variable" || asset.AssetRid.Variable != assetRidVariableName {
+				t.Errorf("assetRid constant = %+v, want variable %q", asset.AssetRid, assetRidVariableName)
 			}
 		})
 	}
@@ -288,7 +350,7 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 
 	t.Run("string ChannelDataType produces enum series", func(t *testing.T) {
 		qm := baseQM
-		qm.ChannelDataType = "string"
+		qm.ChannelDataType = ChannelDataTypeString
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		// The request should have a valid node
@@ -303,26 +365,14 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 			t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, baseTimeRange.To.Unix())
 		}
 
-		// Serialize the node to JSON and verify it contains enum-specific types
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal ComputableNode: %v", err)
-		}
-		jsonStr := string(jsonBytes)
-
-		// Enum path should contain "enum" type markers in the serialized structure
-		if !strings.Contains(jsonStr, `"type":"enum"`) {
-			t.Errorf("expected enum series type in JSON for string ChannelDataType, got: %s", jsonStr)
-		}
-		// Should NOT contain numeric series type at the top level
-		if strings.Contains(jsonStr, `"type":"numeric"`) {
-			t.Errorf("expected no numeric series type in JSON for string ChannelDataType, got: %s", jsonStr)
+		if got := decodePlan(t, req.Node).SeriesKind; got != "enum" {
+			t.Errorf("series kind = %q, want \"enum\" for string ChannelDataType", got)
 		}
 	})
 
 	t.Run("numeric ChannelDataType produces numeric series", func(t *testing.T) {
 		qm := baseQM
-		qm.ChannelDataType = "numeric"
+		qm.ChannelDataType = ChannelDataTypeNumeric
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
 		if req.Node == (computeapi1.ComputableNode{}) {
@@ -332,15 +382,8 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 			t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, baseTimeRange.From.Unix())
 		}
 
-		// Serialize and verify it contains numeric-specific types
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal ComputableNode: %v", err)
-		}
-		jsonStr := string(jsonBytes)
-
-		if !strings.Contains(jsonStr, `"type":"numeric"`) {
-			t.Errorf("expected numeric series type in JSON for numeric ChannelDataType, got: %s", jsonStr)
+		if got := decodePlan(t, req.Node).SeriesKind; got != "numeric" {
+			t.Errorf("series kind = %q, want \"numeric\" for numeric ChannelDataType", got)
 		}
 	})
 
@@ -356,18 +399,8 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 			t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, baseTimeRange.From.Unix())
 		}
 
-		// Default should be numeric
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal ComputableNode: %v", err)
-		}
-		jsonStr := string(jsonBytes)
-
-		if !strings.Contains(jsonStr, `"type":"numeric"`) {
-			t.Errorf("expected numeric series type in JSON for empty ChannelDataType, got: %s", jsonStr)
-		}
-		if strings.Contains(jsonStr, `"type":"enum"`) {
-			t.Errorf("expected no enum series type in JSON for empty ChannelDataType, got: %s", jsonStr)
+		if got := decodePlan(t, req.Node).SeriesKind; got != "numeric" {
+			t.Errorf("series kind = %q, want \"numeric\" for empty ChannelDataType", got)
 		}
 	})
 
@@ -379,22 +412,22 @@ func TestBuildComputeRequestBranching(t *testing.T) {
 		if req.Node == (computeapi1.ComputableNode{}) {
 			t.Fatal("expected non-zero ComputableNode for missing ChannelDataType request")
 		}
+		if got := decodePlan(t, req.Node).SeriesKind; got != "numeric" {
+			t.Errorf("series kind = %q, want \"numeric\" for missing ChannelDataType", got)
+		}
 	})
 
 	t.Run("string and numeric produce structurally different requests", func(t *testing.T) {
 		stringQM := baseQM
-		stringQM.ChannelDataType = "string"
+		stringQM.ChannelDataType = ChannelDataTypeString
 		stringReq := newTestQueryExecution(ds, nil).buildComputeRequest(stringQM, baseTimeRange, 0)
 
 		numericQM := baseQM
-		numericQM.ChannelDataType = "numeric"
+		numericQM.ChannelDataType = ChannelDataTypeNumeric
 		numericReq := newTestQueryExecution(ds, nil).buildComputeRequest(numericQM, baseTimeRange, 0)
 
-		stringJSON, _ := json.Marshal(stringReq.Node)
-		numericJSON, _ := json.Marshal(numericReq.Node)
-
-		if string(stringJSON) == string(numericJSON) {
-			t.Error("expected different JSON for string vs numeric ChannelDataType, but they are identical")
+		if stringKind, numericKind := decodePlan(t, stringReq.Node).SeriesKind, decodePlan(t, numericReq.Node).SeriesKind; stringKind == numericKind {
+			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
 	})
 }
@@ -407,24 +440,15 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 		To:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
 	}
 
-	extractBuckets := func(t *testing.T, req computeapi1.ComputeNodeRequest) int {
+	wantBuckets := func(t *testing.T, req computeapi1.ComputeNodeRequest, want int) {
 		t.Helper()
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal node: %v", err)
+		got := decodePlan(t, req.Node).Buckets
+		if got == nil {
+			t.Fatalf("buckets = nil, want %d", want)
 		}
-		var node struct {
-			Series struct {
-				Buckets *int `json:"buckets"`
-			} `json:"series"`
+		if *got != want {
+			t.Errorf("buckets = %d, want %d", *got, want)
 		}
-		if err := json.Unmarshal(jsonBytes, &node); err != nil {
-			t.Fatalf("failed to unmarshal node: %v", err)
-		}
-		if node.Series.Buckets == nil {
-			return 0
-		}
-		return *node.Series.Buckets
 	}
 
 	t.Run("maxDataPoints caps buckets when smaller", func(t *testing.T) {
@@ -435,9 +459,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			Buckets:       1000,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 500)
-		if got := extractBuckets(t, req); got != 500 {
-			t.Errorf("buckets = %d, want 500", got)
-		}
+		wantBuckets(t, req, 500)
 	})
 
 	t.Run("maxDataPoints does not increase buckets", func(t *testing.T) {
@@ -448,9 +470,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			Buckets:       500,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 1000)
-		if got := extractBuckets(t, req); got != 500 {
-			t.Errorf("buckets = %d, want 500", got)
-		}
+		wantBuckets(t, req, 500)
 	})
 
 	t.Run("maxDataPoints used when buckets is zero", func(t *testing.T) {
@@ -461,9 +481,7 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			Buckets:       0,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 800)
-		if got := extractBuckets(t, req); got != 800 {
-			t.Errorf("buckets = %d, want 800", got)
-		}
+		wantBuckets(t, req, 800)
 	})
 
 	t.Run("zero maxDataPoints uses saved buckets", func(t *testing.T) {
@@ -474,62 +492,36 @@ func TestBuildComputeRequestMaxDataPoints(t *testing.T) {
 			Buckets:       1000,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
-		if got := extractBuckets(t, req); got != 1000 {
-			t.Errorf("buckets = %d, want 1000", got)
-		}
+		wantBuckets(t, req, 1000)
 	})
 }
 
 func TestBuildEnumChannelSeries(t *testing.T) {
 	ds := &Datasource{}
 
-	t.Run("returns non-nil enum series", func(t *testing.T) {
-		enumSeries := newTestQueryExecution(ds, nil).buildEnumChannelSeries("ri.nominal.asset.test", "status", "default")
-		// Serialize to JSON to verify the structure
-		jsonBytes, err := json.Marshal(enumSeries)
-		if err != nil {
-			t.Fatalf("failed to marshal EnumSeries: %v", err)
-		}
-		jsonStr := string(jsonBytes)
+	t.Run("returns asset channel series", func(t *testing.T) {
+		enumSeries := newTestQueryExecution(ds, nil).buildEnumChannelSeries("status", "default")
+		view := decodeChannelSeries(t, enumSeries)
 
-		// Should contain channel type (same as numeric path)
-		if !strings.Contains(jsonStr, `"type":"channel"`) {
-			t.Errorf("expected channel series type in JSON, got: %s", jsonStr)
+		// Should be an asset-based channel (same shape as the numeric path).
+		if view.Type != "channel" {
+			t.Errorf("series type = %q, want \"channel\"", view.Type)
 		}
-		if !strings.Contains(jsonStr, `"type":"asset"`) {
-			t.Errorf("expected asset channel type in JSON, got: %s", jsonStr)
+		if view.Channel.Type != "asset" {
+			t.Errorf("channel type = %q, want \"asset\"", view.Channel.Type)
 		}
-		// Verify channel name is present
-		if !strings.Contains(jsonStr, `"channel":{"type":"literal","literal":"status"}`) {
-			t.Errorf("expected channel literal 'status' in JSON, got: %s", jsonStr)
+		if asset := view.Channel.Asset; asset.Channel.Type != "literal" || asset.Channel.Literal != "status" {
+			t.Errorf("channel constant = %+v, want literal \"status\"", asset.Channel)
 		}
 	})
 
 	t.Run("mirrors buildChannelSeries asset channel structure", func(t *testing.T) {
-		// Both builders should produce the same AssetChannel structure;
-		// verify by checking the channel and dataScopeName appear identically.
-		enumSeries := newTestQueryExecution(ds, nil).buildEnumChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
-		numericSeries := newTestQueryExecution(ds, nil).buildChannelSeries("ri.nominal.asset.test", "sensor1", "scope1")
+		// Both builders should produce the same AssetChannel structure.
+		enumView := decodeChannelSeries(t, newTestQueryExecution(ds, nil).buildEnumChannelSeries("sensor1", "scope1"))
+		numericView := decodeChannelSeries(t, newTestQueryExecution(ds, nil).buildChannelSeries("sensor1", "scope1"))
 
-		enumJSON, _ := json.Marshal(enumSeries)
-		numericJSON, _ := json.Marshal(numericSeries)
-
-		// Both should contain the same channel literal
-		expectedChannel := `"channel":{"type":"literal","literal":"sensor1"}`
-		if !strings.Contains(string(enumJSON), expectedChannel) {
-			t.Errorf("enum series missing expected channel literal, got: %s", string(enumJSON))
-		}
-		if !strings.Contains(string(numericJSON), expectedChannel) {
-			t.Errorf("numeric series missing expected channel literal, got: %s", string(numericJSON))
-		}
-
-		// Both should contain the same dataScopeName literal
-		expectedScope := `"dataScopeName":{"type":"literal","literal":"scope1"}`
-		if !strings.Contains(string(enumJSON), expectedScope) {
-			t.Errorf("enum series missing expected dataScopeName literal, got: %s", string(enumJSON))
-		}
-		if !strings.Contains(string(numericJSON), expectedScope) {
-			t.Errorf("numeric series missing expected dataScopeName literal, got: %s", string(numericJSON))
+		if enumView.Channel.Asset != numericView.Channel.Asset {
+			t.Errorf("enum and numeric asset channels differ:\n enum:    %+v\n numeric: %+v", enumView.Channel.Asset, numericView.Channel.Asset)
 		}
 	})
 }
@@ -547,7 +539,7 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		newTestQueryExecution(ds, nil).buildComputeContext(qm, 1704067200, 1704153600)
+		newTestQueryExecution(ds, nil).buildComputeContext(qm)
 	}
 }
 
@@ -562,24 +554,19 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 		qm := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "temperature",
-			ChannelDataType: "numeric",
+			ChannelDataType: ChannelDataTypeNumeric,
 			DataScopeName:   "default",
 			Buckets:         1000,
 			Aggregations:    []string{"MEAN"},
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
+		plan := decodePlan(t, req.Node)
 
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal: %v", err)
+		if plan.OutputFormat != "ARROW_V3" {
+			t.Errorf("outputFormat = %q, want \"ARROW_V3\"", plan.OutputFormat)
 		}
-		jsonStr := string(jsonBytes)
-
-		if !strings.Contains(jsonStr, `"outputFormat"`) {
-			t.Errorf("expected outputFormat in request JSON, got: %s", jsonStr)
-		}
-		if !strings.Contains(jsonStr, `"numericOutputFields"`) {
-			t.Errorf("expected numericOutputFields in request JSON, got: %s", jsonStr)
+		if len(plan.NumericOutputFields) == 0 {
+			t.Errorf("expected numericOutputFields to be set, got %v", plan.NumericOutputFields)
 		}
 	})
 
@@ -593,11 +580,8 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
 
-		jsonBytes, _ := json.Marshal(req.Node)
-		jsonStr := string(jsonBytes)
-
-		if !strings.Contains(jsonStr, `"outputFormat"`) {
-			t.Errorf("expected outputFormat for default numeric path, got: %s", jsonStr)
+		if got := decodePlan(t, req.Node).OutputFormat; got != "ARROW_V3" {
+			t.Errorf("outputFormat = %q, want \"ARROW_V3\" for default numeric path", got)
 		}
 	})
 
@@ -605,20 +589,18 @@ func TestBuildComputeRequestArrowFormat(t *testing.T) {
 		qm := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "status",
-			ChannelDataType: "string",
+			ChannelDataType: ChannelDataTypeString,
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
+		plan := decodePlan(t, req.Node)
 
-		jsonBytes, _ := json.Marshal(req.Node)
-		jsonStr := string(jsonBytes)
-
-		if strings.Contains(jsonStr, `"outputFormat"`) {
-			t.Errorf("expected no outputFormat for enum path, got: %s", jsonStr)
+		if plan.OutputFormat != "" {
+			t.Errorf("outputFormat = %q, want empty for enum path", plan.OutputFormat)
 		}
-		if strings.Contains(jsonStr, `"numericOutputFields"`) {
-			t.Errorf("expected no numericOutputFields for enum path, got: %s", jsonStr)
+		if plan.NumericOutputFields != nil {
+			t.Errorf("numericOutputFields = %v, want nil for enum path", plan.NumericOutputFields)
 		}
 	})
 }
@@ -634,47 +616,42 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 		qm := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "app.logs",
-			ChannelDataType: "log",
+			ChannelDataType: ChannelDataTypeLog,
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
 		req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, baseTimeRange, 0)
+		plan := decodePlan(t, req.Node)
 
-		jsonBytes, err := json.Marshal(req.Node)
-		if err != nil {
-			t.Fatalf("failed to marshal: %v", err)
+		if plan.SeriesKind != "log" {
+			t.Errorf("series kind = %q, want \"log\"", plan.SeriesKind)
 		}
-		jsonStr := string(jsonBytes)
-
-		if !strings.Contains(jsonStr, `"type":"log"`) {
-			t.Errorf("expected log series type in JSON, got: %s", jsonStr)
+		// Log path uses a page strategy, not buckets or Arrow output.
+		if plan.OutputFormat != "" {
+			t.Errorf("outputFormat = %q, want empty for log path", plan.OutputFormat)
 		}
-		// Log path uses page strategy, not buckets
-		if strings.Contains(jsonStr, `"outputFormat"`) {
-			t.Errorf("expected no outputFormat for log path, got: %s", jsonStr)
+		if plan.NumericOutputFields != nil {
+			t.Errorf("numericOutputFields = %v, want nil for log path", plan.NumericOutputFields)
 		}
-		if strings.Contains(jsonStr, `"numericOutputFields"`) {
-			t.Errorf("expected no numericOutputFields for log path, got: %s", jsonStr)
+		if plan.Buckets != nil {
+			t.Errorf("buckets = %d, want nil for log path", *plan.Buckets)
 		}
-		if !strings.Contains(jsonStr, `"pageSize":-250`) {
-			t.Errorf("expected newest-first log page size -250, got: %s", jsonStr)
-		}
-		if strings.Contains(jsonStr, `"buckets"`) {
-			t.Errorf("expected no buckets for log path, got: %s", jsonStr)
+		if plan.PageSize == nil || *plan.PageSize != logPageSize {
+			t.Errorf("pageSize = %v, want %d (newest-first) for log path", plan.PageSize, logPageSize)
 		}
 	})
 
-	t.Run("log path is structurally different from numeric and enum", func(t *testing.T) {
+	t.Run("log path is structurally different from numeric", func(t *testing.T) {
 		logQM := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "app.logs",
-			ChannelDataType: "log",
+			ChannelDataType: ChannelDataTypeLog,
 			DataScopeName:   "default",
 		}
 		numericQM := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "temperature",
-			ChannelDataType: "numeric",
+			ChannelDataType: ChannelDataTypeNumeric,
 			DataScopeName:   "default",
 			Buckets:         1000,
 			Aggregations:    []string{"MEAN"},
@@ -683,11 +660,8 @@ func TestBuildComputeRequestLogPath(t *testing.T) {
 		logReq := newTestQueryExecution(ds, nil).buildComputeRequest(logQM, baseTimeRange, 0)
 		numericReq := newTestQueryExecution(ds, nil).buildComputeRequest(numericQM, baseTimeRange, 0)
 
-		logJSON, _ := json.Marshal(logReq.Node)
-		numericJSON, _ := json.Marshal(numericReq.Node)
-
-		if string(logJSON) == string(numericJSON) {
-			t.Error("expected different JSON for log vs numeric ChannelDataType")
+		if logKind, numericKind := decodePlan(t, logReq.Node).SeriesKind, decodePlan(t, numericReq.Node).SeriesKind; logKind == numericKind {
+			t.Errorf("expected different series kinds for log vs numeric, both = %q", logKind)
 		}
 	})
 }

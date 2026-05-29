@@ -1086,11 +1086,11 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	}
 	switch channel.DataType.Value() {
 	case api.SeriesDataType_STRING, api.SeriesDataType_STRING_ARRAY:
-		return "string"
+		return ChannelDataTypeString
 	case api.SeriesDataType_LOG:
-		return "log"
+		return ChannelDataTypeLog
 	default:
-		return "numeric"
+		return ChannelDataTypeNumeric
 	}
 }
 

@@ -11,83 +11,86 @@ import (
 
 const logPageSize = -250
 
+// assetRidVariableName is the compute-context variable that carries the asset RID.
+// AssetChannel binds the RID by this variable name; the value is supplied separately
+// in buildComputeContext, so the channel builders do not take the RID as a parameter.
+const assetRidVariableName = "assetRid"
+
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
 	startSeconds := timeRange.From.Unix()
 	endSeconds := timeRange.To.Unix()
 
-	series := e.buildSeries(qm)
-	seriesNode := e.buildSummarizeSeries(qm, series, maxDataPoints)
-	node := computeapi1.NewComputableNodeFromSeries(seriesNode)
+	seriesPlan := e.buildSeriesPlan(qm, maxDataPoints)
+	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
 	return computeapi1.ComputeNodeRequest{
 		Start:   timestampFromUnix(startSeconds),
 		End:     timestampFromUnix(endSeconds),
 		Node:    node,
-		Context: e.buildComputeContext(qm, startSeconds, endSeconds),
+		Context: e.buildComputeContext(qm),
 	}
 }
 
-func (e *NominalQueryExecution) buildSeries(qm NominalQueryModel) computeapi1.Series {
+// buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
+// series shape and its summarization strategy, so adding a new channel kind is a single
+// case here rather than coordinated edits across separate series/summarization helpers.
+func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoints int64) computeapi1.SummarizeSeries {
 	switch qm.ChannelDataType {
-	case "string":
+	case ChannelDataTypeString:
 		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
-			Input:    e.buildEnumChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			Input:    e.buildEnumChannelSeries(qm.Channel, qm.DataScopeName),
 			Duration: zeroDurationConstant(),
 		}
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
-		return computeapi1.NewSeriesFromEnum(enumSeries)
-	case "log":
+		series := computeapi1.NewSeriesFromEnum(enumSeries)
+
+		buckets := effectiveBucketCount(qm, maxDataPoints)
+		return computeapi1.SummarizeSeries{
+			Input:   series,
+			Buckets: &buckets,
+		}
+
+	case ChannelDataTypeLog:
 		channelSeries := computeapi.NewChannelSeriesFromAsset(
-			e.buildAssetChannel(qm.AssetRid, qm.Channel, qm.DataScopeName),
+			e.buildAssetChannel(qm.Channel, qm.DataScopeName),
 		)
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
-		return computeapi1.NewSeriesFromLog(logSeries)
-	default:
-		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
-			Input:    e.buildChannelSeries(qm.AssetRid, qm.Channel, qm.DataScopeName),
-			Duration: zeroDurationConstant(),
-		}
-		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
-		return computeapi1.NewSeriesFromNumeric(numericSeries)
-	}
-}
+		series := computeapi1.NewSeriesFromLog(logSeries)
 
-func (e *NominalQueryExecution) buildSummarizeSeries(qm NominalQueryModel, series computeapi1.Series, maxDataPoints int64) computeapi1.SummarizeSeries {
-	if qm.ChannelDataType == "log" {
-		pageInfo := computeapi.PageInfo{
-			PageSize: logPageSize,
-		}
+		pageInfo := computeapi.PageInfo{PageSize: logPageSize}
 		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		return computeapi1.SummarizeSeries{
 			Input:                 series,
 			SummarizationStrategy: &summarizationStrategy,
 		}
-	}
 
-	buckets := effectiveBucketCount(qm, maxDataPoints)
-	if qm.ChannelDataType == "string" {
-		return computeapi1.SummarizeSeries{
-			Input:   series,
-			Buckets: &buckets,
+	default:
+		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
+			Input:    e.buildChannelSeries(qm.Channel, qm.DataScopeName),
+			Duration: zeroDurationConstant(),
 		}
-	}
+		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
+		series := computeapi1.NewSeriesFromNumeric(numericSeries)
 
-	arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-	outputFields := numericOutputFields(qm.Aggregations)
-	return computeapi1.SummarizeSeries{
-		Input:               series,
-		Buckets:             &buckets,
-		OutputFormat:        &arrowFormat,
-		NumericOutputFields: &outputFields,
+		buckets := effectiveBucketCount(qm, maxDataPoints)
+		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
+		outputFields := numericOutputFields(qm.Aggregations)
+		return computeapi1.SummarizeSeries{
+			Input:               series,
+			Buckets:             &buckets,
+			OutputFormat:        &arrowFormat,
+			NumericOutputFields: &outputFields,
+		}
 	}
 }
 
 // buildAssetChannel constructs the shared AssetChannel used by numeric, enum, and log series builders.
-func (e *NominalQueryExecution) buildAssetChannel(assetRid, channel, dataScopeName string) computeapi.AssetChannel {
+// The asset RID is bound by variable name (see assetRidVariableName); its value is supplied in buildComputeContext.
+func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string) computeapi.AssetChannel {
 	return computeapi.AssetChannel{
-		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName("assetRid")),
+		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName(assetRidVariableName)),
 		Channel:        computeapi.NewStringConstantFromLiteral(channel),
 		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
 		AdditionalTags: map[string]computeapi.StringConstant{},
@@ -96,22 +99,22 @@ func (e *NominalQueryExecution) buildAssetChannel(assetRid, channel, dataScopeNa
 	}
 }
 
-// buildChannelSeries creates a numeric channel series for the given asset/channel.
-func (e *NominalQueryExecution) buildChannelSeries(assetRid, channel, dataScopeName string) computeapi1.NumericSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
+// buildChannelSeries creates a numeric channel series for the given channel.
+func (e *NominalQueryExecution) buildChannelSeries(channel, dataScopeName string) computeapi1.NumericSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(channel, dataScopeName))
 	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
 }
 
-// buildEnumChannelSeries creates an enum channel series for the given asset/channel.
-func (e *NominalQueryExecution) buildEnumChannelSeries(assetRid, channel, dataScopeName string) computeapi1.EnumSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(assetRid, channel, dataScopeName))
+// buildEnumChannelSeries creates an enum channel series for the given channel.
+func (e *NominalQueryExecution) buildEnumChannelSeries(channel, dataScopeName string) computeapi1.EnumSeries {
+	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(channel, dataScopeName))
 	return computeapi1.NewEnumSeriesFromChannel(channelSeries)
 }
 
 // buildComputeContext creates the context with variables for the compute request.
-func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel, startSeconds, endSeconds int64) computeapi1.Context {
+func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel) computeapi1.Context {
 	variables := map[computeapi.VariableName]computeapi1.VariableValue{
-		computeapi.VariableName("assetRid"): computeapi1.NewVariableValueFromString(qm.AssetRid),
+		computeapi.VariableName(assetRidVariableName): computeapi1.NewVariableValueFromString(qm.AssetRid),
 	}
 
 	if qm.TemplateVariables != nil {

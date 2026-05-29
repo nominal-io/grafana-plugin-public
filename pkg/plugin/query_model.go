@@ -45,6 +45,15 @@ type NominalQueryModel struct {
 	ChannelUnit string `json:"-"`
 }
 
+// ChannelDataType values. These are produced by getChannelDataType (normalizing the
+// API's SeriesDataType) and consumed by the compute-request and query-execution layers.
+// An empty ChannelDataType (searched-but-not-found, or DataType nil) is treated as numeric.
+const (
+	ChannelDataTypeNumeric = "numeric"
+	ChannelDataTypeString  = "string"
+	ChannelDataTypeLog     = "log"
+)
+
 type preparedQueryKind int
 
 const (
@@ -99,7 +108,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 
 func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 	qm.ExplicitAggregations = len(qm.Aggregations) > 0
-	if qm.ChannelDataType == "string" || qm.ChannelDataType == "log" {
+	if qm.ChannelDataType == ChannelDataTypeString || qm.ChannelDataType == ChannelDataTypeLog {
 		return nil
 	}
 

@@ -104,7 +104,7 @@ func (e *NominalQueryExecution) executePreparedBatches(ctx context.Context, prep
 func partitionPreparedQueries(prepared []preparedQuery) (queryBatch, queryBatch) {
 	var logBatch, otherBatch queryBatch
 	for _, query := range prepared {
-		if query.Model.ChannelDataType == "log" {
+		if query.Model.ChannelDataType == ChannelDataTypeLog {
 			logBatch.add(query)
 		} else {
 			otherBatch.add(query)
