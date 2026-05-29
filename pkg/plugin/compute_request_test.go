@@ -88,7 +88,9 @@ func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) comp
 		func(s computeapi1.SummarizeSeries) error { series = s; return nil },
 		func(computeapi1.SelectValue) error { return fmt.Errorf("expected series node, got value") },
 		func(computeapi1.SummarizeCartesian) error { return fmt.Errorf("expected series node, got cartesian") },
-		func(computeapi1.SummarizeCartesian3d) error { return fmt.Errorf("expected series node, got cartesian3d") },
+		func(computeapi1.SummarizeCartesian3d) error {
+			return fmt.Errorf("expected series node, got cartesian3d")
+		},
 		func(computeapi1.FrequencyDomain) error { return fmt.Errorf("expected series node, got frequency") },
 		func(computeapi1.FrequencyDomainV2) error { return fmt.Errorf("expected series node, got frequencyV2") },
 		func(computeapi1.Histogram) error { return fmt.Errorf("expected series node, got histogram") },
@@ -320,7 +322,7 @@ func TestBuildAssetChannel(t *testing.T) {
 				t.Errorf("dataScopeName = (%s, %q), want (literal, %q)", kind, val, tt.dataScopeName)
 			}
 			// assetRid is a variable reference (not a literal); the value is supplied via context.
-			if kind, val := stringConstantValue(t, asset.AssetRid); kind != "variable" || val != assetRidVariableName {
+			if kind, val := stringConstantValue(t, asset.AssetRid); kind != "variable" || val != string(assetRidVariableName) {
 				t.Errorf("assetRid = (%s, %q), want (variable, %q)", kind, val, assetRidVariableName)
 			}
 		})

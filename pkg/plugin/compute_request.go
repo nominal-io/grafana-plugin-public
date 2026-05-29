@@ -14,7 +14,7 @@ const logPageSize = -250
 // assetRidVariableName is the compute-context variable that carries the asset RID.
 // AssetChannel binds the RID by this variable name; the value is supplied separately
 // in buildComputeContext, so the channel builders do not take the RID as a parameter.
-const assetRidVariableName = "assetRid"
+const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
@@ -89,7 +89,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 // The asset RID is bound by variable name (see assetRidVariableName); its value is supplied in buildComputeContext.
 func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string) computeapi.AssetChannel {
 	return computeapi.AssetChannel{
-		AssetRid:       computeapi.NewStringConstantFromVariable(computeapi.VariableName(assetRidVariableName)),
+		AssetRid:       computeapi.NewStringConstantFromVariable(assetRidVariableName),
 		Channel:        computeapi.NewStringConstantFromLiteral(channel),
 		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
 		AdditionalTags: map[string]computeapi.StringConstant{},
@@ -101,7 +101,7 @@ func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string)
 // buildComputeContext creates the context with variables for the compute request.
 func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel) computeapi1.Context {
 	variables := map[computeapi.VariableName]computeapi1.VariableValue{
-		computeapi.VariableName(assetRidVariableName): computeapi1.NewVariableValueFromString(qm.AssetRid),
+		assetRidVariableName: computeapi1.NewVariableValueFromString(qm.AssetRid),
 	}
 
 	if qm.TemplateVariables != nil {
