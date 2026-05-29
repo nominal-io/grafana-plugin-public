@@ -38,8 +38,9 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoints int64) computeapi1.SummarizeSeries {
 	switch qm.ChannelDataType {
 	case ChannelDataTypeString:
+		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
-			Input:    e.buildEnumChannelSeries(qm.Channel, qm.DataScopeName),
+			Input:    computeapi1.NewEnumSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),
 		}
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
@@ -52,9 +53,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		}
 
 	case ChannelDataTypeLog:
-		channelSeries := computeapi.NewChannelSeriesFromAsset(
-			e.buildAssetChannel(qm.Channel, qm.DataScopeName),
-		)
+		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
@@ -67,8 +66,9 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		}
 
 	default:
+		channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
-			Input:    e.buildChannelSeries(qm.Channel, qm.DataScopeName),
+			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),
 		}
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
@@ -86,7 +86,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 	}
 }
 
-// buildAssetChannel constructs the shared AssetChannel used by numeric, enum, and log series builders.
+// buildAssetChannel constructs the asset-bound AssetChannel shared by every channel kind.
 // The asset RID is bound by variable name (see assetRidVariableName); its value is supplied in buildComputeContext.
 func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string) computeapi.AssetChannel {
 	return computeapi.AssetChannel{
@@ -97,18 +97,6 @@ func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string)
 		TagsToGroupBy:  []string{},
 		GroupByTags:    []computeapi.StringConstant{},
 	}
-}
-
-// buildChannelSeries creates a numeric channel series for the given channel.
-func (e *NominalQueryExecution) buildChannelSeries(channel, dataScopeName string) computeapi1.NumericSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(channel, dataScopeName))
-	return computeapi1.NewNumericSeriesFromChannel(channelSeries)
-}
-
-// buildEnumChannelSeries creates an enum channel series for the given channel.
-func (e *NominalQueryExecution) buildEnumChannelSeries(channel, dataScopeName string) computeapi1.EnumSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(channel, dataScopeName))
-	return computeapi1.NewEnumSeriesFromChannel(channelSeries)
 }
 
 // buildComputeContext creates the context with variables for the compute request.
