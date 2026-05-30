@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SelectableValue } from '@grafana/data';
-import { getTemplateSrv } from '@grafana/runtime';
+import { AppEvents, type SelectableValue } from '@grafana/data';
+import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
 import { debounce } from 'lodash';
 import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue, type ChannelOption } from './queryBuilderOptions';
-import { notifyError } from './queryBuilderNotify';
 import type { AssetInputMethod } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
@@ -27,6 +26,13 @@ export interface ChannelOptionsModel {
   openChannelMenu: () => void;
   selectChannel: (selection: ChannelOption) => void;
 }
+
+const notifyError = (title: string, message: string) => {
+  getAppEvents().publish({
+    type: AppEvents.alertError.name,
+    payload: [title, message],
+  });
+};
 
 export function useChannelOptions({
   query,

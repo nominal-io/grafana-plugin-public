@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { SelectableValue } from '@grafana/data';
-import { getTemplateSrv } from '@grafana/runtime';
+import { AppEvents, type SelectableValue } from '@grafana/data';
+import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import {
   createBasicAsset,
@@ -11,7 +11,6 @@ import {
   type Asset,
 } from '../../utils/api';
 import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
-import { notifyError } from './queryBuilderNotify';
 import type { AssetInputMethod } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
@@ -42,6 +41,13 @@ export interface AssetSelectionModel {
   changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
 }
+
+const notifyError = (title: string, message: string) => {
+  getAppEvents().publish({
+    type: AppEvents.alertError.name,
+    payload: [title, message],
+  });
+};
 
 export function useAssetSelection({
   query,
