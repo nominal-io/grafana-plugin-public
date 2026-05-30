@@ -161,6 +161,60 @@ describe('channel data type inference effect', () => {
     expect(assetFetches).toHaveLength(1);
   });
 
+  it('fetches a direct-mode RID once even when search-assets resolves mid-flight', async () => {
+    // Gate the by-RID asset fetch so it stays in-flight while search-assets resolves.
+    // On the pre-fix code, setAssets re-runs the restore effect, which aborts and
+    // re-issues the same asset/multiple POST (2 calls). The fix keeps the direct
+    // restore effect independent of `assets`, so it fires exactly once.
+    let releaseAssetFetch!: () => void;
+    const assetFetchGate = new Promise<void>((resolve) => {
+      releaseAssetFetch = resolve;
+    });
+
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        await assetFetchGate;
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    // Wait for search-assets to resolve (the trigger for the buggy re-run).
+    await waitFor(() => {
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/search-assets`)).toBe(true);
+    });
+    // Let setAssets flush and any (buggy) effect re-run happen while the asset fetch is still gated.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Release the gated asset fetch and settle.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      releaseAssetFetch();
+      await Promise.resolve();
+    });
+
+    const assetFetches = post.mock.calls.filter((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`);
+    expect(assetFetches).toHaveLength(1);
+  });
+
   it('refetches the asset when a direct-mode template variable resolves to a new RID', async () => {
     const ASSET_RID_B = 'ri.scout.main.asset.def456';
     const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };

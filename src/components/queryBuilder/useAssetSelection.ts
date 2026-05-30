@@ -129,50 +129,61 @@ export function useAssetSelection({
     [datasourceUrl]
   );
 
-  // Restore UI state from a saved query on mount / duplication.
-  //
-  // Decision tree:
-  //  1. Skip if no assetRid or asset already selected.
-  //  2. Skip if user manually switched modes UNLESS the saved method is 'direct'
-  //     (direct-mode queries initialize hasManuallySetMethod=true from the saved value,
-  //     so we must still allow them through here for the initial asset fetch to happen).
-  //  3. Resolve template variables - skip if unresolvable (still contains '$').
-  //  4. If saved method is 'direct' -> fetch asset by RID.
-  //  5. Else (search mode or no saved method):
-  //     a. If asset is in current search results -> select it in search mode.
-  //     b. If assets are loaded but not found, and no saved method -> infer direct mode.
+  // Restore a saved DIRECT-mode asset on mount / duplication.
+  // Deliberately does NOT depend on `assets`: the by-RID fetch path never reads the
+  // search list, so letting search-assets resolution (setAssets) re-run this effect
+  // would only abort and re-issue an identical in-flight fetch (Caveat B). Keeping
+  // `assets` out of the deps removes that redundant cancelled request.
+  // MUST stay ordered before the resolved-asset effect so pendingAssetRidRef is set
+  // first (see plan Decision 2 / the "fetches a saved direct template RID only once" test).
   useEffect(() => {
-    const controller = new AbortController();
-
-    if (query && query.assetRid && !selectedAsset && (!hasManuallySetMethod || query.assetInputMethod === 'direct')) {
-      const resolved = getTemplateSrv().replace(query.assetRid);
-      const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
-
-      // For direct mode, always ensure the input field shows the saved RID (including
-      // template variable syntax) regardless of whether the variable is currently resolved.
-      // This prevents a blank input when reloading a panel with a $variable-based direct RID.
-      if (query.assetInputMethod === 'direct') {
-        setDirectRID((prev) => prev || query.assetRid || '');
-      }
-
-      if (!resolved.includes('$')) {
-        if (query.assetInputMethod === 'direct') {
-          applyAssetFromRid(resolved, displayLabel, controller.signal);
-        } else {
-          const asset = assets.find((a) => a.rid === resolved);
-          if (asset) {
-            setAssetInputMethod('search');
-            setSelectedAsset(asset);
-          } else if (assets.length > 0 && !query.assetInputMethod) {
-            setAssetInputMethod('direct');
-            setDirectRID(query.assetRid);
-            applyAssetFromRid(resolved, displayLabel, controller.signal);
-          }
-        }
-      }
+    if (!query?.assetRid || selectedAsset || query.assetInputMethod !== 'direct') {
+      return;
     }
+    // Always show the saved RID (incl. unresolved $variable) in the direct input.
+    setDirectRID((prev) => prev || query.assetRid || '');
 
+    const resolved = getTemplateSrv().replace(query.assetRid);
+    if (resolved.includes('$')) {
+      return;
+    }
+    const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+    const controller = new AbortController();
+    applyAssetFromRid(resolved, displayLabel, controller.signal);
     return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, applyAssetFromRid]);
+
+  // Restore a SEARCH-mode asset / infer direct mode for a saved RID, once assets are known.
+  // This branch legitimately depends on `assets` (it matches against the loaded list).
+  // Only entered when the user never saved an explicit method (hasManuallySetMethod=false);
+  // the hasManuallySetMethod search case is handled by the search-restore effect below.
+  useEffect(() => {
+    if (
+      !query?.assetRid ||
+      selectedAsset ||
+      hasManuallySetMethod ||
+      query.assetInputMethod === 'direct'
+    ) {
+      return;
+    }
+    const resolved = getTemplateSrv().replace(query.assetRid);
+    if (resolved.includes('$')) {
+      return;
+    }
+    const asset = assets.find((a) => a.rid === resolved);
+    if (asset) {
+      setAssetInputMethod('search');
+      setSelectedAsset(asset);
+    } else if (assets.length > 0 && !query.assetInputMethod) {
+      const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+      setAssetInputMethod('direct');
+      setDirectRID(query.assetRid);
+      const controller = new AbortController();
+      applyAssetFromRid(resolved, displayLabel, controller.signal);
+      return () => controller.abort();
+    }
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assets, hasManuallySetMethod, applyAssetFromRid]);
 
