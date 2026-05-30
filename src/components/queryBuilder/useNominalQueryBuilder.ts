@@ -1,28 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppEvents, type SelectableValue } from '@grafana/data';
-import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
-import { debounce } from 'lodash';
+import type { SelectableValue } from '@grafana/data';
+import { getTemplateSrv } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import {
   createBasicAsset,
   fetchAssetByRid,
   getSupportedScopeNames,
   getSupportedScopes,
-  resolveDataSourceRids,
   searchAssets,
-  searchChannels,
   type Asset,
 } from '../../utils/api';
 import {
   buildAssetOptions,
-  buildChannelOptions,
   buildDataScopeOptions,
-  channelsToOptions,
   getAssetSelectValue,
-  getChannelSelectValue,
-  type ChannelOption,
 } from './queryBuilderOptions';
+import { notifyError } from './queryBuilderNotify';
 import type { AssetInputMethod, QueryBuilderModel } from './queryBuilderTypes';
+import { useChannelOptions } from './useChannelOptions';
 import { useAggregationRun } from './useAggregationRun';
 import { useCopyToClipboard } from './useCopyToClipboard';
 
@@ -34,13 +29,6 @@ interface UseNominalQueryBuilderArgs {
   onRunQuery: () => void;
   datasourceUrl: string;
 }
-
-const notifyError = (title: string, message: string) => {
-  getAppEvents().publish({
-    type: AppEvents.alertError.name,
-    payload: [title, message],
-  });
-};
 
 export function useNominalQueryBuilder({
   query,
@@ -61,17 +49,14 @@ export function useNominalQueryBuilder({
   // Initialising from query rather than defaulting to false prevents the restore effect
   // from running unnecessary branches after a panel reload.
   const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
-  const [channelResults, setChannelResults] = useState<ChannelOption[]>([]);
-  const [isLoadingChannels, setIsLoadingChannels] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
+  const markInteracted = useCallback(() => setHasUserInteracted(true), []);
 
   // Ref to latest query - used by effects and callbacks that need fresh query values
   // without re-triggering when query changes (avoids onChange -> query -> effect cycles)
   const queryRef = useRef(query);
   queryRef.current = query;
-
-  const isMountedRef = useRef(true);
 
   // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
   const assetSelectControllerRef = useRef<AbortController>(undefined);
@@ -104,74 +89,6 @@ export function useNominalQueryBuilder({
       setIsLoadingAssets(false);
     }
   }, [searchQuery, datasourceUrl]);
-
-  // Dynamically search channels via backend; called by the Select loadOptions prop.
-  const loadChannelOptions = useCallback(
-    async (searchText: string): Promise<ChannelOption[]> => {
-      if (!selectedAsset) {
-        return [];
-      }
-      const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-      const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
-      try {
-        const channels = await searchChannels(datasourceUrl, dataSourceRids, searchText);
-        return channelsToOptions(channels);
-      } catch {
-        if (isMountedRef.current) {
-          notifyError('Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.');
-        }
-        return [];
-      }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    },
-    [selectedAsset, datasourceUrl, query?.dataScopeName]
-  );
-
-  // Keep a ref so the stable debounce below always calls the latest closure without
-  // needing to be recreated (and without leaving stale pending timeouts behind).
-  const loadChannelOptionsRef = useRef(loadChannelOptions);
-  loadChannelOptionsRef.current = loadChannelOptions;
-
-  // Debounced channel search that populates state (synchronous options) instead of
-  // returning a Promise. This allows allowCustomValue to work on the Select.
-  // The counter guard discards late responses so a slow earlier request can't overwrite newer results.
-  const channelSearchId = useRef(0);
-  const debouncedChannelSearch = useRef(
-    debounce((searchText: string) => {
-      const id = ++channelSearchId.current;
-      setIsLoadingChannels(true);
-      loadChannelOptionsRef.current(searchText)
-        .then((results) => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setChannelResults(results);
-          }
-        })
-        .catch(() => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setChannelResults([]);
-          }
-        })
-        .finally(() => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setIsLoadingChannels(false);
-          }
-        });
-    }, 300)
-  ).current;
-
-  const openChannelMenu = useCallback(() => {
-    debouncedChannelSearch('');
-  }, [debouncedChannelSearch]);
-
-  // Pre-load channel options when the channel dropdown becomes visible or the
-  // underlying asset/datascope changes (mirrors the old defaultOptions behaviour).
-  useEffect(() => {
-    if (selectedAsset) {
-      setChannelResults([]);
-      setIsLoadingChannels(true);
-      debouncedChannelSearch('');
-    }
-  }, [selectedAsset, query?.dataScopeName, debouncedChannelSearch]);
 
   /** Fetch an asset by resolved RID and update selectedAsset/dataScopes state.
    *  Returns early without updating state if `signal` is aborted. */
@@ -259,6 +176,17 @@ export function useNominalQueryBuilder({
   const resolvedAssetRid = query?.assetRid ? getTemplateSrv().replace(query.assetRid) : '';
   const resolvedDataScopeName = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
   const resolvedChannel = query?.channel ? getTemplateSrv().replace(query.channel) : '';
+
+  const channel = useChannelOptions({
+    query,
+    onChange,
+    selectedAsset,
+    assetInputMethod,
+    resolvedChannel,
+    resolvedDataScopeName,
+    datasourceUrl,
+    markInteracted,
+  });
 
   // Update dropdown options when the resolved asset RID changes (e.g. template variable changed).
   // Skipped in direct mode because changeDirectRID manages its own debounced fetch -
@@ -356,43 +284,6 @@ export function useNominalQueryBuilder({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
-
-  // Infer channelDataType when the resolved channel changes (e.g. template variable).
-  // The backend does its own inference, but the frontend needs the correct type to show
-  // the right aggregation UI (numeric MultiSelect vs disabled "Mode" / "Logs (raw)").
-  useEffect(() => {
-    if (!resolvedChannel || resolvedChannel.includes('$') || !selectedAsset) {
-      return;
-    }
-    // Skip if type was already set by direct dropdown selection (not a variable)
-    if (queryRef.current?.channelDataType && !queryRef.current?.channel?.includes('$')) {
-      return;
-    }
-    const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-    const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
-    if (dataSourceRids.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-    searchChannels(datasourceUrl, dataSourceRids, resolvedChannel)
-      .then((channels) => {
-        if (cancelled) {
-          return;
-        }
-        const match = channels.find((ch) => ch.name === resolvedChannel);
-        if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
-          onChange({ ...queryRef.current, channelDataType: match.dataType });
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-    // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
-    // call whenever setSelectedAsset is called with a logically identical asset.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedChannel, selectedAsset?.rid, resolvedDataScopeName, datasourceUrl]);
 
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
@@ -517,40 +408,14 @@ export function useNominalQueryBuilder({
     [assetInputMethod, onChange, query]
   );
 
-  const selectChannel = useCallback(
-    (selection: ChannelOption) => {
-      setHasUserInteracted(true);
-      // NOTE: channelDataType is captured at selection time from the dropdown option.
-      // If channel is later overridden by a template variable that resolves to a
-      // different channel, the stored channelDataType may be stale. The backend will
-      // fall back to numeric for an unknown type, but mismatches can cause query errors.
-      // Mitigation: the backend error message hints the user to re-select the channel.
-      onChange({
-        ...query,
-        channel: selection?.value || '',
-        channelDataType: selection?.dataType || '',
-        dataScopeName: query?.dataScopeName || '',
-        assetInputMethod,
-        queryType: 'decimation',
-        buckets: 1000,
-      });
-    },
-    [assetInputMethod, onChange, query]
-  );
-
   // Clean up timers and in-flight fetches on unmount
   useEffect(() => {
-    isMountedRef.current = true;
-
     return () => {
-      isMountedRef.current = false;
-      channelSearchId.current += 1;
-      debouncedChannelSearch.cancel();
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
     };
-  }, [debouncedChannelSearch]);
+  }, []);
 
   const assetOptions = useMemo(
     () => buildAssetOptions({ assets, selectedAsset, currentAssetRid: query?.assetRid || '' }),
@@ -570,21 +435,6 @@ export function useNominalQueryBuilder({
         resolvedDataScopeName,
       }),
     [dataScopes, query?.dataScopeName, resolvedDataScopeName]
-  );
-
-  const channelOptions = useMemo(
-    () =>
-      buildChannelOptions({
-        channelResults,
-        currentChannel: query?.channel || '',
-        resolvedChannel,
-      }),
-    [channelResults, query?.channel, resolvedChannel]
-  );
-
-  const channelSelectValue = useMemo(
-    () => getChannelSelectValue({ currentChannel: query?.channel || '', resolvedChannel }),
-    [query?.channel, resolvedChannel]
   );
 
   // Step completion status
@@ -608,10 +458,10 @@ export function useNominalQueryBuilder({
       assetOptions,
       assetSelectValue,
       dataScopeOptions,
-      channelOptions,
-      channelSelectValue,
+      channelOptions: channel.channelOptions,
+      channelSelectValue: channel.channelSelectValue,
       isLoadingAssets,
-      isLoadingChannels,
+      isLoadingChannels: channel.isLoadingChannels,
       resolvedAssetRid,
       resolvedDataScopeName,
       resolvedChannel,
@@ -628,9 +478,9 @@ export function useNominalQueryBuilder({
       selectAsset,
       changeDirectRID,
       selectDataScope,
-      searchChannels: debouncedChannelSearch,
-      openChannelMenu,
-      selectChannel,
+      searchChannels: channel.searchChannels,
+      openChannelMenu: channel.openChannelMenu,
+      selectChannel: channel.selectChannel,
       changeAggregations: aggregation.changeAggregations,
       copySelectedAssetRid,
     },
