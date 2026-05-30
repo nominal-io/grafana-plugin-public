@@ -83,7 +83,11 @@ export function useNominalQueryBuilder({
   queryRef.current = query;
   const onRunQueryRef = useRef(onRunQuery);
   onRunQueryRef.current = onRunQuery;
-  const lastDebouncedAggregationsRef = useRef(query?.aggregations);
+  // Track aggregations by normalized value (not array identity) so a content-identical
+  // array arriving as a new reference (e.g. Grafana re-cloning query targets) doesn't
+  // schedule a redundant rerun. Empty/undefined normalizes to DEFAULT_AGGREGATIONS.
+  const aggregationsKey = getAggregationValue(query?.aggregations).join('|');
+  const lastDebouncedAggregationsKeyRef = useRef(aggregationsKey);
 
   // Ref for the "copied" tooltip hide-timer so it can be cleared on unmount.
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -91,6 +95,10 @@ export function useNominalQueryBuilder({
 
   // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
   const assetSelectControllerRef = useRef<AbortController>(undefined);
+
+  // Tracks the resolved RID currently being fetched by applyAssetFromRid so that concurrent
+  // effects (mount restore + resolved-asset) don't both fetch the same asset.
+  const pendingAssetRidRef = useRef<string | undefined>(undefined);
 
   // Debounced asset lookup for direct RID input - fires after user stops typing
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -215,6 +223,8 @@ export function useNominalQueryBuilder({
    *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
+      // Mark this RID as in-flight so concurrent effects skip a duplicate fetch.
+      pendingAssetRidRef.current = resolvedRid;
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
@@ -234,6 +244,11 @@ export function useNominalQueryBuilder({
         notifyError('Unable to load Nominal asset', 'The RID was kept, but data scopes could not be loaded automatically.');
         setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
         setDataScopes([]);
+      } finally {
+        // Clear only if no newer fetch has since claimed the in-flight slot for a different RID.
+        if (pendingAssetRidRef.current === resolvedRid) {
+          pendingAssetRidRef.current = undefined;
+        }
       }
     },
     [datasourceUrl]
@@ -299,6 +314,11 @@ export function useNominalQueryBuilder({
       return;
     }
     if (selectedAsset?.rid === resolvedAssetRid) {
+      return;
+    }
+    // Skip if another path (e.g. the mount restore effect) is already fetching this RID.
+    // Prevents a saved direct query with a template RID ($asset) from being fetched twice.
+    if (pendingAssetRidRef.current === resolvedAssetRid) {
       return;
     }
     // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
@@ -428,18 +448,20 @@ export function useNominalQueryBuilder({
   }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
 
   // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
+  // Compared by normalized value so logically identical aggregations in a new array
+  // reference don't schedule a redundant rerun.
   useEffect(() => {
-    if (query?.aggregations === lastDebouncedAggregationsRef.current) {
+    if (aggregationsKey === lastDebouncedAggregationsKeyRef.current) {
       return;
     }
-    lastDebouncedAggregationsRef.current = query?.aggregations;
+    lastDebouncedAggregationsKeyRef.current = aggregationsKey;
 
     if (!shouldDebounceAggregationRun(queryRef.current)) {
       return;
     }
     const timer = setTimeout(() => onRunQueryRef.current(), AGGREGATION_RUN_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [query?.aggregations]);
+  }, [aggregationsKey]);
 
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {

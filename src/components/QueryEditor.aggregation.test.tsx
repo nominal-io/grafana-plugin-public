@@ -192,6 +192,7 @@ describe('Aggregation widget', () => {
   });
 
   it('empty aggregations falls back to MEAN', async () => {
+    jest.useFakeTimers();
     const onRunQuery = jest.fn();
 
     const { rerender } = render(
@@ -210,7 +211,8 @@ describe('Aggregation widget', () => {
     onRunQuery.mockClear();
 
     // Rerender with explicit ['MEAN'] — the component should treat this as identical
-    // to the empty-fallback state, so blur should NOT trigger onRunQuery.
+    // to the empty-fallback state (both normalize to DEFAULT_AGGREGATIONS), so even
+    // after the debounce window no rerun should be scheduled.
     rerender(
       <QueryEditor
         query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Mean] })}
@@ -223,6 +225,46 @@ describe('Aggregation widget', () => {
     const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
+      await Promise.resolve();
+    });
+
+    expect(onRunQuery).not.toHaveBeenCalled();
+  });
+
+  it('does not reschedule a rerun when aggregations arrive as a new array with identical values', async () => {
+    jest.useFakeTimers();
+    const onRunQuery = jest.fn();
+
+    const { rerender } = render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Min, AggregationType.Max] })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
+    await settleInitialEffects();
+    onRunQuery.mockClear();
+
+    // Simulate Grafana re-cloning the query target: same values, brand-new array reference.
+    rerender(
+      <QueryEditor
+        query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Min, AggregationType.Max] })}
+        onChange={jest.fn()}
+        onRunQuery={onRunQuery}
+        datasource={mockDatasource}
+      />
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
+      await Promise.resolve();
+    });
 
     expect(onRunQuery).not.toHaveBeenCalled();
   });

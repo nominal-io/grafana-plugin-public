@@ -24,6 +24,9 @@ const ASSET = {
 // Component tests install a URL-routing implementation in their describe block.
 const post = jest.fn();
 const publish = jest.fn();
+// Per-test overrides for template variable resolution. Lets a test simulate a
+// dashboard variable changing value mid-session (e.g. $asset resolving to a new RID).
+let mockReplaceOverrides: Record<string, string> = {};
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
@@ -31,6 +34,9 @@ jest.mock('@grafana/runtime', () => ({
   getAppEvents: jest.fn(() => ({ publish })),
   getTemplateSrv: jest.fn(() => ({
     replace: (v: string) => {
+      if (v in mockReplaceOverrides) {
+        return mockReplaceOverrides[v];
+      }
       if (v === '$asset') {
         return ASSET_RID;
       }
@@ -48,6 +54,7 @@ jest.mock('@grafana/runtime', () => ({
 beforeEach(() => {
   post.mockReset();
   publish.mockReset();
+  mockReplaceOverrides = {};
 });
 
 afterEach(() => {
@@ -114,6 +121,105 @@ describe('channel data type inference effect', () => {
     expect(screen.getByDisplayValue('$asset')).toBeInTheDocument();
     await waitFor(() => {
       expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+    });
+  });
+
+  it('fetches a saved direct template RID only once on mount (no restore/resolved double fetch)', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await waitFor(() => {
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+    });
+
+    // Let any racing effect settle before counting.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const assetFetches = post.mock.calls.filter((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`);
+    expect(assetFetches).toHaveLength(1);
+  });
+
+  it('refetches the asset when a direct-mode template variable resolves to a new RID', async () => {
+    const ASSET_RID_B = 'ri.scout.main.asset.def456';
+    const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
+
+    post.mockImplementation(async (url: string, body?: unknown) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        const requestedRid = Array.isArray(body) ? body[0] : undefined;
+        // Respond with whichever asset was requested so both resolutions succeed.
+        if (requestedRid === ASSET_RID_B) {
+          return { [ASSET_RID_B]: ASSET_B };
+        }
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    const { rerender } = render(
+      <QueryEditor
+        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    // First resolution: $asset -> ASSET_RID.
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          (call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple` && Array.isArray(call[1]) && call[1][0] === ASSET_RID
+        )
+      ).toBe(true);
+    });
+
+    // Simulate the dashboard variable changing: $asset now resolves to a different RID.
+    mockReplaceOverrides['$asset'] = ASSET_RID_B;
+    rerender(
+      <QueryEditor
+        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    // The resolved-asset effect must still fire for the new RID despite the in-flight
+    // dedupe guard — the prior fetch has settled, so pendingAssetRidRef is clear.
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          (call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple` && Array.isArray(call[1]) && call[1][0] === ASSET_RID_B
+        )
+      ).toBe(true);
     });
   });
 
