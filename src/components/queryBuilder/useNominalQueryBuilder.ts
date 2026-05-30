@@ -24,7 +24,7 @@ export function useNominalQueryBuilder({
 }: UseNominalQueryBuilderArgs): QueryBuilderModel {
   // Track whether the user has interacted with query fields - prevents auto-clearing on
   // initial load. Cross-cutting: written by asset + channel commands, read by the asset
-  // dependent-fields effect. Owned here so it is single-sourced (see plan Decision 1).
+  // dependent-fields effect. Owned here so it is single-sourced.
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
   const markInteracted = useCallback(() => setHasUserInteracted(true), []);
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);

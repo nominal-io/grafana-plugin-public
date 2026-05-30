@@ -193,7 +193,7 @@ describe('useAssetSelection', () => {
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
-  // Caveat C: a saved direct-mode query whose RID is a template variable is eligible for both
+  // A saved direct-mode query whose RID is a template variable is eligible for both
   // the mount-restore effect and the resolved-asset effect. The pendingAssetRidRef guard must
   // ensure only ONE fetch is issued for that RID.
   it('fetches a saved direct-mode template RID only once', async () => {

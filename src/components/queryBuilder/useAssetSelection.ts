@@ -72,17 +72,14 @@ export function useAssetSelection({
   const [dataScopes, setDataScopes] = useState<string[]>([]);
   const [isLoadingAssets, setIsLoadingAssets] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  // Initialize input method from saved query, defaulting to 'search'
   const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(query?.assetInputMethod || 'search');
-  // Initialize directRID from saved query if using direct mode
   const [directRID, setDirectRID] = useState(query?.assetInputMethod === 'direct' ? query?.assetRid || '' : '');
   // Derive whether user has ever saved an explicit input method (persisted in query model).
   // Initialising from query rather than defaulting to false prevents the restore effect
   // from running unnecessary branches after a panel reload.
   const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
 
-  // Ref to latest query - used by effects and callbacks that need fresh query values
-  // without re-triggering when query changes (avoids onChange -> query -> effect cycles)
+  // Latest query for effects/callbacks, read via ref to avoid onChange -> query -> effect cycles.
   const queryRef = useRef(query);
   queryRef.current = query;
 
@@ -147,7 +144,7 @@ export function useAssetSelection({
   // Restore a saved DIRECT-mode asset on mount / duplication.
   // Deliberately does NOT depend on `assets`: the by-RID fetch path never reads the
   // search list, so letting search-assets resolution (setAssets) re-run this effect
-  // would only abort and re-issue an identical in-flight fetch (Caveat B). Keeping
+  // would only abort and re-issue an identical in-flight fetch. Keeping
   // `assets` out of the deps removes that redundant cancelled request.
   // MUST stay ordered before the resolved-asset effect so pendingAssetRidRef is set
   // before that effect considers the same resolved template RID. Otherwise a saved
