@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, searchAssets, type Asset } from '../../utils/api';
@@ -92,6 +93,7 @@ describe('useAssetSelection', () => {
     await waitFor(() => expect(result.current.assetSearchResultCount).toBe(1));
     await waitForAssetSearchToSettle(result);
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset({ value: ASSET.rid });
     });
@@ -123,6 +125,7 @@ describe('useAssetSelection', () => {
     const { result } = renderHook(() => useAssetSelection(hookArgs));
     await waitForAssetSearchToSettle(result);
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.changeAssetInputMethod('direct');
     });

@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook } from '@testing-library/react';
 import { AggregationType, DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
 import { AGGREGATION_RUN_DELAY_MS, useAggregationRun } from './useAggregationRun';
@@ -33,6 +34,7 @@ describe('useAggregationRun', () => {
   it('changeAggregations normalizes empty selection to the default and calls onChange', () => {
     const onChange = jest.fn();
     const { result } = renderHook(() => useAggregationRun({ query: makeQuery(), onChange, onRunQuery: jest.fn() }));
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.changeAggregations([]);
     });
@@ -51,6 +53,7 @@ describe('useAggregationRun', () => {
     rerender({ query: makeQuery({ aggregations: [AggregationType.Min, AggregationType.Max] }) });
     expect(onRunQuery).not.toHaveBeenCalled();
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
     });
@@ -67,6 +70,7 @@ describe('useAggregationRun', () => {
     onRunQuery.mockClear();
 
     rerender({ query: makeQuery({ aggregations: [AggregationType.Min, AggregationType.Max] }) });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
     });

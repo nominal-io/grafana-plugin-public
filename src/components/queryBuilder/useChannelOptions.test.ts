@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { searchChannels, type Asset } from '../../utils/api';
@@ -62,9 +63,11 @@ describe('useChannelOptions', () => {
     mockSearchChannels.mockResolvedValue([{ name: 'temp', dataSource: 'ds', description: '', dataType: 'numeric' }]);
     const { result } = renderHook(() => useChannelOptions(args()));
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.openChannelMenu();
     });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(300);
       await Promise.resolve();
@@ -80,6 +83,7 @@ describe('useChannelOptions', () => {
     const markInteracted = jest.fn();
     const { result } = renderHook(() => useChannelOptions(args({ onChange, markInteracted })));
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectChannel({ label: 'temp', value: 'temp', dataType: 'numeric' });
     });
@@ -91,9 +95,11 @@ describe('useChannelOptions', () => {
   it('returns no channel options and does not call the API without a selected asset', async () => {
     const { result } = renderHook(() => useChannelOptions(args({ selectedAsset: null })));
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.openChannelMenu();
     });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(300);
       await Promise.resolve();
