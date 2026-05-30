@@ -18,26 +18,15 @@ import {
   buildChannelOptions,
   buildDataScopeOptions,
   channelsToOptions,
-  getAggregationValue,
   getAssetSelectValue,
   getChannelSelectValue,
-  NUMERIC_AGG_OPTIONS,
   type ChannelOption,
 } from './queryBuilderOptions';
 import type { AssetInputMethod, QueryBuilderModel } from './queryBuilderTypes';
+import { useAggregationRun } from './useAggregationRun';
 import { useCopyToClipboard } from './useCopyToClipboard';
 
-type QueryCompletenessInput = Pick<NominalQuery, 'assetRid' | 'channel' | 'dataScopeName'> | undefined;
-
-export const AGGREGATION_RUN_DELAY_MS = 400;
-
-function shouldRunCompleteQuery(query: QueryCompletenessInput): boolean {
-  return Boolean(query?.assetRid && query.channel && query.dataScopeName);
-}
-
-function shouldDebounceAggregationRun(query: QueryCompletenessInput): boolean {
-  return shouldRunCompleteQuery(query);
-}
+export { AGGREGATION_RUN_DELAY_MS } from './useAggregationRun';
 
 interface UseNominalQueryBuilderArgs {
   query: NominalQuery;
@@ -81,13 +70,6 @@ export function useNominalQueryBuilder({
   // without re-triggering when query changes (avoids onChange -> query -> effect cycles)
   const queryRef = useRef(query);
   queryRef.current = query;
-  const onRunQueryRef = useRef(onRunQuery);
-  onRunQueryRef.current = onRunQuery;
-  // Track aggregations by normalized value (not array identity) so a content-identical
-  // array arriving as a new reference (e.g. Grafana re-cloning query targets) doesn't
-  // schedule a redundant rerun. Empty/undefined normalizes to DEFAULT_AGGREGATIONS.
-  const aggregationsKey = getAggregationValue(query?.aggregations).join('|');
-  const lastDebouncedAggregationsKeyRef = useRef(aggregationsKey);
 
   const isMountedRef = useRef(true);
 
@@ -103,6 +85,7 @@ export function useNominalQueryBuilder({
   const directRidControllerRef = useRef<AbortController>(undefined);
 
   const { showCopiedMessage, copyToClipboard } = useCopyToClipboard();
+  const aggregation = useAggregationRun({ query, onChange, onRunQuery });
 
   const copySelectedAssetRid = useCallback(() => {
     if (selectedAsset) {
@@ -411,29 +394,6 @@ export function useNominalQueryBuilder({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedChannel, selectedAsset?.rid, resolvedDataScopeName, datasourceUrl]);
 
-  // Trigger graph update when query is complete
-  useEffect(() => {
-    if (shouldRunCompleteQuery(queryRef.current)) {
-      onRunQuery();
-    }
-  }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
-
-  // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
-  // Compared by normalized value so logically identical aggregations in a new array
-  // reference don't schedule a redundant rerun.
-  useEffect(() => {
-    if (aggregationsKey === lastDebouncedAggregationsKeyRef.current) {
-      return;
-    }
-    lastDebouncedAggregationsKeyRef.current = aggregationsKey;
-
-    if (!shouldDebounceAggregationRun(queryRef.current)) {
-      return;
-    }
-    const timer = setTimeout(() => onRunQueryRef.current(), AGGREGATION_RUN_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [aggregationsKey]);
-
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
       setHasUserInteracted(true);
@@ -578,15 +538,6 @@ export function useNominalQueryBuilder({
     [assetInputMethod, onChange, query]
   );
 
-  const changeAggregations = useCallback(
-    (selected: Array<SelectableValue<string>>) => {
-      const values = selected.map((selection) => selection.value).filter((value): value is string => value != null);
-      const aggregations = values.length > 0 ? values : getAggregationValue(undefined);
-      onChange({ ...query, aggregations });
-    },
-    [onChange, query]
-  );
-
   // Clean up timers and in-flight fetches on unmount
   useEffect(() => {
     isMountedRef.current = true;
@@ -636,31 +587,6 @@ export function useNominalQueryBuilder({
     [query?.channel, resolvedChannel]
   );
 
-  const aggregationState = useMemo(() => {
-    if (query?.channelDataType === 'string') {
-      return {
-        kind: 'string' as const,
-        tooltip: 'String channels only support Mode (most frequent value per time bucket)',
-        value: ['Mode'],
-        options: NUMERIC_AGG_OPTIONS,
-      };
-    }
-    if (query?.channelDataType === 'log') {
-      return {
-        kind: 'log' as const,
-        tooltip: 'Log channels return raw entries without aggregation',
-        value: ['Logs (raw)'],
-        options: NUMERIC_AGG_OPTIONS,
-      };
-    }
-    return {
-      kind: 'numeric' as const,
-      tooltip: 'Aggregation functions to apply per time bucket',
-      value: getAggregationValue(query?.aggregations),
-      options: NUMERIC_AGG_OPTIONS,
-    };
-  }, [query?.aggregations, query?.channelDataType]);
-
   // Step completion status
   const assetComplete =
     assetInputMethod === 'search' ? resolvedAssetRid !== '' && !resolvedAssetRid.includes('$') : directRID.trim() !== '';
@@ -693,7 +619,7 @@ export function useNominalQueryBuilder({
       configComplete: Boolean(configComplete),
       hasChannelSearch,
       showCopiedMessage,
-      aggregationState,
+      aggregationState: aggregation.aggregationState,
     },
     commands: {
       changeAssetInputMethod,
@@ -705,7 +631,7 @@ export function useNominalQueryBuilder({
       searchChannels: debouncedChannelSearch,
       openChannelMenu,
       selectChannel,
-      changeAggregations,
+      changeAggregations: aggregation.changeAggregations,
       copySelectedAssetRid,
     },
   };
