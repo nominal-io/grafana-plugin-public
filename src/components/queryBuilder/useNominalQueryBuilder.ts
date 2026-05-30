@@ -25,6 +25,7 @@ import {
   type ChannelOption,
 } from './queryBuilderOptions';
 import type { AssetInputMethod, QueryBuilderModel } from './queryBuilderTypes';
+import { useCopyToClipboard } from './useCopyToClipboard';
 
 type QueryCompletenessInput = Pick<NominalQuery, 'assetRid' | 'channel' | 'dataScopeName'> | undefined;
 
@@ -71,7 +72,6 @@ export function useNominalQueryBuilder({
   // Initialising from query rather than defaulting to false prevents the restore effect
   // from running unnecessary branches after a panel reload.
   const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
-  const [showCopiedMessage, setShowCopiedMessage] = useState(false);
   const [channelResults, setChannelResults] = useState<ChannelOption[]>([]);
   const [isLoadingChannels, setIsLoadingChannels] = useState(false);
   // Track whether the user has interacted with query fields - prevents auto-clearing on initial load
@@ -89,8 +89,6 @@ export function useNominalQueryBuilder({
   const aggregationsKey = getAggregationValue(query?.aggregations).join('|');
   const lastDebouncedAggregationsKeyRef = useRef(aggregationsKey);
 
-  // Ref for the "copied" tooltip hide-timer so it can be cleared on unmount.
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const isMountedRef = useRef(true);
 
   // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
@@ -104,34 +102,7 @@ export function useNominalQueryBuilder({
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const directRidControllerRef = useRef<AbortController>(undefined);
 
-  const copyToClipboard = useCallback(async (text: string) => {
-    // Clear any existing hide-timer before starting a new one
-    clearTimeout(copiedTimerRef.current);
-    try {
-      await navigator.clipboard.writeText(text);
-
-      // Show ephemeral "copied" message
-      setShowCopiedMessage(true);
-      copiedTimerRef.current = setTimeout(() => {
-        setShowCopiedMessage(false);
-      }, 2000);
-    } catch {
-      // Fallback for browsers that don't support clipboard API
-      const textArea = document.createElement('textarea');
-      textArea.value = text;
-      document.body.appendChild(textArea);
-      textArea.select();
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
-      document.execCommand('copy');
-      document.body.removeChild(textArea);
-
-      // Show ephemeral "copied" message for fallback too
-      setShowCopiedMessage(true);
-      copiedTimerRef.current = setTimeout(() => {
-        setShowCopiedMessage(false);
-      }, 2000);
-    }
-  }, []);
+  const { showCopiedMessage, copyToClipboard } = useCopyToClipboard();
 
   const copySelectedAssetRid = useCallback(() => {
     if (selectedAsset) {
@@ -627,7 +598,6 @@ export function useNominalQueryBuilder({
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
-      clearTimeout(copiedTimerRef.current);
     };
   }, [debouncedChannelSearch]);
 
