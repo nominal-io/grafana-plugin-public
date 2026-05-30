@@ -122,7 +122,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             ? {
                 label: option.label,
                 value: option.value,
-                description: option.description,
+                // Only attach description when present. Grafana's Combobox sizes rows by
+                // `'description' in option`, so an always-present `description: undefined`
+                // forces every row to the taller description height and makes the 7
+                // aggregation options scroll (regression vs. passing bare options).
+                ...(option.description ? { description: option.description } : {}),
               }
             : null
         )
