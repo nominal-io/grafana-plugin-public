@@ -199,6 +199,11 @@ export function useAssetSelection({
     }
     // Skip if another path (e.g. the mount restore effect) is already fetching this RID.
     // Prevents a saved direct query with a template RID ($asset) from being fetched twice.
+    // Invariant: every path that fetches an asset for selection starts from the current
+    // query/source RID and either has already persisted that RID (changeDirectRID) or is
+    // driven by an existing saved query. Stale completions are ignored by their abort
+    // signals, so the abort-then-skip over-suppression window is unreachable without a
+    // generation counter.
     if (pendingAssetRidRef.current === resolvedAssetRid) {
       return;
     }
