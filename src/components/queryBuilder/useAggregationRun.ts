@@ -13,10 +13,6 @@ function shouldRunCompleteQuery(query: QueryCompletenessInput): boolean {
   return Boolean(query?.assetRid && query.channel && query.dataScopeName);
 }
 
-function shouldDebounceAggregationRun(query: QueryCompletenessInput): boolean {
-  return shouldRunCompleteQuery(query);
-}
-
 interface UseAggregationRunArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
@@ -56,7 +52,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
     }
     lastDebouncedAggregationsKeyRef.current = aggregationsKey;
 
-    if (!shouldDebounceAggregationRun(queryRef.current)) {
+    if (!shouldRunCompleteQuery(queryRef.current)) {
       return;
     }
     const timer = setTimeout(() => onRunQueryRef.current(), AGGREGATION_RUN_DELAY_MS);
