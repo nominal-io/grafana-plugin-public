@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { SelectableValue } from '@grafana/data';
 import type { NominalQuery } from '../../types';
 import { getAggregationValue, NUMERIC_AGG_OPTIONS } from './queryBuilderOptions';
+import { changeAggregationsQuery } from './queryMutations';
 import type { AggregationState } from './queryBuilderTypes';
 
 export const AGGREGATION_RUN_DELAY_MS = 400;
@@ -65,8 +66,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
   const changeAggregations = useCallback(
     (selected: Array<SelectableValue<string>>) => {
       const values = selected.map((selection) => selection.value).filter((value): value is string => value != null);
-      const aggregations = values.length > 0 ? values : getAggregationValue(undefined);
-      onChange({ ...query, aggregations });
+      onChange(changeAggregationsQuery(query, values));
     },
     [onChange, query]
   );

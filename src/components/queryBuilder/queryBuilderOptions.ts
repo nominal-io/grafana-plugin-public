@@ -1,8 +1,8 @@
 import type { SelectableValue } from '@grafana/data';
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { assetToOption, type Asset, type Channel } from '../../utils/api';
-
-export type ChannelOption = SelectableValue<string> & { dataType?: string };
+import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
+import type { ChannelOption } from './queryBuilderTypes';
 
 export const DATA_TYPE_ICONS: Record<string, string> = {
   string: 'font',
@@ -23,11 +23,11 @@ export const NUMERIC_AGG_OPTIONS = [
 export function buildAssetOptions({
   assets,
   selectedAsset,
-  currentAssetRid,
+  assetRid,
 }: {
   assets: Asset[];
   selectedAsset: Asset | null;
-  currentAssetRid: string;
+  assetRid: TemplateValueResolution;
 }): Array<SelectableValue<string>> {
   const options = assets.map(assetToOption);
 
@@ -35,12 +35,12 @@ export function buildAssetOptions({
     options.unshift(assetToOption(selectedAsset));
   }
 
-  if (currentAssetRid.includes('$') && !options.some((option) => option.value === currentAssetRid)) {
+  if (assetRid.hasTemplate && !options.some((option) => option.value === assetRid.raw)) {
     const resolvedTitle = selectedAsset?.title;
-    const label = resolvedTitle && !resolvedTitle.includes('$') ? `${currentAssetRid} → ${resolvedTitle}` : currentAssetRid;
+    const label = resolvedTitle && !resolvedTitle.includes('$') ? `${assetRid.raw} \u2192 ${resolvedTitle}` : assetRid.raw;
     options.unshift({
       label,
-      value: currentAssetRid,
+      value: assetRid.raw,
       description: 'Template variable',
     });
   }
@@ -49,43 +49,39 @@ export function buildAssetOptions({
 }
 
 export function getAssetSelectValue({
-  currentAssetRid,
-  resolvedAssetRid,
+  assetRid,
   assetOptions,
 }: {
-  currentAssetRid: string;
-  resolvedAssetRid: string;
+  assetRid: TemplateValueResolution;
   assetOptions: Array<SelectableValue<string>>;
 }): string {
-  if (currentAssetRid.includes('$')) {
-    return currentAssetRid;
+  if (assetRid.hasTemplate) {
+    return assetRid.raw;
   }
-  return assetOptions.some((option) => option.value === resolvedAssetRid) ? resolvedAssetRid : '';
+  return assetOptions.some((option) => option.value === assetRid.resolved) ? assetRid.resolved : '';
 }
 
 export function buildDataScopeOptions({
   dataScopes,
-  currentDataScopeName,
-  resolvedDataScopeName,
+  dataScopeName,
 }: {
   dataScopes: string[];
-  currentDataScopeName: string;
-  resolvedDataScopeName: string;
+  dataScopeName: TemplateValueResolution;
 }): Array<SelectableValue<string>> {
   const options = dataScopes.map((scope) => ({
     label: scope,
     value: scope,
   }));
 
-  if (currentDataScopeName.includes('$') && !dataScopes.includes(currentDataScopeName)) {
+  if (dataScopeName.hasTemplate && !dataScopes.includes(dataScopeName.raw)) {
     const resolvedIsValid =
-      resolvedDataScopeName &&
-      resolvedDataScopeName !== currentDataScopeName &&
-      !resolvedDataScopeName.includes('$') &&
-      (!dataScopes.length || dataScopes.includes(resolvedDataScopeName));
+      dataScopeName.resolved &&
+      dataScopeName.resolved !== dataScopeName.raw &&
+      dataScopeName.isResolved &&
+      (!dataScopes.length || dataScopes.includes(dataScopeName.resolved));
     options.unshift({
-      label: resolvedIsValid ? `${currentDataScopeName} → ${resolvedDataScopeName}` : currentDataScopeName,
-      value: currentDataScopeName,
+      label: resolvedIsValid ? templateDisplayLabel(dataScopeName) : dataScopeName.raw,
+      value: dataScopeName.raw,
     });
   }
 
@@ -104,40 +100,32 @@ export function channelsToOptions(channels: Channel[]): ChannelOption[] {
 
 export function buildChannelOptions({
   channelResults,
-  currentChannel,
-  resolvedChannel,
+  channel,
 }: {
   channelResults: ChannelOption[];
-  currentChannel: string;
-  resolvedChannel: string;
+  channel: TemplateValueResolution;
 }): ChannelOption[] {
   const options = [...channelResults];
-  if (currentChannel.includes('$') && !options.some((option) => option.value === currentChannel)) {
-    const resolvedIsValid = resolvedChannel && resolvedChannel !== currentChannel && !resolvedChannel.includes('$');
+  if (channel.hasTemplate && !options.some((option) => option.value === channel.raw)) {
     options.unshift({
-      label: resolvedIsValid ? `${currentChannel} → ${resolvedChannel}` : currentChannel,
-      value: currentChannel,
+      label: channel.isResolved && channel.resolved ? templateDisplayLabel(channel) : channel.raw,
+      value: channel.raw,
     });
   }
   return options;
 }
 
 export function getChannelSelectValue({
-  currentChannel,
-  resolvedChannel,
+  channel,
 }: {
-  currentChannel: string;
-  resolvedChannel: string;
+  channel: TemplateValueResolution;
 }): SelectableValue<string> | null {
-  if (!currentChannel) {
+  if (!channel.raw) {
     return null;
   }
   return {
-    label:
-      currentChannel.includes('$') && resolvedChannel && resolvedChannel !== currentChannel && !resolvedChannel.includes('$')
-        ? `${currentChannel} → ${resolvedChannel}`
-        : currentChannel,
-    value: currentChannel,
+    label: templateDisplayLabel(channel),
+    value: channel.raw,
   };
 }
 

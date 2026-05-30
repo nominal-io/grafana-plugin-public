@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppEvents, type SelectableValue } from '@grafana/data';
-import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
+import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import {
   createBasicAsset,
@@ -11,14 +11,22 @@ import {
   type Asset,
 } from '../../utils/api';
 import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
+import {
+  changeAssetInputMethodQuery,
+  changeDirectAssetRidQuery,
+  changeSearchAssetRidQuery,
+  changeSelectedDataScopeQuery,
+} from './queryMutations';
+import type { TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
   datasourceUrl: string;
-  resolvedAssetRid: string;
-  resolvedDataScopeName: string;
+  assetRidResolution: TemplateValueResolution;
+  dataScopeResolution: TemplateValueResolution;
+  resolveTemplateText: (value: string) => TemplateValueResolution;
   hasUserInteracted: boolean;
   markInteracted: () => void;
 }
@@ -53,8 +61,9 @@ export function useAssetSelection({
   query,
   onChange,
   datasourceUrl,
-  resolvedAssetRid,
-  resolvedDataScopeName,
+  assetRidResolution,
+  dataScopeResolution,
+  resolveTemplateText,
   hasUserInteracted,
   markInteracted,
 }: UseAssetSelectionArgs): AssetSelectionModel {
@@ -141,7 +150,8 @@ export function useAssetSelection({
   // would only abort and re-issue an identical in-flight fetch (Caveat B). Keeping
   // `assets` out of the deps removes that redundant cancelled request.
   // MUST stay ordered before the resolved-asset effect so pendingAssetRidRef is set
-  // first (see plan Decision 2 / the "fetches a saved direct template RID only once" test).
+  // before that effect considers the same resolved template RID. Otherwise a saved
+  // direct query like "$asset" can schedule duplicate by-RID fetches on mount.
   useEffect(() => {
     if (!query?.assetRid || selectedAsset || query.assetInputMethod !== 'direct') {
       return;
@@ -149,16 +159,15 @@ export function useAssetSelection({
     // Always show the saved RID (incl. unresolved $variable) in the direct input.
     setDirectRID((prev) => prev || query.assetRid || '');
 
-    const resolved = getTemplateSrv().replace(query.assetRid);
-    if (resolved.includes('$')) {
+    if (!assetRidResolution.isResolved) {
       return;
     }
-    const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+    const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
     const controller = new AbortController();
-    applyAssetFromRid(resolved, displayLabel, controller.signal);
+    applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, applyAssetFromRid]);
+  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, applyAssetFromRid]);
 
   // Restore a SEARCH-mode asset / infer direct mode for a saved RID, once assets are known.
   // This branch legitimately depends on `assets` (it matches against the loaded list).
@@ -173,34 +182,33 @@ export function useAssetSelection({
     ) {
       return;
     }
-    const resolved = getTemplateSrv().replace(query.assetRid);
-    if (resolved.includes('$')) {
+    if (!assetRidResolution.isResolved) {
       return;
     }
-    const asset = assets.find((a) => a.rid === resolved);
+    const asset = assets.find((a) => a.rid === assetRidResolution.resolved);
     if (asset) {
       setAssetInputMethod('search');
       setSelectedAsset(asset);
     } else if (assets.length > 0 && !query.assetInputMethod) {
-      const displayLabel = query.assetRid.includes('$') ? `Asset (${query.assetRid})` : 'Asset (Direct RID)';
+      const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
       setAssetInputMethod('direct');
       setDirectRID(query.assetRid);
       const controller = new AbortController();
-      applyAssetFromRid(resolved, displayLabel, controller.signal);
+      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
       return () => controller.abort();
     }
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assets, hasManuallySetMethod, applyAssetFromRid]);
+  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assets, hasManuallySetMethod, assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, applyAssetFromRid]);
 
   // Update dropdown options when the resolved asset RID changes (e.g. template variable changed).
   // Skipped in direct mode because changeDirectRID manages its own debounced fetch -
   // running both would cause two concurrent requests racing to update selectedAsset.
   useEffect(() => {
-    if (!resolvedAssetRid || resolvedAssetRid.includes('$')) {
+    if (!assetRidResolution.resolved || !assetRidResolution.isResolved) {
       return;
     }
-    if (selectedAsset?.rid === resolvedAssetRid) {
+    if (selectedAsset?.rid === assetRidResolution.resolved) {
       return;
     }
     // Skip if another path (e.g. the mount restore effect) is already fetching this RID.
@@ -210,23 +218,23 @@ export function useAssetSelection({
     // driven by an existing saved query. Stale completions are ignored by their abort
     // signals, so the abort-then-skip over-suppression window is unreachable without a
     // generation counter.
-    if (pendingAssetRidRef.current === resolvedAssetRid) {
+    if (pendingAssetRidRef.current === assetRidResolution.resolved) {
       return;
     }
     // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
-    if (queryRef.current?.assetInputMethod === 'direct' && !queryRef.current?.assetRid?.includes('$')) {
+    if (queryRef.current?.assetInputMethod === 'direct' && !assetRidResolution.hasTemplate) {
       return;
     }
-    const displayLabel = queryRef.current?.assetRid?.includes('$')
-      ? `Asset (${queryRef.current.assetRid})`
+    const displayLabel = assetRidResolution.hasTemplate
+      ? `Asset (${assetRidResolution.raw})`
       : 'Asset (Direct RID)';
     const controller = new AbortController();
-    applyAssetFromRid(resolvedAssetRid, displayLabel, controller.signal);
+    applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
     return () => controller.abort();
     // Only depend on selectedAsset?.rid (not the full object) to avoid aborting in-flight
     // fetches when the object reference changes but the RID stays the same.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedAssetRid, selectedAsset?.rid, applyAssetFromRid]);
+  }, [assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, assetRidResolution.raw, selectedAsset?.rid, applyAssetFromRid]);
 
   // Load assets on component mount and when search query changes
   useEffect(() => {
@@ -248,13 +256,12 @@ export function useAssetSelection({
       hasManuallySetMethod
     ) {
       // Resolve template variables to match against actual asset RIDs
-      const resolvedRid = getTemplateSrv().replace(query.assetRid);
-      const asset = assets.find((a) => a.rid === resolvedRid);
+      const asset = assets.find((a) => a.rid === assetRidResolution.resolved);
       if (asset) {
         setSelectedAsset(asset);
       }
     }
-  }, [query, selectedAsset, assets, assetInputMethod, hasManuallySetMethod]);
+  }, [query, selectedAsset, assets, assetInputMethod, hasManuallySetMethod, assetRidResolution.resolved]);
 
   // Update dependent fields when asset changes
   useEffect(() => {
@@ -266,8 +273,13 @@ export function useAssetSelection({
       // This prevents unwanted resets when just editing panel display settings
       if (hasUserInteracted) {
         const q = queryRef.current;
+        // NOTE: resolution (dataScopeResolution/assetRidResolution) is read from the closure of
+        // the render that scheduled this effect, while `q` is the latest query via ref. They are
+        // consistent because the effect fires on selectedAsset/assetInputMethod/hasUserInteracted
+        // changes, and at that render the resolution is derived from the same query. The original
+        // re-resolved live via getTemplateSrv() here; this is intentionally render-time instead.
         // Check if current dataScopeName is valid for the new asset
-        const resolvedCurrentScope = q?.dataScopeName ? getTemplateSrv().replace(q.dataScopeName) : '';
+        const resolvedCurrentScope = dataScopeResolution.resolved;
         const scopeIsValid = scopeNames.includes(resolvedCurrentScope);
 
         // Preserve template variables - don't overwrite $variable with resolved scope
@@ -276,18 +288,18 @@ export function useAssetSelection({
         }
         // Auto-select data scope if only one available
         else if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
-          onChange({ ...q, dataScopeName: scopeNames[0], assetInputMethod, queryType: 'decimation', buckets: 1000 });
+          onChange(changeSelectedDataScopeQuery(q, scopeNames[0], assetInputMethod));
         }
         // Clear invalid data scope when asset changes
         else if (!scopeIsValid && q?.dataScopeName) {
-          onChange({ ...q, dataScopeName: '', assetInputMethod, queryType: 'decimation', buckets: 1000 });
+          onChange(changeSelectedDataScopeQuery(q, '', assetInputMethod));
         }
         // Update query with selected asset only if it has changed (search mode)
         // Preserve template variables - don't overwrite $variable with resolved RID
         else if (assetInputMethod === 'search' && !q?.assetRid?.includes('$')) {
-          const resolvedCurrentRid = getTemplateSrv().replace(q?.assetRid || '');
+          const resolvedCurrentRid = assetRidResolution.resolved;
           if (resolvedCurrentRid !== selectedAsset.rid) {
-            onChange({ ...q, assetRid: selectedAsset.rid, assetInputMethod: 'search' });
+            onChange(changeSearchAssetRidQuery(q, selectedAsset.rid));
           }
         }
       }
@@ -309,7 +321,7 @@ export function useAssetSelection({
       setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
       // Only update input method, preserve other query values (assetRid, channel, dataScopeName)
       // so users don't lose their selection when quickly toggling between modes.
-      onChange({ ...query, assetInputMethod: method });
+      onChange(changeAssetInputMethodQuery(query, method));
     },
     [markInteracted, onChange, query]
   );
@@ -325,7 +337,8 @@ export function useAssetSelection({
       const isVariable = value.includes('$');
 
       // Resolve to actual RID for asset lookup (variables need resolution)
-      const ridToFind = isVariable ? getTemplateSrv().replace(value) : value;
+      const selectedRidResolution = resolveTemplateText(value);
+      const ridToFind = isVariable ? selectedRidResolution.resolved : value;
       const asset = assets.find((a) => a.rid === ridToFind);
 
       if (asset) {
@@ -348,14 +361,14 @@ export function useAssetSelection({
 
       // Store variable syntax if variable, resolved RID if fetched directly, or asset RID from search
       if (isVariable) {
-        onChange({ ...query, assetRid: value, assetInputMethod: 'search' });
+        onChange(changeSearchAssetRidQuery(query, value));
       } else if (asset) {
-        onChange({ ...query, assetRid: asset.rid, assetInputMethod: 'search' });
+        onChange(changeSearchAssetRidQuery(query, asset.rid));
       } else if (ridToFind && !ridToFind.includes('$')) {
-        onChange({ ...query, assetRid: ridToFind, assetInputMethod: 'search' });
+        onChange(changeSearchAssetRidQuery(query, ridToFind));
       }
     },
-    [applyAssetFromRid, assets, markInteracted, onChange, query]
+    [applyAssetFromRid, assets, markInteracted, onChange, query, resolveTemplateText]
   );
 
   const changeDirectRID = useCallback(
@@ -365,13 +378,7 @@ export function useAssetSelection({
 
       // Update query model immediately so the value is persisted
       if (rid.trim()) {
-        onChange({
-          ...queryRef.current,
-          assetRid: rid,
-          assetInputMethod: 'direct',
-          queryType: 'decimation',
-          buckets: 1000,
-        });
+        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
       }
 
       // Cancel any in-flight debounce / fetch
@@ -381,14 +388,14 @@ export function useAssetSelection({
       if (!rid.trim()) {
         setSelectedAsset(null);
         setDataScopes([]);
-        onChange({ ...queryRef.current, assetRid: '', assetInputMethod: 'direct' });
+        onChange(changeDirectAssetRidQuery(queryRef.current, ''));
         return;
       }
 
       // Resolve template variables
-      const resolvedRid = getTemplateSrv().replace(rid);
+      const ridResolution = resolveTemplateText(rid);
       // If still unresolved, nothing more to do (query was already updated above)
-      if (resolvedRid.includes('$')) {
+      if (!ridResolution.isResolved) {
         return;
       }
 
@@ -397,23 +404,17 @@ export function useAssetSelection({
       directRidControllerRef.current = controller;
 
       directRidTimerRef.current = setTimeout(() => {
-        applyAssetFromRid(resolvedRid, displayLabel, controller.signal);
+        applyAssetFromRid(ridResolution.resolved, displayLabel, controller.signal);
       }, 300);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [markInteracted, onChange, applyAssetFromRid]
+    [markInteracted, onChange, applyAssetFromRid, resolveTemplateText]
   );
 
   const selectDataScope = useCallback(
     (dataScopeName: string) => {
       markInteracted();
-      onChange({
-        ...query,
-        dataScopeName,
-        assetInputMethod,
-        queryType: 'decimation',
-        buckets: 1000,
-      });
+      onChange(changeSelectedDataScopeQuery(query, dataScopeName, assetInputMethod));
     },
     [assetInputMethod, markInteracted, onChange, query]
   );
@@ -428,23 +429,22 @@ export function useAssetSelection({
   }, []);
 
   const assetOptions = useMemo(
-    () => buildAssetOptions({ assets, selectedAsset, currentAssetRid: query?.assetRid || '' }),
-    [assets, selectedAsset, query?.assetRid]
+    () => buildAssetOptions({ assets, selectedAsset, assetRid: assetRidResolution }),
+    [assets, selectedAsset, assetRidResolution]
   );
 
   const assetSelectValue = useMemo(
-    () => getAssetSelectValue({ currentAssetRid: query?.assetRid || '', resolvedAssetRid, assetOptions }),
-    [query?.assetRid, resolvedAssetRid, assetOptions]
+    () => getAssetSelectValue({ assetRid: assetRidResolution, assetOptions }),
+    [assetRidResolution, assetOptions]
   );
 
   const dataScopeOptions = useMemo(
     () =>
       buildDataScopeOptions({
         dataScopes,
-        currentDataScopeName: query?.dataScopeName || '',
-        resolvedDataScopeName,
+        dataScopeName: dataScopeResolution,
       }),
-    [dataScopes, query?.dataScopeName, resolvedDataScopeName]
+    [dataScopes, dataScopeResolution]
   );
 
   return {

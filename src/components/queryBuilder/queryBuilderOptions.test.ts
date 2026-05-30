@@ -1,6 +1,7 @@
 import type { SelectableValue } from '@grafana/data';
 import { DEFAULT_AGGREGATIONS, AggregationType } from '../../types';
 import type { Asset } from '../../utils/api';
+import { resolveTemplateValue } from './templateResolution';
 import {
   buildAssetOptions,
   buildChannelOptions,
@@ -38,7 +39,7 @@ describe('queryBuilderOptions', () => {
     const options = buildAssetOptions({
       assets: [assetA],
       selectedAsset: assetB,
-      currentAssetRid: assetB.rid,
+      assetRid: resolveTemplateValue(assetB.rid, (value) => value),
     });
 
     expect(options[0]).toMatchObject({ label: 'Asset B', value: assetB.rid });
@@ -49,7 +50,7 @@ describe('queryBuilderOptions', () => {
     const options = buildAssetOptions({
       assets: [],
       selectedAsset: assetA,
-      currentAssetRid: '$asset',
+      assetRid: resolveTemplateValue('$asset', () => assetA.rid),
     });
 
     expect(options[0]).toEqual({
@@ -62,27 +63,33 @@ describe('queryBuilderOptions', () => {
   it('returns variable select value unchanged and direct select value only when present', () => {
     const options: Array<SelectableValue<string>> = [{ label: 'Asset A', value: assetA.rid }];
 
-    expect(getAssetSelectValue({ currentAssetRid: '$asset', resolvedAssetRid: assetA.rid, assetOptions: options })).toBe('$asset');
-    expect(getAssetSelectValue({ currentAssetRid: assetA.rid, resolvedAssetRid: assetA.rid, assetOptions: options })).toBe(assetA.rid);
-    expect(getAssetSelectValue({ currentAssetRid: assetB.rid, resolvedAssetRid: assetB.rid, assetOptions: options })).toBe('');
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), assetOptions: options })).toBe('$asset');
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetA.rid, (value) => value), assetOptions: options })).toBe(assetA.rid);
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetB.rid, (value) => value), assetOptions: options })).toBe('');
   });
 
   it('adds data scope template-variable labels only when the resolved scope is valid', () => {
     expect(
       buildDataScopeOptions({
         dataScopes: ['primary', 'backup'],
-        currentDataScopeName: '$scope',
-        resolvedDataScopeName: 'primary',
+        dataScopeName: resolveTemplateValue('$scope', () => 'primary'),
       })[0]
     ).toEqual({ label: '$scope → primary', value: '$scope' });
 
     expect(
       buildDataScopeOptions({
         dataScopes: ['primary'],
-        currentDataScopeName: '$scope',
-        resolvedDataScopeName: 'missing',
+        dataScopeName: resolveTemplateValue('$scope', () => 'missing'),
       })[0]
     ).toEqual({ label: '$scope', value: '$scope' });
+
+    // Scopes not loaded yet (empty list): a resolved variable is still treated as valid.
+    expect(
+      buildDataScopeOptions({
+        dataScopes: [],
+        dataScopeName: resolveTemplateValue('$scope', () => 'primary'),
+      })[0]
+    ).toEqual({ label: '$scope → primary', value: '$scope' });
   });
 
   it('maps channels to Grafana options', () => {
@@ -104,27 +111,27 @@ describe('queryBuilderOptions', () => {
       { name: 'temperature', dataSource: 'ds', description: 'Ambient temperature', dataType: 'numeric' },
     ]);
 
-    expect(buildChannelOptions({ channelResults: options, currentChannel: '$chan', resolvedChannel: 'temperature' })[0]).toEqual({
+    expect(buildChannelOptions({ channelResults: options, channel: resolveTemplateValue('$chan', () => 'temperature') })[0]).toEqual({
       label: '$chan → temperature',
       value: '$chan',
     });
   });
 
   it('builds channel select values for empty, plain, resolved, and unresolved channels', () => {
-    expect(getChannelSelectValue({ currentChannel: '', resolvedChannel: '' })).toBeNull();
-    expect(getChannelSelectValue({ currentChannel: 'temperature', resolvedChannel: 'temperature' })).toEqual({
+    expect(getChannelSelectValue({ channel: resolveTemplateValue('', (value) => value) })).toBeNull();
+    expect(getChannelSelectValue({ channel: resolveTemplateValue('temperature', (value) => value) })).toEqual({
       label: 'temperature',
       value: 'temperature',
     });
-    expect(getChannelSelectValue({ currentChannel: '$chan', resolvedChannel: 'temperature' })).toEqual({
+    expect(getChannelSelectValue({ channel: resolveTemplateValue('$chan', () => 'temperature') })).toEqual({
       label: '$chan → temperature',
       value: '$chan',
     });
-    expect(getChannelSelectValue({ currentChannel: '$chan', resolvedChannel: '$chan' })).toEqual({
+    expect(getChannelSelectValue({ channel: resolveTemplateValue('$chan', (value) => value) })).toEqual({
       label: '$chan',
       value: '$chan',
     });
-    expect(getChannelSelectValue({ currentChannel: '$chan', resolvedChannel: '$other' })).toEqual({
+    expect(getChannelSelectValue({ channel: resolveTemplateValue('$chan', () => '$other') })).toEqual({
       label: '$chan',
       value: '$chan',
     });

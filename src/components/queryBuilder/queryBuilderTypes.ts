@@ -1,8 +1,9 @@
 import type { SelectableValue } from '@grafana/data';
 import type { Asset } from '../../utils/api';
-import type { ChannelOption } from './queryBuilderOptions';
 
 export type AssetInputMethod = 'search' | 'direct';
+
+export type ChannelOption = SelectableValue<string> & { dataType?: string };
 
 export type AggregationDisplayKind = 'string' | 'log' | 'numeric';
 

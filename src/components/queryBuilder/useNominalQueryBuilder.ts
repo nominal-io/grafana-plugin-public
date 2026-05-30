@@ -5,6 +5,7 @@ import type { QueryBuilderModel } from './queryBuilderTypes';
 import { useAssetSelection } from './useAssetSelection';
 import { useChannelOptions } from './useChannelOptions';
 import { useAggregationRun } from './useAggregationRun';
+import { resolveQueryTemplateValues, resolveTemplateValue } from './templateResolution';
 
 export { AGGREGATION_RUN_DELAY_MS } from './useAggregationRun';
 
@@ -30,17 +31,21 @@ export function useNominalQueryBuilder({
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Compute resolved values on every render - these change when template variables change.
-  // Single source of template resolution, passed down to the hooks that need them.
-  const resolvedAssetRid = query?.assetRid ? getTemplateSrv().replace(query.assetRid) : '';
-  const resolvedDataScopeName = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-  const resolvedChannel = query?.channel ? getTemplateSrv().replace(query.channel) : '';
+  // Single source of Grafana template resolution, passed down to the hooks that need it.
+  const replaceTemplateValue = useCallback((value: string) => getTemplateSrv().replace(value), []);
+  const queryResolution = resolveQueryTemplateValues({ query, replace: replaceTemplateValue });
+  const resolveTemplateText = useCallback(
+    (value: string) => resolveTemplateValue(value, replaceTemplateValue),
+    [replaceTemplateValue]
+  );
 
   const asset = useAssetSelection({
     query,
     onChange,
     datasourceUrl,
-    resolvedAssetRid,
-    resolvedDataScopeName,
+    assetRidResolution: queryResolution.assetRid,
+    dataScopeResolution: queryResolution.dataScopeName,
+    resolveTemplateText,
     hasUserInteracted,
     markInteracted,
   });
@@ -50,8 +55,8 @@ export function useNominalQueryBuilder({
     onChange,
     selectedAsset: asset.selectedAsset,
     assetInputMethod: asset.assetInputMethod,
-    resolvedChannel,
-    resolvedDataScopeName,
+    channelResolution: queryResolution.channel,
+    dataScopeResolution: queryResolution.dataScopeName,
     datasourceUrl,
     markInteracted,
   });
@@ -98,9 +103,9 @@ export function useNominalQueryBuilder({
   // Step completion status
   const assetComplete =
     asset.assetInputMethod === 'search'
-      ? resolvedAssetRid !== '' && !resolvedAssetRid.includes('$')
+      ? queryResolution.assetRid.resolved !== '' && queryResolution.assetRid.isResolved
       : asset.directRID.trim() !== '';
-  const configComplete = assetComplete && query && query.dataScopeName && query.channel;
+  const configComplete = assetComplete && Boolean(query?.dataScopeName) && Boolean(query?.channel);
   // Show the channel selector whenever an asset is selected (even if dataScopes is empty).
   const hasChannelSearch = asset.selectedAsset !== null;
 
@@ -119,11 +124,11 @@ export function useNominalQueryBuilder({
       channelSelectValue: channel.channelSelectValue,
       isLoadingAssets: asset.isLoadingAssets,
       isLoadingChannels: channel.isLoadingChannels,
-      resolvedAssetRid,
-      resolvedDataScopeName,
-      resolvedChannel,
+      resolvedAssetRid: queryResolution.assetRid.resolved,
+      resolvedDataScopeName: queryResolution.dataScopeName.resolved,
+      resolvedChannel: queryResolution.channel.resolved,
       assetComplete,
-      configComplete: Boolean(configComplete),
+      configComplete,
       hasChannelSearch,
       showCopiedMessage,
       aggregationState: aggregation.aggregationState,

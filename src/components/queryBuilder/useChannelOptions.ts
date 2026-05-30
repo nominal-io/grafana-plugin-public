@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppEvents, type SelectableValue } from '@grafana/data';
-import { getAppEvents, getTemplateSrv } from '@grafana/runtime';
+import { getAppEvents } from '@grafana/runtime';
 import { debounce } from 'lodash';
 import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
-import { buildChannelOptions, channelsToOptions, getChannelSelectValue, type ChannelOption } from './queryBuilderOptions';
-import type { AssetInputMethod } from './queryBuilderTypes';
+import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
+import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
+import type { TemplateValueResolution } from './templateResolution';
+import type { AssetInputMethod, ChannelOption } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
   selectedAsset: Asset | null;
   assetInputMethod: AssetInputMethod;
-  resolvedChannel: string;
-  resolvedDataScopeName: string;
+  channelResolution: TemplateValueResolution;
+  dataScopeResolution: TemplateValueResolution;
   datasourceUrl: string;
   markInteracted: () => void;
 }
@@ -39,8 +41,8 @@ export function useChannelOptions({
   onChange,
   selectedAsset,
   assetInputMethod,
-  resolvedChannel,
-  resolvedDataScopeName,
+  channelResolution,
+  dataScopeResolution,
   datasourceUrl,
   markInteracted,
 }: UseChannelOptionsArgs): ChannelOptionsModel {
@@ -57,8 +59,7 @@ export function useChannelOptions({
       if (!selectedAsset) {
         return [];
       }
-      const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-      const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
+      const dataSourceRids = resolveDataSourceRids(selectedAsset, dataScopeResolution.resolved || undefined);
       try {
         const channels = await searchChannels(datasourceUrl, dataSourceRids, searchText);
         return channelsToOptions(channels);
@@ -70,7 +71,7 @@ export function useChannelOptions({
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [selectedAsset, datasourceUrl, query?.dataScopeName]
+    [selectedAsset, datasourceUrl, dataScopeResolution.resolved]
   );
 
   // Keep a ref so the stable debounce below always calls the latest closure without
@@ -117,34 +118,33 @@ export function useChannelOptions({
       setIsLoadingChannels(true);
       debouncedChannelSearch('');
     }
-  }, [selectedAsset, query?.dataScopeName, debouncedChannelSearch]);
+  }, [selectedAsset, dataScopeResolution.resolved, debouncedChannelSearch]);
 
   // Infer channelDataType when the resolved channel changes (e.g. template variable).
   // The backend does its own inference, but the frontend needs the correct type to show
   // the right aggregation UI (numeric MultiSelect vs disabled "Mode" / "Logs (raw)").
   useEffect(() => {
-    if (!resolvedChannel || resolvedChannel.includes('$') || !selectedAsset) {
+    if (!channelResolution.resolved || !channelResolution.isResolved || !selectedAsset) {
       return;
     }
     // Skip if type was already set by direct dropdown selection (not a variable)
-    if (queryRef.current?.channelDataType && !queryRef.current?.channel?.includes('$')) {
+    if (queryRef.current?.channelDataType && !channelResolution.hasTemplate) {
       return;
     }
-    const resolvedScope = query?.dataScopeName ? getTemplateSrv().replace(query.dataScopeName) : '';
-    const dataSourceRids = resolveDataSourceRids(selectedAsset, resolvedScope || undefined);
+    const dataSourceRids = resolveDataSourceRids(selectedAsset, dataScopeResolution.resolved || undefined);
     if (dataSourceRids.length === 0) {
       return;
     }
 
     let cancelled = false;
-    searchChannels(datasourceUrl, dataSourceRids, resolvedChannel)
+    searchChannels(datasourceUrl, dataSourceRids, channelResolution.resolved)
       .then((channels) => {
         if (cancelled) {
           return;
         }
-        const match = channels.find((ch) => ch.name === resolvedChannel);
+        const match = channels.find((ch) => ch.name === channelResolution.resolved);
         if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
-          onChange({ ...queryRef.current, channelDataType: match.dataType });
+          onChange(inferChannelDataTypeQuery(queryRef.current, match.dataType));
         }
       })
       .catch(() => undefined);
@@ -154,7 +154,14 @@ export function useChannelOptions({
     // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
     // call whenever setSelectedAsset is called with a logically identical asset.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedChannel, selectedAsset?.rid, resolvedDataScopeName, datasourceUrl]);
+  }, [
+    channelResolution.resolved,
+    channelResolution.isResolved,
+    channelResolution.hasTemplate,
+    selectedAsset?.rid,
+    dataScopeResolution.resolved,
+    datasourceUrl,
+  ]);
 
   const selectChannel = useCallback(
     (selection: ChannelOption) => {
@@ -164,15 +171,11 @@ export function useChannelOptions({
       // different channel, the stored channelDataType may be stale. The backend will
       // fall back to numeric for an unknown type, but mismatches can cause query errors.
       // Mitigation: the backend error message hints the user to re-select the channel.
-      onChange({
-        ...query,
+      onChange(changeSelectedChannelQuery(query, {
         channel: selection?.value || '',
-        channelDataType: selection?.dataType || '',
-        dataScopeName: query?.dataScopeName || '',
+        dataType: selection?.dataType || '',
         assetInputMethod,
-        queryType: 'decimation',
-        buckets: 1000,
-      });
+      }));
     },
     [assetInputMethod, markInteracted, onChange, query]
   );
@@ -191,15 +194,14 @@ export function useChannelOptions({
     () =>
       buildChannelOptions({
         channelResults,
-        currentChannel: query?.channel || '',
-        resolvedChannel,
+        channel: channelResolution,
       }),
-    [channelResults, query?.channel, resolvedChannel]
+    [channelResults, channelResolution]
   );
 
   const channelSelectValue = useMemo(
-    () => getChannelSelectValue({ currentChannel: query?.channel || '', resolvedChannel }),
-    [query?.channel, resolvedChannel]
+    () => getChannelSelectValue({ channel: channelResolution }),
+    [channelResolution]
   );
 
   return {
