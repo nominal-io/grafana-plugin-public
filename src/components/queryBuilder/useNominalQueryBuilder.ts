@@ -1,11 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getTemplateSrv } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import type { QueryBuilderModel } from './queryBuilderTypes';
 import { useAssetSelection } from './useAssetSelection';
 import { useChannelOptions } from './useChannelOptions';
 import { useAggregationRun } from './useAggregationRun';
-import { useCopyToClipboard } from './useCopyToClipboard';
 
 export { AGGREGATION_RUN_DELAY_MS } from './useAggregationRun';
 
@@ -27,6 +26,8 @@ export function useNominalQueryBuilder({
   // dependent-fields effect. Owned here so it is single-sourced (see plan Decision 1).
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
   const markInteracted = useCallback(() => setHasUserInteracted(true), []);
+  const [showCopiedMessage, setShowCopiedMessage] = useState(false);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Compute resolved values on every render - these change when template variables change.
   // Single source of template resolution, passed down to the hooks that need them.
@@ -57,13 +58,42 @@ export function useNominalQueryBuilder({
 
   const aggregation = useAggregationRun({ query, onChange, onRunQuery });
 
-  const { showCopiedMessage, copyToClipboard } = useCopyToClipboard();
+  const showCopiedForDuration = useCallback(() => {
+    clearTimeout(copiedTimerRef.current);
+    setShowCopiedMessage(true);
+    copiedTimerRef.current = setTimeout(() => {
+      setShowCopiedMessage(false);
+    }, 2000);
+  }, []);
+
+  const copyToClipboard = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        // eslint-disable-next-line @typescript-eslint/no-deprecated
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+
+      showCopiedForDuration();
+    },
+    [showCopiedForDuration]
+  );
 
   const copySelectedAssetRid = useCallback(() => {
     if (asset.selectedAsset) {
       copyToClipboard(asset.selectedAsset.rid);
     }
   }, [copyToClipboard, asset.selectedAsset]);
+
+  useEffect(() => {
+    return () => clearTimeout(copiedTimerRef.current);
+  }, []);
 
   // Step completion status
   const assetComplete =
