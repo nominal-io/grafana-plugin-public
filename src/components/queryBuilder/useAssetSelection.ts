@@ -456,22 +456,65 @@ export function useAssetSelection({
   }, []);
 
   const assetOptions = useMemo(
-    () => buildAssetOptions({ assets, selectedAsset, assetRid: assetRidResolution }),
-    [assets, selectedAsset, assetRidResolution]
+    () =>
+      buildAssetOptions({
+        assets,
+        selectedAsset,
+        assetRid: {
+          raw: assetRidResolution.raw,
+          resolved: assetRidResolution.resolved,
+          hasTemplate: assetRidResolution.hasTemplate,
+          isResolved: assetRidResolution.isResolved,
+        },
+      }),
+    [
+      assets,
+      selectedAsset,
+      assetRidResolution.raw,
+      assetRidResolution.resolved,
+      assetRidResolution.hasTemplate,
+      assetRidResolution.isResolved,
+    ]
   );
 
   const assetSelectValue = useMemo(
-    () => getAssetSelectValue({ assetRid: assetRidResolution, assetOptions }),
-    [assetRidResolution, assetOptions]
+    () =>
+      getAssetSelectValue({
+        assetRid: {
+          raw: assetRidResolution.raw,
+          resolved: assetRidResolution.resolved,
+          hasTemplate: assetRidResolution.hasTemplate,
+          isResolved: assetRidResolution.isResolved,
+        },
+        assetOptions,
+      }),
+    [
+      assetRidResolution.raw,
+      assetRidResolution.resolved,
+      assetRidResolution.hasTemplate,
+      assetRidResolution.isResolved,
+      assetOptions,
+    ]
   );
 
   const dataScopeOptions = useMemo(
     () =>
       buildDataScopeOptions({
         dataScopes,
-        dataScopeName: dataScopeResolution,
+        dataScopeName: {
+          raw: dataScopeResolution.raw,
+          resolved: dataScopeResolution.resolved,
+          hasTemplate: dataScopeResolution.hasTemplate,
+          isResolved: dataScopeResolution.isResolved,
+        },
       }),
-    [dataScopes, dataScopeResolution]
+    [
+      dataScopes,
+      dataScopeResolution.raw,
+      dataScopeResolution.resolved,
+      dataScopeResolution.hasTemplate,
+      dataScopeResolution.isResolved,
+    ]
   );
 
   return {

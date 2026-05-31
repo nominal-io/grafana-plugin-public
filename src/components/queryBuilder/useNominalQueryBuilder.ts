@@ -1,16 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getTemplateSrv } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import type { QueryBuilderModel } from './queryBuilderTypes';
 import { useAssetSelection } from './useAssetSelection';
 import { useChannelOptions } from './useChannelOptions';
 import { useAggregationRun } from './useAggregationRun';
-import {
-  resolveQueryTemplateValues,
-  resolveTemplateValue,
-  type QueryTemplateResolution,
-  type TemplateValueResolution,
-} from './templateResolution';
+import { resolveQueryTemplateValues, resolveTemplateValue } from './templateResolution';
 
 export { AGGREGATION_RUN_DELAY_MS } from './useAggregationRun';
 
@@ -19,35 +14,6 @@ interface UseNominalQueryBuilderArgs {
   onChange: (query: NominalQuery) => void;
   onRunQuery: () => void;
   datasourceUrl: string;
-}
-
-function useStableTemplateValueResolution(value: TemplateValueResolution): TemplateValueResolution {
-  const { raw, resolved, hasTemplate, isResolved } = value;
-
-  return useMemo(
-    () => ({
-      raw,
-      resolved,
-      hasTemplate,
-      isResolved,
-    }),
-    [raw, resolved, hasTemplate, isResolved]
-  );
-}
-
-function useStableQueryTemplateResolution(value: QueryTemplateResolution): QueryTemplateResolution {
-  const assetRid = useStableTemplateValueResolution(value.assetRid);
-  const dataScopeName = useStableTemplateValueResolution(value.dataScopeName);
-  const channel = useStableTemplateValueResolution(value.channel);
-
-  return useMemo(
-    () => ({
-      assetRid,
-      dataScopeName,
-      channel,
-    }),
-    [assetRid, dataScopeName, channel]
-  );
 }
 
 export function useNominalQueryBuilder({
@@ -64,12 +30,10 @@ export function useNominalQueryBuilder({
   const [showCopiedMessage, setShowCopiedMessage] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  // Resolve on every render so Grafana template variable changes are picked up, then
-  // stabilize object identities while the primitive resolution fields are unchanged.
+  // Compute resolved values on every render - these change when template variables change.
+  // Child hooks memoize work from the primitive fields, not these object identities.
   const replaceTemplateValue = useCallback((value: string) => getTemplateSrv().replace(value), []);
-  const queryResolution = useStableQueryTemplateResolution(
-    resolveQueryTemplateValues({ query, replace: replaceTemplateValue })
-  );
+  const queryResolution = resolveQueryTemplateValues({ query, replace: replaceTemplateValue });
   const resolveTemplateText = useCallback(
     (value: string) => resolveTemplateValue(value, replaceTemplateValue),
     [replaceTemplateValue]

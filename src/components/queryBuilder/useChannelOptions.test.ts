@@ -3,7 +3,8 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { searchChannels, type Asset, type Channel } from '../../utils/api';
 import type { AssetInputMethod } from './queryBuilderTypes';
-import { resolveTemplateValue } from './templateResolution';
+import { buildChannelOptions, getChannelSelectValue } from './queryBuilderOptions';
+import { resolveTemplateValue, type TemplateValueResolution } from './templateResolution';
 import { useChannelOptions } from './useChannelOptions';
 
 const publish = jest.fn();
@@ -17,7 +18,18 @@ jest.mock('../../utils/api', () => ({
   searchChannels: jest.fn(),
 }));
 
+jest.mock('./queryBuilderOptions', () => {
+  const actual = jest.requireActual('./queryBuilderOptions');
+  return {
+    ...actual,
+    buildChannelOptions: jest.fn(actual.buildChannelOptions),
+    getChannelSelectValue: jest.fn(actual.getChannelSelectValue),
+  };
+});
+
 const mockSearchChannels = searchChannels as jest.MockedFunction<typeof searchChannels>;
+const mockBuildChannelOptions = buildChannelOptions as jest.MockedFunction<typeof buildChannelOptions>;
+const mockGetChannelSelectValue = getChannelSelectValue as jest.MockedFunction<typeof getChannelSelectValue>;
 
 const ASSET: Asset = {
   rid: 'ri.scout.main.asset.a',
@@ -80,10 +92,40 @@ function args(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function unresolvedResolution(raw: string, overrides: Partial<TemplateValueResolution> = {}): TemplateValueResolution {
+  return {
+    raw,
+    resolved: '',
+    hasTemplate: true,
+    isResolved: false,
+    ...overrides,
+  };
+}
+
+function renderMemoTestHook() {
+  const query = makeQuery({ channel: '$channel', dataScopeName: '$scope' });
+  const hookArgs = args({
+    query,
+    selectedAsset: null,
+    channelResolution: unresolvedResolution('$channel'),
+    dataScopeResolution: unresolvedResolution('$scope'),
+  });
+  const { rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useChannelOptions(nextArgs), {
+    initialProps: hookArgs,
+  });
+
+  mockBuildChannelOptions.mockClear();
+  mockGetChannelSelectValue.mockClear();
+
+  return { hookArgs, rerender };
+}
+
 describe('useChannelOptions', () => {
   beforeEach(() => {
     publish.mockReset();
     mockSearchChannels.mockReset();
+    mockBuildChannelOptions.mockClear();
+    mockGetChannelSelectValue.mockClear();
     jest.useFakeTimers();
   });
   afterEach(() => jest.useRealTimers());
@@ -172,6 +214,46 @@ describe('useChannelOptions', () => {
     });
     expect(mockSearchChannels).toHaveBeenCalledWith('/api/x', ['ri.scout.main.dataset.b'], '');
   });
+
+  it('does not rebuild options when resolution references change but primitive fields do not', () => {
+    const { hookArgs, rerender } = renderMemoTestHook();
+    const nextChannelResolution = unresolvedResolution('$channel');
+    const nextDataScopeResolution = unresolvedResolution('$scope');
+    expect(nextChannelResolution).not.toBe(hookArgs.channelResolution);
+    expect(nextDataScopeResolution).not.toBe(hookArgs.dataScopeResolution);
+
+    rerender({
+      ...hookArgs,
+      channelResolution: nextChannelResolution,
+      dataScopeResolution: nextDataScopeResolution,
+    });
+
+    expect(mockBuildChannelOptions).not.toHaveBeenCalled();
+    expect(mockGetChannelSelectValue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['raw', { raw: '$channel2' }],
+    ['resolved', { resolved: 'temperature' }],
+    ['hasTemplate', { hasTemplate: false }],
+    ['isResolved', { isResolved: true }],
+  ] satisfies Array<[string, Partial<TemplateValueResolution>]>)(
+    'rebuilds options when channel %s changes',
+    (_field, channelChange) => {
+      const { hookArgs, rerender } = renderMemoTestHook();
+
+      rerender({
+        ...hookArgs,
+        channelResolution: {
+          ...hookArgs.channelResolution,
+          ...channelChange,
+        },
+      });
+
+      expect(mockBuildChannelOptions).toHaveBeenCalledTimes(1);
+      expect(mockGetChannelSelectValue).toHaveBeenCalledTimes(1);
+    }
+  );
 
   // The channelSearchId counter must discard a slow earlier response so it can't overwrite the
   // results of a newer search that already resolved.

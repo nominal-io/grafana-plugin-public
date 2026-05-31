@@ -3,7 +3,8 @@ import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, searchAssets, type Asset } from '../../utils/api';
-import { resolveTemplateValue } from './templateResolution';
+import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
+import { resolveTemplateValue, type TemplateValueResolution } from './templateResolution';
 import { useAssetSelection } from './useAssetSelection';
 
 const publish = jest.fn();
@@ -18,8 +19,21 @@ jest.mock('../../utils/api', () => ({
   fetchAssetByRid: jest.fn(),
 }));
 
+jest.mock('./queryBuilderOptions', () => {
+  const actual = jest.requireActual('./queryBuilderOptions');
+  return {
+    ...actual,
+    buildAssetOptions: jest.fn(actual.buildAssetOptions),
+    buildDataScopeOptions: jest.fn(actual.buildDataScopeOptions),
+    getAssetSelectValue: jest.fn(actual.getAssetSelectValue),
+  };
+});
+
 const mockSearchAssets = searchAssets as jest.MockedFunction<typeof searchAssets>;
 const mockFetchAssetByRid = fetchAssetByRid as jest.MockedFunction<typeof fetchAssetByRid>;
+const mockBuildAssetOptions = buildAssetOptions as jest.MockedFunction<typeof buildAssetOptions>;
+const mockBuildDataScopeOptions = buildDataScopeOptions as jest.MockedFunction<typeof buildDataScopeOptions>;
+const mockGetAssetSelectValue = getAssetSelectValue as jest.MockedFunction<typeof getAssetSelectValue>;
 
 const ASSET: Asset = {
   rid: 'ri.scout.main.asset.a',
@@ -56,6 +70,16 @@ function args(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function unresolvedResolution(raw: string, overrides: Partial<TemplateValueResolution> = {}): TemplateValueResolution {
+  return {
+    raw,
+    resolved: '',
+    hasTemplate: true,
+    isResolved: false,
+    ...overrides,
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((res) => {
@@ -71,6 +95,25 @@ async function waitForAssetSearchToSettle(result: { current: ReturnType<typeof u
   });
 }
 
+async function renderMemoTestHook() {
+  const query = makeQuery({ assetRid: '$asset', dataScopeName: '$scope' });
+  const hookArgs = args({
+    query,
+    assetRidResolution: unresolvedResolution('$asset'),
+    dataScopeResolution: unresolvedResolution('$scope'),
+  });
+  const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+    initialProps: hookArgs,
+  });
+  await waitForAssetSearchToSettle(result);
+
+  mockBuildAssetOptions.mockClear();
+  mockBuildDataScopeOptions.mockClear();
+  mockGetAssetSelectValue.mockClear();
+
+  return { hookArgs, rerender };
+}
+
 describe('useAssetSelection', () => {
   let consoleErrorSpy: jest.SpyInstance;
 
@@ -78,6 +121,9 @@ describe('useAssetSelection', () => {
     publish.mockReset();
     mockSearchAssets.mockReset().mockResolvedValue([]);
     mockFetchAssetByRid.mockReset().mockResolvedValue(null);
+    mockBuildAssetOptions.mockClear();
+    mockBuildDataScopeOptions.mockClear();
+    mockGetAssetSelectValue.mockClear();
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -216,6 +262,72 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET.rid);
   });
+
+  it('does not rebuild options when resolution references change but primitive fields do not', async () => {
+    const { hookArgs, rerender } = await renderMemoTestHook();
+    const nextAssetRidResolution = unresolvedResolution('$asset');
+    const nextDataScopeResolution = unresolvedResolution('$scope');
+    expect(nextAssetRidResolution).not.toBe(hookArgs.assetRidResolution);
+    expect(nextDataScopeResolution).not.toBe(hookArgs.dataScopeResolution);
+
+    rerender({
+      ...hookArgs,
+      assetRidResolution: nextAssetRidResolution,
+      dataScopeResolution: nextDataScopeResolution,
+    });
+
+    expect(mockBuildAssetOptions).not.toHaveBeenCalled();
+    expect(mockGetAssetSelectValue).not.toHaveBeenCalled();
+    expect(mockBuildDataScopeOptions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['raw', { raw: '$asset2' }],
+    ['resolved', { resolved: 'ri.scout.main.asset.a' }],
+    ['hasTemplate', { hasTemplate: false }],
+    ['isResolved', { isResolved: true }],
+  ] satisfies Array<[string, Partial<TemplateValueResolution>]>)(
+    'rebuilds asset options when asset %s changes',
+    async (_field, assetChange) => {
+      const { hookArgs, rerender } = await renderMemoTestHook();
+
+      rerender({
+        ...hookArgs,
+        assetRidResolution: {
+          ...hookArgs.assetRidResolution,
+          ...assetChange,
+        },
+      });
+
+      expect(mockBuildAssetOptions).toHaveBeenCalledTimes(1);
+      expect(mockGetAssetSelectValue).toHaveBeenCalledTimes(1);
+      expect(mockBuildDataScopeOptions).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['raw', { raw: '$scope2' }],
+    ['resolved', { resolved: 'primary' }],
+    ['hasTemplate', { hasTemplate: false }],
+    ['isResolved', { isResolved: true }],
+  ] satisfies Array<[string, Partial<TemplateValueResolution>]>)(
+    'rebuilds data scope options when data scope %s changes',
+    async (_field, dataScopeChange) => {
+      const { hookArgs, rerender } = await renderMemoTestHook();
+
+      rerender({
+        ...hookArgs,
+        dataScopeResolution: {
+          ...hookArgs.dataScopeResolution,
+          ...dataScopeChange,
+        },
+      });
+
+      expect(mockBuildAssetOptions).not.toHaveBeenCalled();
+      expect(mockGetAssetSelectValue).not.toHaveBeenCalled();
+      expect(mockBuildDataScopeOptions).toHaveBeenCalledTimes(1);
+    }
+  );
 
   // A saved SEARCH-mode RID absent from the search results can only be restored via the
   // resolved-asset by-RID fetch. Under React 18 StrictMode the mount runs setup -> cleanup

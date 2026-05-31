@@ -201,12 +201,39 @@ export function useChannelOptions({
     () =>
       buildChannelOptions({
         channelResults,
-        channel: channelResolution,
+        channel: {
+          raw: channelResolution.raw,
+          resolved: channelResolution.resolved,
+          hasTemplate: channelResolution.hasTemplate,
+          isResolved: channelResolution.isResolved,
+        },
       }),
-    [channelResults, channelResolution]
+    [
+      channelResults,
+      channelResolution.raw,
+      channelResolution.resolved,
+      channelResolution.hasTemplate,
+      channelResolution.isResolved,
+    ]
   );
 
-  const channelSelectValue = useMemo(() => getChannelSelectValue({ channel: channelResolution }), [channelResolution]);
+  const channelSelectValue = useMemo(
+    () =>
+      getChannelSelectValue({
+        channel: {
+          raw: channelResolution.raw,
+          resolved: channelResolution.resolved,
+          hasTemplate: channelResolution.hasTemplate,
+          isResolved: channelResolution.isResolved,
+        },
+      }),
+    [
+      channelResolution.raw,
+      channelResolution.resolved,
+      channelResolution.hasTemplate,
+      channelResolution.isResolved,
+    ]
+  );
 
   return {
     channelOptions,
