@@ -71,13 +71,10 @@ export function useAssetSelection({
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
   const [dataScopes, setDataScopes] = useState<string[]>([]);
   const [isLoadingAssets, setIsLoadingAssets] = useState(false);
+  const [hasLoadedAssets, setHasLoadedAssets] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(query?.assetInputMethod || 'search');
   const [directRID, setDirectRID] = useState(query?.assetInputMethod === 'direct' ? query?.assetRid || '' : '');
-  // Derive whether user has ever saved an explicit input method (persisted in query model).
-  // Initialising from query rather than defaulting to false prevents the restore effect
-  // from running unnecessary branches after a panel reload.
-  const [hasManuallySetMethod, setHasManuallySetMethod] = useState(!!query?.assetInputMethod);
 
   // Latest query for effects/callbacks, read via ref to avoid onChange -> query -> effect cycles.
   const queryRef = useRef(query);
@@ -86,11 +83,10 @@ export function useAssetSelection({
   // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
   const assetSelectControllerRef = useRef<AbortController>(undefined);
 
-  // Tracks the in-flight by-RID fetch (its resolved RID + abort signal) so concurrent effects
-  // (mount restore + resolved-asset) don't both fetch the same asset. Stored as a token rather
-  // than a bare RID so the guard can distinguish a *live* fetch from one already aborted, and
-  // so the cleanup clears only the slot belonging to *this* fetch — never a same-RID successor.
-  const pendingAssetFetchRef = useRef<{ rid: string; signal?: AbortSignal } | undefined>(undefined);
+  // Tracks the exact concrete RID whose by-RID fetch is owned by a user event handler
+  // (`selectAsset` custom values or `changeDirectRID` debounced input). Query-driven
+  // reconciliation skips only this RID, so saved/query-driven concrete RIDs can still restore.
+  const eventOwnedConcreteAssetRidRef = useRef<string | undefined>(undefined);
 
   // Debounced asset lookup for direct RID input - fires after user stops typing
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -98,6 +94,7 @@ export function useAssetSelection({
 
   const loadAssets = useCallback(async () => {
     setIsLoadingAssets(true);
+    setHasLoadedAssets(false);
     try {
       setAssets(await searchAssets(datasourceUrl, searchQuery));
     } catch {
@@ -105,6 +102,7 @@ export function useAssetSelection({
       setAssets([]);
     } finally {
       setIsLoadingAssets(false);
+      setHasLoadedAssets(true);
     }
   }, [searchQuery, datasourceUrl]);
 
@@ -112,8 +110,6 @@ export function useAssetSelection({
    *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
-      // Mark this fetch as in-flight (RID + signal) so concurrent effects skip a duplicate.
-      pendingAssetFetchRef.current = { rid: resolvedRid, signal };
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
@@ -136,127 +132,90 @@ export function useAssetSelection({
         );
         setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
         setDataScopes([]);
-      } finally {
-        // Clear only the slot belonging to THIS fetch (matched by signal identity). A newer
-        // fetch — even for the same RID — owns a different signal, so a stale completion can
-        // never wipe a live successor's slot.
-        if (pendingAssetFetchRef.current?.signal === signal) {
-          pendingAssetFetchRef.current = undefined;
-        }
       }
     },
     [datasourceUrl]
   );
 
-  // Restore a saved DIRECT-mode asset on mount / duplication.
-  // Deliberately does NOT depend on `assets`: the by-RID fetch path never reads the
-  // search list, so letting search-assets resolution (setAssets) re-run this effect
-  // would only abort and re-issue an identical in-flight fetch. Keeping
-  // `assets` out of the deps removes that redundant cancelled request.
-  // MUST stay ordered before the resolved-asset effect so pendingAssetFetchRef is set
-  // before that effect considers the same resolved template RID. Otherwise a saved
-  // direct query like "$asset" can schedule duplicate by-RID fetches on mount.
-  useEffect(() => {
-    if (!query?.assetRid || selectedAsset || query.assetInputMethod !== 'direct') {
-      return;
-    }
-    // Always show the saved RID (incl. unresolved $variable) in the direct input.
-    setDirectRID((prev) => prev || query.assetRid || '');
+  const queryReconcileUsesSearchResults = query?.assetInputMethod !== 'direct';
+  const queryReconcileSearchHasLoaded = queryReconcileUsesSearchResults ? hasLoadedAssets : false;
+  const queryReconcileSearchAsset = queryReconcileUsesSearchResults
+    ? assets.find((asset) => asset.rid === assetRidResolution.resolved)
+    : undefined;
 
-    if (!assetRidResolution.isResolved) {
+  // Reconcile selected asset state from the saved/query-driven RID.
+  //
+  // This is the only query-driven path allowed to schedule a by-RID asset fetch. Concrete
+  // user-entered/custom RIDs are owned by their event handlers; template-backed RIDs stay
+  // query-driven so dashboard variable changes refetch the resolved asset.
+  useEffect(() => {
+    if (!query?.assetRid) {
       return;
     }
+
+    if (query.assetInputMethod === 'direct') {
+      // Always show the saved/direct raw value, including unresolved template variables.
+      setDirectRID((prev) => prev || query.assetRid || '');
+    }
+
+    if (!assetRidResolution.resolved || !assetRidResolution.isResolved) {
+      return;
+    }
+
+    if (selectedAsset?.rid === assetRidResolution.resolved) {
+      return;
+    }
+
+    if (
+      !assetRidResolution.hasTemplate &&
+      eventOwnedConcreteAssetRidRef.current === assetRidResolution.resolved
+    ) {
+      return;
+    }
+
     const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
-    const controller = new AbortController();
-    applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
-    return () => controller.abort();
-  }, [
-    query?.assetRid,
-    query?.assetInputMethod,
-    selectedAsset,
-    assetRidResolution.resolved,
-    assetRidResolution.isResolved,
-    assetRidResolution.hasTemplate,
-    assetRidResolution.raw,
-    applyAssetFromRid,
-  ]);
 
-  // Restore a SEARCH-mode asset / infer direct mode for a saved RID, once assets are known.
-  // This branch legitimately depends on `assets` (it matches against the loaded list).
-  // Only entered when the user never saved an explicit method (hasManuallySetMethod=false);
-  // the hasManuallySetMethod search case is handled by the search-restore effect below.
-  useEffect(() => {
-    if (!query?.assetRid || selectedAsset || hasManuallySetMethod || query.assetInputMethod === 'direct') {
+    if (query.assetInputMethod === 'direct') {
+      const controller = new AbortController();
+      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
+      return () => controller.abort();
+    }
+
+    if (!queryReconcileSearchHasLoaded) {
       return;
     }
-    if (!assetRidResolution.isResolved) {
-      return;
-    }
-    const asset = assets.find((a) => a.rid === assetRidResolution.resolved);
-    if (asset) {
+
+    if (queryReconcileSearchAsset) {
       setAssetInputMethod('search');
-      setSelectedAsset(asset);
-    } else if (assets.length > 0 && !query.assetInputMethod) {
-      const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
+      setSelectedAsset(queryReconcileSearchAsset);
+      return;
+    }
+
+    if (!query.assetInputMethod) {
       setAssetInputMethod('direct');
       setDirectRID(query.assetRid);
       const controller = new AbortController();
       applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
       return () => controller.abort();
     }
+
+    if (query.assetInputMethod === 'search') {
+      const controller = new AbortController();
+      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
+      return () => controller.abort();
+    }
+
     return undefined;
   }, [
     query?.assetRid,
     query?.assetInputMethod,
-    selectedAsset,
-    assets,
-    hasManuallySetMethod,
-    assetRidResolution.resolved,
-    assetRidResolution.isResolved,
-    assetRidResolution.hasTemplate,
-    assetRidResolution.raw,
-    applyAssetFromRid,
-  ]);
-
-  // Update dropdown options when the resolved asset RID changes (e.g. template variable changed).
-  // Skipped in direct mode because changeDirectRID manages its own debounced fetch -
-  // running both would cause two concurrent requests racing to update selectedAsset.
-  useEffect(() => {
-    if (!assetRidResolution.resolved || !assetRidResolution.isResolved) {
-      return;
-    }
-    if (selectedAsset?.rid === assetRidResolution.resolved) {
-      return;
-    }
-    // Skip only if a *live* (not-yet-aborted) by-RID fetch for this same RID is already in
-    // flight, so a saved direct query with a template RID ($asset) isn't fetched twice by both
-    // the mount-restore effect and this one.
-    // The abort-signal check is load-bearing: under React 18 StrictMode the mount runs
-    // setup -> cleanup -> setup, and the cleanup aborts the first fetch. A bare-RID guard would
-    // still see the in-flight RID and suppress the second setup's fetch forever, leaving
-    // selectedAsset null and the channel picker hidden. Gating on a live signal (and clearing
-    // the slot by signal identity in applyAssetFromRid's finally) lets the legitimate re-run
-    // proceed while still ignoring stale completions.
-    const pendingFetch = pendingAssetFetchRef.current;
-    if (pendingFetch && pendingFetch.rid === assetRidResolution.resolved && !pendingFetch.signal?.aborted) {
-      return;
-    }
-    // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
-    if (queryRef.current?.assetInputMethod === 'direct' && !assetRidResolution.hasTemplate) {
-      return;
-    }
-    const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
-    const controller = new AbortController();
-    applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
-    return () => controller.abort();
-    // Only depend on selectedAsset?.rid (not the full object) to avoid aborting in-flight
-    // fetches when the object reference changes but the RID stays the same.
-  }, [
-    assetRidResolution.resolved,
-    assetRidResolution.isResolved,
-    assetRidResolution.hasTemplate,
-    assetRidResolution.raw,
     selectedAsset?.rid,
+    assetRidResolution.resolved,
+    assetRidResolution.isResolved,
+    assetRidResolution.hasTemplate,
+    assetRidResolution.raw,
+    queryReconcileSearchHasLoaded,
+    queryReconcileSearchAsset,
     applyAssetFromRid,
   ]);
 
@@ -264,28 +223,6 @@ export function useAssetSelection({
   useEffect(() => {
     loadAssets();
   }, [loadAssets]);
-
-  // After assets are loaded, restore a selected asset for search-mode queries when the user
-  // has already confirmed their input method (hasManuallySetMethod). This covers the case
-  // where the asset list loads after the restore effect has already run and found nothing.
-  // Guarded by hasManuallySetMethod to avoid overlapping with the restore effect above
-  // when both are eligible to set selectedAsset simultaneously (React 18 strict mode concern).
-  useEffect(() => {
-    if (
-      query &&
-      query.assetRid &&
-      !selectedAsset &&
-      assets.length > 0 &&
-      assetInputMethod === 'search' &&
-      hasManuallySetMethod
-    ) {
-      // Resolve template variables to match against actual asset RIDs
-      const asset = assets.find((a) => a.rid === assetRidResolution.resolved);
-      if (asset) {
-        setSelectedAsset(asset);
-      }
-    }
-  }, [query, selectedAsset, assets, assetInputMethod, hasManuallySetMethod, assetRidResolution.resolved]);
 
   // Update dependent fields when asset changes
   useEffect(() => {
@@ -341,8 +278,8 @@ export function useAssetSelection({
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
+      eventOwnedConcreteAssetRidRef.current = undefined;
       setAssetInputMethod(method);
-      setHasManuallySetMethod(true); // Mark as manually set to prevent automatic overrides
       setSelectedAsset(null);
       setDataScopes([]);
       // Populate directRID from existing query when switching to direct mode
@@ -372,18 +309,25 @@ export function useAssetSelection({
       if (asset) {
         // Abort any in-flight search-mode fetch from a previous selection
         assetSelectControllerRef.current?.abort();
+        eventOwnedConcreteAssetRidRef.current = undefined;
         setSelectedAsset(asset);
-      } else if (ridToFind && !ridToFind.includes('$')) {
-        // Asset not in search results - fetch it directly instead of nulling selectedAsset.
-        // This avoids a UI flash where channel/scope selectors unmount during the fetch.
-        // Abort any previous in-flight fetch before starting a new one.
+      } else if (ridToFind && !ridToFind.includes('$') && !isVariable) {
+        // Concrete custom RIDs are event-owned: fetch immediately instead of waiting
+        // for query reconciliation, and avoid a UI flash while the fetch is in flight.
         assetSelectControllerRef.current?.abort();
         const controller = new AbortController();
         assetSelectControllerRef.current = controller;
-        const displayLabel = isVariable ? `Asset (${value})` : 'Asset (Direct RID)';
-        applyAssetFromRid(ridToFind, displayLabel, controller.signal);
+        eventOwnedConcreteAssetRidRef.current = ridToFind;
+        applyAssetFromRid(ridToFind, 'Asset (Direct RID)', controller.signal);
+      } else if (isVariable && selectedRidResolution.isResolved) {
+        // Template-backed selections are query-owned so future variable resolution changes
+        // refetch through the same reconcile path. Keep the current selected asset until
+        // reconciliation replaces it.
+        assetSelectControllerRef.current?.abort();
+        eventOwnedConcreteAssetRidRef.current = undefined;
       } else {
         assetSelectControllerRef.current?.abort();
+        eventOwnedConcreteAssetRidRef.current = undefined;
         setSelectedAsset(null);
       }
 
@@ -414,6 +358,7 @@ export function useAssetSelection({
       directRidControllerRef.current?.abort();
 
       if (!rid.trim()) {
+        eventOwnedConcreteAssetRidRef.current = undefined;
         setSelectedAsset(null);
         setDataScopes([]);
         onChange(changeDirectAssetRidQuery(queryRef.current, ''));
@@ -422,12 +367,20 @@ export function useAssetSelection({
 
       // Resolve template variables
       const ridResolution = resolveTemplateText(rid);
-      // If still unresolved, nothing more to do (query was already updated above)
+      // Template-backed RIDs are query-owned so dashboard variable changes use the
+      // same reconcile path. Concrete direct RIDs stay event-owned and debounced.
       if (!ridResolution.isResolved) {
+        eventOwnedConcreteAssetRidRef.current = undefined;
+        return;
+      }
+      if (ridResolution.hasTemplate) {
+        eventOwnedConcreteAssetRidRef.current = undefined;
         return;
       }
 
-      const displayLabel = rid.includes('$') ? `Asset (${rid})` : 'Asset (Direct RID)';
+      eventOwnedConcreteAssetRidRef.current = ridResolution.resolved;
+
+      const displayLabel = 'Asset (Direct RID)';
       const controller = new AbortController();
       directRidControllerRef.current = controller;
 

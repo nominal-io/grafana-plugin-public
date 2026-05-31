@@ -163,9 +163,9 @@ describe('channel data type inference effect', () => {
 
   it('fetches a direct-mode RID once even when search-assets resolves mid-flight', async () => {
     // Gate the by-RID asset fetch so it stays in-flight while search-assets resolves.
-    // On the pre-fix code, setAssets re-runs the restore effect, which aborts and
-    // re-issues the same asset/multiple POST (2 calls). The fix keeps the direct
-    // restore effect independent of `assets`, so it fires exactly once.
+    // On the pre-fix code, setAssets could re-run a query-driven by-RID path, aborting
+    // and re-issuing the same asset/multiple POST (2 calls). The reconciler's direct-mode
+    // inputs stay independent of `assets`, so this fires exactly once.
     let releaseAssetFetch!: () => void;
     const assetFetchGate = new Promise<void>((resolve) => {
       releaseAssetFetch = resolve;
@@ -266,8 +266,8 @@ describe('channel data type inference effect', () => {
       />
     );
 
-    // The resolved-asset effect must still fire for the new RID despite the in-flight
-    // dedupe guard — the prior fetch has settled, so pendingAssetFetchRef is clear.
+    // The query-driven reconcile effect must fire again when the template resolves
+    // to a different RID.
     await waitFor(() => {
       expect(
         post.mock.calls.some(
@@ -298,7 +298,8 @@ describe('channel data type inference effect', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Test Asset')).toBeInTheDocument();
+      expect(screen.getByText('RID:')).toBeInTheDocument();
+      expect(screen.getByText(ASSET_RID)).toBeInTheDocument();
     });
   });
 
