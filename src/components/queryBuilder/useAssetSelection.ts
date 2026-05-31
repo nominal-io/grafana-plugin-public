@@ -130,7 +130,10 @@ export function useAssetSelection({
         if (signal?.aborted) {
           return;
         }
-        notifyError('Unable to load Nominal asset', 'The RID was kept, but data scopes could not be loaded automatically.');
+        notifyError(
+          'Unable to load Nominal asset',
+          'The RID was kept, but data scopes could not be loaded automatically.'
+        );
         setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
         setDataScopes([]);
       } finally {
@@ -167,20 +170,23 @@ export function useAssetSelection({
     const controller = new AbortController();
     applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
     return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, applyAssetFromRid]);
+  }, [
+    query?.assetRid,
+    query?.assetInputMethod,
+    selectedAsset,
+    assetRidResolution.resolved,
+    assetRidResolution.isResolved,
+    assetRidResolution.hasTemplate,
+    assetRidResolution.raw,
+    applyAssetFromRid,
+  ]);
 
   // Restore a SEARCH-mode asset / infer direct mode for a saved RID, once assets are known.
   // This branch legitimately depends on `assets` (it matches against the loaded list).
   // Only entered when the user never saved an explicit method (hasManuallySetMethod=false);
   // the hasManuallySetMethod search case is handled by the search-restore effect below.
   useEffect(() => {
-    if (
-      !query?.assetRid ||
-      selectedAsset ||
-      hasManuallySetMethod ||
-      query.assetInputMethod === 'direct'
-    ) {
+    if (!query?.assetRid || selectedAsset || hasManuallySetMethod || query.assetInputMethod === 'direct') {
       return;
     }
     if (!assetRidResolution.isResolved) {
@@ -199,8 +205,18 @@ export function useAssetSelection({
       return () => controller.abort();
     }
     return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query?.assetRid, query?.assetInputMethod, selectedAsset, assets, hasManuallySetMethod, assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, applyAssetFromRid]);
+  }, [
+    query?.assetRid,
+    query?.assetInputMethod,
+    selectedAsset,
+    assets,
+    hasManuallySetMethod,
+    assetRidResolution.resolved,
+    assetRidResolution.isResolved,
+    assetRidResolution.hasTemplate,
+    assetRidResolution.raw,
+    applyAssetFromRid,
+  ]);
 
   // Update dropdown options when the resolved asset RID changes (e.g. template variable changed).
   // Skipped in direct mode because changeDirectRID manages its own debounced fetch -
@@ -229,16 +245,20 @@ export function useAssetSelection({
     if (queryRef.current?.assetInputMethod === 'direct' && !assetRidResolution.hasTemplate) {
       return;
     }
-    const displayLabel = assetRidResolution.hasTemplate
-      ? `Asset (${assetRidResolution.raw})`
-      : 'Asset (Direct RID)';
+    const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
     const controller = new AbortController();
     applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
     return () => controller.abort();
     // Only depend on selectedAsset?.rid (not the full object) to avoid aborting in-flight
     // fetches when the object reference changes but the RID stays the same.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assetRidResolution.resolved, assetRidResolution.isResolved, assetRidResolution.hasTemplate, assetRidResolution.raw, selectedAsset?.rid, applyAssetFromRid]);
+  }, [
+    assetRidResolution.resolved,
+    assetRidResolution.isResolved,
+    assetRidResolution.hasTemplate,
+    assetRidResolution.raw,
+    selectedAsset?.rid,
+    applyAssetFromRid,
+  ]);
 
   // Load assets on component mount and when search query changes
   useEffect(() => {
@@ -308,6 +328,10 @@ export function useAssetSelection({
         }
       }
     }
+    // Intentionally omit asset/data-scope resolution deps here. This effect mutates
+    // query fields in response to selected-asset/user-interaction changes, while the
+    // latest query is read through queryRef.current. Running it on template-resolution
+    // changes would broaden when dataScopeName/assetRid can be auto-cleared or rewritten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
 
@@ -410,7 +434,6 @@ export function useAssetSelection({
       directRidTimerRef.current = setTimeout(() => {
         applyAssetFromRid(ridResolution.resolved, displayLabel, controller.signal);
       }, 300);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [markInteracted, onChange, applyAssetFromRid, resolveTemplateText]
   );

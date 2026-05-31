@@ -65,11 +65,13 @@ export function useChannelOptions({
         return channelsToOptions(channels);
       } catch {
         if (isMountedRef.current) {
-          notifyError('Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.');
+          notifyError(
+            'Unable to load Nominal channels',
+            'Check the selected asset, data scope, and data source configuration.'
+          );
         }
         return [];
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [selectedAsset, datasourceUrl, dataScopeResolution.resolved]
   );
@@ -87,7 +89,8 @@ export function useChannelOptions({
     debounce((searchText: string) => {
       const id = ++channelSearchId.current;
       setIsLoadingChannels(true);
-      loadChannelOptionsRef.current(searchText)
+      loadChannelOptionsRef
+        .current(searchText)
         .then((results) => {
           if (isMountedRef.current && channelSearchId.current === id) {
             setChannelResults(results);
@@ -151,8 +154,10 @@ export function useChannelOptions({
     return () => {
       cancelled = true;
     };
-    // Depend on selectedAsset?.rid (not the full object) to avoid a redundant /channels
-    // call whenever setSelectedAsset is called with a logically identical asset.
+    // Intentionally depend on selectedAsset?.rid rather than the whole object to avoid
+    // redundant /channels calls when setSelectedAsset receives a logically identical asset.
+    // onChange is omitted for the same reason this effect uses queryRef.current: this lookup
+    // should be driven by resolved channel/scope/asset identity, not parent callback identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     channelResolution.resolved,
@@ -171,11 +176,13 @@ export function useChannelOptions({
       // different channel, the stored channelDataType may be stale. The backend will
       // fall back to numeric for an unknown type, but mismatches can cause query errors.
       // Mitigation: the backend error message hints the user to re-select the channel.
-      onChange(changeSelectedChannelQuery(query, {
-        channel: selection?.value || '',
-        dataType: selection?.dataType || '',
-        assetInputMethod,
-      }));
+      onChange(
+        changeSelectedChannelQuery(query, {
+          channel: selection?.value || '',
+          dataType: selection?.dataType || '',
+          assetInputMethod,
+        })
+      );
     },
     [assetInputMethod, markInteracted, onChange, query]
   );
@@ -199,10 +206,7 @@ export function useChannelOptions({
     [channelResults, channelResolution]
   );
 
-  const channelSelectValue = useMemo(
-    () => getChannelSelectValue({ channel: channelResolution }),
-    [channelResolution]
-  );
+  const channelSelectValue = useMemo(() => getChannelSelectValue({ channel: channelResolution }), [channelResolution]);
 
   return {
     channelOptions,
