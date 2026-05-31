@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
@@ -194,7 +195,7 @@ describe('useAssetSelection', () => {
   });
 
   // A saved direct-mode query whose RID is a template variable is eligible for both
-  // the mount-restore effect and the resolved-asset effect. The pendingAssetRidRef guard must
+  // the mount-restore effect and the resolved-asset effect. The pendingAssetFetchRef guard must
   // ensure only ONE fetch is issued for that RID.
   it('fetches a saved direct-mode template RID only once', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
@@ -214,5 +215,23 @@ describe('useAssetSelection', () => {
 
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET.rid);
+  });
+
+  // A saved SEARCH-mode RID absent from the search results can only be restored via the
+  // resolved-asset by-RID fetch. Under React 18 StrictMode the mount runs setup -> cleanup
+  // -> setup; the in-flight guard must not permanently suppress the re-run, or selectedAsset
+  // never gets set and the channel picker (gated on selectedAsset !== null) stays hidden.
+  it('restores a saved search-mode RID absent from results under StrictMode', async () => {
+    mockSearchAssets.mockResolvedValue([]); // saved RID is NOT in the search list
+    mockFetchAssetByRid.mockResolvedValue(ASSET);
+    const hookArgs = args({
+      query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'search' }),
+    });
+    const { result } = renderHook(() => useAssetSelection(hookArgs), { wrapper: StrictMode });
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
+    });
+    await waitForAssetSearchToSettle(result);
   });
 });

@@ -267,7 +267,7 @@ describe('channel data type inference effect', () => {
     );
 
     // The resolved-asset effect must still fire for the new RID despite the in-flight
-    // dedupe guard — the prior fetch has settled, so pendingAssetRidRef is clear.
+    // dedupe guard — the prior fetch has settled, so pendingAssetFetchRef is clear.
     await waitFor(() => {
       expect(
         post.mock.calls.some(

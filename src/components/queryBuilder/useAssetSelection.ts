@@ -86,9 +86,11 @@ export function useAssetSelection({
   // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
   const assetSelectControllerRef = useRef<AbortController>(undefined);
 
-  // Tracks the resolved RID currently being fetched by applyAssetFromRid so that concurrent
-  // effects (mount restore + resolved-asset) don't both fetch the same asset.
-  const pendingAssetRidRef = useRef<string | undefined>(undefined);
+  // Tracks the in-flight by-RID fetch (its resolved RID + abort signal) so concurrent effects
+  // (mount restore + resolved-asset) don't both fetch the same asset. Stored as a token rather
+  // than a bare RID so the guard can distinguish a *live* fetch from one already aborted, and
+  // so the cleanup clears only the slot belonging to *this* fetch — never a same-RID successor.
+  const pendingAssetFetchRef = useRef<{ rid: string; signal?: AbortSignal } | undefined>(undefined);
 
   // Debounced asset lookup for direct RID input - fires after user stops typing
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -110,8 +112,8 @@ export function useAssetSelection({
    *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
-      // Mark this RID as in-flight so concurrent effects skip a duplicate fetch.
-      pendingAssetRidRef.current = resolvedRid;
+      // Mark this fetch as in-flight (RID + signal) so concurrent effects skip a duplicate.
+      pendingAssetFetchRef.current = { rid: resolvedRid, signal };
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
@@ -132,9 +134,11 @@ export function useAssetSelection({
         setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
         setDataScopes([]);
       } finally {
-        // Clear only if no newer fetch has since claimed the in-flight slot for a different RID.
-        if (pendingAssetRidRef.current === resolvedRid) {
-          pendingAssetRidRef.current = undefined;
+        // Clear only the slot belonging to THIS fetch (matched by signal identity). A newer
+        // fetch — even for the same RID — owns a different signal, so a stale completion can
+        // never wipe a live successor's slot.
+        if (pendingAssetFetchRef.current?.signal === signal) {
+          pendingAssetFetchRef.current = undefined;
         }
       }
     },
@@ -146,7 +150,7 @@ export function useAssetSelection({
   // search list, so letting search-assets resolution (setAssets) re-run this effect
   // would only abort and re-issue an identical in-flight fetch. Keeping
   // `assets` out of the deps removes that redundant cancelled request.
-  // MUST stay ordered before the resolved-asset effect so pendingAssetRidRef is set
+  // MUST stay ordered before the resolved-asset effect so pendingAssetFetchRef is set
   // before that effect considers the same resolved template RID. Otherwise a saved
   // direct query like "$asset" can schedule duplicate by-RID fetches on mount.
   useEffect(() => {
@@ -208,14 +212,17 @@ export function useAssetSelection({
     if (selectedAsset?.rid === assetRidResolution.resolved) {
       return;
     }
-    // Skip if another path (e.g. the mount restore effect) is already fetching this RID.
-    // Prevents a saved direct query with a template RID ($asset) from being fetched twice.
-    // Invariant: every path that fetches an asset for selection starts from the current
-    // query/source RID and either has already persisted that RID (changeDirectRID) or is
-    // driven by an existing saved query. Stale completions are ignored by their abort
-    // signals, so the abort-then-skip over-suppression window is unreachable without a
-    // generation counter.
-    if (pendingAssetRidRef.current === assetRidResolution.resolved) {
+    // Skip only if a *live* (not-yet-aborted) by-RID fetch for this same RID is already in
+    // flight, so a saved direct query with a template RID ($asset) isn't fetched twice by both
+    // the mount-restore effect and this one.
+    // The abort-signal check is load-bearing: under React 18 StrictMode the mount runs
+    // setup -> cleanup -> setup, and the cleanup aborts the first fetch. A bare-RID guard would
+    // still see the in-flight RID and suppress the second setup's fetch forever, leaving
+    // selectedAsset null and the channel picker hidden. Gating on a live signal (and clearing
+    // the slot by signal identity in applyAssetFromRid's finally) lets the legitimate re-run
+    // proceed while still ignoring stale completions.
+    const pendingFetch = pendingAssetFetchRef.current;
+    if (pendingFetch && pendingFetch.rid === assetRidResolution.resolved && !pendingFetch.signal?.aborted) {
       return;
     }
     // In direct mode the handler's debounced timer owns the fetch lifecycle; skip here.
