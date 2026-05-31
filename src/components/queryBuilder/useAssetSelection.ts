@@ -17,6 +17,7 @@ import {
   changeSearchAssetRidQuery,
   changeSelectedDataScopeQuery,
 } from './queryMutations';
+import { decideAssetReconcile } from './assetReconcile';
 import type { TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod } from './queryBuilderTypes';
 
@@ -137,10 +138,15 @@ export function useAssetSelection({
     [datasourceUrl]
   );
 
+  const assetRidRaw = assetRidResolution.raw;
+  const assetRidResolved = assetRidResolution.resolved;
+  const assetRidHasTemplate = assetRidResolution.hasTemplate;
+  const assetRidIsResolved = assetRidResolution.isResolved;
+
   const queryReconcileUsesSearchResults = query?.assetInputMethod !== 'direct';
   const queryReconcileSearchHasLoaded = queryReconcileUsesSearchResults ? hasLoadedAssets : false;
   const queryReconcileSearchAsset = queryReconcileUsesSearchResults
-    ? assets.find((asset) => asset.rid === assetRidResolution.resolved)
+    ? assets.find((asset) => asset.rid === assetRidResolved)
     : undefined;
 
   // Reconcile selected asset state from the saved/query-driven RID.
@@ -149,71 +155,57 @@ export function useAssetSelection({
   // user-entered/custom RIDs are owned by their event handlers; template-backed RIDs stay
   // query-driven so dashboard variable changes refetch the resolved asset.
   useEffect(() => {
-    if (!query?.assetRid) {
-      return;
+    const controllers: AbortController[] = [];
+    const actions = decideAssetReconcile({
+      assetRid: query?.assetRid,
+      assetInputMethod: query?.assetInputMethod,
+      selectedAssetRid: selectedAsset?.rid,
+      assetRidResolution: {
+        raw: assetRidRaw,
+        resolved: assetRidResolved,
+        hasTemplate: assetRidHasTemplate,
+        isResolved: assetRidIsResolved,
+      },
+      eventOwnedConcreteAssetRid: eventOwnedConcreteAssetRidRef.current,
+      searchHasLoaded: queryReconcileSearchHasLoaded,
+      searchAsset: queryReconcileSearchAsset,
+    });
+
+    for (const action of actions) {
+      switch (action.kind) {
+        case 'mirrorDirectRaw':
+          setDirectRID((prev) => prev || action.raw);
+          break;
+        case 'fetchByRid': {
+          const controller = new AbortController();
+          controllers.push(controller);
+          applyAssetFromRid(action.rid, action.label, controller.signal);
+          break;
+        }
+        case 'selectSearchResult':
+          setAssetInputMethod('search');
+          setSelectedAsset(action.asset);
+          break;
+        case 'inferDirect': {
+          setAssetInputMethod('direct');
+          setDirectRID(action.raw);
+          const controller = new AbortController();
+          controllers.push(controller);
+          applyAssetFromRid(action.rid, action.label, controller.signal);
+          break;
+        }
+      }
     }
 
-    if (query.assetInputMethod === 'direct') {
-      // Always show the saved/direct raw value, including unresolved template variables.
-      setDirectRID((prev) => prev || query.assetRid || '');
-    }
-
-    if (!assetRidResolution.resolved || !assetRidResolution.isResolved) {
-      return;
-    }
-
-    if (selectedAsset?.rid === assetRidResolution.resolved) {
-      return;
-    }
-
-    if (
-      !assetRidResolution.hasTemplate &&
-      eventOwnedConcreteAssetRidRef.current === assetRidResolution.resolved
-    ) {
-      return;
-    }
-
-    const displayLabel = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
-
-    if (query.assetInputMethod === 'direct') {
-      const controller = new AbortController();
-      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
-      return () => controller.abort();
-    }
-
-    if (!queryReconcileSearchHasLoaded) {
-      return;
-    }
-
-    if (queryReconcileSearchAsset) {
-      setAssetInputMethod('search');
-      setSelectedAsset(queryReconcileSearchAsset);
-      return;
-    }
-
-    if (!query.assetInputMethod) {
-      setAssetInputMethod('direct');
-      setDirectRID(query.assetRid);
-      const controller = new AbortController();
-      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
-      return () => controller.abort();
-    }
-
-    if (query.assetInputMethod === 'search') {
-      const controller = new AbortController();
-      applyAssetFromRid(assetRidResolution.resolved, displayLabel, controller.signal);
-      return () => controller.abort();
-    }
-
-    return undefined;
+    return controllers.length > 0 ? () => controllers.forEach((controller) => controller.abort()) : undefined;
   }, [
     query?.assetRid,
     query?.assetInputMethod,
     selectedAsset?.rid,
-    assetRidResolution.resolved,
-    assetRidResolution.isResolved,
-    assetRidResolution.hasTemplate,
-    assetRidResolution.raw,
+    assetRidResolved,
+    assetRidIsResolved,
+    assetRidHasTemplate,
+    assetRidRaw,
     queryReconcileSearchHasLoaded,
     queryReconcileSearchAsset,
     applyAssetFromRid,

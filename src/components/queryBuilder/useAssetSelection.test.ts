@@ -283,6 +283,50 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET_B.rid);
   });
 
+  it('leaves a custom concrete search RID fetch to the select handler', async () => {
+    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
+    const pendingFetch = deferred<Asset | null>();
+    mockSearchAssets.mockResolvedValue([]);
+    mockFetchAssetByRid.mockReturnValue(pendingFetch.promise);
+
+    let currentQuery = makeQuery();
+    const onChange = jest.fn((nextQuery: NominalQuery) => {
+      currentQuery = nextQuery;
+    });
+    const markInteracted = jest.fn();
+    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
+    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+      initialProps: initialArgs,
+    });
+    await waitForAssetSearchToSettle(result);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset({ value: ASSET_B.rid });
+    });
+
+    expect(markInteracted).toHaveBeenCalled();
+    expect(currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'search' }));
+    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
+    expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET_B.rid);
+
+    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      pendingFetch.resolve(ASSET_B);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+  });
+
   it('reconciles a user-entered direct template RID through the query-driven path', async () => {
     jest.useFakeTimers();
     mockFetchAssetByRid.mockResolvedValue(ASSET);
