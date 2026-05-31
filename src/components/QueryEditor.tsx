@@ -116,21 +116,17 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   const aggregationOptions = React.useMemo(
     () =>
-      state.aggregationState.options
-        .map((option): ComboboxOption<string> | null =>
-          option.value
-            ? {
-                label: option.label,
-                value: option.value,
-                // Only attach description when present. Grafana's Combobox sizes rows by
-                // `'description' in option`, so an always-present `description: undefined`
-                // forces every row to the taller description height and makes the 7
-                // aggregation options scroll (regression vs. passing bare options).
-                ...(option.description ? { description: option.description } : {}),
-              }
-            : null
-        )
-        .filter((option): option is ComboboxOption<string> => option !== null),
+      state.aggregationState.options.map(
+        (option): ComboboxOption<string> => ({
+          label: option.label,
+          value: option.value,
+          // Only attach description when present. Grafana's Combobox sizes rows by
+          // `'description' in option`, so an always-present `description: undefined`
+          // forces every row to the taller description height and makes the 7
+          // aggregation options scroll (regression vs. passing bare options).
+          ...(option.description ? { description: option.description } : {}),
+        })
+      ),
     [state.aggregationState.options]
   );
 

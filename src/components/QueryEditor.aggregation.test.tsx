@@ -8,10 +8,12 @@ import { AGGREGATION_RUN_DELAY_MS } from './queryBuilder/useNominalQueryBuilder'
 
 // Mock Grafana runtime
 const post = jest.fn();
+const publish = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(() => ({ post })),
+  getAppEvents: jest.fn(() => ({ publish })),
   getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
 }));
 
@@ -48,6 +50,7 @@ async function settleInitialEffects() {
 describe('Aggregation widget', () => {
   beforeEach(() => {
     post.mockReset();
+    publish.mockReset();
     post.mockResolvedValue({});
   });
 

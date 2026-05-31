@@ -6,12 +6,13 @@ export type AssetInputMethod = 'search' | 'direct';
 export type ChannelOption = SelectableValue<string> & { dataType?: string };
 
 export type AggregationDisplayKind = 'string' | 'log' | 'numeric';
+export type AggregationOption = SelectableValue<string> & { value: string };
 
 export interface AggregationState {
   kind: AggregationDisplayKind;
   tooltip: string;
   value: string[];
-  options: Array<SelectableValue<string>>;
+  options: AggregationOption[];
 }
 
 export interface QueryBuilderState {
