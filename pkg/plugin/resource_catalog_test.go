@@ -6,15 +6,167 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
+
+// ============================================================================
+// TemplateVariableCatalog tests
+// ============================================================================
+
+func TestTemplateVariableCatalogAssetsFiltersAndShapesMetricFindValues(t *testing.T) {
+	searchResults := []AssetResponse{
+		{
+			Results: []AssetSearchResult{
+				{
+					Rid:   "ri.scout.main.asset.1",
+					Title: "Asset With Dataset",
+					DataScopes: []AssetDataScope{
+						{DataScopeName: "scope1", DataSource: AssetDataSource{Type: "dataset"}},
+					},
+				},
+				{
+					Rid:   "ri.scout.main.asset.2",
+					Title: "Asset With Video Only",
+					DataScopes: []AssetDataScope{
+						{DataScopeName: "scope2", DataSource: AssetDataSource{Type: "video"}},
+					},
+				},
+			},
+		},
+	}
+
+	server := newTestAssetServer(t, nil, searchResults)
+	defer server.Close()
+
+	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+
+	values, err := templateCatalog.Assets(context.Background(), config, assetsVariableRequest{MaxResults: 10})
+	if err != nil {
+		t.Fatalf("Assets returned error: %v", err)
+	}
+	if len(values) != 1 {
+		t.Fatalf("len(values) = %d, want 1: %v", len(values), values)
+	}
+	if values[0] != (metricFindValue{Text: "Asset With Dataset", Value: "ri.scout.main.asset.1"}) {
+		t.Fatalf("values[0] = %+v, want Asset With Dataset metric value", values[0])
+	}
+}
+
+func TestTemplateVariableCatalogDatascopesFiltersAndHandlesUnresolvedVariables(t *testing.T) {
+	assetRid := "ri.scout.main.asset.1"
+	datasetRid := "ri.scout.main.data-source.dataset1"
+	videoRid := "ri.scout.main.data-source.video1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "supported", DataSource: AssetDataSource{Type: "dataset", Dataset: &datasetRid}},
+				{DataScopeName: "unsupported", DataSource: AssetDataSource{Type: "video", Dataset: &videoRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+
+	values, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: assetRid})
+	if err != nil {
+		t.Fatalf("Datascopes returned error: %v", err)
+	}
+	if len(values) != 1 {
+		t.Fatalf("len(values) = %d, want 1: %v", len(values), values)
+	}
+	if values[0] != (metricFindValue{Text: "supported", Value: "supported"}) {
+		t.Fatalf("values[0] = %+v, want supported metric value", values[0])
+	}
+
+	unresolved, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: "$asset"})
+	if err != nil {
+		t.Fatalf("unresolved Datascopes returned error: %v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("unresolved values = %v, want empty", unresolved)
+	}
+}
+
+func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVariables(t *testing.T) {
+	assetRid := "ri.scout.main.asset.1"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{Name: api.Channel("state")},
+				{Name: api.Channel("state")},
+				{Name: api.Channel("rpm")},
+			},
+		},
+	}
+	nominalCatalog := newNominalCatalog(server.Client(), mockDS)
+	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+
+	values, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: assetRid, DataScopeName: "scope-a"})
+	if err != nil {
+		t.Fatalf("ChannelVariables returned error: %v", err)
+	}
+	if len(values) != 2 {
+		t.Fatalf("len(values) = %d, want 2: %v", len(values), values)
+	}
+	if values[0] != (metricFindValue{Text: "state", Value: "state"}) || values[1] != (metricFindValue{Text: "rpm", Value: "rpm"}) {
+		t.Fatalf("values = %+v, want state/rpm metric values", values)
+	}
+	if mockDS.searchChannelsCalls != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	}
+
+	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: assetRid, DataScopeName: "$scope"})
+	if err != nil {
+		t.Fatalf("unresolved ChannelVariables returned error: %v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("unresolved values = %v, want empty", unresolved)
+	}
+}
 
 // ============================================================================
 // CallResource handler tests
@@ -740,6 +892,29 @@ func TestHandleChannelVariables(t *testing.T) {
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want 500; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+
+	t.Run("asset fetch error keeps asset error message", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/scout/v1/asset/multiple" {
+				http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+				return
+			}
+			http.Error(w, `{"error":"asset lookup failed"}`, http.StatusInternalServerError)
+		}))
+		defer server.Close()
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500; body = %s", resp.Status, string(resp.Body))
+		}
+		if !strings.Contains(string(resp.Body), "Failed to fetch asset") {
+			t.Fatalf("body = %s, want Failed to fetch asset", string(resp.Body))
 		}
 	})
 }

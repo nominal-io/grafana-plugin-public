@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
-	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
-	"github.com/palantir/pkg/bearertoken"
 )
 
 // NominalQueryModel represents a query to the Nominal API
@@ -227,54 +224,10 @@ func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
 //
 // Both lookups ride on the same cached SearchChannels exact-match call.
 func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *NominalQueryModel) {
-	if qm == nil || e.datasource.datasourceService == nil {
+	if e == nil || e.datasource == nil {
 		return
 	}
-	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
-		return
-	}
-
-	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
-
-	if entry, hit := e.datasource.lookupChannelMetadata(cacheKey); hit {
-		applyChannelMetadata(qm, entry)
-		return
-	}
-
-	asset, err := e.datasource.fetchAssetByRid(ctx, e.config, qm.AssetRid)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
-		return
-	}
-	if asset == nil {
-		return
-	}
-
-	dataSourceRids := collectDataSourceRidsForScope(asset, qm.DataScopeName)
-	if len(dataSourceRids) == 0 {
-		return
-	}
-
-	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
-	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{qm.Channel},
-		DataSources: dataSourceRids,
-	}
-	channelsResponse, err := e.datasource.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
-		return
-	}
-
-	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, qm.Channel); ok {
-		applyChannelMetadata(qm, entry)
-		entry.fetchedAt = time.Now()
-		e.datasource.storeChannelMetadata(cacheKey, entry)
-		return
-	}
-
-	// No usable metadata — cache the miss so a re-query doesn't re-search.
-	e.datasource.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
+	e.datasource.catalog().InferChannelMetadata(ctx, e.config, qm)
 }
 
 func applyChannelMetadata(qm *NominalQueryModel, entry channelMetadataCacheEntry) {
@@ -284,51 +237,4 @@ func applyChannelMetadata(qm *NominalQueryModel, entry channelMetadataCacheEntry
 	if entry.unit != "" {
 		qm.ChannelUnit = entry.unit
 	}
-}
-
-func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
-	// Nominal enforces unique DataScopeName per asset (CreateAssetDataScope conjure
-	// doc + DuplicateDataScopeNames error), so SearchChannels-exact-match returns
-	// at most one case-exact result. Pick the first match with usable metadata.
-	for _, channel := range channels {
-		if string(channel.Name) != channelName {
-			continue
-		}
-		entry := channelMetadataCacheEntry{
-			channelDataType: getChannelDataType(channel), // "" if ChannelMetadata.DataType is nil
-			unit:            getChannelUnit(channel),     // "" if Unit is nil
-		}
-		if entry.channelDataType == "" && entry.unit == "" {
-			continue
-		}
-		return entry, true
-	}
-	return channelMetadataCacheEntry{}, false
-}
-
-// lookupChannelMetadata returns a cached channel metadata entry if present and
-// not yet expired. Lazily initializes the cache map on first call. Caller must
-// apply the entry to its query model on hit.
-func (d *Datasource) lookupChannelMetadata(cacheKey string) (channelMetadataCacheEntry, bool) {
-	d.channelMetadataCacheMu.Lock()
-	defer d.channelMetadataCacheMu.Unlock()
-	if d.channelMetadataCache == nil {
-		d.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
-	}
-	entry, ok := d.channelMetadataCache[cacheKey]
-	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
-		return channelMetadataCacheEntry{}, false
-	}
-	return entry, true
-}
-
-// storeChannelMetadata writes (or overwrites) a cache entry. Lazily initializes
-// the cache map so this is safe even when called before any lookup.
-func (d *Datasource) storeChannelMetadata(cacheKey string, entry channelMetadataCacheEntry) {
-	d.channelMetadataCacheMu.Lock()
-	defer d.channelMetadataCacheMu.Unlock()
-	if d.channelMetadataCache == nil {
-		d.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
-	}
-	d.channelMetadataCache[cacheKey] = entry
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -15,16 +16,47 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
 
 // assetCacheTTL controls how long fetched asset metadata is cached.
 const assetCacheTTL = 5 * time.Minute
 
+const maxChannelVariables = 5000
+
 // assetCacheEntry holds a cached asset response with its fetch time.
 type assetCacheEntry struct {
 	asset     *SingleAssetResponse
 	fetchedAt time.Time
+}
+
+// channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
+type channelMetadataCacheEntry struct {
+	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
+	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
+	fetchedAt       time.Time
+}
+
+type NominalCatalog struct {
+	resourceHTTPClient *http.Client
+	datasourceService  datasourceservice.DataSourceServiceClient
+
+	assetCacheMu sync.Mutex
+	assetCache   map[string]assetCacheEntry
+
+	channelMetadataCacheMu sync.Mutex
+	channelMetadataCache   map[string]channelMetadataCacheEntry
+}
+
+func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
+	return &NominalCatalog{
+		resourceHTTPClient:   resourceHTTPClient,
+		datasourceService:    datasourceService,
+		assetCache:           make(map[string]assetCacheEntry),
+		channelMetadataCache: make(map[string]channelMetadataCacheEntry),
+	}
 }
 
 // AssetDataSource represents the data source within an asset's data scope.
@@ -87,26 +119,35 @@ func dataSourceRidFor(ds AssetDataSource) (string, bool) {
 	return "", false
 }
 
-// fetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint
-func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	d.assetCacheMu.Lock()
-	if d.assetCache == nil {
-		d.assetCache = make(map[string]assetCacheEntry)
+func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
+	for _, scope := range asset.DataScopes {
+		if isSupportedDataSourceType(scope.DataSource.Type) {
+			return true
+		}
 	}
-	if entry, ok := d.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-		d.assetCacheMu.Unlock()
+	return false
+}
+
+// FetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint.
+func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	c.assetCacheMu.Lock()
+	if c.assetCache == nil {
+		c.assetCache = make(map[string]assetCacheEntry)
+	}
+	if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+		c.assetCacheMu.Unlock()
 		return entry.asset, nil
 	}
-	d.assetCacheMu.Unlock()
+	c.assetCacheMu.Unlock()
 
-	asset, err := d.fetchAssetByRidUncached(ctx, config, assetRid)
+	asset, err := c.fetchAssetByRidUncached(ctx, config, assetRid)
 	if err != nil {
 		return nil, err
 	}
 
-	d.assetCacheMu.Lock()
-	d.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-	d.assetCacheMu.Unlock()
+	c.assetCacheMu.Lock()
+	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	c.assetCacheMu.Unlock()
 
 	return asset, nil
 }
@@ -115,7 +156,7 @@ func (d *Datasource) fetchAssetByRid(ctx context.Context, config *models.PluginS
 // with the standard Authorization and Content-Type headers. On non-200 the
 // response body is read, closed, and returned as a typed *apiError. On 200
 // the caller owns closing resp.Body.
-func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
+func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
@@ -135,7 +176,11 @@ func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginS
 	req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := d.getResourceHTTPClient().Do(req)
+	httpClient := c.resourceHTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -149,8 +194,8 @@ func (d *Datasource) postNominalJSON(ctx context.Context, config *models.PluginS
 	return resp, nil
 }
 
-func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	resp, err := d.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	resp, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +212,8 @@ func (d *Datasource) fetchAssetByRidUncached(ctx context.Context, config *models
 	return nil, nil
 }
 
-// fetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls
-func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
+// FetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls.
+func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
 	var allResults []AssetResponse
 	pageToken := ""
 	pageSize := 50
@@ -190,7 +235,7 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 			requestBody["nextPageToken"] = pageToken
 		}
 
-		resp, err := d.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
+		resp, err := c.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
 		if err != nil {
 			return nil, err
 		}
@@ -212,6 +257,145 @@ func (d *Datasource) fetchAssetsForVariable(ctx context.Context, config *models.
 	}
 
 	return allResults, nil
+}
+
+func (d *Datasource) catalog() *NominalCatalog {
+	if d.nominalCatalog == nil {
+		d.nominalCatalog = newNominalCatalog(d.resourceHTTPClient, d.datasourceService)
+	}
+	return d.nominalCatalog
+}
+
+// InferChannelMetadata verifies (or backfills) channel metadata — both data type
+// and unit symbol — against the actual ChannelMetadata returned by SearchChannels.
+func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
+	if qm == nil || c == nil || c.datasourceService == nil {
+		return
+	}
+	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
+		return
+	}
+
+	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
+
+	if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
+		applyChannelMetadata(qm, entry)
+		return
+	}
+
+	asset, err := c.FetchAssetByRid(ctx, config, qm.AssetRid)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
+		return
+	}
+	if asset == nil {
+		return
+	}
+
+	dataSourceRids := c.DataSourceRidsForScope(asset, qm.DataScopeName)
+	if len(dataSourceRids) == 0 {
+		return
+	}
+
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	searchRequest := datasourceapi.SearchChannelsRequest{
+		ExactMatch:  []string{qm.Channel},
+		DataSources: dataSourceRids,
+	}
+	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
+		return
+	}
+
+	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, qm.Channel); ok {
+		applyChannelMetadata(qm, entry)
+		entry.fetchedAt = time.Now()
+		c.storeChannelMetadata(cacheKey, entry)
+		return
+	}
+
+	c.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
+}
+
+func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid) ([]datasourceapi.ChannelMetadata, error) {
+	if c == nil || c.datasourceService == nil || len(dataSourceRids) == 0 {
+		return nil, nil
+	}
+
+	pageSize := 1000
+	var allChannelResults []datasourceapi.ChannelMetadata
+	var nextPageToken *api.Token
+
+	for {
+		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
+			FuzzySearchText: "",
+			DataSources:     dataSourceRids,
+			PageSize:        &pageSize,
+			NextPageToken:   nextPageToken,
+		}
+
+		channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
+		if err != nil {
+			return nil, err
+		}
+
+		allChannelResults = append(allChannelResults, channelsResponse.Results...)
+
+		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables || len(channelsResponse.Results) == 0 {
+			break
+		}
+		nextPageToken = channelsResponse.NextPageToken
+	}
+
+	if len(allChannelResults) > maxChannelVariables {
+		allChannelResults = allChannelResults[:maxChannelVariables]
+	}
+	return allChannelResults, nil
+}
+
+func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
+	// Nominal enforces unique DataScopeName per asset (CreateAssetDataScope conjure
+	// doc + DuplicateDataScopeNames error), so SearchChannels-exact-match returns
+	// at most one case-exact result. Pick the first match with usable metadata.
+	for _, channel := range channels {
+		if string(channel.Name) != channelName {
+			continue
+		}
+		entry := channelMetadataCacheEntry{
+			channelDataType: getChannelDataType(channel), // "" if ChannelMetadata.DataType is nil
+			unit:            getChannelUnit(channel),     // "" if Unit is nil
+		}
+		if entry.channelDataType == "" && entry.unit == "" {
+			continue
+		}
+		return entry, true
+	}
+	return channelMetadataCacheEntry{}, false
+}
+
+// lookupChannelMetadata returns a cached channel metadata entry if present and
+// not yet expired. Caller must apply the entry to its query model on hit.
+func (c *NominalCatalog) lookupChannelMetadata(cacheKey string) (channelMetadataCacheEntry, bool) {
+	c.channelMetadataCacheMu.Lock()
+	defer c.channelMetadataCacheMu.Unlock()
+	if c.channelMetadataCache == nil {
+		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
+	}
+	entry, ok := c.channelMetadataCache[cacheKey]
+	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
+		return channelMetadataCacheEntry{}, false
+	}
+	return entry, true
+}
+
+func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMetadataCacheEntry) {
+	c.channelMetadataCacheMu.Lock()
+	defer c.channelMetadataCacheMu.Unlock()
+	if c.channelMetadataCache == nil {
+		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
+	}
+	c.channelMetadataCache[cacheKey] = entry
 }
 
 // getChannelMetadataDescription extracts description from channel metadata
@@ -247,13 +431,12 @@ func getChannelDataType(channel datasourceapi.ChannelMetadata) string {
 	}
 }
 
-// collectDataSourceRidsForScope returns the parsed DataSource RIDs from every
-// data scope on the asset matching dataScopeName. Returns nil if no scopes match
-// or none have a parseable RID for a supported data source type.
-func collectDataSourceRidsForScope(asset *SingleAssetResponse, dataScopeName string) []rids.DataSourceRid {
+// DataSourceRidsForScope returns the parsed DataSource RIDs from data scopes on
+// the asset. An empty dataScopeName includes every supported scope.
+func (c *NominalCatalog) DataSourceRidsForScope(asset *SingleAssetResponse, dataScopeName string) []rids.DataSourceRid {
 	var out []rids.DataSourceRid
 	for _, scope := range asset.DataScopes {
-		if scope.DataScopeName != dataScopeName {
+		if dataScopeName != "" && scope.DataScopeName != dataScopeName {
 			continue
 		}
 		ridStr, ok := dataSourceRidFor(scope.DataSource)

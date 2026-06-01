@@ -11,10 +11,164 @@ import (
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
-	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
+
+type TemplateVariableCatalog struct {
+	nominal *NominalCatalog
+}
+
+func newTemplateVariableCatalog(nominal *NominalCatalog) *TemplateVariableCatalog {
+	return &TemplateVariableCatalog{nominal: nominal}
+}
+
+type metricFindValue struct {
+	Text  string `json:"text"`
+	Value string `json:"value"`
+}
+
+type assetsVariableRequest struct {
+	SearchText string `json:"searchText"`
+	MaxResults int    `json:"maxResults"`
+}
+
+type datascopesVariableRequest struct {
+	AssetRid string `json:"assetRid"`
+}
+
+type channelVariablesRequest struct {
+	AssetRid      string `json:"assetRid"`
+	DataScopeName string `json:"dataScopeName"`
+}
+
+type templateVariableCatalogErrorKind int
+
+const (
+	templateVariableAssetFetchError templateVariableCatalogErrorKind = iota
+	templateVariableChannelSearchError
+)
+
+type templateVariableCatalogError struct {
+	kind templateVariableCatalogErrorKind
+	err  error
+}
+
+func (e *templateVariableCatalogError) Error() string {
+	return e.err.Error()
+}
+
+func (e *templateVariableCatalogError) Unwrap() error {
+	return e.err
+}
+
+func hasUnresolvedTemplateVariable(values ...string) bool {
+	for _, value := range values {
+		if strings.Contains(value, "$") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *TemplateVariableCatalog) Assets(ctx context.Context, config *models.PluginSettings, req assetsVariableRequest) ([]metricFindValue, error) {
+	if req.MaxResults == 0 {
+		req.MaxResults = 500
+	}
+
+	assetResponses, err := c.nominal.FetchAssetsForVariable(ctx, config, req.SearchText, req.MaxResults)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]metricFindValue, 0)
+outer:
+	for _, resp := range assetResponses {
+		for _, asset := range resp.Results {
+			if c.nominal.HasSupportedDataSource(asset) {
+				result = append(result, metricFindValue{
+					Text:  asset.Title,
+					Value: asset.Rid,
+				})
+				if len(result) >= req.MaxResults {
+					break outer
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func (c *TemplateVariableCatalog) Datascopes(ctx context.Context, config *models.PluginSettings, req datascopesVariableRequest) ([]metricFindValue, error) {
+	if hasUnresolvedTemplateVariable(req.AssetRid) {
+		return []metricFindValue{}, nil
+	}
+
+	asset, err := c.nominal.FetchAssetByRid(ctx, config, req.AssetRid)
+	if err != nil {
+		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+	}
+	if asset == nil {
+		return []metricFindValue{}, nil
+	}
+
+	result := make([]metricFindValue, 0)
+	for _, scope := range asset.DataScopes {
+		if isSupportedDataSourceType(scope.DataSource.Type) {
+			result = append(result, metricFindValue{
+				Text:  scope.DataScopeName,
+				Value: scope.DataScopeName,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *models.PluginSettings, req channelVariablesRequest) ([]metricFindValue, error) {
+	if hasUnresolvedTemplateVariable(req.AssetRid, req.DataScopeName) {
+		return []metricFindValue{}, nil
+	}
+
+	asset, err := c.nominal.FetchAssetByRid(ctx, config, req.AssetRid)
+	if err != nil {
+		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+	}
+	if asset == nil {
+		return []metricFindValue{}, nil
+	}
+
+	dataSourceRids := c.nominal.DataSourceRidsForScope(asset, req.DataScopeName)
+	if len(dataSourceRids) == 0 {
+		return []metricFindValue{}, nil
+	}
+
+	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids)
+	if err != nil {
+		return nil, &templateVariableCatalogError{kind: templateVariableChannelSearchError, err: err}
+	}
+
+	seen := make(map[string]bool)
+	result := make([]metricFindValue, 0)
+	for _, channel := range allChannelResults {
+		name := string(channel.Name)
+		if !seen[name] {
+			seen[name] = true
+			result = append(result, metricFindValue{
+				Text:  name,
+				Value: name,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (d *Datasource) templateCatalog() *TemplateVariableCatalog {
+	if d.templateVariableCatalog == nil {
+		d.templateVariableCatalog = newTemplateVariableCatalog(d.catalog())
+	}
+	return d.templateVariableCatalog
+}
 
 // handleChannelsSearch handles searching for channels in a data source
 func (h *NominalResourceHandler) handleChannelsSearch(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
@@ -153,11 +307,7 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 
 	log.DefaultLogger.Debug("Assets variable request")
 
-	// Parse optional request body for search/filter parameters
-	var searchRequest struct {
-		SearchText string `json:"searchText"`
-		MaxResults int    `json:"maxResults"`
-	}
+	var searchRequest assetsVariableRequest
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
@@ -169,11 +319,6 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 				Body:    errBody,
 			})
 		}
-	}
-
-	// Set defaults
-	if searchRequest.MaxResults == 0 {
-		searchRequest.MaxResults = 500
 	}
 
 	// Load settings to get API key
@@ -188,8 +333,7 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 		})
 	}
 
-	// Fetch assets with pagination
-	assetResponses, err := d.fetchAssetsForVariable(ctx, config, searchRequest.SearchText, searchRequest.MaxResults)
+	result, err := d.templateCatalog().Assets(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch assets", err)
 		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch assets", err)})
@@ -200,51 +344,8 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 		})
 	}
 
-	// Transform to MetricFindValue format: { text: "name", value: "rid" }
-	// Filter to assets with supported data sources
-	result := make([]map[string]string, 0)
-outer:
-	for _, resp := range assetResponses {
-		for _, asset := range resp.Results {
-			hasSupported := false
-			for _, scope := range asset.DataScopes {
-				if isSupportedDataSourceType(scope.DataSource.Type) {
-					hasSupported = true
-					break
-				}
-			}
-			if hasSupported {
-				result = append(result, map[string]string{
-					"text":  asset.Title,
-					"value": asset.Rid,
-				})
-				if len(result) >= searchRequest.MaxResults {
-					break outer
-				}
-			}
-		}
-	}
-
-	responseBytes, err := json.Marshal(result)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to marshal assets variable response", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
-	}
-
 	log.DefaultLogger.Debug("Assets variable request successful", "assetCount", len(result))
-
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return jsonMarshalResponse(sender, http.StatusOK, result)
 }
 
 // handleDatascopesVariable handles the datascopes endpoint for Grafana template variables
@@ -258,10 +359,7 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 
 	log.DefaultLogger.Debug("Datascopes variable request")
 
-	// Parse request body for asset RID
-	var searchRequest struct {
-		AssetRid string `json:"assetRid"`
-	}
+	var searchRequest datascopesVariableRequest
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
@@ -285,17 +383,6 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		})
 	}
 
-	// Check if asset RID contains unresolved template variable
-	if strings.Contains(searchRequest.AssetRid, "$") {
-		log.DefaultLogger.Debug("Asset RID contains unresolved template variable", "assetRid", searchRequest.AssetRid)
-		// Return empty array - variable not yet resolved
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusOK,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    []byte("[]"),
-		})
-	}
-
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
@@ -308,8 +395,7 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		})
 	}
 
-	// Fetch asset by RID to get its datascopes
-	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
+	result, err := d.templateCatalog().Datascopes(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
 		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
@@ -320,48 +406,8 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		})
 	}
 
-	if asset == nil {
-		log.DefaultLogger.Debug("Asset not found", "assetRid", searchRequest.AssetRid)
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusOK,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    []byte("[]"),
-		})
-	}
-
-	// Transform datascopes to MetricFindValue format: { text: "name", value: "name" }
-	// Filter to supported data source types
-	result := make([]map[string]string, 0)
-	for _, scope := range asset.DataScopes {
-		dsType := scope.DataSource.Type
-		if isSupportedDataSourceType(dsType) {
-			result = append(result, map[string]string{
-				"text":  scope.DataScopeName,
-				"value": scope.DataScopeName,
-			})
-		}
-	}
-
-	responseBytes, err := json.Marshal(result)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to marshal datascopes response", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
-	}
-
 	log.DefaultLogger.Debug("Datascopes variable request successful", "datascopeCount", len(result))
-
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return jsonMarshalResponse(sender, http.StatusOK, result)
 }
 
 // handleChannelVariables handles the channelvariables endpoint for Grafana template variables
@@ -375,11 +421,7 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 
 	log.DefaultLogger.Debug("Channel variables request")
 
-	// Parse request body for asset RID and optional datascope filter
-	var searchRequest struct {
-		AssetRid      string `json:"assetRid"`
-		DataScopeName string `json:"dataScopeName"`
-	}
+	var searchRequest channelVariablesRequest
 
 	if req.Body != nil && len(req.Body) > 0 {
 		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
@@ -403,16 +445,6 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 		})
 	}
 
-	// Check if any parameter contains unresolved template variable
-	if strings.Contains(searchRequest.AssetRid, "$") || strings.Contains(searchRequest.DataScopeName, "$") {
-		log.DefaultLogger.Debug("Request contains unresolved template variable", "assetRid", searchRequest.AssetRid, "dataScopeName", searchRequest.DataScopeName)
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusOK,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    []byte("[]"),
-		})
-	}
-
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
@@ -425,116 +457,19 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 		})
 	}
 
-	// Fetch asset by RID to get its datascopes and datasource RIDs
-	asset, err := d.fetchAssetByRid(ctx, config, searchRequest.AssetRid)
+	result, err := d.templateCatalog().ChannelVariables(ctx, config, searchRequest)
 	if err != nil {
-		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
-	}
-
-	if asset == nil {
-		log.DefaultLogger.Debug("Asset not found", "assetRid", searchRequest.AssetRid)
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusOK,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    []byte("[]"),
-		})
-	}
-
-	// Extract datasource RIDs from the asset's datascopes, optionally filtered by dataScopeName
-	var dataSourceRids []rids.DataSourceRid
-	for _, scope := range asset.DataScopes {
-		// If a dataScopeName filter is provided, only include matching scopes
-		if searchRequest.DataScopeName != "" && scope.DataScopeName != searchRequest.DataScopeName {
-			continue
-		}
-
-		ridStr, ok := dataSourceRidFor(scope.DataSource)
-		if !ok {
-			continue
-		}
-
-		if parsedRid, err := rid.ParseRID(ridStr); err == nil {
-			dataSourceRids = append(dataSourceRids, rids.DataSourceRid(parsedRid))
-		} else {
-			log.DefaultLogger.Warn("Failed to parse data source RID", "rid", ridStr, "error", err)
-		}
-	}
-
-	if len(dataSourceRids) == 0 {
-		log.DefaultLogger.Debug("No data source RIDs found for asset", "assetRid", searchRequest.AssetRid)
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusOK,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    []byte("[]"),
-		})
-	}
-
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-
-	// Paginate through all channels. The SearchChannels API caps at 1000 per call,
-	// so we loop with NextPageToken to fetch the complete list for template variables.
-	const maxChannelVariables = 5000
-	pageSize := 1000
-	var allChannelResults []datasourceapi.ChannelMetadata
-	var nextPageToken *api.Token
-
-	for page := 0; ; page++ {
-		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
-			FuzzySearchText: "",
-			DataSources:     dataSourceRids,
-			PageSize:        &pageSize,
-			NextPageToken:   nextPageToken,
-		}
-
-		channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
-		if err != nil {
-			logErrorWithConjureFields("Channels search API call failed", err)
-			errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
+		if catalogErr, ok := err.(*templateVariableCatalogError); ok && catalogErr.kind == templateVariableAssetFetchError {
+			logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
+			errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
 			return sender.Send(&backend.CallResourceResponse{
 				Status:  http.StatusInternalServerError,
 				Headers: map[string][]string{"Content-Type": {"application/json"}},
 				Body:    errBody,
 			})
 		}
-
-		allChannelResults = append(allChannelResults, channelsResponse.Results...)
-
-		if channelsResponse.NextPageToken == nil || len(allChannelResults) >= maxChannelVariables || len(channelsResponse.Results) == 0 {
-			break
-		}
-		nextPageToken = channelsResponse.NextPageToken
-	}
-
-	// Hard cap: a page append could overshoot if maxChannelVariables is not a
-	// multiple of the page size, so truncate any excess here.
-	if len(allChannelResults) > maxChannelVariables {
-		allChannelResults = allChannelResults[:maxChannelVariables]
-	}
-
-	// Deduplicate channel names and return as MetricFindValue format
-	seen := make(map[string]bool)
-	result := make([]map[string]string, 0)
-	for _, channel := range allChannelResults {
-		name := string(channel.Name)
-		if !seen[name] {
-			seen[name] = true
-			result = append(result, map[string]string{
-				"text":  name,
-				"value": name,
-			})
-		}
-	}
-
-	responseBytes, err := json.Marshal(result)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to marshal channel variables response", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to marshal response"})
+		logErrorWithConjureFields("Channels search API call failed", err)
+		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
 		return sender.Send(&backend.CallResourceResponse{
 			Status:  http.StatusInternalServerError,
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
@@ -543,12 +478,5 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 	}
 
 	log.DefaultLogger.Debug("Channel variables request successful", "channelCount", len(result))
-
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return jsonMarshalResponse(sender, http.StatusOK, result)
 }

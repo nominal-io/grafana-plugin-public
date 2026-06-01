@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -43,13 +42,6 @@ const maxBatchComputeSubrequests = 300
 
 // defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
-
-// channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
-type channelMetadataCacheEntry struct {
-	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
-	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
-	fetchedAt       time.Time
-}
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -89,14 +81,14 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 
 	ds := &Datasource{
-		settings:             settings,
-		resourceHTTPClient:   resourceHTTPClient,
-		authService:          authapi.NewAuthenticationServiceV2Client(conjureClient),
-		computeService:       computeapi1.NewComputeServiceClient(conjureClient),
-		datasourceService:    datasourceservice.NewDataSourceServiceClient(conjureClient),
-		assetCache:           make(map[string]assetCacheEntry),
-		channelMetadataCache: make(map[string]channelMetadataCacheEntry),
+		settings:           settings,
+		resourceHTTPClient: resourceHTTPClient,
+		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
+		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
+		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
 	}
+	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
 
 	return ds, nil
 }
@@ -108,17 +100,10 @@ type Datasource struct {
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 
-	// assetCache stores asset metadata with a TTL to avoid
-	// redundant HTTP calls across queries and dashboard refreshes.
-	assetCacheMu sync.Mutex
-	assetCache   map[string]assetCacheEntry
-
-	// channelMetadataCache caches SearchChannels inference results (data type + unit) with a TTL
-	// to avoid redundant HTTP calls across queries and dashboard refreshes.
-	channelMetadataCacheMu sync.Mutex
-	channelMetadataCache   map[string]channelMetadataCacheEntry
-
 	resourceHTTPClient *http.Client
+
+	nominalCatalog          *NominalCatalog
+	templateVariableCatalog *TemplateVariableCatalog
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
