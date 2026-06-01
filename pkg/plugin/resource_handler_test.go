@@ -87,6 +87,62 @@ func TestCallResourceRouting(t *testing.T) {
 			body:         []byte(`not json`),
 			expectStatus: http.StatusBadRequest,
 		},
+		// Connection-test routing: slash/no-slash forms and the connection-test alias.
+		{
+			name:         "POST test routes to connection test",
+			path:         "test",
+			method:       "POST",
+			expectStatus: http.StatusOK,
+		},
+		{
+			name:         "POST /test routes to connection test",
+			path:         "/test",
+			method:       "POST",
+			expectStatus: http.StatusOK,
+		},
+		{
+			name:         "POST connection-test alias",
+			path:         "connection-test",
+			method:       "POST",
+			expectStatus: http.StatusOK,
+		},
+		{
+			name:         "POST /connection-test alias with slash",
+			path:         "/connection-test",
+			method:       "POST",
+			expectStatus: http.StatusOK,
+		},
+		// GET 405: channels is only covered here, plus the leading-slash variants of each route.
+		{
+			name:         "GET /channels returns 405",
+			path:         "channels",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /channels with slash returns 405",
+			path:         "/channels",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /assets with slash returns 405",
+			path:         "/assets",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /datascopes with slash returns 405",
+			path:         "/datascopes",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:         "GET /channelvariables with slash returns 405",
+			path:         "/channelvariables",
+			method:       "GET",
+			expectStatus: http.StatusMethodNotAllowed,
+		},
 	}
 
 	for _, tt := range tests {
@@ -102,57 +158,6 @@ func TestCallResourceRouting(t *testing.T) {
 			}
 			if tt.expectContains != "" && !strings.Contains(string(resp.Body), tt.expectContains) {
 				t.Errorf("body %q does not contain %q", string(resp.Body), tt.expectContains)
-			}
-		})
-	}
-}
-
-func TestCallResourceRouteVariants(t *testing.T) {
-	mockAuth := &mockAuthService{
-		getMyProfileResponse: authapi.UserV2{
-			Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
-			DisplayName: "Test User",
-		},
-	}
-
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"proxied":true}`))
-	}))
-	defer proxyServer.Close()
-
-	ds := newTestDatasource(proxyServer.URL, mockAuth, &mockDatasourceService{})
-
-	tests := []struct {
-		name       string
-		path       string
-		method     string
-		body       []byte
-		wantStatus int
-	}{
-		{name: "test without slash", path: "test", method: "POST", wantStatus: http.StatusOK},
-		{name: "test with slash", path: "/test", method: "POST", wantStatus: http.StatusOK},
-		{name: "connection-test alias", path: "connection-test", method: "POST", wantStatus: http.StatusOK},
-		{name: "connection-test alias with slash", path: "/connection-test", method: "POST", wantStatus: http.StatusOK},
-		{name: "channels without slash", path: "channels", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "channels with slash", path: "/channels", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "assets without slash", path: "assets", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "assets with slash", path: "/assets", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "datascopes without slash", path: "datascopes", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "datascopes with slash", path: "/datascopes", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "channelvariables without slash", path: "channelvariables", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-		{name: "channelvariables with slash", path: "/channelvariables", method: "GET", wantStatus: http.StatusMethodNotAllowed},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{
-				Path:   tt.path,
-				Method: tt.method,
-				Body:   tt.body,
-			})
-			if resp.Status != tt.wantStatus {
-				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.wantStatus, string(resp.Body))
 			}
 		})
 	}
