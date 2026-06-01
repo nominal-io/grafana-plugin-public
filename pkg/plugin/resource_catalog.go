@@ -383,6 +383,11 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		})
 	}
 
+	if hasUnresolvedTemplateVariable(searchRequest.AssetRid) {
+		log.DefaultLogger.Debug("Asset RID contains unresolved template variable", "assetRid", searchRequest.AssetRid)
+		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
+	}
+
 	// Load settings to get API key
 	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
@@ -443,6 +448,11 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 			Headers: map[string][]string{"Content-Type": {"application/json"}},
 			Body:    errBody,
 		})
+	}
+
+	if hasUnresolvedTemplateVariable(searchRequest.AssetRid, searchRequest.DataScopeName) {
+		log.DefaultLogger.Debug("Request contains unresolved template variable", "assetRid", searchRequest.AssetRid, "dataScopeName", searchRequest.DataScopeName)
+		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 
 	// Load settings to get API key

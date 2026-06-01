@@ -490,6 +490,21 @@ func TestHandleDatascopesVariable(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolved template variable skips settings load", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.settings.JSONData = []byte(`{`)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": "$asset"})
+		req := &backend.CallResourceRequest{Path: "datascopes", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
 	t.Run("asset not found returns empty array 200", func(t *testing.T) {
 		// Server with empty asset map — asset won't be found
 		server := newTestAssetServer(t, map[string]SingleAssetResponse{}, nil)
@@ -683,6 +698,21 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
+	t.Run("unresolved template variable in assetRid skips settings load", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.settings.JSONData = []byte(`{`)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": "${asset}"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
 	t.Run("unresolved template variable in dataScopeName returns empty 200", func(t *testing.T) {
 		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 
@@ -691,6 +721,21 @@ func TestHandleChannelVariables(t *testing.T) {
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.Status)
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("unresolved template variable in dataScopeName skips settings load", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.settings.JSONData = []byte(`{`)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "dataScopeName": "$scope"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
 		if string(resp.Body) != "[]" {
 			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
