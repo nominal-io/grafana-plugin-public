@@ -259,6 +259,8 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	return allResults, nil
 }
 
+// catalog lazily builds the NominalCatalog, snapshotting resourceHTTPClient and
+// datasourceService on first use. Mutate either field before the first call.
 func (d *Datasource) catalog() *NominalCatalog {
 	if d.nominalCatalog == nil {
 		d.nominalCatalog = newNominalCatalog(d.resourceHTTPClient, d.datasourceService)

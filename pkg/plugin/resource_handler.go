@@ -208,10 +208,7 @@ func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *ba
 		return fmt.Errorf("failed to load settings: %v", err)
 	}
 
-	apiKey := ""
-	if config.Secrets != nil {
-		apiKey = config.Secrets.ApiKey
-	}
+	apiKey := config.Secrets.ApiKey
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" || apiKey == "" {
 		return sender.Send(&backend.CallResourceResponse{

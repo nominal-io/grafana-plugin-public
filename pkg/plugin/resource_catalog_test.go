@@ -172,6 +172,87 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 // CallResource handler tests
 // ============================================================================
 
+func TestHandleChannelsSearch(t *testing.T) {
+	dsRid := "ri.scout.main.data-source.ds1"
+
+	// Pins the empty-result shape to {"channels":[]}, not {"channels":null}, so a
+	// future edit can't silently revert to a nil slice. (The frontend tolerates both.)
+	t.Run("empty results return empty array not null", func(t *testing.T) {
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: nil},
+		}
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]any{"dataSourceRids": []string{dsRid}, "searchText": "no-match"})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != `{"channels":[]}` {
+			t.Errorf("body = %q, want %q", string(resp.Body), `{"channels":[]}`)
+		}
+	})
+
+	t.Run("maps channel fields into name/dataSource/description/dataType", func(t *testing.T) {
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+				},
+			},
+		}
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]any{"dataSourceRids": []string{dsRid}, "searchText": "temp"})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+
+		var result struct {
+			Channels []map[string]any `json:"channels"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			t.Fatalf("failed to parse response: %v", err)
+		}
+		if len(result.Channels) != 1 {
+			t.Fatalf("expected 1 channel, got %d: %v", len(result.Channels), result.Channels)
+		}
+		ch := result.Channels[0]
+		for _, key := range []string{"name", "dataSource", "description", "dataType"} {
+			if _, ok := ch[key]; !ok {
+				t.Errorf("channel result missing %q key: %v", key, ch)
+			}
+		}
+		if ch["name"] != "temperature" {
+			t.Errorf("name = %v, want %q", ch["name"], "temperature")
+		}
+	})
+
+	t.Run("rejects non-POST", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "GET"}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want 405; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+
+	t.Run("rejects request with no valid data source RIDs", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		body, _ := json.Marshal(map[string]any{"dataSourceRids": []string{"not-a-rid"}, "searchText": "x"})
+		req := &backend.CallResourceRequest{Path: "channels", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("status = %d, want 400; body = %s", resp.Status, string(resp.Body))
+		}
+	})
+}
+
 func TestHandleAssetsVariable(t *testing.T) {
 	t.Run("returns assets with dataset or connection data sources in text/value format", func(t *testing.T) {
 		searchResults := []AssetResponse{
