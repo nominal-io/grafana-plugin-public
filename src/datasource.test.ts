@@ -9,14 +9,22 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: jest.fn(),
 }));
 
-const mockTemplateSrv = { replace: jest.fn((v: string) => v) };
+type TemplateScopedVars = Record<string, { value?: unknown }>;
+
+const replaceScopedVariable = (value: string, scopedVars?: TemplateScopedVars) => {
+  const variableName = value.match(/^\$\{?([^}]+)\}?$/)?.[1];
+  const scopedValue = variableName ? scopedVars?.[variableName]?.value : undefined;
+  return scopedValue === undefined ? value : String(scopedValue);
+};
+
+const mockTemplateSrv = { replace: jest.fn(replaceScopedVariable) };
 const mockBackendSrv = { post: jest.fn() };
 
 beforeEach(() => {
   jest.clearAllMocks();
   (getTemplateSrv as jest.Mock).mockReturnValue(mockTemplateSrv);
   (getBackendSrv as jest.Mock).mockReturnValue(mockBackendSrv);
-  mockTemplateSrv.replace.mockImplementation((v: string) => v);
+  mockTemplateSrv.replace.mockImplementation(replaceScopedVariable);
 });
 
 function createDataSource(): DataSource {
@@ -107,6 +115,25 @@ describe('metricFindQuery routing', () => {
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/assets'),
       expect.objectContaining({ searchText: expectedSearch })
+    );
+  });
+
+  it.each([
+    ['assets($__searchFilter)', 'motor'],
+    ['assets:$__searchFilter', 'motor'],
+  ])('query %j passes Grafana dynamic search filter %j', async (query, expectedSearch) => {
+    await ds.metricFindQuery(query, { searchFilter: expectedSearch });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/assets'),
+      expect.objectContaining({ searchText: expectedSearch })
+    );
+  });
+
+  it('query "assets($__searchFilter)" uses unfiltered search when dropdown text is empty', async () => {
+    await ds.metricFindQuery('assets($__searchFilter)');
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/assets'),
+      expect.objectContaining({ searchText: '' })
     );
   });
 

@@ -2,7 +2,9 @@ import {
   DataSourceInstanceSettings,
   CoreApp,
   ScopedVars,
-  MetricFindValue
+  MetricFindValue,
+  LegacyMetricFindQueryOptions,
+  getSearchFilterScopedVar,
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
@@ -59,10 +61,13 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    */
-  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+  async metricFindQuery(query: string, options?: LegacyMetricFindQueryOptions): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
-    const scopedVars = options?.scopedVars;
+    const scopedVars = {
+      ...options?.scopedVars,
+      ...getSearchFilterScopedVar({ query: trimmedQuery, wildcardChar: '', options }),
+    };
 
     // Handle channels query: channels(<assetRid>) or channels(<assetRid>, <dataScopeName>)
     const channelsMatch = trimmedQuery.match(/^channels\(([^,)]+)(?:,\s*([^)]+))?\)$/i);
