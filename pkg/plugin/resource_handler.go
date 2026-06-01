@@ -129,56 +129,29 @@ func (h *NominalResourceHandler) handleTestConnection(ctx context.Context, req *
 	defer cancel()
 
 	// Load settings to get API key and base URL
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Test connection: failed to load settings", "error", err)
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Failed to load settings"}`),
-		})
+	config, ok, err := loadResourceSettings(d.settings, sender, "Test connection: failed to load settings")
+	if !ok {
+		return err
 	}
 
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		log.DefaultLogger.Debug("Test connection: missing base URL")
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Base URL is required"}`),
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "Base URL is required")
 	}
 
 	if config.Secrets.ApiKey == "" {
 		log.DefaultLogger.Debug("Test connection: missing API key")
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "API key is required"}`),
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "API key is required")
 	}
 
 	// Test connection using conjure client with timeout
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
-
 	if err != nil {
 		logErrorWithConjureFields("Test connection failed", err)
 		message, statusCode := classifyConnectionError(err)
-		errBody, _ := json.Marshal(map[string]string{"error": message})
-		return sender.Send(&backend.CallResourceResponse{
-			Status: statusCode,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: errBody,
-		})
+		return jsonErrorResponse(sender, statusCode, message)
 	}
 
 	log.DefaultLogger.Debug("Test connection successful", "profileRid", profile.Rid)
@@ -188,14 +161,7 @@ func (h *NominalResourceHandler) handleTestConnection(ctx context.Context, req *
 		"status":  "success",
 		"message": "Successfully connected to Nominal API and retrieved user profile",
 	}
-	responseBytes, _ := json.Marshal(response)
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return jsonMarshalResponse(sender, http.StatusOK, response)
 }
 
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection.

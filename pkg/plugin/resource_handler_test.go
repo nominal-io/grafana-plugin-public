@@ -178,6 +178,12 @@ func TestCallResourceProxyPaths(t *testing.T) {
 			wantReqPath:  "nominal/scout/v1/search-assets",
 		},
 		{
+			name:         "leading slash nominal prefix strips only nominal segment",
+			requestPath:  "/nominal/scout/v1/search-assets",
+			wantUpstream: "/scout/v1/search-assets",
+			wantReqPath:  "/nominal/scout/v1/search-assets",
+		},
+		{
 			name:         "unknown path proxies normalized path",
 			requestPath:  "/scout/v1/raw",
 			wantUpstream: "/scout/v1/raw",
