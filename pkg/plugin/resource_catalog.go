@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -40,6 +39,22 @@ type datascopesVariableRequest struct {
 type channelVariablesRequest struct {
 	AssetRid      string `json:"assetRid"`
 	DataScopeName string `json:"dataScopeName"`
+}
+
+type channelsSearchRequest struct {
+	DataSourceRids []string `json:"dataSourceRids"`
+	SearchText     string   `json:"searchText"`
+}
+
+type channelSearchResult struct {
+	Name        string `json:"name"`
+	DataSource  string `json:"dataSource"`
+	Description string `json:"description"`
+	DataType    string `json:"dataType"`
+}
+
+type channelsSearchResponse struct {
+	Channels []channelSearchResult `json:"channels"`
 }
 
 type templateVariableCatalogErrorKind int
@@ -180,34 +195,14 @@ func (h *NominalResourceHandler) handleChannelsSearch(ctx context.Context, req *
 		return err
 	}
 
-	// Parse request body
-	var searchRequest struct {
-		DataSourceRids []string `json:"dataSourceRids"`
-		SearchText     string   `json:"searchText"`
+	var searchRequest channelsSearchRequest
+	if ok, err := decodeResourceJSON(req.Body, sender, &searchRequest, "Failed to parse channels search request body"); !ok {
+		return err
 	}
 
-	if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-		log.DefaultLogger.Error("Failed to parse channels search request body", "error", err)
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Invalid request body"}`),
-		})
-	}
-
-	// Load settings to get API key
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to load settings for channels search", "error", err)
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusInternalServerError,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Failed to load settings"}`),
-		})
+	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for channels search")
+	if !ok {
+		return err
 	}
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
@@ -225,13 +220,7 @@ func (h *NominalResourceHandler) handleChannelsSearch(ctx context.Context, req *
 
 	if len(dataSourceRids) == 0 {
 		log.DefaultLogger.Warn("No valid data source RIDs provided")
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "No valid data source RIDs provided"}`),
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "No valid data source RIDs provided")
 	}
 
 	// Build the search request with correct field names
@@ -246,54 +235,21 @@ func (h *NominalResourceHandler) handleChannelsSearch(ctx context.Context, req *
 	channelsResponse, err := d.datasourceService.SearchChannels(ctx, bearerToken, searchChannelsRequest)
 	if err != nil {
 		logErrorWithConjureFields("Channels search API call failed", err)
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusInternalServerError,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Channels search failed", err))
 	}
 
-	// Transform the API response to the expected format
-	var channels []map[string]interface{}
+	channels := make([]channelSearchResult, 0, len(channelsResponse.Results))
 	for _, channel := range channelsResponse.Results {
-		channelMap := map[string]interface{}{
-			"name":        string(channel.Name),
-			"dataSource":  channel.DataSource.String(),
-			"description": getChannelMetadataDescription(channel),
-			"dataType":    getChannelDataType(channel),
-		}
-		channels = append(channels, channelMap)
-	}
-
-	apiResponse := map[string]interface{}{
-		"channels": channels,
-	}
-
-	// Convert response to JSON
-	responseBytes, err := json.Marshal(apiResponse)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to marshal channels search response", "error", err)
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusInternalServerError,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Failed to marshal response"}`),
+		channels = append(channels, channelSearchResult{
+			Name:        string(channel.Name),
+			DataSource:  channel.DataSource.String(),
+			Description: getChannelMetadataDescription(channel),
+			DataType:    getChannelDataType(channel),
 		})
 	}
 
 	log.DefaultLogger.Debug("Channels search successful", "channelCount", len(channels))
-
-	return sender.Send(&backend.CallResourceResponse{
-		Status: http.StatusOK,
-		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-		},
-		Body: responseBytes,
-	})
+	return jsonMarshalResponse(sender, http.StatusOK, channelsSearchResponse{Channels: channels})
 }
 
 // handleAssetsVariable handles the assets endpoint for Grafana template variables
@@ -309,39 +265,19 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 
 	var searchRequest assetsVariableRequest
 
-	if req.Body != nil && len(req.Body) > 0 {
-		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Error("Failed to parse assets variable request body", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
-			return sender.Send(&backend.CallResourceResponse{
-				Status:  http.StatusBadRequest,
-				Headers: map[string][]string{"Content-Type": {"application/json"}},
-				Body:    errBody,
-			})
-		}
+	if ok, err := decodeOptionalResourceJSON(req, sender, &searchRequest, "Failed to parse assets variable request body"); !ok {
+		return err
 	}
 
-	// Load settings to get API key
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to load settings for assets variable", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for assets variable")
+	if !ok {
+		return err
 	}
 
 	result, err := d.templateCatalog().Assets(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch assets", err)
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch assets", err)})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch assets", err))
 	}
 
 	log.DefaultLogger.Debug("Assets variable request successful", "assetCount", len(result))
@@ -361,26 +297,13 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 
 	var searchRequest datascopesVariableRequest
 
-	if req.Body != nil && len(req.Body) > 0 {
-		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Error("Failed to parse datascopes request body", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
-			return sender.Send(&backend.CallResourceResponse{
-				Status:  http.StatusBadRequest,
-				Headers: map[string][]string{"Content-Type": {"application/json"}},
-				Body:    errBody,
-			})
-		}
+	if ok, err := decodeOptionalResourceJSON(req, sender, &searchRequest, "Failed to parse datascopes request body"); !ok {
+		return err
 	}
 
 	// Validate asset RID is provided
 	if searchRequest.AssetRid == "" {
-		errBody, _ := json.Marshal(map[string]string{"error": "assetRid is required"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusBadRequest,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "assetRid is required")
 	}
 
 	if hasUnresolvedTemplateVariable(searchRequest.AssetRid) {
@@ -388,27 +311,15 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 
-	// Load settings to get API key
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to load settings for datascopes variable", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for datascopes variable")
+	if !ok {
+		return err
 	}
 
 	result, err := d.templateCatalog().Datascopes(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch asset", err))
 	}
 
 	log.DefaultLogger.Debug("Datascopes variable request successful", "datascopeCount", len(result))
@@ -428,26 +339,13 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 
 	var searchRequest channelVariablesRequest
 
-	if req.Body != nil && len(req.Body) > 0 {
-		if err := json.Unmarshal(req.Body, &searchRequest); err != nil {
-			log.DefaultLogger.Error("Failed to parse channel variables request body", "error", err)
-			errBody, _ := json.Marshal(map[string]string{"error": "Invalid request body"})
-			return sender.Send(&backend.CallResourceResponse{
-				Status:  http.StatusBadRequest,
-				Headers: map[string][]string{"Content-Type": {"application/json"}},
-				Body:    errBody,
-			})
-		}
+	if ok, err := decodeOptionalResourceJSON(req, sender, &searchRequest, "Failed to parse channel variables request body"); !ok {
+		return err
 	}
 
 	// Validate asset RID is provided
 	if searchRequest.AssetRid == "" {
-		errBody, _ := json.Marshal(map[string]string{"error": "assetRid is required"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusBadRequest,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "assetRid is required")
 	}
 
 	if hasUnresolvedTemplateVariable(searchRequest.AssetRid, searchRequest.DataScopeName) {
@@ -455,36 +353,19 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 
-	// Load settings to get API key
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to load settings for channel variables", "error", err)
-		errBody, _ := json.Marshal(map[string]string{"error": "Failed to load settings"})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for channel variables")
+	if !ok {
+		return err
 	}
 
 	result, err := d.templateCatalog().ChannelVariables(ctx, config, searchRequest)
 	if err != nil {
 		if catalogErr, ok := err.(*templateVariableCatalogError); ok && catalogErr.kind == templateVariableAssetFetchError {
 			logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
-			errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Failed to fetch asset", err)})
-			return sender.Send(&backend.CallResourceResponse{
-				Status:  http.StatusInternalServerError,
-				Headers: map[string][]string{"Content-Type": {"application/json"}},
-				Body:    errBody,
-			})
+			return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch asset", err))
 		}
 		logErrorWithConjureFields("Channels search API call failed", err)
-		errBody, _ := json.Marshal(map[string]string{"error": appendInstanceID("Channels search failed", err)})
-		return sender.Send(&backend.CallResourceResponse{
-			Status:  http.StatusInternalServerError,
-			Headers: map[string][]string{"Content-Type": {"application/json"}},
-			Body:    errBody,
-		})
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Channels search failed", err))
 	}
 
 	log.DefaultLogger.Debug("Channel variables request successful", "channelCount", len(result))

@@ -85,6 +85,34 @@ func jsonMarshalResponse(sender backend.CallResourceResponseSender, status int, 
 	return jsonBytesResponse(sender, status, responseBytes)
 }
 
+func jsonErrorResponse(sender backend.CallResourceResponseSender, status int, message string) error {
+	return jsonMarshalResponse(sender, status, map[string]string{"error": message})
+}
+
+func decodeResourceJSON(body []byte, sender backend.CallResourceResponseSender, target any, logMessage string) (bool, error) {
+	if err := json.Unmarshal(body, target); err != nil {
+		log.DefaultLogger.Error(logMessage, "error", err)
+		return false, jsonErrorResponse(sender, http.StatusBadRequest, "Invalid request body")
+	}
+	return true, nil
+}
+
+func decodeOptionalResourceJSON(req *backend.CallResourceRequest, sender backend.CallResourceResponseSender, target any, logMessage string) (bool, error) {
+	if req.Body == nil || len(req.Body) == 0 {
+		return true, nil
+	}
+	return decodeResourceJSON(req.Body, sender, target, logMessage)
+}
+
+func loadResourceSettings(settings backend.DataSourceInstanceSettings, sender backend.CallResourceResponseSender, logMessage string) (*models.PluginSettings, bool, error) {
+	config, err := models.LoadPluginSettings(settings)
+	if err != nil {
+		log.DefaultLogger.Error(logMessage, "error", err)
+		return nil, false, jsonErrorResponse(sender, http.StatusInternalServerError, "Failed to load settings")
+	}
+	return config, true, nil
+}
+
 func requirePost(req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) (bool, error) {
 	if req.Method == http.MethodPost {
 		return true, nil
