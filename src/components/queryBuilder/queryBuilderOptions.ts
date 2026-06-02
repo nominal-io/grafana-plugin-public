@@ -1,7 +1,7 @@
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
-import type { AssetOption, ChannelOption, DataScopeOption } from './queryBuilderTypes';
+import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
 export const NUMERIC_AGG_OPTIONS = [
   { label: 'Mean', value: AggregationType.Mean },
@@ -130,6 +130,25 @@ export function getChannelSelectValue({
     value: channel.raw,
     ...(channelDataType ? { dataType: channelDataType } : {}),
   };
+}
+
+export function toChannelOption(selection: PickerOption | ChannelOption): ChannelOption {
+  const value = selection.value || '';
+  const dataType = 'dataType' in selection ? selection.dataType : undefined;
+
+  return {
+    label: selection.label || value,
+    value,
+    ...(dataType ? { dataType } : {}),
+  };
+}
+
+export function toAggregationComboboxOptions(options: AggregationOption[]): PickerOption[] {
+  return options.map((option) => ({
+    label: option.label,
+    value: option.value,
+    ...(option.description ? { description: option.description } : {}),
+  }));
 }
 
 export function getAggregationValue(aggregations: string[] | undefined): string[] {
