@@ -1,4 +1,3 @@
-import type { SelectableValue } from '@grafana/data';
 import { DEFAULT_AGGREGATIONS, AggregationType } from '../../types';
 import type { Asset } from '../../utils/api';
 import { resolveTemplateValue } from './templateResolution';
@@ -8,7 +7,7 @@ import {
   buildDataScopeOptions,
   channelsToOptions,
   getAggregationValue,
-  getAssetSelectValue,
+  getAssetPickerValue,
   getChannelPrefixIcon,
   getChannelSelectValue,
   NUMERIC_AGG_OPTIONS,
@@ -36,18 +35,28 @@ const assetB: Asset = {
 };
 
 describe('queryBuilderOptions', () => {
-  it('inserts the selected asset when it is not in asset search results', () => {
+  it('inserts asset combobox options with selected assets and descriptions', () => {
     const options = buildAssetOptions({
       assets: [assetA],
       selectedAsset: assetB,
       assetRid: resolveTemplateValue(assetB.rid, (value) => value),
     });
 
-    expect(options[0]).toMatchObject({ label: 'Asset B', value: assetB.rid });
-    expect(options[1]).toMatchObject({ label: 'Asset A', value: assetA.rid });
+    expect(options).toEqual([
+      {
+        label: 'Asset B',
+        value: assetB.rid,
+        description: 'flight - 1 data scope(s)',
+      },
+      {
+        label: 'Asset A',
+        value: assetA.rid,
+        description: 'flight - 1 data scope(s)',
+      },
+    ]);
   });
 
-  it('adds a template-variable asset option with resolved title when available', () => {
+  it('adds a template-variable asset combobox option with resolved title when available', () => {
     const options = buildAssetOptions({
       assets: [],
       selectedAsset: assetA,
@@ -55,18 +64,18 @@ describe('queryBuilderOptions', () => {
     });
 
     expect(options[0]).toEqual({
-      label: '$asset → Asset A',
+      label: '$asset \u2192 Asset A',
       value: '$asset',
       description: 'Template variable',
     });
   });
 
-  it('returns variable select value unchanged and direct select value only when present', () => {
-    const options: Array<SelectableValue<string>> = [{ label: 'Asset A', value: assetA.rid }];
+  it('returns variable picker value unchanged and direct picker value only when present', () => {
+    const options = [{ label: 'Asset A', value: assetA.rid }];
 
-    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), assetOptions: options })).toBe('$asset');
-    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetA.rid, (value) => value), assetOptions: options })).toBe(assetA.rid);
-    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetB.rid, (value) => value), assetOptions: options })).toBe('');
+    expect(getAssetPickerValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), assetOptions: options })).toBe('$asset');
+    expect(getAssetPickerValue({ assetRid: resolveTemplateValue(assetA.rid, (value) => value), assetOptions: options })).toBe(assetA.rid);
+    expect(getAssetPickerValue({ assetRid: resolveTemplateValue(assetB.rid, (value) => value), assetOptions: options })).toBe('');
   });
 
   it('adds data scope template-variable labels only when the resolved scope is valid', () => {

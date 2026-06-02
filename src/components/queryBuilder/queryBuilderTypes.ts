@@ -4,7 +4,10 @@ import type { Asset } from '../../utils/api';
 
 export type AssetInputMethod = 'search' | 'direct';
 
-export type ChannelOption = ComboboxOption<string> & { dataType?: string };
+export type PickerOption = ComboboxOption<string>;
+export type AssetOption = PickerOption;
+export type DataScopeOption = PickerOption;
+export type ChannelOption = PickerOption & { dataType?: string };
 export type ChannelOptionsLoader = (searchText: string) => Promise<ChannelOption[]>;
 
 export type AggregationDisplayKind = 'string' | 'log' | 'numeric';
@@ -24,9 +27,9 @@ export interface QueryBuilderState {
   selectedAsset: Asset | null;
   assetSearchResultCount: number;
   selectedAssetSupportedScopeCount: number;
-  assetOptions: Array<SelectableValue<string>>;
+  assetOptions: AssetOption[];
   assetSelectValue: string;
-  dataScopeOptions: Array<SelectableValue<string>>;
+  dataScopeOptions: DataScopeOption[];
   channelOptions: ChannelOptionsLoader;
   channelSelectValue: ChannelOption | null;
   isLoadingAssets: boolean;
@@ -44,7 +47,7 @@ export interface QueryBuilderCommands {
   changeAssetInputMethod: (method: AssetInputMethod) => void;
   changeAssetSearchQuery: (searchQuery: string) => void;
   runAssetSearch: () => void;
-  selectAsset: (selection: SelectableValue<string>) => void;
+  selectAsset: (assetRid: string) => void;
   changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
   selectChannel: (selection: ChannelOption) => void;
