@@ -1,13 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppEvents, type SelectableValue } from '@grafana/data';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
-import { debounce } from 'lodash';
 import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
 import type { TemplateValueResolution } from './templateResolution';
-import type { AssetInputMethod, ChannelOption } from './queryBuilderTypes';
+import type { AssetInputMethod, ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
   query: NominalQuery;
@@ -21,11 +20,8 @@ interface UseChannelOptionsArgs {
 }
 
 export interface ChannelOptionsModel {
-  channelOptions: ChannelOption[];
-  channelSelectValue: SelectableValue<string> | null;
-  isLoadingChannels: boolean;
-  searchChannels: (searchText: string) => void;
-  openChannelMenu: () => void;
+  channelOptions: ChannelOptionsLoader;
+  channelSelectValue: ChannelOption | null;
   selectChannel: (selection: ChannelOption) => void;
 }
 
@@ -46,25 +42,42 @@ export function useChannelOptions({
   datasourceUrl,
   markInteracted,
 }: UseChannelOptionsArgs): ChannelOptionsModel {
-  const [channelResults, setChannelResults] = useState<ChannelOption[]>([]);
-  const [isLoadingChannels, setIsLoadingChannels] = useState(false);
-
   const queryRef = useRef(query);
   queryRef.current = query;
   const isMountedRef = useRef(true);
+  const channelOptionsRequestId = useRef(0);
 
-  // Dynamically search channels via backend; called by the Select loadOptions prop.
-  const loadChannelOptions = useCallback(
+  const channelResolutionSnapshot = useMemo(
+    () => ({
+      raw: channelResolution.raw,
+      resolved: channelResolution.resolved,
+      hasTemplate: channelResolution.hasTemplate,
+      isResolved: channelResolution.isResolved,
+    }),
+    [
+      channelResolution.raw,
+      channelResolution.resolved,
+      channelResolution.hasTemplate,
+      channelResolution.isResolved,
+    ]
+  );
+
+  const channelOptions = useCallback<ChannelOptionsLoader>(
     async (searchText: string): Promise<ChannelOption[]> => {
+      const requestId = ++channelOptionsRequestId.current;
       if (!selectedAsset) {
         return [];
       }
       const dataSourceRids = resolveDataSourceRids(selectedAsset, dataScopeResolution.resolved || undefined);
       try {
         const channels = await searchChannels(datasourceUrl, dataSourceRids, searchText);
-        return channelsToOptions(channels);
+        return buildChannelOptions({
+          channelResults: channelsToOptions(channels),
+          channel: channelResolutionSnapshot,
+        });
       } catch {
-        if (isMountedRef.current) {
+        // Only the latest loader request may emit alerts; stale failures can belong to an old asset/scope/search.
+        if (isMountedRef.current && channelOptionsRequestId.current === requestId) {
           notifyError(
             'Unable to load Nominal channels',
             'Check the selected asset, data scope, and data source configuration.'
@@ -73,55 +86,8 @@ export function useChannelOptions({
         return [];
       }
     },
-    [selectedAsset, datasourceUrl, dataScopeResolution.resolved]
+    [channelResolutionSnapshot, dataScopeResolution.resolved, datasourceUrl, selectedAsset]
   );
-
-  // Keep a ref so the stable debounce below always calls the latest closure without
-  // needing to be recreated (and without leaving stale pending timeouts behind).
-  const loadChannelOptionsRef = useRef(loadChannelOptions);
-  loadChannelOptionsRef.current = loadChannelOptions;
-
-  // Debounced channel search that populates state (synchronous options) instead of
-  // returning a Promise. This allows allowCustomValue to work on the Select.
-  // The counter guard discards late responses so a slow earlier request can't overwrite newer results.
-  const channelSearchId = useRef(0);
-  const debouncedChannelSearch = useRef(
-    debounce((searchText: string) => {
-      const id = ++channelSearchId.current;
-      setIsLoadingChannels(true);
-      loadChannelOptionsRef
-        .current(searchText)
-        .then((results) => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setChannelResults(results);
-          }
-        })
-        .catch(() => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setChannelResults([]);
-          }
-        })
-        .finally(() => {
-          if (isMountedRef.current && channelSearchId.current === id) {
-            setIsLoadingChannels(false);
-          }
-        });
-    }, 300)
-  ).current;
-
-  const openChannelMenu = useCallback(() => {
-    debouncedChannelSearch('');
-  }, [debouncedChannelSearch]);
-
-  // Pre-load channel options when the channel dropdown becomes visible or the
-  // underlying asset/datascope changes (mirrors the old defaultOptions behaviour).
-  useEffect(() => {
-    if (selectedAsset) {
-      setChannelResults([]);
-      setIsLoadingChannels(true);
-      debouncedChannelSearch('');
-    }
-  }, [selectedAsset, dataScopeResolution.resolved, debouncedChannelSearch]);
 
   // Infer channelDataType when the resolved channel changes (e.g. template variable).
   // The backend does its own inference, but the frontend needs the correct type to show
@@ -187,60 +153,26 @@ export function useChannelOptions({
     [assetInputMethod, markInteracted, onChange, query]
   );
 
-  // Clean up the debounced search and discard in-flight responses on unmount.
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
-      channelSearchId.current += 1;
-      debouncedChannelSearch.cancel();
+      channelOptionsRequestId.current += 1;
     };
-  }, [debouncedChannelSearch]);
-
-  const channelOptions = useMemo(
-    () =>
-      buildChannelOptions({
-        channelResults,
-        channel: {
-          raw: channelResolution.raw,
-          resolved: channelResolution.resolved,
-          hasTemplate: channelResolution.hasTemplate,
-          isResolved: channelResolution.isResolved,
-        },
-      }),
-    [
-      channelResults,
-      channelResolution.raw,
-      channelResolution.resolved,
-      channelResolution.hasTemplate,
-      channelResolution.isResolved,
-    ]
-  );
+  }, []);
 
   const channelSelectValue = useMemo(
     () =>
       getChannelSelectValue({
-        channel: {
-          raw: channelResolution.raw,
-          resolved: channelResolution.resolved,
-          hasTemplate: channelResolution.hasTemplate,
-          isResolved: channelResolution.isResolved,
-        },
+        channel: channelResolutionSnapshot,
+        channelDataType: query.channelDataType,
       }),
-    [
-      channelResolution.raw,
-      channelResolution.resolved,
-      channelResolution.hasTemplate,
-      channelResolution.isResolved,
-    ]
+    [channelResolutionSnapshot, query.channelDataType]
   );
 
   return {
     channelOptions,
     channelSelectValue,
-    isLoadingChannels,
-    searchChannels: debouncedChannelSearch,
-    openChannelMenu,
     selectChannel,
   };
 }

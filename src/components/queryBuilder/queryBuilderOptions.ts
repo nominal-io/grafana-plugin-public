@@ -1,14 +1,26 @@
-import type { SelectableValue } from '@grafana/data';
+import type { IconName, SelectableValue } from '@grafana/data';
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { assetToOption, type Asset, type Channel } from '../../utils/api';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { ChannelOption } from './queryBuilderTypes';
 
-export const DATA_TYPE_ICONS: Record<string, string> = {
+export const DATA_TYPE_ICONS = {
   string: 'font',
   numeric: 'calculator-alt',
   log: 'gf-logs',
-};
+} as const satisfies Record<string, IconName>;
+
+type SupportedChannelDataType = keyof typeof DATA_TYPE_ICONS;
+
+const hasChannelDataTypeIcon = (channelDataType: string): channelDataType is SupportedChannelDataType =>
+  Object.prototype.hasOwnProperty.call(DATA_TYPE_ICONS, channelDataType);
+
+export function getChannelPrefixIcon(channelDataType?: string): IconName | undefined {
+  if (!channelDataType || !hasChannelDataTypeIcon(channelDataType)) {
+    return undefined;
+  }
+  return DATA_TYPE_ICONS[channelDataType];
+}
 
 export const NUMERIC_AGG_OPTIONS = [
   { label: 'Mean', value: AggregationType.Mean },
@@ -92,9 +104,8 @@ export function channelsToOptions(channels: Channel[]): ChannelOption[] {
   return channels.map((channel) => ({
     label: channel.name,
     value: channel.name,
-    description: channel.description || `Channel: ${channel.name}`,
+    ...(channel.description ? { description: channel.description } : {}),
     dataType: channel.dataType || '',
-    icon: channel.dataType ? DATA_TYPE_ICONS[channel.dataType] : undefined,
   }));
 }
 
@@ -117,15 +128,18 @@ export function buildChannelOptions({
 
 export function getChannelSelectValue({
   channel,
+  channelDataType,
 }: {
   channel: TemplateValueResolution;
-}): SelectableValue<string> | null {
+  channelDataType?: string;
+}): ChannelOption | null {
   if (!channel.raw) {
     return null;
   }
   return {
     label: templateDisplayLabel(channel),
     value: channel.raw,
+    ...(channelDataType ? { dataType: channelDataType } : {}),
   };
 }
 

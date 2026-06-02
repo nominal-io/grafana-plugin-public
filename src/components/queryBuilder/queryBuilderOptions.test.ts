@@ -9,6 +9,7 @@ import {
   channelsToOptions,
   getAggregationValue,
   getAssetSelectValue,
+  getChannelPrefixIcon,
   getChannelSelectValue,
   NUMERIC_AGG_OPTIONS,
 } from './queryBuilderOptions';
@@ -92,18 +93,33 @@ describe('queryBuilderOptions', () => {
     ).toEqual({ label: '$scope → primary', value: '$scope' });
   });
 
-  it('maps channels to Grafana options', () => {
+  it('maps channels to dense combobox options while preserving real descriptions and data types', () => {
     const options = channelsToOptions([
       { name: 'temperature', dataSource: 'ds', description: 'Ambient temperature', dataType: 'numeric' },
       { name: 'status', dataSource: 'ds', description: '', dataType: 'string' },
       { name: 'app.logs', dataSource: 'logs', description: '', dataType: 'log' },
     ]);
 
-    expect(options).toEqual([
-      expect.objectContaining({ label: 'temperature', value: 'temperature', description: 'Ambient temperature', dataType: 'numeric', icon: 'calculator-alt' }),
-      expect.objectContaining({ label: 'status', value: 'status', description: 'Channel: status', dataType: 'string', icon: 'font' }),
-      expect.objectContaining({ label: 'app.logs', value: 'app.logs', description: 'Channel: app.logs', dataType: 'log', icon: 'gf-logs' }),
-    ]);
+    expect(options[0]).toEqual({
+      label: 'temperature',
+      value: 'temperature',
+      description: 'Ambient temperature',
+      dataType: 'numeric',
+    });
+    expect(options[1]).toEqual({
+      label: 'status',
+      value: 'status',
+      dataType: 'string',
+    });
+    expect(options[2]).toEqual({
+      label: 'app.logs',
+      value: 'app.logs',
+      dataType: 'log',
+    });
+    expect(options[1]).not.toHaveProperty('description');
+    expect(options[1]).not.toHaveProperty('icon');
+    expect(options[2]).not.toHaveProperty('description');
+    expect(options[2]).not.toHaveProperty('icon');
   });
 
   it('adds template-variable channel labels', () => {
@@ -117,11 +133,17 @@ describe('queryBuilderOptions', () => {
     });
   });
 
-  it('builds channel select values for empty, plain, resolved, and unresolved channels', () => {
+  it('builds channel combobox values for empty, plain, resolved, and unresolved channels', () => {
     expect(getChannelSelectValue({ channel: resolveTemplateValue('', (value) => value) })).toBeNull();
-    expect(getChannelSelectValue({ channel: resolveTemplateValue('temperature', (value) => value) })).toEqual({
+    expect(
+      getChannelSelectValue({
+        channel: resolveTemplateValue('temperature', (value) => value),
+        channelDataType: 'numeric',
+      })
+    ).toEqual({
       label: 'temperature',
       value: 'temperature',
+      dataType: 'numeric',
     });
     expect(getChannelSelectValue({ channel: resolveTemplateValue('$chan', () => 'temperature') })).toEqual({
       label: '$chan → temperature',
@@ -135,6 +157,16 @@ describe('queryBuilderOptions', () => {
       label: '$chan',
       value: '$chan',
     });
+  });
+
+  it('maps known channel data types to selected-input prefix icons only', () => {
+    expect(getChannelPrefixIcon('numeric')).toBe('calculator-alt');
+    expect(getChannelPrefixIcon('string')).toBe('font');
+    expect(getChannelPrefixIcon('log')).toBe('gf-logs');
+    expect(getChannelPrefixIcon('')).toBeUndefined();
+    expect(getChannelPrefixIcon(undefined)).toBeUndefined();
+    expect(getChannelPrefixIcon('binary')).toBeUndefined();
+    expect(getChannelPrefixIcon('constructor')).toBeUndefined();
   });
 
   it('falls back to default numeric aggregations when saved aggregations are empty', () => {

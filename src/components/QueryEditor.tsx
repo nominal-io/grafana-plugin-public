@@ -1,6 +1,7 @@
 import React from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
+  Combobox,
   InlineField,
   Input,
   Stack,
@@ -14,6 +15,8 @@ import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
+import { getChannelPrefixIcon } from './queryBuilder/queryBuilderOptions';
+import type { ChannelOption } from './queryBuilder/queryBuilderTypes';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -130,6 +133,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     [state.aggregationState.options]
   );
 
+  const channelPrefixIcon = React.useMemo(() => getChannelPrefixIcon(query?.channelDataType), [query?.channelDataType]);
+
   return (
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
@@ -211,23 +216,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8}>
-                  {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                  <Select
+                  <Combobox
                     key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
                     value={state.channelSelectValue}
-                    onChange={commands.selectChannel}
+                    onChange={(selection) => commands.selectChannel(selection as ChannelOption)}
                     options={state.channelOptions}
-                    onInputChange={(text, action) => {
-                      if (action.action === 'input-change') {
-                        commands.searchChannels(text);
-                      }
-                    }}
-                    onOpenMenu={commands.openChannelMenu}
-                    isLoading={state.isLoadingChannels}
                     placeholder="Search for channel..."
-                    width={50}
-                    allowCustomValue
+                    width="auto"
+                    minWidth={30}
+                    maxWidth={80}
+                    createCustomValue
                     isClearable={false}
+                    prefixIcon={channelPrefixIcon}
+                    data-testid="channel-combobox"
                   />
                 </InlineField>
               )}

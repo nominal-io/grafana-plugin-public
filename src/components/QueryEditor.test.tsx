@@ -1,6 +1,6 @@
 import React from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
 import { DataSource } from '../datasource';
@@ -24,9 +24,39 @@ const ASSET = {
 // Component tests install a URL-routing implementation in their describe block.
 const post = jest.fn();
 const publish = jest.fn();
+const mockComboboxProps = jest.fn();
 // Per-test overrides for template variable resolution. Lets a test simulate a
 // dashboard variable changing value mid-session (e.g. $asset resolving to a new RID).
 let mockReplaceOverrides: Record<string, string> = {};
+
+jest.mock('@grafana/ui', () => {
+  const React = jest.requireActual('react');
+  const actual = jest.requireActual('@grafana/ui');
+  return {
+    ...actual,
+    Combobox: (props: Record<string, any>) => {
+      mockComboboxProps(props);
+      const value =
+        typeof props.value === 'object'
+          ? props.value?.label ?? props.value?.value ?? ''
+          : props.value ?? '';
+      return React.createElement('input', {
+        'data-testid': props['data-testid'] ?? 'mock-combobox',
+        'data-prefix-icon': props.prefixIcon ?? '',
+        'data-width': props.width ?? '',
+        'data-min-width': String(props.minWidth ?? ''),
+        'data-max-width': String(props.maxWidth ?? ''),
+        placeholder: props.placeholder,
+        value,
+        onChange: async (event: React.ChangeEvent<HTMLInputElement>) => {
+          if (typeof props.options === 'function') {
+            await props.options(event.currentTarget.value);
+          }
+        },
+      });
+    },
+  };
+});
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
@@ -54,6 +84,7 @@ jest.mock('@grafana/runtime', () => ({
 beforeEach(() => {
   post.mockReset();
   publish.mockReset();
+  mockComboboxProps.mockReset();
   mockReplaceOverrides = {};
 });
 
@@ -304,7 +335,6 @@ describe('channel data type inference effect', () => {
   });
 
   it('publishes a Grafana alert when channel option loading fails', async () => {
-    jest.useFakeTimers();
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
         return { [ASSET_RID]: ASSET };
@@ -331,16 +361,78 @@ describe('channel data type inference effect', () => {
       expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
     });
 
-    // Flush the debounced channel preload.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
+    await screen.findByTestId('channel-combobox');
+    const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
+    await act(async () => {
+      await lastProps.options('temperature');
     });
 
     await waitFor(() => {
       expect(publish).toHaveBeenCalledWith(
         expect.objectContaining({
           payload: ['Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.'],
+        })
+      );
+    });
+  });
+
+  it('renders the channel combobox with autosizing bounds and selected numeric prefix icon', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('channel-combobox');
+
+    expect(input).toHaveAttribute('data-prefix-icon', 'calculator-alt');
+    expect(input).toHaveAttribute('data-width', 'auto');
+    expect(input).toHaveAttribute('data-min-width', '30');
+    expect(input).toHaveAttribute('data-max-width', '80');
+
+    const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
+    expect(typeof lastProps.options).toBe('function');
+    expect(lastProps.createCustomValue).toBe(true);
+    expect(lastProps.isClearable).toBe(false);
+  });
+
+  it('omits the channel prefix icon when the selected channel type is unknown', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'manual.channel', channelDataType: '' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('channel-combobox');
+
+    expect(input).toHaveAttribute('data-prefix-icon', '');
+  });
+
+  it('uses the combobox async options loader to search channels with typed text', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('channel-combobox');
+    fireEvent.change(input, { target: { value: 'long.temperature.channel' } });
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        `${DATASOURCE_URL}/channels`,
+        expect.objectContaining({
+          dataSourceRids: [LOG_DS_RID],
+          searchText: 'long.temperature.channel',
         })
       );
     });
