@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppEvents, type SelectableValue } from '@grafana/data';
+import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import {
@@ -10,7 +10,7 @@ import {
   searchAssets,
   type Asset,
 } from '../../utils/api';
-import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
+import { buildAssetOptions, buildDataScopeOptions, getAssetPickerValue } from './queryBuilderOptions';
 import {
   changeAssetInputMethodQuery,
   changeDirectAssetRidQuery,
@@ -19,7 +19,7 @@ import {
 } from './queryMutations';
 import { decideAssetReconcile } from './assetReconcile';
 import type { TemplateValueResolution } from './templateResolution';
-import type { AssetInputMethod } from './queryBuilderTypes';
+import type { AssetInputMethod, AssetOption, DataScopeOption } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
   query: NominalQuery;
@@ -39,14 +39,14 @@ export interface AssetSelectionModel {
   selectedAsset: Asset | null;
   assetSearchResultCount: number;
   selectedAssetSupportedScopeCount: number;
-  assetOptions: Array<SelectableValue<string>>;
+  assetOptions: AssetOption[];
   assetSelectValue: string;
-  dataScopeOptions: Array<SelectableValue<string>>;
+  dataScopeOptions: DataScopeOption[];
   isLoadingAssets: boolean;
   changeAssetInputMethod: (method: AssetInputMethod) => void;
   changeAssetSearchQuery: (value: string) => void;
   runAssetSearch: () => void;
-  selectAsset: (selection: SelectableValue<string>) => void;
+  selectAsset: (assetRid: string) => void;
   changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
 }
@@ -288,9 +288,8 @@ export function useAssetSelection({
   }, []);
 
   const selectAsset = useCallback(
-    (selection: SelectableValue<string>) => {
+    (value: string) => {
       markInteracted();
-      const value = selection.value || '';
       const isVariable = value.includes('$');
 
       // Resolve to actual RID for asset lookup (variables need resolution)
@@ -424,7 +423,7 @@ export function useAssetSelection({
 
   const assetSelectValue = useMemo(
     () =>
-      getAssetSelectValue({
+      getAssetPickerValue({
         assetRid: {
           raw: assetRidResolution.raw,
           resolved: assetRidResolution.resolved,
