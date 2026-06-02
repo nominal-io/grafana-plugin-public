@@ -8,13 +8,12 @@ import {
   MultiCombobox,
   RadioButtonGroup,
   useStyles2,
-  type ComboboxOption,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
-import type { ChannelOption } from './queryBuilder/queryBuilderTypes';
+import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -116,18 +115,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   });
 
   const aggregationOptions = React.useMemo(
-    () =>
-      state.aggregationState.options.map(
-        (option): ComboboxOption<string> => ({
-          label: option.label,
-          value: option.value,
-          // Only attach description when present. Grafana's Combobox sizes rows by
-          // `'description' in option`, so an always-present `description: undefined`
-          // forces every row to the taller description height and makes the 7
-          // aggregation options scroll (regression vs. passing bare options).
-          ...(option.description ? { description: option.description } : {}),
-        })
-      ),
+    () => toAggregationComboboxOptions(state.aggregationState.options),
     [state.aggregationState.options]
   );
 
@@ -223,7 +211,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   <Combobox
                     key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
                     value={state.channelSelectValue}
-                    onChange={(selection) => commands.selectChannel(selection as ChannelOption)}
+                    onChange={(selection) => commands.selectChannel(toChannelOption(selection))}
                     options={state.channelOptions}
                     placeholder="Search for channel..."
                     width="auto"
