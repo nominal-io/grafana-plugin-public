@@ -10,6 +10,8 @@ import {
   getAssetPickerValue,
   getChannelSelectValue,
   NUMERIC_AGG_OPTIONS,
+  toAggregationComboboxOptions,
+  toChannelOption,
 } from './queryBuilderOptions';
 
 const assetA: Asset = {
@@ -164,6 +166,37 @@ describe('queryBuilderOptions', () => {
     expect(getChannelSelectValue({ channel: resolveTemplateValue('$chan', () => '$other') })).toEqual({
       label: '$chan',
       value: '$chan',
+    });
+  });
+
+  it('normalizes channel picker selections while preserving selected data type', () => {
+    expect(toChannelOption({ label: 'temperature', value: 'temperature', dataType: 'numeric' })).toEqual({
+      label: 'temperature',
+      value: 'temperature',
+      dataType: 'numeric',
+    });
+
+    expect(toChannelOption({ label: 'manual.channel', value: 'manual.channel' })).toEqual({
+      label: 'manual.channel',
+      value: 'manual.channel',
+    });
+  });
+
+  it('maps aggregation options to dense combobox options without undefined descriptions', () => {
+    const options = toAggregationComboboxOptions([
+      { label: 'Mean', value: AggregationType.Mean },
+      { label: 'Explained', value: 'explained', description: 'Shown in the menu' },
+    ]);
+
+    expect(options[0]).toEqual({
+      label: 'Mean',
+      value: AggregationType.Mean,
+    });
+    expect(options[0]).not.toHaveProperty('description');
+    expect(options[1]).toEqual({
+      label: 'Explained',
+      value: 'explained',
+      description: 'Shown in the menu',
     });
   });
 
