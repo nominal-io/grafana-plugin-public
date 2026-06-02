@@ -1,8 +1,8 @@
-import type { IconName, SelectableValue } from '@grafana/data';
+import type { IconName } from '@grafana/data';
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
-import { assetToOption, type Asset, type Channel } from '../../utils/api';
+import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
-import type { ChannelOption } from './queryBuilderTypes';
+import type { AssetOption, ChannelOption, DataScopeOption } from './queryBuilderTypes';
 
 export const DATA_TYPE_ICONS = {
   string: 'font',
@@ -32,6 +32,14 @@ export const NUMERIC_AGG_OPTIONS = [
   { label: 'Last', value: AggregationType.LastPoint },
 ];
 
+function assetToOption(asset: Asset): AssetOption {
+  return {
+    label: asset.title,
+    value: asset.rid,
+    description: `${asset.labels.join(', ') || 'No labels'} - ${getSupportedScopes(asset).length} data scope(s)`,
+  };
+}
+
 export function buildAssetOptions({
   assets,
   selectedAsset,
@@ -40,7 +48,7 @@ export function buildAssetOptions({
   assets: Asset[];
   selectedAsset: Asset | null;
   assetRid: TemplateValueResolution;
-}): Array<SelectableValue<string>> {
+}): AssetOption[] {
   const options = assets.map(assetToOption);
 
   if (selectedAsset && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
@@ -60,12 +68,12 @@ export function buildAssetOptions({
   return options;
 }
 
-export function getAssetSelectValue({
+export function getAssetPickerValue({
   assetRid,
   assetOptions,
 }: {
   assetRid: TemplateValueResolution;
-  assetOptions: Array<SelectableValue<string>>;
+  assetOptions: AssetOption[];
 }): string {
   if (assetRid.hasTemplate) {
     return assetRid.raw;
@@ -79,7 +87,7 @@ export function buildDataScopeOptions({
 }: {
   dataScopes: string[];
   dataScopeName: TemplateValueResolution;
-}): Array<SelectableValue<string>> {
+}): DataScopeOption[] {
   const options = dataScopes.map((scope) => ({
     label: scope,
     value: scope,

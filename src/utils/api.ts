@@ -1,4 +1,3 @@
-import { SelectableValue } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 
 export type WeakTimestampType = 'ABSOLUTE' | 'RELATIVE' | 'PENDING' | 'UNKNOWN';
@@ -91,13 +90,6 @@ export const createBasicAsset = (rid: string, title: string): Asset => ({
   labels: [],
   dataScopes: [],
   properties: {},
-});
-
-/** Convert asset to dropdown option */
-export const assetToOption = (asset: Asset): SelectableValue<string> => ({
-  label: asset.title,
-  value: asset.rid,
-  description: `${asset.labels.join(', ') || 'No labels'} - ${getSupportedScopes(asset).length} data scope(s)`,
 });
 
 /** Fetches a single asset by its exact RID using the batch lookup endpoint */

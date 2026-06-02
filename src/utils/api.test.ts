@@ -1,7 +1,6 @@
 import {
   Asset,
   DataScope,
-  assetToOption,
   createBasicAsset,
   fetchAssetByRid,
   getDataSourceRid,
@@ -101,29 +100,6 @@ describe('resolveDataSourceRids', () => {
 
   it('returns an empty array for an asset with no scopes', () => {
     expect(resolveDataSourceRids(buildAsset())).toEqual([]);
-  });
-});
-
-describe('assetToOption', () => {
-  it('summarizes labels and supported scope count', () => {
-    const asset = buildAsset({
-      title: 'Engine 12',
-      labels: ['prod', 'eu'],
-      dataScopes: [
-        scope('ds1', { type: 'dataset', dataset: 'ri.dataset.a' }),
-        scope('vid', { type: 'video', video: 'ri.video.c' }),
-      ],
-    });
-    expect(assetToOption(asset)).toEqual({
-      label: 'Engine 12',
-      value: asset.rid,
-      description: 'prod, eu - 1 data scope(s)',
-    });
-  });
-
-  it('falls back to "No labels" when labels are empty', () => {
-    const asset = buildAsset({ title: 'X', labels: [] });
-    expect(assetToOption(asset).description).toBe('No labels - 0 data scope(s)');
   });
 });
 
