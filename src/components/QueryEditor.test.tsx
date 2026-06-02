@@ -43,7 +43,6 @@ jest.mock('@grafana/ui', () => {
       return React.createElement('input', {
         'data-testid': props['data-testid'] ?? 'mock-combobox',
         'data-id': props.id ?? '',
-        'data-prefix-icon': props.prefixIcon ?? '',
         'data-width': props.width ?? '',
         'data-min-width': String(props.minWidth ?? ''),
         'data-max-width': String(props.maxWidth ?? ''),
@@ -434,7 +433,7 @@ describe('channel data type inference effect', () => {
     });
   });
 
-  it('renders the channel combobox with autosizing bounds and selected numeric prefix icon', async () => {
+  it('renders the channel combobox with autosizing bounds', async () => {
     render(
       <QueryEditor
         query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
@@ -446,7 +445,6 @@ describe('channel data type inference effect', () => {
 
     const input = await screen.findByTestId('channel-combobox');
 
-    expect(input).toHaveAttribute('data-prefix-icon', 'calculator-alt');
     expect(input).toHaveAttribute('data-width', 'auto');
     expect(input).toHaveAttribute('data-min-width', '30');
     expect(input).toHaveAttribute('data-max-width', '80');
@@ -455,21 +453,6 @@ describe('channel data type inference effect', () => {
     expect(typeof lastProps.options).toBe('function');
     expect(lastProps.createCustomValue).toBe(true);
     expect(lastProps.isClearable).toBe(false);
-  });
-
-  it('omits the channel prefix icon when the selected channel type is unknown', async () => {
-    render(
-      <QueryEditor
-        query={makeQuery({ channel: 'manual.channel', channelDataType: '' })}
-        onChange={jest.fn()}
-        onRunQuery={jest.fn()}
-        datasource={mockDatasource}
-      />
-    );
-
-    const input = await screen.findByTestId('channel-combobox');
-
-    expect(input).toHaveAttribute('data-prefix-icon', '');
   });
 
   it('uses the combobox async options loader to search channels with typed text', async () => {

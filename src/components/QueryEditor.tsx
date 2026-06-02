@@ -14,7 +14,6 @@ import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
-import { getChannelPrefixIcon } from './queryBuilder/queryBuilderOptions';
 import type { ChannelOption } from './queryBuilder/queryBuilderTypes';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
@@ -132,8 +131,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     [state.aggregationState.options]
   );
 
-  const channelPrefixIcon = React.useMemo(() => getChannelPrefixIcon(query?.channelDataType), [query?.channelDataType]);
-
   return (
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
@@ -219,6 +216,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8}>
+                  {/*
+                    TODO: add Combobox prefixIcon after bumping @grafana/ui to >=12.3.0;
+                    the current 12.1.0 pin does not include it.
+                  */}
                   <Combobox
                     key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
                     value={state.channelSelectValue}
@@ -230,7 +231,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     maxWidth={80}
                     createCustomValue
                     isClearable={false}
-                    prefixIcon={channelPrefixIcon}
                     data-testid="channel-combobox"
                   />
                 </InlineField>

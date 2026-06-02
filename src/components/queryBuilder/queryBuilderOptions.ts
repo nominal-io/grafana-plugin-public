@@ -1,26 +1,7 @@
-import type { IconName } from '@grafana/data';
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AssetOption, ChannelOption, DataScopeOption } from './queryBuilderTypes';
-
-export const DATA_TYPE_ICONS = {
-  string: 'font',
-  numeric: 'calculator-alt',
-  log: 'gf-logs',
-} as const satisfies Record<string, IconName>;
-
-type SupportedChannelDataType = keyof typeof DATA_TYPE_ICONS;
-
-const hasChannelDataTypeIcon = (channelDataType: string): channelDataType is SupportedChannelDataType =>
-  Object.prototype.hasOwnProperty.call(DATA_TYPE_ICONS, channelDataType);
-
-export function getChannelPrefixIcon(channelDataType?: string): IconName | undefined {
-  if (!channelDataType || !hasChannelDataTypeIcon(channelDataType)) {
-    return undefined;
-  }
-  return DATA_TYPE_ICONS[channelDataType];
-}
 
 export const NUMERIC_AGG_OPTIONS = [
   { label: 'Mean', value: AggregationType.Mean },

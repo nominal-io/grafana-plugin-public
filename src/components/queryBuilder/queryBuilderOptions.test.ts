@@ -8,7 +8,6 @@ import {
   channelsToOptions,
   getAggregationValue,
   getAssetPickerValue,
-  getChannelPrefixIcon,
   getChannelSelectValue,
   NUMERIC_AGG_OPTIONS,
 } from './queryBuilderOptions';
@@ -166,16 +165,6 @@ describe('queryBuilderOptions', () => {
       label: '$chan',
       value: '$chan',
     });
-  });
-
-  it('maps known channel data types to selected-input prefix icons only', () => {
-    expect(getChannelPrefixIcon('numeric')).toBe('calculator-alt');
-    expect(getChannelPrefixIcon('string')).toBe('font');
-    expect(getChannelPrefixIcon('log')).toBe('gf-logs');
-    expect(getChannelPrefixIcon('')).toBeUndefined();
-    expect(getChannelPrefixIcon(undefined)).toBeUndefined();
-    expect(getChannelPrefixIcon('binary')).toBeUndefined();
-    expect(getChannelPrefixIcon('constructor')).toBeUndefined();
   });
 
   it('falls back to default numeric aggregations when saved aggregations are empty', () => {
