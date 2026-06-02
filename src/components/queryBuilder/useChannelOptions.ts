@@ -25,12 +25,36 @@ export interface ChannelOptionsModel {
   selectChannel: (selection: ChannelOption) => void;
 }
 
+interface ChannelOptionsContext {
+  dataSourceRids: string[];
+  hasSelectedAsset: boolean;
+  key: string;
+}
+
 const notifyError = (title: string, message: string) => {
   getAppEvents().publish({
     type: AppEvents.alertError.name,
     payload: [title, message],
   });
 };
+
+function getChannelOptionsContext({
+  datasourceUrl,
+  selectedAsset,
+  dataScopeName,
+}: {
+  datasourceUrl: string;
+  selectedAsset: Asset | null;
+  dataScopeName: string;
+}): ChannelOptionsContext {
+  const dataSourceRids = selectedAsset ? resolveDataSourceRids(selectedAsset, dataScopeName || undefined) : [];
+
+  return {
+    dataSourceRids,
+    hasSelectedAsset: selectedAsset !== null,
+    key: JSON.stringify([datasourceUrl, dataSourceRids]),
+  };
+}
 
 export function useChannelOptions({
   query,
@@ -46,6 +70,18 @@ export function useChannelOptions({
   queryRef.current = query;
   const isMountedRef = useRef(true);
   const channelOptionsRequestId = useRef(0);
+
+  const channelOptionsContext = useMemo(
+    () =>
+      getChannelOptionsContext({
+        datasourceUrl,
+        selectedAsset,
+        dataScopeName: dataScopeResolution.resolved,
+      }),
+    [dataScopeResolution.resolved, datasourceUrl, selectedAsset]
+  );
+  const channelOptionsContextKeyRef = useRef(channelOptionsContext.key);
+  channelOptionsContextKeyRef.current = channelOptionsContext.key;
 
   const channelResolutionSnapshot = useMemo(
     () => ({
@@ -65,19 +101,23 @@ export function useChannelOptions({
   const channelOptions = useCallback<ChannelOptionsLoader>(
     async (searchText: string): Promise<ChannelOption[]> => {
       const requestId = ++channelOptionsRequestId.current;
-      if (!selectedAsset) {
+      const requestContextKey = channelOptionsContext.key;
+      if (!channelOptionsContext.hasSelectedAsset) {
         return [];
       }
-      const dataSourceRids = resolveDataSourceRids(selectedAsset, dataScopeResolution.resolved || undefined);
       try {
-        const channels = await searchChannels(datasourceUrl, dataSourceRids, searchText);
+        const channels = await searchChannels(datasourceUrl, channelOptionsContext.dataSourceRids, searchText);
         return buildChannelOptions({
           channelResults: channelsToOptions(channels),
           channel: channelResolutionSnapshot,
         });
       } catch {
         // Only the latest loader request may emit alerts; stale failures can belong to an old asset/scope/search.
-        if (isMountedRef.current && channelOptionsRequestId.current === requestId) {
+        if (
+          isMountedRef.current &&
+          channelOptionsRequestId.current === requestId &&
+          channelOptionsContextKeyRef.current === requestContextKey
+        ) {
           notifyError(
             'Unable to load Nominal channels',
             'Check the selected asset, data scope, and data source configuration.'
@@ -86,7 +126,7 @@ export function useChannelOptions({
         return [];
       }
     },
-    [channelResolutionSnapshot, dataScopeResolution.resolved, datasourceUrl, selectedAsset]
+    [channelOptionsContext, channelResolutionSnapshot, datasourceUrl]
   );
 
   // Infer channelDataType when the resolved channel changes (e.g. template variable).

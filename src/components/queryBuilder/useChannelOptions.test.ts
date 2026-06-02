@@ -217,6 +217,46 @@ describe('useChannelOptions', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('does not publish an alert when a request from a previous channel loading context fails', async () => {
+    const calls: Array<{
+      resolve: (channels: Channel[]) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    mockSearchChannels.mockImplementation(
+      () =>
+        new Promise<Channel[]>((resolve, reject) => {
+          calls.push({ resolve, reject });
+        })
+    );
+    const nextAsset: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.b',
+      dataScopes: [
+        {
+          dataScopeName: 'default',
+          dataSource: { type: 'dataset', dataset: 'ri.scout.main.dataset.b' },
+          timestampType: 'ABSOLUTE',
+          seriesTags: {},
+        },
+      ],
+    };
+    const { result, rerender } = renderHook(
+      ({ selectedAsset }) => useChannelOptions(args({ selectedAsset })),
+      { initialProps: { selectedAsset: ASSET } }
+    );
+
+    const olderRequest = result.current.channelOptions('old-asset-search');
+    rerender({ selectedAsset: nextAsset });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      calls[0].reject(new Error('old asset failure'));
+      await olderRequest;
+    });
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it('loads channel options against the currently resolved template data scope', async () => {
     mockSearchChannels.mockResolvedValue([]);
     const query = makeQuery({ dataScopeName: '$scope' });
