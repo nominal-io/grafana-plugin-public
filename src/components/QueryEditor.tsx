@@ -5,7 +5,6 @@ import {
   InlineField,
   Input,
   Stack,
-  Select,
   MultiCombobox,
   RadioButtonGroup,
   useStyles2,
@@ -170,18 +169,20 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               </InlineField>
 
               {state.assetSearchResultCount > 0 && (
-                <InlineField label="Asset" labelWidth={8}>
-                  {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                  <Select
+                <InlineField label="Asset" labelWidth={8} loading={state.isLoadingAssets}>
+                  <Combobox
+                    id="nominal-query-asset-picker"
                     key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
                     options={state.assetOptions}
                     value={state.assetSelectValue}
-                    onChange={commands.selectAsset}
-                    width={30}
+                    onChange={(selection) => commands.selectAsset(selection.value)}
+                    width="auto"
+                    minWidth={30}
+                    maxWidth={80}
                     placeholder="Choose asset..."
-                    isLoading={state.isLoadingAssets}
                     isClearable={false}
-                    allowCustomValue={true}
+                    createCustomValue
+                    data-testid="asset-combobox"
                   />
                 </InlineField>
               )}
@@ -200,17 +201,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           {/* Channel Selection - only show if asset is selected */}
           {state.assetComplete && (
             <>
-              <InlineField label="Data scope" labelWidth={12}>
-                {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                <Select
+              <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
+                <Combobox
+                  id="nominal-query-data-scope-picker"
                   value={query?.dataScopeName || ''}
-                  onChange={(value) => commands.selectDataScope(value?.value || '')}
+                  onChange={(selection) => commands.selectDataScope(selection.value)}
                   options={state.dataScopeOptions}
                   placeholder="Choose scope or use $variable..."
-                  width={30}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={60}
                   isClearable={false}
-                  allowCustomValue={true}
-                  isLoading={!state.selectedAsset && state.assetComplete}
+                  createCustomValue
+                  data-testid="data-scope-combobox"
                 />
               </InlineField>
 

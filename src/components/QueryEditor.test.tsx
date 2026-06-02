@@ -42,10 +42,14 @@ jest.mock('@grafana/ui', () => {
           : props.value ?? '';
       return React.createElement('input', {
         'data-testid': props['data-testid'] ?? 'mock-combobox',
+        'data-id': props.id ?? '',
         'data-prefix-icon': props.prefixIcon ?? '',
         'data-width': props.width ?? '',
         'data-min-width': String(props.minWidth ?? ''),
         'data-max-width': String(props.maxWidth ?? ''),
+        'data-loading': String(props.loading ?? false),
+        'data-create-custom-value': String(props.createCustomValue ?? false),
+        'data-clearable': String(props.isClearable ?? ''),
         placeholder: props.placeholder,
         value,
         onChange: async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -332,6 +336,60 @@ describe('channel data type inference effect', () => {
       expect(screen.getByText('RID:')).toBeInTheDocument();
       expect(screen.getByText(ASSET_RID)).toBeInTheDocument();
     });
+  });
+
+  it('renders the asset picker as a combobox with custom RID support', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('asset-combobox');
+
+    expect(input).toHaveAttribute('data-id', 'nominal-query-asset-picker');
+    expect(input).toHaveAttribute('data-width', 'auto');
+    expect(input).toHaveAttribute('data-min-width', '30');
+    expect(input).toHaveAttribute('data-max-width', '80');
+    expect(input).toHaveAttribute('data-loading', 'false');
+    expect(input).toHaveAttribute('data-create-custom-value', 'true');
+    expect(input).toHaveAttribute('data-clearable', 'false');
+  });
+
+  it('renders the data scope picker as a combobox with variable support', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('data-scope-combobox');
+
+    expect(input).toHaveAttribute('data-id', 'nominal-query-data-scope-picker');
+    expect(input).toHaveAttribute('data-width', 'auto');
+    expect(input).toHaveAttribute('data-min-width', '30');
+    expect(input).toHaveAttribute('data-max-width', '60');
+    await waitFor(() => {
+      expect(screen.getByTestId('data-scope-combobox')).toHaveAttribute('data-loading', 'false');
+    });
+    expect(input).toHaveAttribute('data-create-custom-value', 'true');
+    expect(input).toHaveAttribute('data-clearable', 'false');
   });
 
   it('publishes a Grafana alert when channel option loading fails', async () => {
