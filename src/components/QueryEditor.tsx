@@ -122,70 +122,69 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   return (
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
-        <Stack gap={1} direction="row" wrap alignItems="center">
-          {/* Asset Input Method */}
-          <div className={styles.methodToggle}>
-            <RadioButtonGroup
-              options={[
-                { label: 'Asset Search', value: 'search' },
-                { label: 'Asset RID', value: 'direct' },
-              ]}
-              value={state.assetInputMethod}
-              onChange={commands.changeAssetInputMethod}
-              size="sm"
-            />
-          </div>
+        <Stack gap={1} direction="column">
+          <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
+            {/* Asset Input Method */}
+            <div className={styles.methodToggle}>
+              <RadioButtonGroup
+                options={[
+                  { label: 'Asset Search', value: 'search' },
+                  { label: 'Asset RID', value: 'direct' },
+                ]}
+                value={state.assetInputMethod}
+                onChange={commands.changeAssetInputMethod}
+                size="sm"
+              />
+            </div>
 
-          {/* Asset Selection */}
-          {state.assetInputMethod === 'search' ? (
-            <>
-              <InlineField label="Search" labelWidth={8}>
-                <Input
-                  placeholder="Search assets"
-                  value={state.searchQuery}
-                  onChange={(event) => commands.changeAssetSearchQuery(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      commands.runAssetSearch();
-                    }
-                  }}
-                  width={20}
-                />
-              </InlineField>
-
-              {state.assetSearchResultCount > 0 && (
-                <InlineField label="Asset" labelWidth={8} loading={state.isLoadingAssets}>
-                  <Combobox
-                    id="nominal-query-asset-picker"
-                    key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
-                    options={state.assetOptions}
-                    value={state.assetSelectValue}
-                    onChange={(selection) => commands.selectAsset(selection.value)}
-                    width="auto"
-                    minWidth={30}
-                    maxWidth={80}
-                    placeholder="Choose asset..."
-                    isClearable={false}
-                    createCustomValue
-                    data-testid="asset-combobox"
+            {/* Asset Selection */}
+            {state.assetInputMethod === 'search' ? (
+              <>
+                <InlineField label="Search" labelWidth={8}>
+                  <Input
+                    placeholder="Search assets"
+                    value={state.searchQuery}
+                    onChange={(event) => commands.changeAssetSearchQuery(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        commands.runAssetSearch();
+                      }
+                    }}
+                    width={20}
                   />
                 </InlineField>
-              )}
-            </>
-          ) : (
-            <InlineField label="Asset RID" labelWidth={12}>
-              <Input
-                placeholder="ri.scout.cerulean-staging.asset..."
-                value={state.directRID}
-                onChange={(event) => commands.changeDirectRID(event.currentTarget.value)}
-                width={40}
-              />
-            </InlineField>
-          )}
 
-          {/* Channel Selection - only show if asset is selected */}
-          {state.assetComplete && (
-            <>
+                {state.assetSearchResultCount > 0 && (
+                  <InlineField label="Asset" labelWidth={8} loading={state.isLoadingAssets}>
+                    <Combobox
+                      id="nominal-query-asset-picker"
+                      key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
+                      options={state.assetOptions}
+                      value={state.assetSelectValue}
+                      onChange={(selection) => commands.selectAsset(selection.value)}
+                      width="auto"
+                      minWidth={30}
+                      maxWidth={100}
+                      placeholder="Choose asset..."
+                      isClearable={false}
+                      createCustomValue
+                      data-testid="asset-combobox"
+                    />
+                  </InlineField>
+                )}
+              </>
+            ) : (
+              <InlineField label="Asset RID" labelWidth={12}>
+                <Input
+                  placeholder="ri.scout.cerulean-staging.asset..."
+                  value={state.directRID}
+                  onChange={(event) => commands.changeDirectRID(event.currentTarget.value)}
+                  width={40}
+                />
+              </InlineField>
+            )}
+
+            {state.assetComplete && (
               <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
                 <Combobox
                   id="nominal-query-data-scope-picker"
@@ -195,13 +194,18 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   placeholder="Choose scope or use $variable..."
                   width="auto"
                   minWidth={30}
-                  maxWidth={60}
+                  maxWidth={100}
                   isClearable={false}
                   createCustomValue
                   data-testid="data-scope-combobox"
                 />
               </InlineField>
+            )}
+          </Stack>
 
+          {/* Channel Selection - only show if asset is selected */}
+          {state.assetComplete && (
+            <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8}>
                   {/*
@@ -216,7 +220,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     placeholder="Search for channel..."
                     width="auto"
                     minWidth={30}
-                    maxWidth={80}
+                    maxWidth={100}
                     createCustomValue
                     isClearable={false}
                     data-testid="channel-combobox"
@@ -237,12 +241,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       value={state.aggregationState.value}
                       onChange={commands.changeAggregations}
                       placeholder="Select aggregations..."
-                      width={35}
+                      width="auto"
+                      minWidth={40}
+                      maxWidth={100}
+                      data-testid="aggregation-multi-combobox"
                     />
                   )}
                 </InlineField>
               )}
-            </>
+            </Stack>
           )}
         </Stack>
 

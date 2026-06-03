@@ -25,6 +25,7 @@ const ASSET = {
 const post = jest.fn();
 const publish = jest.fn();
 const mockComboboxProps = jest.fn();
+const mockMultiComboboxProps = jest.fn();
 // Per-test overrides for template variable resolution. Lets a test simulate a
 // dashboard variable changing value mid-session (e.g. $asset resolving to a new RID).
 let mockReplaceOverrides: Record<string, string> = {};
@@ -58,6 +59,18 @@ jest.mock('@grafana/ui', () => {
         },
       });
     },
+    MultiCombobox: (props: Record<string, any>) => {
+      mockMultiComboboxProps(props);
+      return React.createElement('input', {
+        'data-testid': props['data-testid'] ?? 'mock-multi-combobox',
+        'data-width': props.width ?? '',
+        'data-min-width': String(props.minWidth ?? ''),
+        'data-max-width': String(props.maxWidth ?? ''),
+        placeholder: props.placeholder,
+        value: Array.isArray(props.value) ? props.value.join(',') : '',
+        readOnly: true,
+      });
+    },
   };
 });
 
@@ -88,6 +101,7 @@ beforeEach(() => {
   post.mockReset();
   publish.mockReset();
   mockComboboxProps.mockReset();
+  mockMultiComboboxProps.mockReset();
   mockReplaceOverrides = {};
 });
 
@@ -362,7 +376,7 @@ describe('channel data type inference effect', () => {
     expect(input).toHaveAttribute('data-id', 'nominal-query-asset-picker');
     expect(input).toHaveAttribute('data-width', 'auto');
     expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '80');
+    expect(input).toHaveAttribute('data-max-width', '100');
     expect(input).toHaveAttribute('data-loading', 'false');
     expect(input).toHaveAttribute('data-create-custom-value', 'true');
     expect(input).toHaveAttribute('data-clearable', 'false');
@@ -383,12 +397,34 @@ describe('channel data type inference effect', () => {
     expect(input).toHaveAttribute('data-id', 'nominal-query-data-scope-picker');
     expect(input).toHaveAttribute('data-width', 'auto');
     expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '60');
+    expect(input).toHaveAttribute('data-max-width', '100');
     await waitFor(() => {
       expect(screen.getByTestId('data-scope-combobox')).toHaveAttribute('data-loading', 'false');
     });
     expect(input).toHaveAttribute('data-create-custom-value', 'true');
     expect(input).toHaveAttribute('data-clearable', 'false');
+  });
+
+  it('renders asset and data scope controls in a separate row from channel controls', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const dataScopePicker = await screen.findByTestId('data-scope-combobox');
+    const channelPicker = await screen.findByTestId('channel-combobox');
+
+    const assetScopeRow = screen.getByTestId('query-editor-asset-scope-row');
+    const channelAggregationRow = screen.getByTestId('query-editor-channel-aggregation-row');
+
+    expect(assetScopeRow).toContainElement(dataScopePicker);
+    expect(assetScopeRow).not.toContainElement(channelPicker);
+    expect(channelAggregationRow).toContainElement(channelPicker);
+    expect(channelAggregationRow).not.toContainElement(dataScopePicker);
   });
 
   it('publishes a Grafana alert when channel option loading fails', async () => {
@@ -447,12 +483,32 @@ describe('channel data type inference effect', () => {
 
     expect(input).toHaveAttribute('data-width', 'auto');
     expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '80');
+    expect(input).toHaveAttribute('data-max-width', '100');
 
     const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
     expect(typeof lastProps.options).toBe('function');
     expect(lastProps.createCustomValue).toBe(true);
     expect(lastProps.isClearable).toBe(false);
+  });
+
+  it('renders numeric aggregation selection as an autosizing multiselect', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const aggregationInput = await screen.findByTestId('aggregation-multi-combobox');
+
+    expect(aggregationInput).toHaveAttribute('data-width', 'auto');
+    expect(aggregationInput).toHaveAttribute('data-min-width', '40');
+    expect(aggregationInput).toHaveAttribute('data-max-width', '100');
+
+    const lastProps = mockMultiComboboxProps.mock.calls.at(-1)?.[0];
+    expect(lastProps.value).toEqual(['MEAN']);
   });
 
   it('uses the combobox async options loader to search channels with typed text', async () => {
