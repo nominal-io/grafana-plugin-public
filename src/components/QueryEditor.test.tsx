@@ -110,6 +110,15 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+// Returns the most recent props captured for the Combobox rendered with the
+// given data-testid. The bare-<input> mock hides the real onChange/value wiring,
+// so reaching the captured props is the only way to exercise the QueryEditor-level
+// onChange wrappers and value props directly (the Select->Combobox migration boundary).
+function latestComboboxProps(testId: string): Record<string, any> | undefined {
+  const calls = mockComboboxProps.mock.calls.filter((call) => call[0]?.['data-testid'] === testId);
+  return calls.at(-1)?.[0];
+}
+
 describe('channel data type inference effect', () => {
   // Per-test overrides for the /channels response routed below.
   let channelsResponse: unknown = { channels: [{ name: 'app.logs', dataType: 'log' }] };
@@ -481,6 +490,7 @@ describe('channel data type inference effect', () => {
 
     const input = await screen.findByTestId('channel-combobox');
 
+    expect(input).toHaveAttribute('data-id', 'nominal-query-channel-picker');
     expect(input).toHaveAttribute('data-width', 'auto');
     expect(input).toHaveAttribute('data-min-width', '30');
     expect(input).toHaveAttribute('data-max-width', '100');
@@ -627,5 +637,138 @@ describe('channel data type inference effect', () => {
     );
     expect(channelTypeUpdates).toHaveLength(0);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // The bare-<input> mock's onChange only invokes the async options loader, never
+  // props.onChange. These tests reach the captured props to exercise the selection
+  // wrappers in QueryEditor.tsx (the destructuring that changed in the Combobox
+  // migration: `selection.value` for asset/scope, `toChannelOption(selection)` for
+  // channel). A mis-wired or mis-destructured handler is invisible to every other
+  // test layer, so cover it here.
+  it('wires the asset picker onChange to selectAsset with the option value', async () => {
+    const ASSET_RID_B = 'ri.scout.main.asset.def456';
+    const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET, ASSET_B] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await screen.findByTestId('asset-combobox');
+    const props = latestComboboxProps('asset-combobox');
+    expect(props).toBeDefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props!.onChange({ value: ASSET_RID_B, label: 'Asset B' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET_RID_B }));
+  });
+
+  it('wires the data scope picker onChange to selectDataScope with the option value', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: 'default' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const props = (await waitFor(() => {
+      const captured = latestComboboxProps('data-scope-combobox');
+      expect(captured).toBeDefined();
+      return captured;
+    }))!;
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props.onChange({ value: 'secondary', label: 'Secondary scope' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ dataScopeName: 'secondary' }));
+  });
+
+  it('wires the channel picker onChange to selectChannel via toChannelOption', async () => {
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await screen.findByTestId('channel-combobox');
+    const props = latestComboboxProps('channel-combobox');
+    expect(props).toBeDefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props!.onChange({ value: 'pressure', label: 'Pressure', dataType: 'numeric' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'pressure', channelDataType: 'numeric' })
+    );
+  });
+
+  // The data scope picker passes the raw query value (`query?.dataScopeName || ''`)
+  // straight into the Combobox `value` prop, bypassing the option adapters that the other
+  // pickers' value props go through. Nothing else asserts this passthrough, including the
+  // template-variable case where the raw `$scope` syntax must reach the picker verbatim.
+  it('passes the raw query dataScopeName through to the data scope picker value', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: '$scope' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await waitFor(() => {
+      const props = latestComboboxProps('data-scope-combobox');
+      expect(props).toBeDefined();
+      expect(props!.value).toBe('$scope');
+    });
   });
 });

@@ -213,6 +213,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     the current 12.1.0 pin does not include it.
                   */}
                   <Combobox
+                    id="nominal-query-channel-picker"
                     key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
                     value={state.channelSelectValue}
                     onChange={(selection) => commands.selectChannel(toChannelOption(selection))}
