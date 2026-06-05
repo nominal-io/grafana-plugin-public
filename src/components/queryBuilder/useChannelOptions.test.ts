@@ -257,6 +257,37 @@ describe('useChannelOptions', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('does not publish an alert when a previous asset request fails after switching to another asset with the same data source', async () => {
+    const calls: Array<{
+      reject: (error: Error) => void;
+    }> = [];
+    mockSearchChannels.mockImplementation(
+      () =>
+        new Promise<Channel[]>((_resolve, reject) => {
+          calls.push({ reject });
+        })
+    );
+    const nextAsset: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.b',
+    };
+    const { result, rerender } = renderHook(
+      ({ selectedAsset }) => useChannelOptions(args({ selectedAsset })),
+      { initialProps: { selectedAsset: ASSET } }
+    );
+
+    const olderRequest = result.current.channelOptions('old-asset-search');
+    rerender({ selectedAsset: nextAsset });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      calls[0].reject(new Error('old asset failure'));
+      await olderRequest;
+    });
+
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it('loads channel options against the currently resolved template data scope', async () => {
     mockSearchChannels.mockResolvedValue([]);
     const query = makeQuery({ dataScopeName: '$scope' });

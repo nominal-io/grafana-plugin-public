@@ -52,7 +52,7 @@ function getChannelOptionsContext({
   return {
     dataSourceRids,
     hasSelectedAsset: selectedAsset !== null,
-    key: JSON.stringify([datasourceUrl, dataSourceRids]),
+    key: JSON.stringify([datasourceUrl, selectedAsset?.rid || '', dataScopeName, dataSourceRids]),
   };
 }
 
