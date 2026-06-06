@@ -540,7 +540,8 @@ describe('channel data type inference effect', () => {
         expect.objectContaining({
           dataSourceRids: [LOG_DS_RID],
           searchText: 'long.temperature.channel',
-        })
+        }),
+        { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
       );
     });
   });

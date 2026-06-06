@@ -31,6 +31,13 @@ interface ChannelOptionsContext {
   key: string;
 }
 
+let nextChannelOptionsLoaderId = 0;
+
+function createChannelOptionsBackendRequestId(): string {
+  nextChannelOptionsLoaderId += 1;
+  return `nominal-channel-options-${nextChannelOptionsLoaderId}`;
+}
+
 const notifyError = (title: string, message: string) => {
   getAppEvents().publish({
     type: AppEvents.alertError.name,
@@ -70,6 +77,7 @@ export function useChannelOptions({
   queryRef.current = query;
   const isMountedRef = useRef(true);
   const channelOptionsRequestId = useRef(0);
+  const channelOptionsBackendRequestId = useMemo(createChannelOptionsBackendRequestId, []);
 
   const channelOptionsContext = useMemo(
     () =>
@@ -106,7 +114,11 @@ export function useChannelOptions({
         return [];
       }
       try {
-        const channels = await searchChannels(datasourceUrl, channelOptionsContext.dataSourceRids, searchText);
+        const channels = await searchChannels(datasourceUrl, channelOptionsContext.dataSourceRids, searchText, {
+          requestId: channelOptionsBackendRequestId,
+        });
+        // Combobox discards superseded resolved async options before they reach the menu.
+        // The local request/context guard below is only for alert side effects.
         return buildChannelOptions({
           channelResults: channelsToOptions(channels),
           channel: channelResolutionSnapshot,
@@ -126,7 +138,7 @@ export function useChannelOptions({
         return [];
       }
     },
-    [channelOptionsContext, channelResolutionSnapshot, datasourceUrl]
+    [channelOptionsBackendRequestId, channelOptionsContext, channelResolutionSnapshot, datasourceUrl]
   );
 
   // Infer channelDataType when the resolved channel changes (e.g. template variable).

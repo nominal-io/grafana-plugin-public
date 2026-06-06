@@ -129,8 +129,31 @@ describe('useChannelOptions', () => {
       options = await result.current.channelOptions('temp');
     });
 
-    expect(mockSearchChannels).toHaveBeenCalledWith('/api/x', ['ri.scout.main.dataset.a'], 'temp');
+    expect(mockSearchChannels).toHaveBeenCalledWith(
+      '/api/x',
+      ['ri.scout.main.dataset.a'],
+      'temp',
+      { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
+    );
     expect(options).toEqual([expect.objectContaining({ label: 'temp', value: 'temp', dataType: 'numeric' })]);
+  });
+
+  it('uses one stable backend request id for channel option loads from the same hook instance', async () => {
+    mockSearchChannels.mockResolvedValue([]);
+    const { result } = renderHook(() => useChannelOptions(args()));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      await result.current.channelOptions('temp');
+      await result.current.channelOptions('pressure');
+    });
+
+    const calls = mockSearchChannels.mock.calls as unknown as Array<
+      [string, string[], string, { requestId?: string }]
+    >;
+    const firstRequestId = calls[0][3]?.requestId;
+    expect(firstRequestId).toEqual(expect.stringMatching(/^nominal-channel-options-\d+$/));
+    expect(calls[1][3]).toEqual({ requestId: firstRequestId });
   });
 
   it('selectChannel marks interaction and emits channel + dataType', () => {
@@ -307,7 +330,12 @@ describe('useChannelOptions', () => {
     await act(async () => {
       await result.current.channelOptions('');
     });
-    expect(mockSearchChannels).toHaveBeenCalledWith('/api/x', ['ri.scout.main.dataset.a'], '');
+    expect(mockSearchChannels).toHaveBeenCalledWith(
+      '/api/x',
+      ['ri.scout.main.dataset.a'],
+      '',
+      { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
+    );
 
     mockSearchChannels.mockClear();
     rerender({ dataScopeName: 'scope-b' });
@@ -316,7 +344,12 @@ describe('useChannelOptions', () => {
     await act(async () => {
       await result.current.channelOptions('');
     });
-    expect(mockSearchChannels).toHaveBeenCalledWith('/api/x', ['ri.scout.main.dataset.b'], '');
+    expect(mockSearchChannels).toHaveBeenCalledWith(
+      '/api/x',
+      ['ri.scout.main.dataset.b'],
+      '',
+      { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
+    );
   });
 
   it('does not rebuild options when resolution references change but primitive fields do not', () => {

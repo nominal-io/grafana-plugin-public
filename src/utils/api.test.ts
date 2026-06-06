@@ -4,6 +4,7 @@ import {
   createBasicAsset,
   fetchAssetByRid,
   getDataSourceRid,
+  searchChannels,
   getSupportedScopeNames,
   getSupportedScopes,
   resolveDataSourceRids,
@@ -171,5 +172,24 @@ describe('fetchAssetByRid', () => {
     post.mockRejectedValue(new Error('Network error'));
 
     await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
+  });
+});
+
+describe('searchChannels', () => {
+  it('passes requestId to BackendSrv so superseded channel searches can be cancelled', async () => {
+    post.mockResolvedValue({ channels: [] });
+
+    await searchChannels(DATASOURCE_URL, ['ri.dataset.a'], 'temp', {
+      requestId: 'nominal-channel-options-1',
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      `${DATASOURCE_URL}/channels`,
+      {
+        dataSourceRids: ['ri.dataset.a'],
+        searchText: 'temp',
+      },
+      { requestId: 'nominal-channel-options-1' }
+    );
   });
 });

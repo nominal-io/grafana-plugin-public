@@ -42,6 +42,10 @@ export interface Channel {
   dataType: string;
 }
 
+interface SearchChannelsOptions {
+  requestId?: string;
+}
+
 /** Data source types that support channel queries */
 export const SUPPORTED_DATA_SOURCE_TYPES = ['dataset', 'connection', 'logSet'];
 
@@ -135,14 +139,18 @@ export const searchAssets = async (datasourceUrl: string, searchText: string): P
 export const searchChannels = async (
   datasourceUrl: string,
   dataSourceRids: string[],
-  searchText: string
+  searchText: string,
+  options: SearchChannelsOptions = {}
 ): Promise<Channel[]> => {
   if (dataSourceRids.length === 0) {
     return [];
   }
-  const response = await getBackendSrv().post(`${datasourceUrl}/channels`, {
+  const requestBody = {
     dataSourceRids,
     searchText,
-  });
+  };
+  const response = options.requestId
+    ? await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody, { requestId: options.requestId })
+    : await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody);
   return response?.channels ?? [];
 };

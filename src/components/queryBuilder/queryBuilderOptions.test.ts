@@ -57,6 +57,28 @@ describe('queryBuilderOptions', () => {
     ]);
   });
 
+  it('falls back to no labels and zero supported data scopes in asset combobox descriptions', () => {
+    const assetWithoutLabelsOrScopes: Asset = {
+      ...assetA,
+      rid: 'ri.scout.main.asset.empty',
+      title: 'Empty Asset',
+      labels: [],
+      dataScopes: [],
+    };
+
+    const options = buildAssetOptions({
+      assets: [assetWithoutLabelsOrScopes],
+      selectedAsset: null,
+      assetRid: resolveTemplateValue(assetWithoutLabelsOrScopes.rid, (value) => value),
+    });
+
+    expect(options[0]).toEqual({
+      label: 'Empty Asset',
+      value: assetWithoutLabelsOrScopes.rid,
+      description: 'No labels - 0 data scope(s)',
+    });
+  });
+
   it('adds a template-variable asset combobox option with resolved title when available', () => {
     const options = buildAssetOptions({
       assets: [],
