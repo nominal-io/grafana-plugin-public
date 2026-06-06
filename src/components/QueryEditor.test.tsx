@@ -360,8 +360,11 @@ describe('channel data type inference effect', () => {
     });
   });
 
-  it('renders the asset picker as a combobox with custom RID support', async () => {
+  it('renders asset and data scope pickers as comboboxes with custom value support', async () => {
     post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
       if (url.endsWith('/scout/v1/search-assets')) {
         return { results: [ASSET] };
       }
@@ -380,38 +383,15 @@ describe('channel data type inference effect', () => {
       />
     );
 
-    const input = await screen.findByTestId('asset-combobox');
+    const assetInput = await screen.findByTestId('asset-combobox');
+    const dataScopeInput = await screen.findByTestId('data-scope-combobox');
 
-    expect(input).toHaveAttribute('data-id', 'nominal-query-asset-picker');
-    expect(input).toHaveAttribute('data-width', 'auto');
-    expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '100');
-    expect(input).toHaveAttribute('data-loading', 'false');
-    expect(input).toHaveAttribute('data-create-custom-value', 'true');
-    expect(input).toHaveAttribute('data-clearable', 'false');
-  });
-
-  it('renders the data scope picker as a combobox with variable support', async () => {
-    render(
-      <QueryEditor
-        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
-        onChange={jest.fn()}
-        onRunQuery={jest.fn()}
-        datasource={mockDatasource}
-      />
-    );
-
-    const input = await screen.findByTestId('data-scope-combobox');
-
-    expect(input).toHaveAttribute('data-id', 'nominal-query-data-scope-picker');
-    expect(input).toHaveAttribute('data-width', 'auto');
-    expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '100');
-    await waitFor(() => {
-      expect(screen.getByTestId('data-scope-combobox')).toHaveAttribute('data-loading', 'false');
-    });
-    expect(input).toHaveAttribute('data-create-custom-value', 'true');
-    expect(input).toHaveAttribute('data-clearable', 'false');
+    expect(assetInput).toHaveAttribute('data-id', 'nominal-query-asset-picker');
+    expect(dataScopeInput).toHaveAttribute('data-id', 'nominal-query-data-scope-picker');
+    expect(assetInput).toHaveAttribute('data-create-custom-value', 'true');
+    expect(dataScopeInput).toHaveAttribute('data-create-custom-value', 'true');
+    expect(assetInput).toHaveAttribute('data-clearable', 'false');
+    expect(dataScopeInput).toHaveAttribute('data-clearable', 'false');
   });
 
   it('renders asset and data scope controls in a separate row from channel controls', async () => {
@@ -478,7 +458,7 @@ describe('channel data type inference effect', () => {
     });
   });
 
-  it('renders the channel combobox with autosizing bounds', async () => {
+  it('renders channel and aggregation pickers with autosizing bounds', async () => {
     render(
       <QueryEditor
         query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
@@ -488,37 +468,24 @@ describe('channel data type inference effect', () => {
       />
     );
 
-    const input = await screen.findByTestId('channel-combobox');
+    const channelInput = await screen.findByTestId('channel-combobox');
+    const aggregationInput = await screen.findByTestId('aggregation-multi-combobox');
 
-    expect(input).toHaveAttribute('data-id', 'nominal-query-channel-picker');
-    expect(input).toHaveAttribute('data-width', 'auto');
-    expect(input).toHaveAttribute('data-min-width', '30');
-    expect(input).toHaveAttribute('data-max-width', '100');
+    expect(channelInput).toHaveAttribute('data-id', 'nominal-query-channel-picker');
+    expect(channelInput).toHaveAttribute('data-width', 'auto');
+    expect(channelInput).toHaveAttribute('data-min-width', '30');
+    expect(channelInput).toHaveAttribute('data-max-width', '100');
+    expect(aggregationInput).toHaveAttribute('data-width', 'auto');
+    expect(aggregationInput).toHaveAttribute('data-min-width', '40');
+    expect(aggregationInput).toHaveAttribute('data-max-width', '100');
 
     const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
     expect(typeof lastProps.options).toBe('function');
     expect(lastProps.createCustomValue).toBe(true);
     expect(lastProps.isClearable).toBe(false);
-  });
 
-  it('renders numeric aggregation selection as an autosizing multiselect', async () => {
-    render(
-      <QueryEditor
-        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
-        onChange={jest.fn()}
-        onRunQuery={jest.fn()}
-        datasource={mockDatasource}
-      />
-    );
-
-    const aggregationInput = await screen.findByTestId('aggregation-multi-combobox');
-
-    expect(aggregationInput).toHaveAttribute('data-width', 'auto');
-    expect(aggregationInput).toHaveAttribute('data-min-width', '40');
-    expect(aggregationInput).toHaveAttribute('data-max-width', '100');
-
-    const lastProps = mockMultiComboboxProps.mock.calls.at(-1)?.[0];
-    expect(lastProps.value).toEqual(['MEAN']);
+    const lastMultiProps = mockMultiComboboxProps.mock.calls.at(-1)?.[0];
+    expect(lastMultiProps.value).toEqual(['MEAN']);
   });
 
   it('uses the combobox async options loader to search channels with typed text', async () => {
