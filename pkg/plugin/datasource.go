@@ -1499,7 +1499,6 @@ func (d *Datasource) handleChannelVariables(ctx context.Context, req *backend.Ca
 
 	// Paginate through all channels. The SearchChannels API caps at 1000 per call,
 	// so we loop with NextPageToken to fetch the complete list for template variables.
-	const maxChannelVariables = 5000
 	pageSize := 1000
 	var allChannelResults []datasourceapi.ChannelMetadata
 	var nextPageToken *api.Token
