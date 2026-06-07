@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nominal-inc/nominal-ds/pkg/models"
@@ -261,6 +262,37 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing"); err == nil {
 		t.Fatal("FetchAssetByRid error = nil, want non-nil")
+	}
+}
+
+func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
+	assetRid := "ri.scout.main.asset.requires-client"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	var fetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Unexpected Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &fetchCount)
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+	catalog := newNominalCatalog(nil, &mockDatasourceService{})
+
+	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err == nil || !strings.Contains(err.Error(), "resource HTTP client is not configured") {
+		t.Fatalf("FetchAssetByRid error = %v, want missing resource HTTP client error", err)
+	}
+	if fetchCount != 0 {
+		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
 	}
 }
 

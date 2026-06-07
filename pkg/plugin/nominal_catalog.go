@@ -176,11 +176,10 @@ func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.Plu
 	req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	httpClient := c.resourceHTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	if c.resourceHTTPClient == nil {
+		return nil, fmt.Errorf("resource HTTP client is not configured")
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := c.resourceHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
