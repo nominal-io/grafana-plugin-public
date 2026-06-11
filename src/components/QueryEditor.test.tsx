@@ -1,6 +1,6 @@
 import React from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
 import { DataSource } from '../datasource';
@@ -24,9 +24,55 @@ const ASSET = {
 // Component tests install a URL-routing implementation in their describe block.
 const post = jest.fn();
 const publish = jest.fn();
+const mockComboboxProps = jest.fn();
+const mockMultiComboboxProps = jest.fn();
 // Per-test overrides for template variable resolution. Lets a test simulate a
 // dashboard variable changing value mid-session (e.g. $asset resolving to a new RID).
 let mockReplaceOverrides: Record<string, string> = {};
+
+jest.mock('@grafana/ui', () => {
+  const React = jest.requireActual('react');
+  const actual = jest.requireActual('@grafana/ui');
+  return {
+    ...actual,
+    Combobox: (props: Record<string, any>) => {
+      mockComboboxProps(props);
+      const value =
+        typeof props.value === 'object'
+          ? props.value?.label ?? props.value?.value ?? ''
+          : props.value ?? '';
+      return React.createElement('input', {
+        'data-testid': props['data-testid'] ?? 'mock-combobox',
+        'data-id': props.id ?? '',
+        'data-width': props.width ?? '',
+        'data-min-width': String(props.minWidth ?? ''),
+        'data-max-width': String(props.maxWidth ?? ''),
+        'data-loading': String(props.loading ?? false),
+        'data-create-custom-value': String(props.createCustomValue ?? false),
+        'data-clearable': String(props.isClearable ?? ''),
+        placeholder: props.placeholder,
+        value,
+        onChange: async (event: React.ChangeEvent<HTMLInputElement>) => {
+          if (typeof props.options === 'function') {
+            await props.options(event.currentTarget.value);
+          }
+        },
+      });
+    },
+    MultiCombobox: (props: Record<string, any>) => {
+      mockMultiComboboxProps(props);
+      return React.createElement('input', {
+        'data-testid': props['data-testid'] ?? 'mock-multi-combobox',
+        'data-width': props.width ?? '',
+        'data-min-width': String(props.minWidth ?? ''),
+        'data-max-width': String(props.maxWidth ?? ''),
+        placeholder: props.placeholder,
+        value: Array.isArray(props.value) ? props.value.join(',') : '',
+        readOnly: true,
+      });
+    },
+  };
+});
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
@@ -54,6 +100,8 @@ jest.mock('@grafana/runtime', () => ({
 beforeEach(() => {
   post.mockReset();
   publish.mockReset();
+  mockComboboxProps.mockReset();
+  mockMultiComboboxProps.mockReset();
   mockReplaceOverrides = {};
 });
 
@@ -61,6 +109,15 @@ afterEach(() => {
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
+
+// Returns the most recent props captured for the Combobox rendered with the
+// given data-testid. The bare-<input> mock hides the real onChange/value wiring,
+// so reaching the captured props is the only way to exercise the QueryEditor-level
+// onChange wrappers and value props directly (the Select->Combobox migration boundary).
+function latestComboboxProps(testId: string): Record<string, any> | undefined {
+  const calls = mockComboboxProps.mock.calls.filter((call) => call[0]?.['data-testid'] === testId);
+  return calls.at(-1)?.[0];
+}
 
 describe('channel data type inference effect', () => {
   // Per-test overrides for the /channels response routed below.
@@ -303,8 +360,63 @@ describe('channel data type inference effect', () => {
     });
   });
 
+  it('renders asset and data scope pickers as comboboxes with custom value support', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const assetInput = await screen.findByTestId('asset-combobox');
+    const dataScopeInput = await screen.findByTestId('data-scope-combobox');
+
+    expect(assetInput).toHaveAttribute('data-id', 'nominal-query-asset-picker');
+    expect(dataScopeInput).toHaveAttribute('data-id', 'nominal-query-data-scope-picker');
+    expect(assetInput).toHaveAttribute('data-create-custom-value', 'true');
+    expect(dataScopeInput).toHaveAttribute('data-create-custom-value', 'true');
+    expect(assetInput).toHaveAttribute('data-clearable', 'false');
+    expect(dataScopeInput).toHaveAttribute('data-clearable', 'false');
+  });
+
+  it('renders asset and data scope controls in a separate row from channel controls', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const dataScopePicker = await screen.findByTestId('data-scope-combobox');
+    const channelPicker = await screen.findByTestId('channel-combobox');
+
+    const assetScopeRow = screen.getByTestId('query-editor-asset-scope-row');
+    const channelAggregationRow = screen.getByTestId('query-editor-channel-aggregation-row');
+
+    expect(assetScopeRow).toContainElement(dataScopePicker);
+    expect(assetScopeRow).not.toContainElement(channelPicker);
+    expect(channelAggregationRow).toContainElement(channelPicker);
+    expect(channelAggregationRow).not.toContainElement(dataScopePicker);
+  });
+
   it('publishes a Grafana alert when channel option loading fails', async () => {
-    jest.useFakeTimers();
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
         return { [ASSET_RID]: ASSET };
@@ -331,10 +443,10 @@ describe('channel data type inference effect', () => {
       expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
     });
 
-    // Flush the debounced channel preload.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
+    await screen.findByTestId('channel-combobox');
+    const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
+    await act(async () => {
+      await lastProps.options('temperature');
     });
 
     await waitFor(() => {
@@ -342,6 +454,61 @@ describe('channel data type inference effect', () => {
         expect.objectContaining({
           payload: ['Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.'],
         })
+      );
+    });
+  });
+
+  it('renders channel and aggregation pickers with autosizing bounds', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const channelInput = await screen.findByTestId('channel-combobox');
+    const aggregationInput = await screen.findByTestId('aggregation-multi-combobox');
+
+    expect(channelInput).toHaveAttribute('data-id', 'nominal-query-channel-picker');
+    expect(channelInput).toHaveAttribute('data-width', 'auto');
+    expect(channelInput).toHaveAttribute('data-min-width', '30');
+    expect(channelInput).toHaveAttribute('data-max-width', '100');
+    expect(aggregationInput).toHaveAttribute('data-width', 'auto');
+    expect(aggregationInput).toHaveAttribute('data-min-width', '40');
+    expect(aggregationInput).toHaveAttribute('data-max-width', '100');
+
+    const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
+    expect(typeof lastProps.options).toBe('function');
+    expect(lastProps.createCustomValue).toBe(true);
+    expect(lastProps.isClearable).toBe(false);
+
+    const lastMultiProps = mockMultiComboboxProps.mock.calls.at(-1)?.[0];
+    expect(lastMultiProps.value).toEqual(['MEAN']);
+  });
+
+  it('uses the combobox async options loader to search channels with typed text', async () => {
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const input = await screen.findByTestId('channel-combobox');
+    fireEvent.change(input, { target: { value: 'long.temperature.channel' } });
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        `${DATASOURCE_URL}/channels`,
+        expect.objectContaining({
+          dataSourceRids: [LOG_DS_RID],
+          searchText: 'long.temperature.channel',
+        }),
+        { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
       );
     });
   });
@@ -438,5 +605,138 @@ describe('channel data type inference effect', () => {
     );
     expect(channelTypeUpdates).toHaveLength(0);
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // The bare-<input> mock's onChange only invokes the async options loader, never
+  // props.onChange. These tests reach the captured props to exercise the selection
+  // wrappers in QueryEditor.tsx (the destructuring that changed in the Combobox
+  // migration: `selection.value` for asset/scope, `toChannelOption(selection)` for
+  // channel). A mis-wired or mis-destructured handler is invisible to every other
+  // test layer, so cover it here.
+  it('wires the asset picker onChange to selectAsset with the option value', async () => {
+    const ASSET_RID_B = 'ri.scout.main.asset.def456';
+    const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET, ASSET_B] };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await screen.findByTestId('asset-combobox');
+    const props = latestComboboxProps('asset-combobox');
+    expect(props).toBeDefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props!.onChange({ value: ASSET_RID_B, label: 'Asset B' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET_RID_B }));
+  });
+
+  it('wires the data scope picker onChange to selectDataScope with the option value', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: 'default' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const props = (await waitFor(() => {
+      const captured = latestComboboxProps('data-scope-combobox');
+      expect(captured).toBeDefined();
+      return captured;
+    }))!;
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props.onChange({ value: 'secondary', label: 'Secondary scope' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ dataScopeName: 'secondary' }));
+  });
+
+  it('wires the channel picker onChange to selectChannel via toChannelOption', async () => {
+    const onChange = jest.fn();
+
+    render(
+      <QueryEditor
+        query={makeQuery({ channel: 'temperature', channelDataType: 'numeric' })}
+        onChange={onChange}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await screen.findByTestId('channel-combobox');
+    const props = latestComboboxProps('channel-combobox');
+    expect(props).toBeDefined();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      props!.onChange({ value: 'pressure', label: 'Pressure', dataType: 'numeric' });
+    });
+
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'pressure', channelDataType: 'numeric' })
+    );
+  });
+
+  // The data scope picker passes the raw query value (`query?.dataScopeName || ''`)
+  // straight into the Combobox `value` prop, bypassing the option adapters that the other
+  // pickers' value props go through. Nothing else asserts this passthrough, including the
+  // template-variable case where the raw `$scope` syntax must reach the picker verbatim.
+  it('passes the raw query dataScopeName through to the data scope picker value', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: '$scope' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    await waitFor(() => {
+      const props = latestComboboxProps('data-scope-combobox');
+      expect(props).toBeDefined();
+      expect(props!.value).toBe('$scope');
+    });
   });
 });

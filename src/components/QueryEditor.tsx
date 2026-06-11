@@ -1,19 +1,19 @@
 import React from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
+  Combobox,
   InlineField,
   Input,
   Stack,
-  Select,
   MultiCombobox,
   RadioButtonGroup,
   useStyles2,
-  type ComboboxOption,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
+import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -115,119 +115,116 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   });
 
   const aggregationOptions = React.useMemo(
-    () =>
-      state.aggregationState.options.map(
-        (option): ComboboxOption<string> => ({
-          label: option.label,
-          value: option.value,
-          // Only attach description when present. Grafana's Combobox sizes rows by
-          // `'description' in option`, so an always-present `description: undefined`
-          // forces every row to the taller description height and makes the 7
-          // aggregation options scroll (regression vs. passing bare options).
-          ...(option.description ? { description: option.description } : {}),
-        })
-      ),
+    () => toAggregationComboboxOptions(state.aggregationState.options),
     [state.aggregationState.options]
   );
 
   return (
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
-        <Stack gap={1} direction="row" wrap alignItems="center">
-          {/* Asset Input Method */}
-          <div className={styles.methodToggle}>
-            <RadioButtonGroup
-              options={[
-                { label: 'Asset Search', value: 'search' },
-                { label: 'Asset RID', value: 'direct' },
-              ]}
-              value={state.assetInputMethod}
-              onChange={commands.changeAssetInputMethod}
-              size="sm"
-            />
-          </div>
+        <Stack gap={1} direction="column">
+          <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
+            {/* Asset Input Method */}
+            <div className={styles.methodToggle}>
+              <RadioButtonGroup
+                options={[
+                  { label: 'Asset Search', value: 'search' },
+                  { label: 'Asset RID', value: 'direct' },
+                ]}
+                value={state.assetInputMethod}
+                onChange={commands.changeAssetInputMethod}
+                size="sm"
+              />
+            </div>
 
-          {/* Asset Selection */}
-          {state.assetInputMethod === 'search' ? (
-            <>
-              <InlineField label="Search" labelWidth={8}>
-                <Input
-                  placeholder="Search assets"
-                  value={state.searchQuery}
-                  onChange={(event) => commands.changeAssetSearchQuery(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      commands.runAssetSearch();
-                    }
-                  }}
-                  width={20}
-                />
-              </InlineField>
-
-              {state.assetSearchResultCount > 0 && (
-                <InlineField label="Asset" labelWidth={8}>
-                  {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                  <Select
-                    key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
-                    options={state.assetOptions}
-                    value={state.assetSelectValue}
-                    onChange={commands.selectAsset}
-                    width={30}
-                    placeholder="Choose asset..."
-                    isLoading={state.isLoadingAssets}
-                    isClearable={false}
-                    allowCustomValue={true}
+            {/* Asset Selection */}
+            {state.assetInputMethod === 'search' ? (
+              <>
+                <InlineField label="Search" labelWidth={8}>
+                  <Input
+                    placeholder="Search assets"
+                    value={state.searchQuery}
+                    onChange={(event) => commands.changeAssetSearchQuery(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        commands.runAssetSearch();
+                      }
+                    }}
+                    width={20}
                   />
                 </InlineField>
-              )}
-            </>
-          ) : (
-            <InlineField label="Asset RID" labelWidth={12}>
-              <Input
-                placeholder="ri.scout.cerulean-staging.asset..."
-                value={state.directRID}
-                onChange={(event) => commands.changeDirectRID(event.currentTarget.value)}
-                width={40}
-              />
-            </InlineField>
-          )}
+
+                {state.assetSearchResultCount > 0 && (
+                  <InlineField label="Asset" labelWidth={8} loading={state.isLoadingAssets}>
+                    <Combobox
+                      id="nominal-query-asset-picker"
+                      key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
+                      options={state.assetOptions}
+                      value={state.assetSelectValue}
+                      onChange={(selection) => commands.selectAsset(selection.value)}
+                      width="auto"
+                      minWidth={30}
+                      maxWidth={100}
+                      placeholder="Choose asset..."
+                      isClearable={false}
+                      createCustomValue
+                      data-testid="asset-combobox"
+                    />
+                  </InlineField>
+                )}
+              </>
+            ) : (
+              <InlineField label="Asset RID" labelWidth={12}>
+                <Input
+                  placeholder="ri.scout.cerulean-staging.asset..."
+                  value={state.directRID}
+                  onChange={(event) => commands.changeDirectRID(event.currentTarget.value)}
+                  width={40}
+                />
+              </InlineField>
+            )}
+
+            {state.assetComplete && (
+              <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
+                <Combobox
+                  id="nominal-query-data-scope-picker"
+                  value={query?.dataScopeName || ''}
+                  onChange={(selection) => commands.selectDataScope(selection.value)}
+                  options={state.dataScopeOptions}
+                  placeholder="Choose scope or use $variable..."
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  isClearable={false}
+                  createCustomValue
+                  data-testid="data-scope-combobox"
+                />
+              </InlineField>
+            )}
+          </Stack>
 
           {/* Channel Selection - only show if asset is selected */}
           {state.assetComplete && (
-            <>
-              <InlineField label="Data scope" labelWidth={12}>
-                {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                <Select
-                  value={query?.dataScopeName || ''}
-                  onChange={(value) => commands.selectDataScope(value?.value || '')}
-                  options={state.dataScopeOptions}
-                  placeholder="Choose scope or use $variable..."
-                  width={30}
-                  isClearable={false}
-                  allowCustomValue={true}
-                  isLoading={!state.selectedAsset && state.assetComplete}
-                />
-              </InlineField>
-
+            <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8}>
-                  {/* eslint-disable-next-line @typescript-eslint/no-deprecated */}
-                  <Select
+                  {/*
+                    TODO: add Combobox prefixIcon after bumping @grafana/ui to >=12.3.0;
+                    the current 12.1.0 pin does not include it.
+                  */}
+                  <Combobox
+                    id="nominal-query-channel-picker"
                     key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
                     value={state.channelSelectValue}
-                    onChange={commands.selectChannel}
+                    onChange={(selection) => commands.selectChannel(toChannelOption(selection))}
                     options={state.channelOptions}
-                    onInputChange={(text, action) => {
-                      if (action.action === 'input-change') {
-                        commands.searchChannels(text);
-                      }
-                    }}
-                    onOpenMenu={commands.openChannelMenu}
-                    isLoading={state.isLoadingChannels}
                     placeholder="Search for channel..."
-                    width={50}
-                    allowCustomValue
+                    width="auto"
+                    minWidth={30}
+                    maxWidth={100}
+                    createCustomValue
                     isClearable={false}
+                    data-testid="channel-combobox"
                   />
                 </InlineField>
               )}
@@ -245,12 +242,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       value={state.aggregationState.value}
                       onChange={commands.changeAggregations}
                       placeholder="Select aggregations..."
-                      width={35}
+                      width="auto"
+                      minWidth={40}
+                      maxWidth={100}
+                      data-testid="aggregation-multi-combobox"
                     />
                   )}
                 </InlineField>
               )}
-            </>
+            </Stack>
           )}
         </Stack>
 

@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, searchAssets, type Asset } from '../../utils/api';
-import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
+import { buildAssetOptions, buildDataScopeOptions, getAssetPickerValue } from './queryBuilderOptions';
 import { resolveTemplateValue, type TemplateValueResolution } from './templateResolution';
 import { useAssetSelection } from './useAssetSelection';
 
@@ -25,7 +25,7 @@ jest.mock('./queryBuilderOptions', () => {
     ...actual,
     buildAssetOptions: jest.fn(actual.buildAssetOptions),
     buildDataScopeOptions: jest.fn(actual.buildDataScopeOptions),
-    getAssetSelectValue: jest.fn(actual.getAssetSelectValue),
+    getAssetPickerValue: jest.fn(actual.getAssetPickerValue),
   };
 });
 
@@ -33,7 +33,7 @@ const mockSearchAssets = searchAssets as jest.MockedFunction<typeof searchAssets
 const mockFetchAssetByRid = fetchAssetByRid as jest.MockedFunction<typeof fetchAssetByRid>;
 const mockBuildAssetOptions = buildAssetOptions as jest.MockedFunction<typeof buildAssetOptions>;
 const mockBuildDataScopeOptions = buildDataScopeOptions as jest.MockedFunction<typeof buildDataScopeOptions>;
-const mockGetAssetSelectValue = getAssetSelectValue as jest.MockedFunction<typeof getAssetSelectValue>;
+const mockGetAssetPickerValue = getAssetPickerValue as jest.MockedFunction<typeof getAssetPickerValue>;
 
 const ASSET: Asset = {
   rid: 'ri.scout.main.asset.a',
@@ -115,7 +115,7 @@ async function renderMemoTestHook() {
 
   mockBuildAssetOptions.mockClear();
   mockBuildDataScopeOptions.mockClear();
-  mockGetAssetSelectValue.mockClear();
+  mockGetAssetPickerValue.mockClear();
 
   return { hookArgs, rerender };
 }
@@ -129,7 +129,7 @@ describe('useAssetSelection', () => {
     mockFetchAssetByRid.mockReset().mockResolvedValue(null);
     mockBuildAssetOptions.mockClear();
     mockBuildDataScopeOptions.mockClear();
-    mockGetAssetSelectValue.mockClear();
+    mockGetAssetPickerValue.mockClear();
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -161,7 +161,7 @@ describe('useAssetSelection', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset({ value: ASSET.rid });
+      result.current.selectAsset(ASSET.rid);
     });
 
     expect(markInteracted).toHaveBeenCalled();
@@ -302,7 +302,7 @@ describe('useAssetSelection', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset({ value: ASSET_B.rid });
+      result.current.selectAsset(ASSET_B.rid);
     });
 
     expect(markInteracted).toHaveBeenCalled();
@@ -394,11 +394,11 @@ describe('useAssetSelection', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset({ value: ASSET_A.rid });
+      result.current.selectAsset(ASSET_A.rid);
     });
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset({ value: ASSET_B.rid });
+      result.current.selectAsset(ASSET_B.rid);
     });
 
     // Newer selection (B) resolves first and wins.
@@ -456,7 +456,7 @@ describe('useAssetSelection', () => {
     });
 
     expect(mockBuildAssetOptions).not.toHaveBeenCalled();
-    expect(mockGetAssetSelectValue).not.toHaveBeenCalled();
+    expect(mockGetAssetPickerValue).not.toHaveBeenCalled();
     expect(mockBuildDataScopeOptions).not.toHaveBeenCalled();
   });
 
@@ -479,7 +479,7 @@ describe('useAssetSelection', () => {
       });
 
       expect(mockBuildAssetOptions).toHaveBeenCalledTimes(1);
-      expect(mockGetAssetSelectValue).toHaveBeenCalledTimes(1);
+      expect(mockGetAssetPickerValue).toHaveBeenCalledTimes(1);
       expect(mockBuildDataScopeOptions).not.toHaveBeenCalled();
     }
   );
@@ -503,7 +503,7 @@ describe('useAssetSelection', () => {
       });
 
       expect(mockBuildAssetOptions).not.toHaveBeenCalled();
-      expect(mockGetAssetSelectValue).not.toHaveBeenCalled();
+      expect(mockGetAssetPickerValue).not.toHaveBeenCalled();
       expect(mockBuildDataScopeOptions).toHaveBeenCalledTimes(1);
     }
   );

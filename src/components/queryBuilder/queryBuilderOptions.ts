@@ -1,14 +1,7 @@
-import type { SelectableValue } from '@grafana/data';
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
-import { assetToOption, type Asset, type Channel } from '../../utils/api';
+import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
-import type { ChannelOption } from './queryBuilderTypes';
-
-export const DATA_TYPE_ICONS: Record<string, string> = {
-  string: 'font',
-  numeric: 'calculator-alt',
-  log: 'gf-logs',
-};
+import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
 export const NUMERIC_AGG_OPTIONS = [
   { label: 'Mean', value: AggregationType.Mean },
@@ -20,6 +13,14 @@ export const NUMERIC_AGG_OPTIONS = [
   { label: 'Last', value: AggregationType.LastPoint },
 ];
 
+function assetToOption(asset: Asset): AssetOption {
+  return {
+    label: asset.title,
+    value: asset.rid,
+    description: `${asset.labels.join(', ') || 'No labels'} - ${getSupportedScopes(asset).length} data scope(s)`,
+  };
+}
+
 export function buildAssetOptions({
   assets,
   selectedAsset,
@@ -28,7 +29,7 @@ export function buildAssetOptions({
   assets: Asset[];
   selectedAsset: Asset | null;
   assetRid: TemplateValueResolution;
-}): Array<SelectableValue<string>> {
+}): AssetOption[] {
   const options = assets.map(assetToOption);
 
   if (selectedAsset && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
@@ -48,12 +49,12 @@ export function buildAssetOptions({
   return options;
 }
 
-export function getAssetSelectValue({
+export function getAssetPickerValue({
   assetRid,
   assetOptions,
 }: {
   assetRid: TemplateValueResolution;
-  assetOptions: Array<SelectableValue<string>>;
+  assetOptions: AssetOption[];
 }): string {
   if (assetRid.hasTemplate) {
     return assetRid.raw;
@@ -67,7 +68,7 @@ export function buildDataScopeOptions({
 }: {
   dataScopes: string[];
   dataScopeName: TemplateValueResolution;
-}): Array<SelectableValue<string>> {
+}): DataScopeOption[] {
   const options = dataScopes.map((scope) => ({
     label: scope,
     value: scope,
@@ -92,9 +93,8 @@ export function channelsToOptions(channels: Channel[]): ChannelOption[] {
   return channels.map((channel) => ({
     label: channel.name,
     value: channel.name,
-    description: channel.description || `Channel: ${channel.name}`,
+    ...(channel.description ? { description: channel.description } : {}),
     dataType: channel.dataType || '',
-    icon: channel.dataType ? DATA_TYPE_ICONS[channel.dataType] : undefined,
   }));
 }
 
@@ -117,16 +117,38 @@ export function buildChannelOptions({
 
 export function getChannelSelectValue({
   channel,
+  channelDataType,
 }: {
   channel: TemplateValueResolution;
-}): SelectableValue<string> | null {
+  channelDataType?: string;
+}): ChannelOption | null {
   if (!channel.raw) {
     return null;
   }
   return {
     label: templateDisplayLabel(channel),
     value: channel.raw,
+    ...(channelDataType ? { dataType: channelDataType } : {}),
   };
+}
+
+export function toChannelOption(selection: PickerOption | ChannelOption): ChannelOption {
+  const value = selection.value || '';
+  const dataType = 'dataType' in selection ? selection.dataType : undefined;
+
+  return {
+    label: selection.label || value,
+    value,
+    ...(dataType ? { dataType } : {}),
+  };
+}
+
+export function toAggregationComboboxOptions(options: AggregationOption[]): PickerOption[] {
+  return options.map((option) => ({
+    label: option.label,
+    value: option.value,
+    ...(option.description ? { description: option.description } : {}),
+  }));
 }
 
 export function getAggregationValue(aggregations: string[] | undefined): string[] {

@@ -1,4 +1,3 @@
-import { SelectableValue } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 
 export type WeakTimestampType = 'ABSOLUTE' | 'RELATIVE' | 'PENDING' | 'UNKNOWN';
@@ -41,6 +40,10 @@ export interface Channel {
   description: string;
   // May be empty string when upstream metadata is absent (treated as numeric).
   dataType: string;
+}
+
+interface SearchChannelsOptions {
+  requestId?: string;
 }
 
 /** Data source types that support channel queries */
@@ -93,13 +96,6 @@ export const createBasicAsset = (rid: string, title: string): Asset => ({
   properties: {},
 });
 
-/** Convert asset to dropdown option */
-export const assetToOption = (asset: Asset): SelectableValue<string> => ({
-  label: asset.title,
-  value: asset.rid,
-  description: `${asset.labels.join(', ') || 'No labels'} - ${getSupportedScopes(asset).length} data scope(s)`,
-});
-
 /** Fetches a single asset by its exact RID using the batch lookup endpoint */
 export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
   if (!rid || !rid.startsWith('ri.')) {
@@ -143,14 +139,18 @@ export const searchAssets = async (datasourceUrl: string, searchText: string): P
 export const searchChannels = async (
   datasourceUrl: string,
   dataSourceRids: string[],
-  searchText: string
+  searchText: string,
+  options: SearchChannelsOptions = {}
 ): Promise<Channel[]> => {
   if (dataSourceRids.length === 0) {
     return [];
   }
-  const response = await getBackendSrv().post(`${datasourceUrl}/channels`, {
+  const requestBody = {
     dataSourceRids,
     searchText,
-  });
+  };
+  const response = options.requestId
+    ? await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody, { requestId: options.requestId })
+    : await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody);
   return response?.channels ?? [];
 };

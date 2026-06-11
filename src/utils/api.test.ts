@@ -1,10 +1,10 @@
 import {
   Asset,
   DataScope,
-  assetToOption,
   createBasicAsset,
   fetchAssetByRid,
   getDataSourceRid,
+  searchChannels,
   getSupportedScopeNames,
   getSupportedScopes,
   resolveDataSourceRids,
@@ -104,29 +104,6 @@ describe('resolveDataSourceRids', () => {
   });
 });
 
-describe('assetToOption', () => {
-  it('summarizes labels and supported scope count', () => {
-    const asset = buildAsset({
-      title: 'Engine 12',
-      labels: ['prod', 'eu'],
-      dataScopes: [
-        scope('ds1', { type: 'dataset', dataset: 'ri.dataset.a' }),
-        scope('vid', { type: 'video', video: 'ri.video.c' }),
-      ],
-    });
-    expect(assetToOption(asset)).toEqual({
-      label: 'Engine 12',
-      value: asset.rid,
-      description: 'prod, eu - 1 data scope(s)',
-    });
-  });
-
-  it('falls back to "No labels" when labels are empty', () => {
-    const asset = buildAsset({ title: 'X', labels: [] });
-    expect(assetToOption(asset).description).toBe('No labels - 0 data scope(s)');
-  });
-});
-
 describe('createBasicAsset', () => {
   it('creates an asset placeholder with empty collections', () => {
     const a = createBasicAsset('ri.scout.main.asset.x', 'Placeholder');
@@ -195,5 +172,24 @@ describe('fetchAssetByRid', () => {
     post.mockRejectedValue(new Error('Network error'));
 
     await expect(fetchAssetByRid(DATASOURCE_URL, VALID_RID)).rejects.toThrow('Network error');
+  });
+});
+
+describe('searchChannels', () => {
+  it('passes requestId to BackendSrv so superseded channel searches can be cancelled', async () => {
+    post.mockResolvedValue({ channels: [] });
+
+    await searchChannels(DATASOURCE_URL, ['ri.dataset.a'], 'temp', {
+      requestId: 'nominal-channel-options-1',
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      `${DATASOURCE_URL}/channels`,
+      {
+        dataSourceRids: ['ri.dataset.a'],
+        searchText: 'temp',
+      },
+      { requestId: 'nominal-channel-options-1' }
+    );
   });
 });
