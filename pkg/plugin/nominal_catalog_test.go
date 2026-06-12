@@ -246,6 +246,63 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	}
 }
 
+func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
+	assetRid := "ri.scout.main.asset.copied"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	var fetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Copied Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &fetchCount)
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	first, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
+	if err != nil {
+		t.Fatalf("first FetchAssetByRid returned error: %v", err)
+	}
+	if first == nil || len(first.DataScopes) != 1 || first.DataScopes[0].DataSource.Dataset == nil {
+		t.Fatalf("unexpected first asset shape: %+v", first)
+	}
+
+	// Mutate everything reachable from the returned value; the cache must not see it.
+	first.Title = "mutated"
+	first.DataScopes[0].DataScopeName = "mutated-scope"
+	*first.DataScopes[0].DataSource.Dataset = "ri.mutated"
+
+	second, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
+	if err != nil {
+		t.Fatalf("second FetchAssetByRid returned error: %v", err)
+	}
+	if second == nil || len(second.DataScopes) != 1 || second.DataScopes[0].DataSource.Dataset == nil {
+		t.Fatalf("unexpected second asset shape: %+v", second)
+	}
+	if second.Title != "Copied Asset" {
+		t.Fatalf("cached title = %q, want Copied Asset (mutation leaked into cache)", second.Title)
+	}
+	if second.DataScopes[0].DataScopeName != "scope-a" {
+		t.Fatalf("cached scope name = %q, want scope-a (mutation leaked into cache)", second.DataScopes[0].DataScopeName)
+	}
+	if got := *second.DataScopes[0].DataSource.Dataset; got != dataSourceRid {
+		t.Fatalf("cached dataset RID = %q, want %q (mutation leaked into cache)", got, dataSourceRid)
+	}
+	if fetchCount != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", fetchCount)
+	}
+}
+
 func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"bad path %s"}`, r.URL.Path), http.StatusTeapot)

@@ -80,6 +80,33 @@ type SingleAssetResponse struct {
 	DataScopes []AssetDataScope `json:"dataScopes"`
 }
 
+// clone returns a deep copy so cached entries can never be mutated through a
+// returned asset. nil-safe: not-found assets are cached and returned as nil.
+func (a *SingleAssetResponse) clone() *SingleAssetResponse {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	if a.DataScopes != nil {
+		out.DataScopes = make([]AssetDataScope, len(a.DataScopes))
+		for i, scope := range a.DataScopes {
+			scope.DataSource.Dataset = cloneStringPtr(scope.DataSource.Dataset)
+			scope.DataSource.Connection = cloneStringPtr(scope.DataSource.Connection)
+			scope.DataSource.LogSet = cloneStringPtr(scope.DataSource.LogSet)
+			out.DataScopes[i] = scope
+		}
+	}
+	return &out
+}
+
+func cloneStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
+}
+
 // AssetSearchResult represents a single asset returned by the search API.
 type AssetSearchResult struct {
 	Rid         string           `json:"rid"`
@@ -129,6 +156,8 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 }
 
 // FetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint.
+// Results are cached for assetCacheTTL. The returned value is a copy, so callers
+// may mutate it without affecting the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	c.assetCacheMu.Lock()
 	if c.assetCache == nil {
@@ -136,7 +165,7 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	}
 	if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
 		c.assetCacheMu.Unlock()
-		return entry.asset, nil
+		return entry.asset.clone(), nil
 	}
 	c.assetCacheMu.Unlock()
 
@@ -149,7 +178,7 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
 	c.assetCacheMu.Unlock()
 
-	return asset, nil
+	return asset.clone(), nil
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
