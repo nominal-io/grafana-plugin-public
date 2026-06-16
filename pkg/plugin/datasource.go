@@ -416,14 +416,30 @@ type LogEntry struct {
 	Labels json.RawMessage
 }
 
-// marshalLogArgs serializes log Args to JSON, returning "{}" for nil maps.
-// json.Marshal(nil) produces "null", not "{}", so we handle nil explicitly.
-// map[string]string is always JSON-serializable, so we don't handle marshal errors.
-func marshalLogArgs(args map[string]string) json.RawMessage {
-	if args == nil {
-		return json.RawMessage("{}")
+// marshalLogArgs serializes log Args to JSON, injecting a "nominal.channel" key so a
+// single Grafana Logs panel fed by multiple Nominal channels can distinguish,
+// filter, and color rows by source channel.
+//
+// "nominal.channel" avoids Grafana's underscore-prefixed-label hiding while
+// keeping the field clearly namespaced. We never clobber an existing
+// "nominal.channel" arg - user data wins - and we skip injection entirely when
+// channel is empty.
+//
+// The caller's args map is never mutated; we copy into a fresh map. Because that
+// map is always non-nil (make), json.Marshal yields "{}" for the empty case and
+// can never yield "null" - no explicit nil/empty special-casing is needed.
+// map[string]string is always JSON-serializable, so marshal cannot err.
+func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
+	out := make(map[string]string, len(args)+1)
+	for k, v := range args {
+		out[k] = v
 	}
-	labelsJSON, _ := json.Marshal(args)
+	if channel != "" {
+		if _, exists := out["nominal.channel"]; !exists {
+			out["nominal.channel"] = channel
+		}
+	}
+	labelsJSON, _ := json.Marshal(out)
 	return labelsJSON
 }
 
@@ -532,7 +548,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
 					Body:   val.Message,
 					ID:     val.Id.String(),
-					Labels: marshalLogArgs(val.Args),
+					Labels: marshalLogArgs(val.Args, qm.Channel),
 				})
 			}
 			result.IsLog = true
@@ -550,7 +566,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				Time:   time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)),
 				Body:   lp.Value.Message,
 				ID:     lp.Value.Id.String(),
-				Labels: marshalLogArgs(lp.Value.Args),
+				Labels: marshalLogArgs(lp.Value.Args, qm.Channel),
 			}}
 			result.IsLog = true
 			return nil
