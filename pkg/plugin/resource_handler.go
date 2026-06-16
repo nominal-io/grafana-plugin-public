@@ -169,9 +169,9 @@ func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *ba
 	d := h.datasource
 
 	// Load settings to get API key and base URL
-	config, err := models.LoadPluginSettings(d.settings)
-	if err != nil {
-		return fmt.Errorf("failed to load settings: %v", err)
+	config, ok, err := loadResourceSettings(d.settings, sender, "Proxy request: failed to load settings")
+	if !ok {
+		return err
 	}
 
 	apiKey := config.Secrets.ApiKey

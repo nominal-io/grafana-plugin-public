@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -215,6 +216,40 @@ func TestCallResourceProxyPaths(t *testing.T) {
 				t.Fatalf("request path was mutated to %q, want %q", req.Path, tt.wantReqPath)
 			}
 		})
+	}
+}
+
+func TestNominalProxySettingsLoadFailureUsesJSONResponse(t *testing.T) {
+	ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+	ds.settings.JSONData = []byte(`{`)
+
+	req := &backend.CallResourceRequest{
+		Path:   "scout/v1/raw",
+		Method: http.MethodPost,
+		Body:   []byte(`{}`),
+	}
+
+	var captured *backend.CallResourceResponse
+	sender := backend.CallResourceResponseSenderFunc(func(resp *backend.CallResourceResponse) error {
+		captured = resp
+		return nil
+	})
+
+	err := ds.CallResource(context.Background(), req, sender)
+	if err != nil {
+		t.Fatalf("CallResource returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("CallResource did not send a response")
+	}
+	if captured.Status != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", captured.Status, string(captured.Body))
+	}
+	if got := captured.Headers["Content-Type"]; len(got) != 1 || got[0] != "application/json" {
+		t.Fatalf("Content-Type header = %v, want [application/json]", got)
+	}
+	if !strings.Contains(string(captured.Body), "Failed to load settings") {
+		t.Fatalf("body = %s, want Failed to load settings", string(captured.Body))
 	}
 }
 
