@@ -117,7 +117,7 @@ func requirePost(req *backend.CallResourceRequest, sender backend.CallResourceRe
 	if req.Method == http.MethodPost {
 		return true, nil
 	}
-	return false, jsonBytesResponse(sender, http.StatusMethodNotAllowed, []byte(`{"error": "Method not allowed. Use POST."}`))
+	return false, jsonErrorResponse(sender, http.StatusMethodNotAllowed, "Method not allowed. Use POST.")
 }
 
 // handleTestConnection handles the test connection endpoint.
