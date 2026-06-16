@@ -92,14 +92,26 @@ outer:
 	return result, nil
 }
 
+// assetForVariable fetches an asset by RID for a template-variable lookup,
+// wrapping any fetch failure as a templateVariableCatalogError. A nil asset
+// with a nil error means the asset was not found; callers treat that as an
+// empty result.
+func (c *TemplateVariableCatalog) assetForVariable(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	asset, err := c.nominal.FetchAssetByRid(ctx, config, assetRid)
+	if err != nil {
+		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+	}
+	return asset, nil
+}
+
 func (c *TemplateVariableCatalog) Datascopes(ctx context.Context, config *models.PluginSettings, req datascopesVariableRequest) ([]metricFindValue, error) {
 	if hasUnresolvedTemplateVariable(req.AssetRid) {
 		return []metricFindValue{}, nil
 	}
 
-	asset, err := c.nominal.FetchAssetByRid(ctx, config, req.AssetRid)
+	asset, err := c.assetForVariable(ctx, config, req.AssetRid)
 	if err != nil {
-		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+		return nil, err
 	}
 	if asset == nil {
 		return []metricFindValue{}, nil
@@ -122,9 +134,9 @@ func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *
 		return []metricFindValue{}, nil
 	}
 
-	asset, err := c.nominal.FetchAssetByRid(ctx, config, req.AssetRid)
+	asset, err := c.assetForVariable(ctx, config, req.AssetRid)
 	if err != nil {
-		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+		return nil, err
 	}
 	if asset == nil {
 		return []metricFindValue{}, nil

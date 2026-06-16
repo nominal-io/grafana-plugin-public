@@ -177,13 +177,7 @@ func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *ba
 	apiKey := config.Secrets.ApiKey
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" || apiKey == "" {
-		return sender.Send(&backend.CallResourceResponse{
-			Status: http.StatusBadRequest,
-			Headers: map[string][]string{
-				"Content-Type": {"application/json"},
-			},
-			Body: []byte(`{"error": "Missing base URL or API key configuration"}`),
-		})
+		return jsonErrorResponse(sender, http.StatusBadRequest, "Missing base URL or API key configuration")
 	}
 
 	// Construct the full target URL
