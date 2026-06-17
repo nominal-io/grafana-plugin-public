@@ -201,6 +201,8 @@ Do not commit tokens or generated signing output from `dist/`.
 
 Signing without `rootUrls` is the public plugin path. Grafana approval is tied to the plugin ID, so if the plugin ID changes, the signing command may fail until the review submission is updated and Grafana approves that ID.
 
+The release workflow also creates a GitHub provenance attestation for the signed plugin ZIP before running Grafana's release validator.
+
 ### Grafana review submission
 
 Grafana does not require the first public review submission to be signed. For the initial review, package the plugin ZIP, run the validator, and submit the plugin through Grafana's plugin publishing flow with:
