@@ -3112,9 +3112,8 @@ func createMockLogPointResult(message string, args map[string]string) computeapi
 
 func parseLogLabels(t *testing.T, raw json.RawMessage) map[string]string {
 	t.Helper()
-	// Pin the Grafana labels contract: the field must be a JSON object, never
-	// the literal "null". json.Unmarshal("null") succeeds (yielding a nil map),
-	// so an explicit string check is the only thing that catches a regression.
+	// json.Unmarshal("null") succeeds with a nil map, so guard against it before
+	// accepting labels as a Grafana JSON object.
 	if string(raw) == "null" {
 		t.Fatalf("labels serialized to null, want a JSON object")
 	}
@@ -3241,7 +3240,6 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Errorf("expected oldest message last, got %q", v)
 		}
 
-		// Verify labels are valid JSON objects
 		for i := 0; i < bodyField.Len(); i++ {
 			logFrameLabelsAt(t, frame, i)
 		}

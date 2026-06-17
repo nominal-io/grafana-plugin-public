@@ -416,19 +416,14 @@ type LogEntry struct {
 	Labels json.RawMessage
 }
 
-// marshalLogArgs serializes log Args to JSON, injecting a "nominal.channel" key so a
-// single Grafana Logs panel fed by multiple Nominal channels can distinguish,
-// filter, and color rows by source channel.
+// marshalLogArgs serializes log Args to JSON and, when available, adds
+// "nominal.channel" so mixed-channel log panels can distinguish rows.
 //
-// "nominal.channel" avoids Grafana's underscore-prefixed-label hiding while
-// keeping the field clearly namespaced. We never clobber an existing
-// "nominal.channel" arg - user data wins - and we skip injection entirely when
-// channel is empty.
+// The namespaced label avoids Grafana hiding underscore-prefixed labels. Existing
+// user-provided "nominal.channel" values are preserved.
 //
-// The caller's args map is never mutated; we copy into a fresh map. Because that
-// map is always non-nil (make), json.Marshal yields "{}" for the empty case and
-// can never yield "null" - no explicit nil/empty special-casing is needed.
-// map[string]string is always JSON-serializable, so marshal cannot err.
+// Copying is intentional: it preserves caller input and keeps nil Args from
+// serializing as JSON null.
 func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
 	out := make(map[string]string, len(args)+1)
 	for k, v := range args {
