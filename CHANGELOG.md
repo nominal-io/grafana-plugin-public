@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.13.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.2...nominal-grafana-plugin@0.13.0) (2026-06-17)
+
+
+### Features
+
+* add a nominal.channel label to logs ([#93](https://github.com/nominal-io/grafana-plugin-public/issues/93)) ([c2d9fa3](https://github.com/nominal-io/grafana-plugin-public/commit/c2d9fa35c9f319fdae155426a7bed1b38ecdcc82))
+
+
+### Bug Fixes
+
+* avoid channel name truncatation and refresh query editor UI ([#87](https://github.com/nominal-io/grafana-plugin-public/issues/87)) ([e69a53a](https://github.com/nominal-io/grafana-plugin-public/commit/e69a53a316b527c314241e3306915dd3eed179da))
+
+
+### Chores
+
+* add plugin provenance attestation ([#90](https://github.com/nominal-io/grafana-plugin-public/issues/90)) ([b0859fa](https://github.com/nominal-io/grafana-plugin-public/commit/b0859fa57de4c39a03439592cadec44d43080815))
+* **deps:** patch vulnerable transitive dependencies ([#92](https://github.com/nominal-io/grafana-plugin-public/issues/92)) ([ff10382](https://github.com/nominal-io/grafana-plugin-public/commit/ff1038296357dd691caf0814d4384e1102a7bbc7))
+* update grafana go sdk ([#94](https://github.com/nominal-io/grafana-plugin-public/issues/94)) ([b321bb5](https://github.com/nominal-io/grafana-plugin-public/commit/b321bb50b999033dd760df3e2b8ff0330f4c5034))
+
 ## [0.12.2](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.1...nominal-grafana-plugin@0.12.2) (2026-05-22)
 
 
