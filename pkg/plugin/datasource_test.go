@@ -3110,6 +3110,81 @@ func createMockLogPointResult(message string, args map[string]string) computeapi
 	}
 }
 
+func parseLogLabels(t *testing.T, raw json.RawMessage) map[string]string {
+	t.Helper()
+	// json.Unmarshal("null") succeeds with a nil map, so guard against it before
+	// accepting labels as a Grafana JSON object.
+	if string(raw) == "null" {
+		t.Fatalf("labels serialized to null, want a JSON object")
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("not valid JSON object: %v (raw=%q)", err, string(raw))
+	}
+	return m
+}
+
+func logFrameLabelsAt(t *testing.T, frame *data.Frame, row int) map[string]string {
+	t.Helper()
+	if len(frame.Fields) <= 3 {
+		t.Fatalf("expected log frame labels field at index 3, got %d fields", len(frame.Fields))
+	}
+	labelsField := frame.Fields[3]
+	if row < 0 || row >= labelsField.Len() {
+		t.Fatalf("expected labels row %d within field length %d", row, labelsField.Len())
+	}
+	value := labelsField.At(row)
+	raw, ok := value.(json.RawMessage)
+	if !ok {
+		t.Fatalf("labels row %d has type %T, want json.RawMessage", row, value)
+	}
+	return parseLogLabels(t, raw)
+}
+
+func TestMarshalLogArgs(t *testing.T) {
+	t.Run("nil args with channel injects nominal.channel only", func(t *testing.T) {
+		got := parseLogLabels(t, marshalLogArgs(nil, "engine.temp"))
+		if len(got) != 1 || got["nominal.channel"] != "engine.temp" {
+			t.Errorf("expected {nominal.channel: engine.temp}, got %v", got)
+		}
+	})
+
+	t.Run("existing args preserved and nominal.channel added", func(t *testing.T) {
+		got := parseLogLabels(t, marshalLogArgs(map[string]string{"host": "srv-1", "level": "error"}, "engine.temp"))
+		if got["host"] != "srv-1" || got["level"] != "error" {
+			t.Errorf("expected user args preserved, got %v", got)
+		}
+		if got["nominal.channel"] != "engine.temp" {
+			t.Errorf("expected nominal.channel=engine.temp, got %v", got)
+		}
+	})
+
+	t.Run("pre-existing nominal.channel arg is not clobbered", func(t *testing.T) {
+		got := parseLogLabels(t, marshalLogArgs(map[string]string{"nominal.channel": "user-value"}, "engine.temp"))
+		if got["nominal.channel"] != "user-value" {
+			t.Errorf("expected user nominal.channel preserved, got %q", got["nominal.channel"])
+		}
+	})
+
+	t.Run("empty channel does not inject nominal.channel", func(t *testing.T) {
+		got := parseLogLabels(t, marshalLogArgs(map[string]string{"host": "srv-1"}, ""))
+		if _, ok := got["nominal.channel"]; ok {
+			t.Errorf("did not expect nominal.channel for empty channel, got %v", got)
+		}
+		if got["host"] != "srv-1" {
+			t.Errorf("expected host preserved, got %v", got)
+		}
+	})
+
+	t.Run("caller's input map is not mutated", func(t *testing.T) {
+		in := map[string]string{"host": "srv-1"}
+		_ = marshalLogArgs(in, "engine.temp")
+		if _, ok := in["nominal.channel"]; ok {
+			t.Errorf("input map was mutated: %v", in)
+		}
+	})
+}
+
 func TestLogPagedTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -3165,18 +3240,12 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Errorf("expected oldest message last, got %q", v)
 		}
 
-		// Verify labels are valid JSON objects
-		labelsField := frame.Fields[3]
-		for i := 0; i < labelsField.Len(); i++ {
-			raw := labelsField.At(i).(json.RawMessage)
-			var parsed map[string]string
-			if err := json.Unmarshal(raw, &parsed); err != nil {
-				t.Errorf("labels at index %d is not valid JSON object: %v", i, err)
-			}
+		for i := 0; i < bodyField.Len(); i++ {
+			logFrameLabelsAt(t, frame, i)
 		}
 	})
 
-	t.Run("nil Args produces empty JSON object not null", func(t *testing.T) {
+	t.Run("nil Args still yields injected nominal.channel label", func(t *testing.T) {
 		messages := []string{"no-args entry"}
 		result := createMockPagedLogResult(messages, nil) // nil args
 		qm := NominalQueryModel{
@@ -3190,10 +3259,9 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
 
-		labelsField := resp.Frames[0].Fields[3]
-		raw := labelsField.At(0).(json.RawMessage)
-		if string(raw) != "{}" {
-			t.Errorf("expected labels to be {} for nil Args, got %q", string(raw))
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if len(parsed) != 1 || parsed["nominal.channel"] != "app.logs" {
+			t.Errorf("expected {nominal.channel: app.logs} for nil Args, got %v", parsed)
 		}
 	})
 
@@ -3250,7 +3318,7 @@ func TestLogPointTransformation(t *testing.T) {
 		}
 	})
 
-	t.Run("nil Args on single log point produces empty JSON object", func(t *testing.T) {
+	t.Run("nil Args on single log point still yields injected nominal.channel label", func(t *testing.T) {
 		result := createMockLogPointResult("no-args", nil)
 		qm := NominalQueryModel{
 			Channel:         "app.logs",
@@ -3259,12 +3327,43 @@ func TestLogPointTransformation(t *testing.T) {
 		}
 
 		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		labelsField := resp.Frames[0].Fields[3]
-		raw := labelsField.At(0).(json.RawMessage)
-		if string(raw) != "{}" {
-			t.Errorf("expected labels to be {} for nil Args, got %q", string(raw))
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if len(parsed) != 1 || parsed["nominal.channel"] != "app.logs" {
+			t.Errorf("expected {nominal.channel: app.logs} for nil Args, got %v", parsed)
 		}
 	})
+}
+
+func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
+	ds := &Datasource{}
+
+	channelLabel := func(t *testing.T, channel string) string {
+		t.Helper()
+		result := createMockPagedLogResult([]string{"entry"}, []map[string]string{{"host": "srv-1"}})
+		qm := NominalQueryModel{
+			Channel:         channel,
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame for %q, got %d", channel, len(resp.Frames))
+		}
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if parsed["host"] != "srv-1" {
+			t.Errorf("expected user arg host preserved for %q, got %v", channel, parsed)
+		}
+		return parsed["nominal.channel"]
+	}
+
+	a := channelLabel(t, "engine.temp")
+	b := channelLabel(t, "engine.pressure")
+	if a != "engine.temp" || b != "engine.pressure" {
+		t.Errorf("expected per-channel labels, got a=%q b=%q", a, b)
+	}
+	if a == b {
+		t.Errorf("expected distinct nominal.channel labels, both were %q", a)
+	}
 }
 
 func TestMixedLogNumericParallelBatch(t *testing.T) {
