@@ -549,6 +549,31 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
+	t.Run("forwards searchText to channel search", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+				},
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "temp"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if got := mockDS.searchChannelsRequestSnapshot().FuzzySearchText; got != "temp" {
+			t.Fatalf("FuzzySearchText = %q, want temp", got)
+		}
+	})
+
 	t.Run("uses connection datasource RID when type is connection", func(t *testing.T) {
 		connectionRid := "ri.scout.main.data-source.conn1"
 		connAsset := map[string]SingleAssetResponse{
@@ -658,6 +683,21 @@ func TestHandleChannelVariables(t *testing.T) {
 		ds.settings.JSONData = []byte(`{`)
 
 		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "dataScopeName": "$scope"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("unresolved template variable in searchText skips settings load", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.settings.JSONData = []byte(`{`)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "$channelSearch"})
 		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
