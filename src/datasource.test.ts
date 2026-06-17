@@ -9,14 +9,22 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: jest.fn(),
 }));
 
-const mockTemplateSrv = { replace: jest.fn((v: string) => v) };
+type TemplateScopedVars = Record<string, { value?: unknown } | undefined>;
+
+const replaceScopedVariable = (value: string, scopedVars?: TemplateScopedVars) => {
+  const variableName = value.match(/^\$\{?([^}]+)\}?$/)?.[1];
+  const scopedValue = variableName ? scopedVars?.[variableName]?.value : undefined;
+  return scopedValue === undefined ? value : String(scopedValue);
+};
+
+const mockTemplateSrv = { replace: jest.fn(replaceScopedVariable) };
 const mockBackendSrv = { post: jest.fn() };
 
 beforeEach(() => {
   jest.clearAllMocks();
   (getTemplateSrv as jest.Mock).mockReturnValue(mockTemplateSrv);
   (getBackendSrv as jest.Mock).mockReturnValue(mockBackendSrv);
-  mockTemplateSrv.replace.mockImplementation((v: string) => v);
+  mockTemplateSrv.replace.mockImplementation(replaceScopedVariable);
 });
 
 function createDataSource(): DataSource {
@@ -110,6 +118,25 @@ describe('metricFindQuery routing', () => {
     );
   });
 
+  it.each([
+    ['assets($__searchFilter)', 'motor'],
+    ['assets:$__searchFilter', 'motor'],
+  ])('query %j passes Grafana dynamic search filter %j', async (query, expectedSearch) => {
+    await ds.metricFindQuery(query, { searchFilter: expectedSearch });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/assets'),
+      expect.objectContaining({ searchText: expectedSearch })
+    );
+  });
+
+  it('query "assets($__searchFilter)" uses unfiltered search when dropdown text is empty', async () => {
+    await ds.metricFindQuery('assets($__searchFilter)');
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/assets'),
+      expect.objectContaining({ searchText: '' })
+    );
+  });
+
   it('query "datascopes(ri.scout.main.asset.1)" calls datascopes endpoint', async () => {
     await ds.metricFindQuery('datascopes(ri.scout.main.asset.1)');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
@@ -131,6 +158,46 @@ describe('metricFindQuery routing', () => {
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
       expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName: 'myScope' })
+    );
+  });
+
+  it('query "channels(asset, scope, $__searchFilter)" passes typed channel search text', async () => {
+    await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope, $__searchFilter)', {
+      searchFilter: 'temp',
+    });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({
+        assetRid: 'ri.scout.main.asset.1',
+        dataScopeName: 'myScope',
+        searchText: 'temp',
+      })
+    );
+  });
+
+  it('query "channels(asset, $__searchFilter)" treats the token as unscoped channel search', async () => {
+    await ds.metricFindQuery('channels(ri.scout.main.asset.1, $__searchFilter)', {
+      searchFilter: 'rpm',
+    });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({
+        assetRid: 'ri.scout.main.asset.1',
+        dataScopeName: '',
+        searchText: 'rpm',
+      })
+    );
+  });
+
+  it('query "channels(asset, , motor)" passes empty scope and fixed channel search text', async () => {
+    await ds.metricFindQuery('channels(ri.scout.main.asset.1, , motor)');
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({
+        assetRid: 'ri.scout.main.asset.1',
+        dataScopeName: '',
+        searchText: 'motor',
+      })
     );
   });
 
@@ -200,6 +267,25 @@ describe('metricFindQuery template variable resolution', () => {
       expect.objectContaining({ assetRid: 'ri.scout.main.asset.scoped', dataScopeName: 'primary' })
     );
   });
+
+  it('uses scoped variables when resolving channel search text', async () => {
+    await ds.metricFindQuery('channels(${asset}, ${scope}, ${channelSearch})', {
+      scopedVars: {
+        asset: { text: 'Asset 1', value: 'ri.scout.main.asset.scoped' },
+        scope: { text: 'Primary', value: 'primary' },
+        channelSearch: { text: 'Temperature', value: 'temp' },
+      },
+    });
+
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({
+        assetRid: 'ri.scout.main.asset.scoped',
+        dataScopeName: 'primary',
+        searchText: 'temp',
+      })
+    );
+  });
 });
 
 describe('metricFindQuery unresolved variable short-circuits', () => {
@@ -232,6 +318,13 @@ describe('metricFindQuery unresolved variable short-circuits', () => {
     });
     const result = await ds.metricFindQuery('channels(ri.scout.main.asset.1, $scope)');
     expect(result).toEqual([]);
+    expect(mockBackendSrv.post).not.toHaveBeenCalled();
+  });
+
+  it('channels with unresolved search text returns empty without backend call', async () => {
+    const result = await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope, $channelSearch)');
+    expect(result).toEqual([]);
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channelSearch', expect.anything());
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });
 
