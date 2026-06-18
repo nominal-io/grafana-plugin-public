@@ -49,9 +49,15 @@ jobs:
             - name: Setup Go
               uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
               with:
-                  go-version: "1.26.3"
+                  go-version-file: go.mod
                   cache: true
                   cache-dependency-path: go.sum
+
+            - name: Resolve Go toolchain
+              id: go-toolchain
+              run: |
+                  echo "goroot=$(go env GOROOT)" >> "$GITHUB_OUTPUT"
+                  go version
 
             - name: Build backend
               uses: magefile/mage-action@6f50bbb8ea47d56e62dee92392788acbc8192d0b # v3.1.0
@@ -75,13 +81,21 @@ jobs:
             - name: Validate plugin (PR)
               # Relaxed config — release-only analyzers (signature, manifest,
               # provenance, checksum, version) are disabled here and run in
-              # the release job below. Upstream Docker image for parity with
-              # Grafana's review service; pin by digest if you need
-              # reproducibility.
+              # the release job below. Mount the Go toolchain from setup-go so
+              # govulncheck source scans use the same Go version as go.mod.
+              # PATH keeps the standard system dirs (only /usr/local/go/bin is
+              # prepended) so the validator's bundled tools (semgrep,
+              # osv-scanner) stay reachable.
+              # Keep Docker flags in sync with Validate plugin (release);
+              # the PR config mount/flag is the intended difference.
               env:
+                  GO_ROOT: ${{ steps.go-toolchain.outputs.goroot }}
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
                   docker run --pull=always --rm \
+                    -e GOROOT=/usr/local/go \
+                    -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                    -v "$GO_ROOT:/usr/local/go:ro" \
                     -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
                     -v "$PWD/.github/plugin-validator-pr.yaml:/config.yaml:ro" \
                     -v "$PWD:/src:ro" \
@@ -147,9 +161,15 @@ jobs:
             - name: Setup Go
               uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
               with:
-                  go-version: "1.26.3"
+                  go-version-file: go.mod
                   cache: true
                   cache-dependency-path: go.sum
+
+            - name: Resolve Go toolchain
+              id: go-toolchain
+              run: |
+                  echo "goroot=$(go env GOROOT)" >> "$GITHUB_OUTPUT"
+                  go version
 
             - name: Test backend
               uses: magefile/mage-action@6f50bbb8ea47d56e62dee92392788acbc8192d0b # v3.1.0
@@ -196,11 +216,22 @@ jobs:
             - name: Validate plugin (release)
               # No -config: runs the full analyzer suite, including the
               # signature/manifest/provenance/checksum/version checks that the
-              # PR job skips (the archive has just been signed above).
+              # PR job skips (the archive has just been signed above). Mount
+              # the Go toolchain from setup-go so govulncheck source scans use
+              # the same Go version as go.mod.
+              # PATH keeps the standard system dirs (only /usr/local/go/bin is
+              # prepended) so the validator's bundled tools (semgrep,
+              # osv-scanner) stay reachable.
+              # Keep Docker flags in sync with Validate plugin (PR);
+              # release intentionally omits the PR config.
               env:
+                  GO_ROOT: ${{ steps.go-toolchain.outputs.goroot }}
                   PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
               run: |
                   docker run --pull=always --rm \
+                    -e GOROOT=/usr/local/go \
+                    -e PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                    -v "$GO_ROOT:/usr/local/go:ro" \
                     -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
                     -v "$PWD:/src:ro" \
                     grafana/plugin-validator-cli \
