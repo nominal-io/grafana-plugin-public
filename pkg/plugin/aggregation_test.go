@@ -377,8 +377,8 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 	})
 }
 
-func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
-	t.Run("Float64 sparse values use exact backing capacity", func(t *testing.T) {
+func TestExtractArrowBucketedNumericSeriesValues(t *testing.T) {
+	t.Run("Float64 sparse values preserve nulls and value correctness", func(t *testing.T) {
 		timestamps := []int64{1000, 2000, 3000, 4000}
 		arrowBytes := createTestArrowBucketedNumeric(
 			timestamps,
@@ -417,24 +417,9 @@ func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
 		if s.Values[3] != nil {
 			t.Fatalf("Values[3] = %v, want nil", s.Values[3])
 		}
-		if len(s.valueBackings) != 1 {
-			t.Fatalf("len(valueBackings) = %d, want 1", len(s.valueBackings))
-		}
-		if len(s.valueBackings[0]) != 2 {
-			t.Fatalf("len(valueBackings[0]) = %d, want 2", len(s.valueBackings[0]))
-		}
-		if cap(s.valueBackings[0]) != 2 {
-			t.Fatalf("cap(valueBackings[0]) = %d, want 2", cap(s.valueBackings[0]))
-		}
-		if s.Values[0] != &s.valueBackings[0][0] {
-			t.Fatalf("Values[0] does not point into valueBackings[0][0]")
-		}
-		if s.Values[2] != &s.valueBackings[0][1] {
-			t.Fatalf("Values[2] does not point into valueBackings[0][1]")
-		}
 	})
 
-	t.Run("all-null shared timestamp series retains no float backing", func(t *testing.T) {
+	t.Run("all-null shared timestamp series yields all-nil values", func(t *testing.T) {
 		timestamps := []int64{1000, 2000, 3000}
 		arrowBytes := createTestArrowBucketedNumeric(
 			timestamps,
@@ -466,12 +451,9 @@ func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
 				t.Fatalf("Values[%d] = %v, want nil", i, value)
 			}
 		}
-		if len(s.valueBackings) != 0 {
-			t.Fatalf("len(valueBackings) = %d, want 0", len(s.valueBackings))
-		}
 	})
 
-	t.Run("Uint32 count values use exact backing capacity and preserve nulls", func(t *testing.T) {
+	t.Run("Uint32 count values preserve nulls and value correctness", func(t *testing.T) {
 		timestamps := []int64{1000, 2000, 3000}
 		arrowBytes := createNullableCountArrow(
 			t,
@@ -508,24 +490,9 @@ func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
 		if s.Values[2] == nil || *s.Values[2] != 12.0 {
 			t.Fatalf("Values[2] = %v, want 12.0", s.Values[2])
 		}
-		if len(s.valueBackings) != 1 {
-			t.Fatalf("len(valueBackings) = %d, want 1", len(s.valueBackings))
-		}
-		if len(s.valueBackings[0]) != 2 {
-			t.Fatalf("len(valueBackings[0]) = %d, want 2", len(s.valueBackings[0]))
-		}
-		if cap(s.valueBackings[0]) != 2 {
-			t.Fatalf("cap(valueBackings[0]) = %d, want 2", cap(s.valueBackings[0]))
-		}
-		if s.Values[0] != &s.valueBackings[0][0] {
-			t.Fatalf("Values[0] does not point into valueBackings[0][0]")
-		}
-		if s.Values[2] != &s.valueBackings[0][1] {
-			t.Fatalf("Values[2] does not point into valueBackings[0][1]")
-		}
 	})
 
-	t.Run("fully masked FIRST_POINT rows retain no float backing", func(t *testing.T) {
+	t.Run("fully masked FIRST_POINT rows yield empty values", func(t *testing.T) {
 		arrowBytes := createFirstPointAllTimestampNullArrow(t,
 			[]int64{1000, 2000, 3000},
 			[]float64{10.0, 20.0, 30.0},
@@ -545,10 +512,46 @@ func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
 		if len(s.Values) != 0 {
 			t.Fatalf("len(Values) = %d, want 0", len(s.Values))
 		}
-		if len(s.valueBackings) != 0 {
-			t.Fatalf("len(valueBackings) = %d, want 0", len(s.valueBackings))
-		}
 	})
+}
+
+// TestExtractColumnValuesAllocationsAreConstant proves the core optimization: by
+// batching non-null values into a single backing slice (rather than one heap
+// *float64 per value), the allocation count is independent of row count — O(1),
+// not the O(N) of the old &v approach. The check is row-count-relative so it does
+// not depend on a brittle absolute allocation number.
+func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
+	buildFloat64 := func(n int) *array.Float64 {
+		b := array.NewFloat64Builder(memory.DefaultAllocator)
+		defer b.Release()
+		for i := 0; i < n; i++ {
+			b.Append(float64(i))
+		}
+		return b.NewFloat64Array()
+	}
+	measure := func(n int) float64 {
+		col := buildFloat64(n)
+		defer col.Release()
+		return testing.AllocsPerRun(100, func() {
+			var s AggregationSeries
+			if err := extractColumnValues(&s, col, nil, 0, n); err != nil {
+				t.Fatalf("extractColumnValues: %v", err)
+			}
+		})
+	}
+
+	small := measure(100)
+	large := measure(10000)
+
+	// O(1): a 100x larger column must not allocate more.
+	if large > small {
+		t.Fatalf("allocations grow with row count: n=100 -> %v allocs, n=10000 -> %v allocs (want large <= small)", small, large)
+	}
+	// Sanity ceiling so the test also catches a regression to many small allocs.
+	const ceiling = 8
+	if small > ceiling {
+		t.Fatalf("allocations for n=100 = %v, want <= %d", small, ceiling)
+	}
 }
 
 func createNullableCountArrow(t *testing.T, timestamps []int64, counts []uint32, nullMask []bool) []byte {

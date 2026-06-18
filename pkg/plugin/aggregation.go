@@ -3,6 +3,7 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -35,7 +36,6 @@ type AggregationSeries struct {
 	Name               string // display name: "mean", "min", "max", "first", "last"
 	TimePoints         []time.Time
 	Values             []*float64
-	valueBackings      [][]float64
 	CarriesChannelUnit bool
 }
 
@@ -132,17 +132,11 @@ func rowIncluded(validMask []bool, offset, row int) bool {
 	return validMask == nil || validMask[offset+row]
 }
 
-func countNonNullFloat64(col *array.Float64, validMask []bool, offset, nRows int) int {
-	count := 0
-	for i := 0; i < nRows; i++ {
-		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
-			count++
-		}
-	}
-	return count
-}
-
-func countNonNullUint32(col *array.Uint32, validMask []bool, offset, nRows int) int {
+// countIncludedNonNull counts the rows that are both included by validMask and
+// non-null. It uses the same predicate as the fill loops in extractColumnValues
+// so the backing slice can be sized exactly. Only IsNull (interface-level) is
+// used, so a single helper serves both Float64 and Uint32 columns.
+func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) int {
 	count := 0
 	for i := 0; i < nRows; i++ {
 		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
@@ -156,11 +150,23 @@ func countNonNullUint32(col *array.Uint32, validMask []bool, offset, nRows int) 
 // appends values to series.Values. Rows where validMask[offset+i] is false are
 // skipped (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask
 // to include all rows.
+//
+// Non-null values are batched into a single full-length backing slice per call so
+// that each Values entry can point into it (&backing[bi]), avoiding one heap
+// allocation per value. backing is allocated at its exact final length and is
+// therefore never reallocated, so the stored pointers stay valid; an interior
+// pointer in Values also keeps the whole backing array alive. The full-length
+// allocation makes the count/fill invariant self-enforcing: if countIncludedNonNull
+// ever undercounted, backing[bi] would panic rather than corrupt silently.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
+	// Reserve worst-case capacity for this record's appends (at most nRows rows are
+	// included), amortizing Values growth across multi-record Arrow streams.
+	series.Values = slices.Grow(series.Values, nRows)
+
 	switch col := rawCol.(type) {
 	case *array.Float64:
-		nonNullCount := countNonNullFloat64(col, validMask, offset, nRows)
-		backing := make([]float64, 0, nonNullCount)
+		backing := make([]float64, countIncludedNonNull(col, validMask, offset, nRows))
+		bi := 0
 		for i := 0; i < nRows; i++ {
 			if !rowIncluded(validMask, offset, i) {
 				continue
@@ -169,15 +175,13 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 				series.Values = append(series.Values, nil)
 				continue
 			}
-			backing = append(backing, col.Value(i))
-			series.Values = append(series.Values, &backing[len(backing)-1])
-		}
-		if len(backing) > 0 {
-			series.valueBackings = append(series.valueBackings, backing)
+			backing[bi] = col.Value(i)
+			series.Values = append(series.Values, &backing[bi])
+			bi++
 		}
 	case *array.Uint32:
-		nonNullCount := countNonNullUint32(col, validMask, offset, nRows)
-		backing := make([]float64, 0, nonNullCount)
+		backing := make([]float64, countIncludedNonNull(col, validMask, offset, nRows))
+		bi := 0
 		for i := 0; i < nRows; i++ {
 			if !rowIncluded(validMask, offset, i) {
 				continue
@@ -186,11 +190,9 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 				series.Values = append(series.Values, nil)
 				continue
 			}
-			backing = append(backing, float64(col.Value(i)))
-			series.Values = append(series.Values, &backing[len(backing)-1])
-		}
-		if len(backing) > 0 {
-			series.valueBackings = append(series.valueBackings, backing)
+			backing[bi] = float64(col.Value(i))
+			series.Values = append(series.Values, &backing[bi])
+			bi++
 		}
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
