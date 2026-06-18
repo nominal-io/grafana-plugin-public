@@ -35,6 +35,7 @@ type AggregationSeries struct {
 	Name               string // display name: "mean", "min", "max", "first", "last"
 	TimePoints         []time.Time
 	Values             []*float64
+	valueBackings      [][]float64
 	CarriesChannelUnit bool
 }
 
@@ -127,34 +128,69 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
+func rowIncluded(validMask []bool, offset, row int) bool {
+	return validMask == nil || validMask[offset+row]
+}
+
+func countNonNullFloat64(col *array.Float64, validMask []bool, offset, nRows int) int {
+	count := 0
+	for i := 0; i < nRows; i++ {
+		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
+			count++
+		}
+	}
+	return count
+}
+
+func countNonNullUint32(col *array.Uint32, validMask []bool, offset, nRows int) int {
+	count := 0
+	for i := 0; i < nRows; i++ {
+		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
+			count++
+		}
+	}
+	return count
+}
+
 // extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
-// appends the values to dest. Rows where validMask[offset+i] is false are skipped
-// (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask to include all rows.
-func extractColumnValues(dest *[]*float64, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
+// appends values to series.Values. Rows where validMask[offset+i] is false are
+// skipped (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask
+// to include all rows.
+func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
 	switch col := rawCol.(type) {
 	case *array.Float64:
+		nonNullCount := countNonNullFloat64(col, validMask, offset, nRows)
+		backing := make([]float64, 0, nonNullCount)
 		for i := 0; i < nRows; i++ {
-			if validMask != nil && !validMask[offset+i] {
+			if !rowIncluded(validMask, offset, i) {
 				continue
 			}
 			if col.IsNull(i) {
-				*dest = append(*dest, nil)
-			} else {
-				v := col.Value(i)
-				*dest = append(*dest, &v)
+				series.Values = append(series.Values, nil)
+				continue
 			}
+			backing = append(backing, col.Value(i))
+			series.Values = append(series.Values, &backing[len(backing)-1])
+		}
+		if len(backing) > 0 {
+			series.valueBackings = append(series.valueBackings, backing)
 		}
 	case *array.Uint32:
+		nonNullCount := countNonNullUint32(col, validMask, offset, nRows)
+		backing := make([]float64, 0, nonNullCount)
 		for i := 0; i < nRows; i++ {
-			if validMask != nil && !validMask[offset+i] {
+			if !rowIncluded(validMask, offset, i) {
 				continue
 			}
 			if col.IsNull(i) {
-				*dest = append(*dest, nil)
-			} else {
-				v := float64(col.Value(i))
-				*dest = append(*dest, &v)
+				series.Values = append(series.Values, nil)
+				continue
 			}
+			backing = append(backing, float64(col.Value(i)))
+			series.Values = append(series.Values, &backing[len(backing)-1])
+		}
+		if len(backing) > 0 {
+			series.valueBackings = append(series.valueBackings, backing)
 		}
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
@@ -244,7 +280,7 @@ func extractArrowBucketedNumericSeries(
 		// For series with per-series timestamps, rows where the timestamp was null are
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
-			if err := extractColumnValues(&seriesData[fi].Values, rec.Column(rs.valueIdx), perSeriesValid[fi], rowOffset[fi], nRows); err != nil {
+			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), perSeriesValid[fi], rowOffset[fi], nRows); err != nil {
 				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
 			}
 			if perSeriesValid[fi] != nil {

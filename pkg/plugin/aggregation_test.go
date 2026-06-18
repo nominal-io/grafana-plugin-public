@@ -377,6 +377,275 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 	})
 }
 
+func TestExtractArrowBucketedNumericSeriesValueBackings(t *testing.T) {
+	t.Run("Float64 sparse values use exact backing capacity", func(t *testing.T) {
+		timestamps := []int64{1000, 2000, 3000, 4000}
+		arrowBytes := createTestArrowBucketedNumeric(
+			timestamps,
+			[]float64{10.0, 0, 30.0, 0},
+			[]bool{false, true, false, true},
+		)
+		series, err := extractArrowBucketedNumericSeries(
+			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
+			[]aggColumnSpec{{Name: "mean", ValueCol: "mean"}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		s := series[0]
+		if len(s.Values) != 4 {
+			t.Fatalf("len(Values) = %d, want 4", len(s.Values))
+		}
+		if len(s.TimePoints) != 4 {
+			t.Fatalf("len(TimePoints) = %d, want 4", len(s.TimePoints))
+		}
+		for i, ts := range timestamps {
+			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
+				t.Fatalf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
+			}
+		}
+		if s.Values[0] == nil || *s.Values[0] != 10.0 {
+			t.Fatalf("Values[0] = %v, want 10.0", s.Values[0])
+		}
+		if s.Values[1] != nil {
+			t.Fatalf("Values[1] = %v, want nil", s.Values[1])
+		}
+		if s.Values[2] == nil || *s.Values[2] != 30.0 {
+			t.Fatalf("Values[2] = %v, want 30.0", s.Values[2])
+		}
+		if s.Values[3] != nil {
+			t.Fatalf("Values[3] = %v, want nil", s.Values[3])
+		}
+		if len(s.valueBackings) != 1 {
+			t.Fatalf("len(valueBackings) = %d, want 1", len(s.valueBackings))
+		}
+		if len(s.valueBackings[0]) != 2 {
+			t.Fatalf("len(valueBackings[0]) = %d, want 2", len(s.valueBackings[0]))
+		}
+		if cap(s.valueBackings[0]) != 2 {
+			t.Fatalf("cap(valueBackings[0]) = %d, want 2", cap(s.valueBackings[0]))
+		}
+		if s.Values[0] != &s.valueBackings[0][0] {
+			t.Fatalf("Values[0] does not point into valueBackings[0][0]")
+		}
+		if s.Values[2] != &s.valueBackings[0][1] {
+			t.Fatalf("Values[2] does not point into valueBackings[0][1]")
+		}
+	})
+
+	t.Run("all-null shared timestamp series retains no float backing", func(t *testing.T) {
+		timestamps := []int64{1000, 2000, 3000}
+		arrowBytes := createTestArrowBucketedNumeric(
+			timestamps,
+			[]float64{0, 0, 0},
+			[]bool{true, true, true},
+		)
+		series, err := extractArrowBucketedNumericSeries(
+			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
+			[]aggColumnSpec{{Name: "mean", ValueCol: "mean"}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		s := series[0]
+		if len(s.Values) != 3 {
+			t.Fatalf("len(Values) = %d, want 3", len(s.Values))
+		}
+		if len(s.TimePoints) != 3 {
+			t.Fatalf("len(TimePoints) = %d, want 3", len(s.TimePoints))
+		}
+		for i, ts := range timestamps {
+			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
+				t.Fatalf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
+			}
+		}
+		for i, value := range s.Values {
+			if value != nil {
+				t.Fatalf("Values[%d] = %v, want nil", i, value)
+			}
+		}
+		if len(s.valueBackings) != 0 {
+			t.Fatalf("len(valueBackings) = %d, want 0", len(s.valueBackings))
+		}
+	})
+
+	t.Run("Uint32 count values use exact backing capacity and preserve nulls", func(t *testing.T) {
+		timestamps := []int64{1000, 2000, 3000}
+		arrowBytes := createNullableCountArrow(
+			t,
+			timestamps,
+			[]uint32{5, 0, 12},
+			[]bool{false, true, false},
+		)
+		series, err := extractArrowBucketedNumericSeries(
+			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
+			[]aggColumnSpec{{Name: "count", ValueCol: "count"}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		s := series[0]
+		if len(s.Values) != 3 {
+			t.Fatalf("len(Values) = %d, want 3", len(s.Values))
+		}
+		if len(s.TimePoints) != 3 {
+			t.Fatalf("len(TimePoints) = %d, want 3", len(s.TimePoints))
+		}
+		for i, ts := range timestamps {
+			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
+				t.Fatalf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
+			}
+		}
+		if s.Values[0] == nil || *s.Values[0] != 5.0 {
+			t.Fatalf("Values[0] = %v, want 5.0", s.Values[0])
+		}
+		if s.Values[1] != nil {
+			t.Fatalf("Values[1] = %v, want nil", s.Values[1])
+		}
+		if s.Values[2] == nil || *s.Values[2] != 12.0 {
+			t.Fatalf("Values[2] = %v, want 12.0", s.Values[2])
+		}
+		if len(s.valueBackings) != 1 {
+			t.Fatalf("len(valueBackings) = %d, want 1", len(s.valueBackings))
+		}
+		if len(s.valueBackings[0]) != 2 {
+			t.Fatalf("len(valueBackings[0]) = %d, want 2", len(s.valueBackings[0]))
+		}
+		if cap(s.valueBackings[0]) != 2 {
+			t.Fatalf("cap(valueBackings[0]) = %d, want 2", cap(s.valueBackings[0]))
+		}
+		if s.Values[0] != &s.valueBackings[0][0] {
+			t.Fatalf("Values[0] does not point into valueBackings[0][0]")
+		}
+		if s.Values[2] != &s.valueBackings[0][1] {
+			t.Fatalf("Values[2] does not point into valueBackings[0][1]")
+		}
+	})
+
+	t.Run("fully masked FIRST_POINT rows retain no float backing", func(t *testing.T) {
+		arrowBytes := createFirstPointAllTimestampNullArrow(t,
+			[]int64{1000, 2000, 3000},
+			[]float64{10.0, 20.0, 30.0},
+		)
+		series, err := extractArrowBucketedNumericSeries(
+			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
+			[]aggColumnSpec{{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}},
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		s := series[0]
+		if len(s.TimePoints) != 0 {
+			t.Fatalf("len(TimePoints) = %d, want 0", len(s.TimePoints))
+		}
+		if len(s.Values) != 0 {
+			t.Fatalf("len(Values) = %d, want 0", len(s.Values))
+		}
+		if len(s.valueBackings) != 0 {
+			t.Fatalf("len(valueBackings) = %d, want 0", len(s.valueBackings))
+		}
+	})
+}
+
+func createNullableCountArrow(t *testing.T, timestamps []int64, counts []uint32, nullMask []bool) []byte {
+	t.Helper()
+	if len(counts) != len(timestamps) {
+		t.Fatalf("len(counts) = %d, want %d", len(counts), len(timestamps))
+	}
+	if nullMask != nil && len(nullMask) != len(timestamps) {
+		t.Fatalf("len(nullMask) = %d, want %d", len(nullMask), len(timestamps))
+	}
+
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "count", Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
+	}, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	countBuilder := array.NewUint32Builder(pool)
+	defer tsBuilder.Release()
+	defer countBuilder.Release()
+
+	for i, ts := range timestamps {
+		tsBuilder.Append(ts)
+		if nullMask != nil && nullMask[i] {
+			countBuilder.AppendNull()
+		} else {
+			countBuilder.Append(counts[i])
+		}
+	}
+
+	tsArr := tsBuilder.NewArray()
+	countArr := countBuilder.NewArray()
+	defer tsArr.Release()
+	defer countArr.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{tsArr, countArr}, int64(len(timestamps)))
+	defer rec.Release()
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		t.Fatalf("write nullable count Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close nullable count Arrow writer: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func createFirstPointAllTimestampNullArrow(t *testing.T, timestamps []int64, values []float64) []byte {
+	t.Helper()
+	if len(values) != len(timestamps) {
+		t.Fatalf("len(values) = %d, want %d", len(values), len(timestamps))
+	}
+
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	valueBuilder := array.NewFloat64Builder(pool)
+	firstTsBuilder := array.NewInt64Builder(pool)
+	defer tsBuilder.Release()
+	defer valueBuilder.Release()
+	defer firstTsBuilder.Release()
+
+	for i, ts := range timestamps {
+		tsBuilder.Append(ts)
+		valueBuilder.Append(values[i])
+		firstTsBuilder.AppendNull()
+	}
+
+	tsArr := tsBuilder.NewArray()
+	valueArr := valueBuilder.NewArray()
+	firstTsArr := firstTsBuilder.NewArray()
+	defer tsArr.Release()
+	defer valueArr.Release()
+	defer firstTsArr.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{tsArr, valueArr, firstTsArr}, int64(len(timestamps)))
+	defer rec.Release()
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		t.Fatalf("write all-masked first point Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close all-masked first point Arrow writer: %v", err)
+	}
+	return buf.Bytes()
+}
+
 func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
@@ -763,5 +1032,127 @@ func TestAggregationSeriesCarriesChannelUnitPropagation(t *testing.T) {
 		if series[i].CarriesChannelUnit != w.carries {
 			t.Errorf("series[%d] (%s).CarriesChannelUnit = %v, want %v", i, w.name, series[i].CarriesChannelUnit, w.carries)
 		}
+	}
+}
+
+var benchmarkExtractArrowBucketedNumericSeriesSink []AggregationSeries
+
+type benchmarkArrowNullPattern int
+
+const (
+	benchmarkArrowDense benchmarkArrowNullPattern = iota
+	benchmarkArrowAllNull
+	benchmarkArrowOnePercentNonNull
+)
+
+func appendBenchmarkFloat64Value(builder *array.Float64Builder, row, column int, pattern benchmarkArrowNullPattern) {
+	switch pattern {
+	case benchmarkArrowDense:
+		builder.Append(float64(row) + float64(column)/10)
+	case benchmarkArrowAllNull:
+		builder.AppendNull()
+	case benchmarkArrowOnePercentNonNull:
+		if row%100 == 0 {
+			builder.Append(float64(row) + float64(column)/10)
+		} else {
+			builder.AppendNull()
+		}
+	}
+}
+
+func createBenchmarkArrowBucketedNumeric(
+	b testing.TB,
+	rows int,
+	specs []aggColumnSpec,
+	pattern benchmarkArrowNullPattern,
+) []byte {
+	b.Helper()
+
+	pool := memory.DefaultAllocator
+	fields := []arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+	}
+	for _, spec := range specs {
+		fields = append(fields, arrow.Field{Name: spec.ValueCol, Type: arrow.PrimitiveTypes.Float64, Nullable: true})
+	}
+	schema := arrow.NewSchema(fields, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	for i := 0; i < rows; i++ {
+		tsBuilder.Append(int64(i) * int64(time.Second))
+	}
+	tsArr := tsBuilder.NewArray()
+	tsBuilder.Release()
+
+	arrays := []arrow.Array{tsArr}
+	valueArrays := make([]arrow.Array, 0, len(specs))
+	for column := range specs {
+		valueBuilder := array.NewFloat64Builder(pool)
+		for row := 0; row < rows; row++ {
+			appendBenchmarkFloat64Value(valueBuilder, row, column, pattern)
+		}
+		valueArr := valueBuilder.NewArray()
+		valueBuilder.Release()
+		arrays = append(arrays, valueArr)
+		valueArrays = append(valueArrays, valueArr)
+	}
+
+	rec := array.NewRecord(schema, arrays, int64(rows))
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		b.Fatalf("write benchmark Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		b.Fatalf("close benchmark Arrow writer: %v", err)
+	}
+
+	rec.Release()
+	tsArr.Release()
+	for _, valueArr := range valueArrays {
+		valueArr.Release()
+	}
+
+	return buf.Bytes()
+}
+
+func BenchmarkExtractArrowBucketedNumericSeries(b *testing.B) {
+	oneAgg := []aggColumnSpec{aggColumnSpecFromEnum(AggMean)}
+	threeAggs := []aggColumnSpec{
+		aggColumnSpecFromEnum(AggMean),
+		aggColumnSpecFromEnum(AggMin),
+		aggColumnSpecFromEnum(AggMax),
+	}
+
+	cases := []struct {
+		name    string
+		rows    int
+		specs   []aggColumnSpec
+		pattern benchmarkArrowNullPattern
+	}{
+		{name: "rows_1000_aggs_1_dense", rows: 1000, specs: oneAgg, pattern: benchmarkArrowDense},
+		{name: "rows_1000_aggs_3_dense", rows: 1000, specs: threeAggs, pattern: benchmarkArrowDense},
+		{name: "rows_10000_aggs_1_dense", rows: 10000, specs: oneAgg, pattern: benchmarkArrowDense},
+		{name: "rows_10000_aggs_3_dense", rows: 10000, specs: threeAggs, pattern: benchmarkArrowDense},
+		{name: "rows_10000_aggs_3_all_null", rows: 10000, specs: threeAggs, pattern: benchmarkArrowAllNull},
+		{name: "rows_10000_aggs_3_one_percent_non_null", rows: 10000, specs: threeAggs, pattern: benchmarkArrowOnePercentNonNull},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		b.Run(tc.name, func(b *testing.B) {
+			arrowBytes := createBenchmarkArrowBucketedNumeric(b, tc.rows, tc.specs, tc.pattern)
+			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				series, err := extractArrowBucketedNumericSeries(arrowPlot, tc.specs)
+				if err != nil {
+					b.Fatalf("extract Arrow bucketed numeric series: %v", err)
+				}
+				benchmarkExtractArrowBucketedNumericSeriesSink = series
+			}
+		})
 	}
 }
