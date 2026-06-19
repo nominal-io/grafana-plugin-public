@@ -686,10 +686,11 @@ func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computea
 // Maps integer indices to category strings with bounds checking.
 // Out-of-bounds indices produce "unknown(N)" rather than panicking.
 func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
-	var timePoints []time.Time
-	var values []string
+	n := min(len(enumPlot.Timestamps), len(enumPlot.Values))
+	timePoints := make([]time.Time, 0, n)
+	values := make([]string, 0, n)
 
-	for i := 0; i < len(enumPlot.Timestamps) && i < len(enumPlot.Values); i++ {
+	for i := 0; i < n; i++ {
 		timestamp := enumPlot.Timestamps[i]
 		index := enumPlot.Values[i]
 
@@ -717,10 +718,11 @@ func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.E
 // Uses the histogram mode (most frequent category) as the representative value for each bucket,
 // which is the categorical equivalent of the numeric path's Mean aggregate.
 func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
-	var timePoints []time.Time
-	var values []string
+	n := min(len(bucketed.Timestamps), len(bucketed.Buckets))
+	timePoints := make([]time.Time, 0, n)
+	values := make([]string, 0, n)
 
-	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
+	for i := 0; i < n; i++ {
 		timestamp := bucketed.Timestamps[i]
 		bucket := bucketed.Buckets[i]
 

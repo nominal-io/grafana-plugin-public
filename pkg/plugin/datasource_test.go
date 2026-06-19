@@ -2090,6 +2090,59 @@ func TestEnumPlotTransformation(t *testing.T) {
 	})
 }
 
+func TestExtractEnumDataFromConjureTruncatesToShortestInput(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+	plot := computeapi.EnumPlot{
+		Timestamps: []api.Timestamp{
+			{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+		},
+		Values:     []int{0},
+		Categories: []string{"idle"},
+	}
+
+	times, values, err := exec.extractEnumDataFromConjure(plot)
+	if err != nil {
+		t.Fatalf("extract enum data: %v", err)
+	}
+	if len(times) != 1 || len(values) != 1 {
+		t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+	}
+	if values[0] != "idle" {
+		t.Fatalf("value = %q, want %q", values[0], "idle")
+	}
+}
+
+func TestExtractBucketedEnumDataFromConjureTruncatesToShortestInput(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+	plot := computeapi.BucketedEnumPlot{
+		Timestamps: []api.Timestamp{
+			{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+		},
+		Buckets: []computeapi.EnumBucket{{
+			Histogram: map[int]safelong.SafeLong{0: safelong.SafeLong(3)},
+			FirstPoint: computeapi.CompactEnumPoint{
+				Timestamp: api.Timestamp{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				Value:     0,
+			},
+		}},
+		Categories: []string{"idle"},
+	}
+
+	times, values, err := exec.extractBucketedEnumDataFromConjure(plot)
+	if err != nil {
+		t.Fatalf("extract bucketed enum data: %v", err)
+	}
+	if len(times) != 1 || len(values) != 1 {
+		t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+	}
+	if values[0] != "idle" {
+		t.Fatalf("value = %q, want %q", values[0], "idle")
+	}
+}
+
 func TestEnumPointTransformation(t *testing.T) {
 	ds := &Datasource{}
 
