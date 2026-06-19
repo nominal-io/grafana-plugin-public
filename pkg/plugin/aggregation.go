@@ -167,18 +167,11 @@ func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) 
 // and pinned alive by the interior pointers — so countIncludedNonNull must use the
 // exact same include+non-null predicate as the fill loop below.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
-	// Reserve capacity for this record's appends, amortizing Values growth across
-	// multi-record Arrow streams. With no per-row mask every row is included, so
-	// nRows is exact; with a mask the included count isn't known without an extra
-	// scan, so we skip the hint and grow organically rather than over-reserve for
-	// rows the mask will drop.
-	if validMask == nil {
-		series.Values = slices.Grow(series.Values, nRows)
-	}
-
 	// The type switch only resolves the per-row value accessor; the fill loop below
 	// is shared so the count/fill invariant lives in exactly one place. Both Float64
-	// and Uint32 feed into the same []float64 backing.
+	// and Uint32 feed into the same []float64 backing. It runs first so an unsupported
+	// column returns before any of the allocations below mutate series — extraction
+	// either fully succeeds or leaves series untouched.
 	var valueAt func(int) float64
 	switch col := rawCol.(type) {
 	case *array.Float64:
@@ -187,6 +180,15 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 		valueAt = func(i int) float64 { return float64(col.Value(i)) }
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
+	}
+
+	// Reserve capacity for this record's appends, amortizing Values growth across
+	// multi-record Arrow streams. With no per-row mask every row is included, so
+	// nRows is exact; with a mask the included count isn't known without an extra
+	// scan, so we skip the hint and grow organically rather than over-reserve for
+	// rows the mask will drop.
+	if validMask == nil {
+		series.Values = slices.Grow(series.Values, nRows)
 	}
 
 	backing := make([]float64, countIncludedNonNull(rawCol, validMask, offset, nRows))
@@ -260,6 +262,10 @@ func extractArrowBucketedNumericSeries(
 		if !ok {
 			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
 		}
+		// Every row contributes one shared timestamp, so the append count is exactly
+		// nRows — presize per record to amortize growth across multi-record streams
+		// (same exact-count rule extractColumnValues uses for Values).
+		sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
 		for i := 0; i < nRows; i++ {
 			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
 		}
@@ -275,6 +281,12 @@ func extractArrowBucketedNumericSeries(
 			if !ok {
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
+			// perSeriesValid gets one entry per row (exactly nRows); perSeriesTime
+			// gets one entry per non-null timestamp (exactly nRows-NullN, via Arrow's
+			// O(1) counter). Both counts are exact, so presize per the same rule as
+			// the shared-timestamp and Values paths.
+			perSeriesValid[si] = slices.Grow(perSeriesValid[si], nRows)
+			perSeriesTime[si] = slices.Grow(perSeriesTime[si], nRows-perTsCol.NullN())
 			for i := 0; i < nRows; i++ {
 				valid := !perTsCol.IsNull(i)
 				perSeriesValid[si] = append(perSeriesValid[si], valid)
