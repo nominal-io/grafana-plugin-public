@@ -132,12 +132,9 @@ func rowIncluded(validMask []bool, offset, row int) bool {
 	return validMask == nil || validMask[offset+row]
 }
 
-// countIncludedNonNull counts the rows that are both included by validMask and
-// non-null, sizing the backing slice in extractColumnValues exactly. When there
-// is no per-row mask (every standard aggregation; only FIRST/LAST carry one) the
-// count is read from Arrow's O(1) null counter, so the common path skips the
-// counting scan entirely. Only IsNull/NullN (interface-level) are used, so a
-// single helper serves both Float64 and Uint32 columns.
+// countIncludedNonNull sizes extractColumnValues' backing slice with the same
+// include-and-non-null predicate used by the fill loop. Unmasked columns use
+// Arrow's O(1) null counter; masked FIRST/LAST columns scan via arrow.Array.
 func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) int {
 	if validMask == nil {
 		return nRows - col.NullN()
@@ -156,22 +153,11 @@ func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) 
 // skipped (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask
 // to include all rows.
 //
-// Non-null values are batched into a single full-length backing slice per call so
-// that each Values entry can point into it (&backing[bi]), avoiding one heap
-// allocation per value. backing is allocated at its exact final length and is
-// therefore never reallocated, so the stored pointers stay valid; an interior
-// pointer in Values also keeps the whole backing array alive. The full-length
-// allocation makes the count/fill invariant fail loudly in one direction: if
-// countIncludedNonNull ever undercounted, backing[bi] would panic rather than
-// corrupt silently. An overcount is not caught — the trailing slots stay unwritten
-// and pinned alive by the interior pointers — so countIncludedNonNull must use the
-// exact same include+non-null predicate as the fill loop below.
+// Non-null values share one backing slice per call, avoiding one heap allocation
+// per value while keeping pointers stable. The sizing predicate must match the
+// fill loop exactly: undercounts panic, but overcounts silently retain dead slots.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
-	// The type switch only resolves the per-row value accessor; the fill loop below
-	// is shared so the count/fill invariant lives in exactly one place. Both Float64
-	// and Uint32 feed into the same []float64 backing. It runs first so an unsupported
-	// column returns before any of the allocations below mutate series — extraction
-	// either fully succeeds or leaves series untouched.
+	// Resolve the accessor first so unsupported columns fail before mutating series.
 	var valueAt func(int) float64
 	switch col := rawCol.(type) {
 	case *array.Float64:
@@ -182,11 +168,8 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
 	}
 
-	// Reserve capacity for this record's appends, amortizing Values growth across
-	// multi-record Arrow streams. With no per-row mask every row is included, so
-	// nRows is exact; with a mask the included count isn't known without an extra
-	// scan, so we skip the hint and grow organically rather than over-reserve for
-	// rows the mask will drop.
+	// Standard aggregations include every row, so nRows is an exact growth hint.
+	// Masked FIRST/LAST rows grow organically to avoid over-reserving dropped rows.
 	if validMask == nil {
 		series.Values = slices.Grow(series.Values, nRows)
 	}
@@ -262,9 +245,7 @@ func extractArrowBucketedNumericSeries(
 		if !ok {
 			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
 		}
-		// Every row contributes one shared timestamp, so the append count is exactly
-		// nRows — presize per record to amortize growth across multi-record streams
-		// (same exact-count rule extractColumnValues uses for Values).
+		// Shared timestamps include every row; grow once per record.
 		sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
 		for i := 0; i < nRows; i++ {
 			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
@@ -281,10 +262,7 @@ func extractArrowBucketedNumericSeries(
 			if !ok {
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
-			// perSeriesValid gets one entry per row (exactly nRows); perSeriesTime
-			// gets one entry per non-null timestamp (exactly nRows-NullN, via Arrow's
-			// O(1) counter). Both counts are exact, so presize per the same rule as
-			// the shared-timestamp and Values paths.
+			// valid tracks every row; perSeriesTime stores only non-null timestamps.
 			perSeriesValid[si] = slices.Grow(perSeriesValid[si], nRows)
 			perSeriesTime[si] = slices.Grow(perSeriesTime[si], nRows-perTsCol.NullN())
 			for i := 0; i < nRows; i++ {

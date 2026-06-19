@@ -435,11 +435,8 @@ func TestExtractArrowBucketedNumericSeriesValues(t *testing.T) {
 	})
 }
 
-// TestExtractColumnValuesAllocationsAreConstant proves the core optimization: by
-// batching non-null values into a single backing slice (rather than one heap
-// *float64 per value), the allocation count is independent of row count — O(1),
-// not the O(N) of the old &v approach. The check is row-count-relative so it does
-// not depend on a brittle absolute allocation number.
+// TestExtractColumnValuesAllocationsAreConstant guards the shared-backing-slice
+// optimization: allocations stay O(1) as row count grows.
 func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
 	buildFloat64 := func(n int) *array.Float64 {
 		b := array.NewFloat64Builder(memory.DefaultAllocator)
@@ -521,14 +518,8 @@ func createFirstPointAllTimestampNullArrow(t *testing.T, timestamps []int64, val
 	return buf.Bytes()
 }
 
-// TestExtractColumnValuesMaskedNullValue covers the one masked branch the other
-// FIRST/LAST tests miss: a row that is INCLUDED by the per-series mask (non-null
-// timestamp) yet has a NULL value. In every other masked test value-nullness is
-// coupled to timestamp-nullness, so an included-but-value-null row never occurs.
-// Here countIncludedNonNull must size backing to the included+non-null count (2)
-// while the fill loop still appends a nil for the included-but-null-value row
-// without advancing the backing index — a future off-by-one in that branch would
-// otherwise slip past the suite.
+// TestExtractColumnValuesMaskedNullValue covers a FIRST/LAST row whose timestamp
+// includes it but whose value is null, keeping TimePoints and Values aligned.
 func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
@@ -537,11 +528,7 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 	}, nil)
 
-	// 4 rows. The mask is "first_timestamp is non-null":
-	//   Row 0: value 10.0, ts 900        -> included, non-null  -> backing[0]
-	//   Row 1: value null, ts 2000       -> included, NULL value -> nil (no bi++)
-	//   Row 2: value 30.0, ts 3000       -> included, non-null  -> backing[1]
-	//   Row 3: value 99.0, ts null       -> excluded (dropped)
+	// Rows 0-2 are included by first_timestamp; row 1 has a null value and row 3 is dropped.
 	endBucketTs := []int64{1000000000000, 2000000000000, 3000000000000, 4000000000000}
 	tsBuilder := array.NewInt64Builder(pool)
 	for _, v := range endBucketTs {
@@ -614,19 +601,9 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 	}
 }
 
-// TestCountIncludedNonNull pins the sizing predicate behind extractColumnValues'
-// backing slice. The fill loop appends a backing entry only for rows that are BOTH
-// included by validMask AND non-null, so countIncludedNonNull must return exactly
-// that count. The function guards one direction loudly — an undercount panics on
-// backing[bi] — but the overcount direction is silent: it over-allocates and pins
-// dead slots alive, with correct values and no panic. That silent direction is
-// invisible to the extract-level tests (an overcount survives), so the count/fill
-// predicate agreement the doc comment calls dangerous is asserted directly here.
-//
-// The "mask + included row with null value" case is what separates the two halves
-// of the predicate: dropping the null check counts the included-but-null row, and
-// dropping the mask check counts the excluded-but-non-null row — both miscount it
-// to 3 while every other case stays correct, so neither half can rot unnoticed.
+// TestCountIncludedNonNull pins the predicate used to size extractColumnValues'
+// backing slice. Undercounts panic in the fill loop, but overcounts silently pin
+// dead backing slots, so the include-and-non-null count is checked directly.
 func TestCountIncludedNonNull(t *testing.T) {
 	mkFloat64 := func(vals []float64, nulls []bool) arrow.Array {
 		b := array.NewFloat64Builder(memory.DefaultAllocator)
@@ -683,8 +660,7 @@ func TestCountIncludedNonNull(t *testing.T) {
 			nRows: 4, want: 2,
 		},
 		{
-			// Row 1 is included by the mask but its value is null; row 3 is non-null
-			// but excluded by the mask. Only rows 0 and 2 are both included and non-null.
+			// Includes a null row and excludes a non-null row so both predicate halves matter.
 			name:  "mask + included row with null value",
 			col:   mkFloat64([]float64{10, 0, 30, 99}, []bool{false, true, false, false}),
 			mask:  []bool{true, true, true, false},
@@ -699,8 +675,6 @@ func TestCountIncludedNonNull(t *testing.T) {
 			nRows:  3, want: 2,
 		},
 		{
-			// countIncludedNonNull touches only arrow.Array (IsNull/NullN), so a Uint32
-			// column must size identically to Float64 — one case documents that.
 			name:  "type-agnostic Uint32 column",
 			col:   mkUint32([]uint32{5, 0, 12}, []bool{false, true, false}),
 			nRows: 3, want: 2,
