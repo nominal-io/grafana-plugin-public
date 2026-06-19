@@ -565,7 +565,10 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		nil, // arrowBucketedEnumFunc
 		// pagedLogFunc — paginated log response
 		func(paged computeapi.PagedLogPlot) error {
-			for i := 0; i < len(paged.Timestamps) && i < len(paged.Values); i++ {
+			n := min(len(paged.Timestamps), len(paged.Values))
+			result.LogEntries = make([]LogEntry, 0, n)
+			defaultLogLabels := defaultLogLabelsForChannel(qm.Channel)
+			for i := 0; i < n; i++ {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
@@ -573,12 +576,12 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
 					Body:   val.Message,
 					ID:     val.Id.String(),
-					Labels: marshalLogArgs(val.Args, qm.Channel),
+					Labels: marshalLogArgsWithDefault(val.Args, qm.Channel, defaultLogLabels),
 				})
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
-				"entries", len(paged.Timestamps))
+				"entries", len(result.LogEntries))
 			return nil
 		},
 		// logPointFunc — single log point response

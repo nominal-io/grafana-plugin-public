@@ -3352,6 +3352,86 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
+	t.Run("empty Args map still yields injected nominal.channel label", func(t *testing.T) {
+		messages := []string{"empty-args entry"}
+		result := createMockPagedLogResult(messages, []map[string]string{{}})
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if len(parsed) != 1 || parsed["nominal.channel"] != "app.logs" {
+			t.Errorf("expected {nominal.channel: app.logs} for empty Args, got %v", parsed)
+		}
+	})
+
+	t.Run("pre-existing nominal.channel label is preserved", func(t *testing.T) {
+		messages := []string{"pre-existing channel entry"}
+		result := createMockPagedLogResult(messages, []map[string]string{{
+			"nominal.channel": "source-channel",
+			"host":            "srv-1",
+		}})
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if parsed["nominal.channel"] != "source-channel" {
+			t.Errorf("expected source nominal.channel preserved, got %v", parsed)
+		}
+		if parsed["host"] != "srv-1" {
+			t.Errorf("expected host preserved, got %v", parsed)
+		}
+	})
+
+	t.Run("mismatched paged log arrays truncate to shortest input", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{{
+				Message: "only value",
+				Id:      [16]byte{0x01},
+				Args:    map[string]string{},
+			}},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		bodyField := resp.Frames[0].Fields[1]
+		if bodyField.Len() != 1 {
+			t.Fatalf("expected 1 log entry after truncation, got %d", bodyField.Len())
+		}
+		if got := bodyField.At(0).(string); got != "only value" {
+			t.Fatalf("body = %q, want %q", got, "only value")
+		}
+	})
+
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
 		result := createMockPagedLogResult([]string{}, nil)
 		qm := NominalQueryModel{
