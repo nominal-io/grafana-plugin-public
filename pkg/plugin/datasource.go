@@ -438,6 +438,36 @@ func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
 	return labelsJSON
 }
 
+func defaultLogLabelsForChannel(channel string) json.RawMessage {
+	if channel == "" {
+		return json.RawMessage("{}")
+	}
+	labelsJSON, _ := json.Marshal(map[string]string{"nominal.channel": channel})
+	return labelsJSON
+}
+
+func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLabels json.RawMessage) json.RawMessage {
+	if len(args) == 0 {
+		return defaultLabels
+	}
+	if channel == "" {
+		labelsJSON, _ := json.Marshal(args)
+		return labelsJSON
+	}
+	if _, exists := args["nominal.channel"]; exists {
+		labelsJSON, _ := json.Marshal(args)
+		return labelsJSON
+	}
+
+	out := make(map[string]string, len(args)+1)
+	for k, v := range args {
+		out[k] = v
+	}
+	out["nominal.channel"] = channel
+	labelsJSON, _ := json.Marshal(out)
+	return labelsJSON
+}
+
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {

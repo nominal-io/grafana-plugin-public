@@ -3185,6 +3185,93 @@ func TestMarshalLogArgs(t *testing.T) {
 	})
 }
 
+func TestMarshalLogArgsWithDefaultMatchesMarshalLogArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]string
+		channel string
+	}{
+		{name: "nil args with channel", args: nil, channel: "engine.temp"},
+		{name: "empty args with channel", args: map[string]string{}, channel: "engine.temp"},
+		{name: "populated args with channel", args: map[string]string{"host": "srv-1", "level": "error"}, channel: "engine.temp"},
+		{name: "populated args with empty channel", args: map[string]string{"host": "srv-1"}, channel: ""},
+		{name: "pre-existing nominal channel", args: map[string]string{"nominal.channel": "source-value", "host": "srv-1"}, channel: "engine.temp"},
+		{name: "nil args with empty channel", args: nil, channel: ""},
+		{name: "empty args with empty channel", args: map[string]string{}, channel: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLabels := defaultLogLabelsForChannel(tt.channel)
+			got := marshalLogArgsWithDefault(tt.args, tt.channel, defaultLabels)
+			want := marshalLogArgs(tt.args, tt.channel)
+			if string(got) != string(want) {
+				t.Fatalf("marshalLogArgsWithDefault = %s, want %s", string(got), string(want))
+			}
+			parseLogLabels(t, got)
+		})
+	}
+}
+
+func TestMarshalLogArgsWithDefaultDoesNotMutateCallerArgs(t *testing.T) {
+	in := map[string]string{"host": "srv-1"}
+	defaultLabels := defaultLogLabelsForChannel("engine.temp")
+	_ = marshalLogArgsWithDefault(in, "engine.temp", defaultLabels)
+	if _, ok := in["nominal.channel"]; ok {
+		t.Fatalf("input map was mutated: %v", in)
+	}
+}
+
+func TestMarshalLogArgsWithDefaultReturnsJSONObjectForEmptyArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]string
+		channel string
+		want    map[string]string
+	}{
+		{
+			name:    "nil args with channel",
+			args:    nil,
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "empty args with channel",
+			args:    map[string]string{},
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "nil args without channel",
+			args:    nil,
+			channel: "",
+			want:    map[string]string{},
+		},
+		{
+			name:    "empty args without channel",
+			args:    map[string]string{},
+			channel: "",
+			want:    map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLabels := defaultLogLabelsForChannel(tt.channel)
+			got := marshalLogArgsWithDefault(tt.args, tt.channel, defaultLabels)
+			parsed := parseLogLabels(t, got)
+			if len(parsed) != len(tt.want) {
+				t.Fatalf("labels = %v, want %v", parsed, tt.want)
+			}
+			for k, wantValue := range tt.want {
+				if parsed[k] != wantValue {
+					t.Fatalf("labels[%q] = %q, want %q", k, parsed[k], wantValue)
+				}
+			}
+		})
+	}
+}
+
 func TestLogPagedTransformation(t *testing.T) {
 	ds := &Datasource{}
 
