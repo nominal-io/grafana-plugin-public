@@ -161,8 +161,11 @@ func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) 
 // allocation per value. backing is allocated at its exact final length and is
 // therefore never reallocated, so the stored pointers stay valid; an interior
 // pointer in Values also keeps the whole backing array alive. The full-length
-// allocation makes the count/fill invariant self-enforcing: if countIncludedNonNull
-// ever undercounted, backing[bi] would panic rather than corrupt silently.
+// allocation makes the count/fill invariant fail loudly in one direction: if
+// countIncludedNonNull ever undercounted, backing[bi] would panic rather than
+// corrupt silently. An overcount is not caught — the trailing slots stay unwritten
+// and pinned alive by the interior pointers — so countIncludedNonNull must use the
+// exact same include+non-null predicate as the fill loop below.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
 	// Reserve capacity for this record's appends, amortizing Values growth across
 	// multi-record Arrow streams. With no per-row mask every row is included, so
@@ -173,39 +176,32 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 		series.Values = slices.Grow(series.Values, nRows)
 	}
 
+	// The type switch only resolves the per-row value accessor; the fill loop below
+	// is shared so the count/fill invariant lives in exactly one place. Both Float64
+	// and Uint32 feed into the same []float64 backing.
+	var valueAt func(int) float64
 	switch col := rawCol.(type) {
 	case *array.Float64:
-		backing := make([]float64, countIncludedNonNull(col, validMask, offset, nRows))
-		bi := 0
-		for i := 0; i < nRows; i++ {
-			if !rowIncluded(validMask, offset, i) {
-				continue
-			}
-			if col.IsNull(i) {
-				series.Values = append(series.Values, nil)
-				continue
-			}
-			backing[bi] = col.Value(i)
-			series.Values = append(series.Values, &backing[bi])
-			bi++
-		}
+		valueAt = col.Value
 	case *array.Uint32:
-		backing := make([]float64, countIncludedNonNull(col, validMask, offset, nRows))
-		bi := 0
-		for i := 0; i < nRows; i++ {
-			if !rowIncluded(validMask, offset, i) {
-				continue
-			}
-			if col.IsNull(i) {
-				series.Values = append(series.Values, nil)
-				continue
-			}
-			backing[bi] = float64(col.Value(i))
-			series.Values = append(series.Values, &backing[bi])
-			bi++
-		}
+		valueAt = func(i int) float64 { return float64(col.Value(i)) }
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
+	}
+
+	backing := make([]float64, countIncludedNonNull(rawCol, validMask, offset, nRows))
+	bi := 0
+	for i := 0; i < nRows; i++ {
+		if !rowIncluded(validMask, offset, i) {
+			continue
+		}
+		if rawCol.IsNull(i) {
+			series.Values = append(series.Values, nil)
+			continue
+		}
+		backing[bi] = valueAt(i)
+		series.Values = append(series.Values, &backing[bi])
+		bi++
 	}
 	return nil
 }

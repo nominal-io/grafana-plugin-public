@@ -649,6 +649,99 @@ func createFirstPointAllTimestampNullArrow(t *testing.T, timestamps []int64, val
 	return buf.Bytes()
 }
 
+// TestExtractColumnValuesMaskedNullValue covers the one masked branch the other
+// FIRST/LAST tests miss: a row that is INCLUDED by the per-series mask (non-null
+// timestamp) yet has a NULL value. In every other masked test value-nullness is
+// coupled to timestamp-nullness, so an included-but-value-null row never occurs.
+// Here countIncludedNonNull must size backing to the included+non-null count (2)
+// while the fill loop still appends a nil for the included-but-null-value row
+// without advancing the backing index — a future off-by-one in that branch would
+// otherwise slip past the suite.
+func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+
+	// 4 rows. The mask is "first_timestamp is non-null":
+	//   Row 0: value 10.0, ts 900        -> included, non-null  -> backing[0]
+	//   Row 1: value null, ts 2000       -> included, NULL value -> nil (no bi++)
+	//   Row 2: value 30.0, ts 3000       -> included, non-null  -> backing[1]
+	//   Row 3: value 99.0, ts null       -> excluded (dropped)
+	endBucketTs := []int64{1000000000000, 2000000000000, 3000000000000, 4000000000000}
+	tsBuilder := array.NewInt64Builder(pool)
+	for _, v := range endBucketTs {
+		tsBuilder.Append(v)
+	}
+	tsArr := tsBuilder.NewArray()
+	defer tsArr.Release()
+	tsBuilder.Release()
+
+	firstValBuilder := array.NewFloat64Builder(pool)
+	firstValBuilder.Append(10.0)
+	firstValBuilder.AppendNull()
+	firstValBuilder.Append(30.0)
+	firstValBuilder.Append(99.0)
+	firstValArr := firstValBuilder.NewArray()
+	defer firstValArr.Release()
+	firstValBuilder.Release()
+
+	firstTsBuilder := array.NewInt64Builder(pool)
+	firstTsBuilder.Append(900000000000)
+	firstTsBuilder.Append(2000000000000)
+	firstTsBuilder.Append(3000000000000)
+	firstTsBuilder.AppendNull()
+	firstTsArr := firstTsBuilder.NewArray()
+	defer firstTsArr.Release()
+	firstTsBuilder.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{tsArr, firstValArr, firstTsArr}, 4)
+	defer rec.Release()
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		t.Fatalf("write masked-null-value Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close masked-null-value Arrow writer: %v", err)
+	}
+
+	series, err := extractArrowBucketedNumericSeries(
+		computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()},
+		[]aggColumnSpec{{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	s := series[0]
+	// Row 3 (null timestamp) is dropped; rows 0,1,2 remain in both axes.
+	if len(s.TimePoints) != 3 {
+		t.Fatalf("len(TimePoints) = %d, want 3", len(s.TimePoints))
+	}
+	if len(s.Values) != 3 {
+		t.Fatalf("len(Values) = %d, want 3", len(s.Values))
+	}
+	if s.Values[0] == nil || *s.Values[0] != 10.0 {
+		t.Errorf("Values[0] = %v, want 10.0", s.Values[0])
+	}
+	if s.Values[1] != nil {
+		t.Errorf("Values[1] = %v, want nil (included row, null value)", s.Values[1])
+	}
+	if s.Values[2] == nil || *s.Values[2] != 30.0 {
+		t.Errorf("Values[2] = %v, want 30.0", s.Values[2])
+	}
+	wantTs := []int64{900000000000, 2000000000000, 3000000000000}
+	for i, ts := range wantTs {
+		if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
+			t.Errorf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
+		}
+	}
+}
+
 func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
