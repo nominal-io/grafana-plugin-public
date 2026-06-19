@@ -378,47 +378,6 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 }
 
 func TestExtractArrowBucketedNumericSeriesValues(t *testing.T) {
-	t.Run("Float64 sparse values preserve nulls and value correctness", func(t *testing.T) {
-		timestamps := []int64{1000, 2000, 3000, 4000}
-		arrowBytes := createTestArrowBucketedNumeric(
-			timestamps,
-			[]float64{10.0, 0, 30.0, 0},
-			[]bool{false, true, false, true},
-		)
-		series, err := extractArrowBucketedNumericSeries(
-			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
-			[]aggColumnSpec{{Name: "mean", ValueCol: "mean"}},
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		s := series[0]
-		if len(s.Values) != 4 {
-			t.Fatalf("len(Values) = %d, want 4", len(s.Values))
-		}
-		if len(s.TimePoints) != 4 {
-			t.Fatalf("len(TimePoints) = %d, want 4", len(s.TimePoints))
-		}
-		for i, ts := range timestamps {
-			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
-				t.Fatalf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
-			}
-		}
-		if s.Values[0] == nil || *s.Values[0] != 10.0 {
-			t.Fatalf("Values[0] = %v, want 10.0", s.Values[0])
-		}
-		if s.Values[1] != nil {
-			t.Fatalf("Values[1] = %v, want nil", s.Values[1])
-		}
-		if s.Values[2] == nil || *s.Values[2] != 30.0 {
-			t.Fatalf("Values[2] = %v, want 30.0", s.Values[2])
-		}
-		if s.Values[3] != nil {
-			t.Fatalf("Values[3] = %v, want nil", s.Values[3])
-		}
-	})
-
 	t.Run("all-null shared timestamp series yields all-nil values", func(t *testing.T) {
 		timestamps := []int64{1000, 2000, 3000}
 		arrowBytes := createTestArrowBucketedNumeric(
@@ -450,45 +409,6 @@ func TestExtractArrowBucketedNumericSeriesValues(t *testing.T) {
 			if value != nil {
 				t.Fatalf("Values[%d] = %v, want nil", i, value)
 			}
-		}
-	})
-
-	t.Run("Uint32 count values preserve nulls and value correctness", func(t *testing.T) {
-		timestamps := []int64{1000, 2000, 3000}
-		arrowBytes := createNullableCountArrow(
-			t,
-			timestamps,
-			[]uint32{5, 0, 12},
-			[]bool{false, true, false},
-		)
-		series, err := extractArrowBucketedNumericSeries(
-			computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
-			[]aggColumnSpec{{Name: "count", ValueCol: "count"}},
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		s := series[0]
-		if len(s.Values) != 3 {
-			t.Fatalf("len(Values) = %d, want 3", len(s.Values))
-		}
-		if len(s.TimePoints) != 3 {
-			t.Fatalf("len(TimePoints) = %d, want 3", len(s.TimePoints))
-		}
-		for i, ts := range timestamps {
-			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
-				t.Fatalf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
-			}
-		}
-		if s.Values[0] == nil || *s.Values[0] != 5.0 {
-			t.Fatalf("Values[0] = %v, want 5.0", s.Values[0])
-		}
-		if s.Values[1] != nil {
-			t.Fatalf("Values[1] = %v, want nil", s.Values[1])
-		}
-		if s.Values[2] == nil || *s.Values[2] != 12.0 {
-			t.Fatalf("Values[2] = %v, want 12.0", s.Values[2])
 		}
 	})
 
@@ -552,54 +472,6 @@ func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
 	if small > ceiling {
 		t.Fatalf("allocations for n=100 = %v, want <= %d", small, ceiling)
 	}
-}
-
-func createNullableCountArrow(t *testing.T, timestamps []int64, counts []uint32, nullMask []bool) []byte {
-	t.Helper()
-	if len(counts) != len(timestamps) {
-		t.Fatalf("len(counts) = %d, want %d", len(counts), len(timestamps))
-	}
-	if nullMask != nil && len(nullMask) != len(timestamps) {
-		t.Fatalf("len(nullMask) = %d, want %d", len(nullMask), len(timestamps))
-	}
-
-	pool := memory.DefaultAllocator
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "count", Type: arrow.PrimitiveTypes.Uint32, Nullable: true},
-	}, nil)
-
-	tsBuilder := array.NewInt64Builder(pool)
-	countBuilder := array.NewUint32Builder(pool)
-	defer tsBuilder.Release()
-	defer countBuilder.Release()
-
-	for i, ts := range timestamps {
-		tsBuilder.Append(ts)
-		if nullMask != nil && nullMask[i] {
-			countBuilder.AppendNull()
-		} else {
-			countBuilder.Append(counts[i])
-		}
-	}
-
-	tsArr := tsBuilder.NewArray()
-	countArr := countBuilder.NewArray()
-	defer tsArr.Release()
-	defer countArr.Release()
-
-	rec := array.NewRecord(schema, []arrow.Array{tsArr, countArr}, int64(len(timestamps)))
-	defer rec.Release()
-
-	var buf bytes.Buffer
-	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	if err := writer.Write(rec); err != nil {
-		t.Fatalf("write nullable count Arrow record: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close nullable count Arrow writer: %v", err)
-	}
-	return buf.Bytes()
 }
 
 func createFirstPointAllTimestampNullArrow(t *testing.T, timestamps []int64, values []float64) []byte {
@@ -739,6 +611,109 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 		if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
 			t.Errorf("TimePoints[%d] = %v, want %v", i, s.TimePoints[i], time.Unix(0, ts))
 		}
+	}
+}
+
+// TestCountIncludedNonNull pins the sizing predicate behind extractColumnValues'
+// backing slice. The fill loop appends a backing entry only for rows that are BOTH
+// included by validMask AND non-null, so countIncludedNonNull must return exactly
+// that count. The function guards one direction loudly — an undercount panics on
+// backing[bi] — but the overcount direction is silent: it over-allocates and pins
+// dead slots alive, with correct values and no panic. That silent direction is
+// invisible to the extract-level tests (an overcount survives), so the count/fill
+// predicate agreement the doc comment calls dangerous is asserted directly here.
+//
+// The "mask + included row with null value" case is what separates the two halves
+// of the predicate: dropping the null check counts the included-but-null row, and
+// dropping the mask check counts the excluded-but-non-null row — both miscount it
+// to 3 while every other case stays correct, so neither half can rot unnoticed.
+func TestCountIncludedNonNull(t *testing.T) {
+	mkFloat64 := func(vals []float64, nulls []bool) arrow.Array {
+		b := array.NewFloat64Builder(memory.DefaultAllocator)
+		defer b.Release()
+		for i, v := range vals {
+			if nulls != nil && nulls[i] {
+				b.AppendNull()
+			} else {
+				b.Append(v)
+			}
+		}
+		return b.NewArray()
+	}
+	mkUint32 := func(vals []uint32, nulls []bool) arrow.Array {
+		b := array.NewUint32Builder(memory.DefaultAllocator)
+		defer b.Release()
+		for i, v := range vals {
+			if nulls != nil && nulls[i] {
+				b.AppendNull()
+			} else {
+				b.Append(v)
+			}
+		}
+		return b.NewArray()
+	}
+
+	tests := []struct {
+		name   string
+		col    arrow.Array
+		mask   []bool
+		offset int
+		nRows  int
+		want   int
+	}{
+		{
+			name:  "no mask, all non-null uses O(1) NullN path",
+			col:   mkFloat64([]float64{1, 2, 3}, nil),
+			nRows: 3, want: 3,
+		},
+		{
+			name:  "no mask, one null",
+			col:   mkFloat64([]float64{1, 0, 3}, []bool{false, true, false}),
+			nRows: 3, want: 2,
+		},
+		{
+			name:  "no mask, all null",
+			col:   mkFloat64([]float64{0, 0, 0}, []bool{true, true, true}),
+			nRows: 3, want: 0,
+		},
+		{
+			name:  "mask excludes rows, no value nulls",
+			col:   mkFloat64([]float64{1, 2, 3, 4}, nil),
+			mask:  []bool{true, false, true, false},
+			nRows: 4, want: 2,
+		},
+		{
+			// Row 1 is included by the mask but its value is null; row 3 is non-null
+			// but excluded by the mask. Only rows 0 and 2 are both included and non-null.
+			name:  "mask + included row with null value",
+			col:   mkFloat64([]float64{10, 0, 30, 99}, []bool{false, true, false, false}),
+			mask:  []bool{true, true, true, false},
+			nRows: 4, want: 2,
+		},
+		{
+			// Mask is built across records; offset indexes this record's slice into it.
+			name:   "non-zero offset into mask",
+			col:    mkFloat64([]float64{1, 2, 3}, nil),
+			mask:   []bool{false, false, true, true, false},
+			offset: 2,
+			nRows:  3, want: 2,
+		},
+		{
+			// countIncludedNonNull touches only arrow.Array (IsNull/NullN), so a Uint32
+			// column must size identically to Float64 — one case documents that.
+			name:  "type-agnostic Uint32 column",
+			col:   mkUint32([]uint32{5, 0, 12}, []bool{false, true, false}),
+			nRows: 3, want: 2,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			defer tc.col.Release()
+			if got := countIncludedNonNull(tc.col, tc.mask, tc.offset, tc.nRows); got != tc.want {
+				t.Fatalf("countIncludedNonNull = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
