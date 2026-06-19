@@ -133,10 +133,15 @@ func rowIncluded(validMask []bool, offset, row int) bool {
 }
 
 // countIncludedNonNull counts the rows that are both included by validMask and
-// non-null. It uses the same predicate as the fill loops in extractColumnValues
-// so the backing slice can be sized exactly. Only IsNull (interface-level) is
-// used, so a single helper serves both Float64 and Uint32 columns.
+// non-null, sizing the backing slice in extractColumnValues exactly. When there
+// is no per-row mask (every standard aggregation; only FIRST/LAST carry one) the
+// count is read from Arrow's O(1) null counter, so the common path skips the
+// counting scan entirely. Only IsNull/NullN (interface-level) are used, so a
+// single helper serves both Float64 and Uint32 columns.
 func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) int {
+	if validMask == nil {
+		return nRows - col.NullN()
+	}
 	count := 0
 	for i := 0; i < nRows; i++ {
 		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
