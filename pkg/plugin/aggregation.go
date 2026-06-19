@@ -164,9 +164,14 @@ func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) 
 // allocation makes the count/fill invariant self-enforcing: if countIncludedNonNull
 // ever undercounted, backing[bi] would panic rather than corrupt silently.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
-	// Reserve worst-case capacity for this record's appends (at most nRows rows are
-	// included), amortizing Values growth across multi-record Arrow streams.
-	series.Values = slices.Grow(series.Values, nRows)
+	// Reserve capacity for this record's appends, amortizing Values growth across
+	// multi-record Arrow streams. With no per-row mask every row is included, so
+	// nRows is exact; with a mask the included count isn't known without an extra
+	// scan, so we skip the hint and grow organically rather than over-reserve for
+	// rows the mask will drop.
+	if validMask == nil {
+		series.Values = slices.Grow(series.Values, nRows)
+	}
 
 	switch col := rawCol.(type) {
 	case *array.Float64:
