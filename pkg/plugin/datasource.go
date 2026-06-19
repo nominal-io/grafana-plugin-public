@@ -225,9 +225,11 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				// the next time-range query. Don't assume this sort is redundant: the
 				// compute API's PageInfo contract specifies selection direction (via sign
 				// of PageSize), not response order.
-				sort.SliceStable(result.LogEntries, func(a, b int) bool {
-					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
-				})
+				if !logEntriesNewestFirst(result.LogEntries) {
+					sort.SliceStable(result.LogEntries, func(a, b int) bool {
+						return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
+					})
+				}
 
 				frame := data.NewFrame(qm.Channel)
 				frame.Meta = &data.FrameMeta{
@@ -466,6 +468,15 @@ func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLa
 	out["nominal.channel"] = channel
 	labelsJSON, _ := json.Marshal(out)
 	return labelsJSON
+}
+
+func logEntriesNewestFirst(entries []LogEntry) bool {
+	for i := 0; i < len(entries)-1; i++ {
+		if !entries[i].Time.After(entries[i+1].Time) && !entries[i].Time.Equal(entries[i+1].Time) {
+			return false
+		}
+	}
+	return true
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.

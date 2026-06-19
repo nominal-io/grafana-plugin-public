@@ -3432,6 +3432,42 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
+	t.Run("already newest-first log response remains in source order", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{
+				{Message: "newest", Id: [16]byte{0x03}, Args: map[string]string{}},
+				{Message: "middle", Id: [16]byte{0x02}, Args: map[string]string{}},
+				{Message: "oldest", Id: [16]byte{0x01}, Args: map[string]string{}},
+			},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		bodyField := resp.Frames[0].Fields[1]
+		want := []string{"newest", "middle", "oldest"}
+		for i, wantBody := range want {
+			if got := bodyField.At(i).(string); got != wantBody {
+				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
+			}
+		}
+	})
+
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
 		result := createMockPagedLogResult([]string{}, nil)
 		qm := NominalQueryModel{
@@ -3453,6 +3489,36 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Fatalf("expected 4 fields even when empty, got %d", len(frame.Fields))
 		}
 	})
+}
+
+func TestLogEntriesNewestFirst(t *testing.T) {
+	base := time.Unix(1704067200, 0)
+	entry := func(offsetSeconds int64) LogEntry {
+		return LogEntry{Time: base.Add(time.Duration(offsetSeconds) * time.Second)}
+	}
+
+	tests := []struct {
+		name    string
+		entries []LogEntry
+		want    bool
+	}{
+		{name: "nil slice", entries: nil, want: true},
+		{name: "empty slice", entries: []LogEntry{}, want: true},
+		{name: "single entry", entries: []LogEntry{entry(1)}, want: true},
+		{name: "strict newest first", entries: []LogEntry{entry(3), entry(2), entry(1)}, want: true},
+		{name: "equal timestamps preserve stable order", entries: []LogEntry{entry(3), entry(3), entry(2)}, want: true},
+		{name: "oldest first", entries: []LogEntry{entry(1), entry(2), entry(3)}, want: false},
+		{name: "one inversion", entries: []LogEntry{entry(3), entry(1), entry(2)}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := logEntriesNewestFirst(tt.entries)
+			if got != tt.want {
+				t.Fatalf("logEntriesNewestFirst() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestLogPointTransformation(t *testing.T) {
