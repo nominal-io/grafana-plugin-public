@@ -128,20 +128,55 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
-func rowIncluded(validMask []bool, offset, row int) bool {
-	return validMask == nil || validMask[offset+row]
+type rowSelection struct {
+	mask         []bool
+	includedRows int
+}
+
+func allRows(nRows int) rowSelection {
+	return rowSelection{includedRows: nRows}
+}
+
+func (s rowSelection) includes(row int) bool {
+	return s.mask == nil || s.mask[row]
+}
+
+func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, rowSelection) {
+	nRows := col.Len()
+	if col.NullN() == 0 {
+		dst = slices.Grow(dst, nRows)
+		for i := 0; i < nRows; i++ {
+			dst = append(dst, time.Unix(0, col.Value(i)))
+		}
+		return dst, allRows(nRows)
+	}
+
+	includedRows := nRows - col.NullN()
+	selection := rowSelection{
+		mask:         make([]bool, nRows),
+		includedRows: includedRows,
+	}
+	dst = slices.Grow(dst, includedRows)
+	for i := 0; i < nRows; i++ {
+		if col.IsNull(i) {
+			continue
+		}
+		selection.mask[i] = true
+		dst = append(dst, time.Unix(0, col.Value(i)))
+	}
+	return dst, selection
 }
 
 // countIncludedNonNull sizes extractColumnValues' backing slice with the same
 // include-and-non-null predicate used by the fill loop. Unmasked columns use
 // Arrow's O(1) null counter; masked FIRST/LAST columns scan via arrow.Array.
-func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) int {
-	if validMask == nil {
+func countIncludedNonNull(col arrow.Array, selection rowSelection, nRows int) int {
+	if selection.mask == nil {
 		return nRows - col.NullN()
 	}
 	count := 0
 	for i := 0; i < nRows; i++ {
-		if rowIncluded(validMask, offset, i) && !col.IsNull(i) {
+		if selection.includes(i) && !col.IsNull(i) {
 			count++
 		}
 	}
@@ -149,14 +184,13 @@ func countIncludedNonNull(col arrow.Array, validMask []bool, offset, nRows int) 
 }
 
 // extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
-// appends values to series.Values. Rows where validMask[offset+i] is false are
-// skipped (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask
-// to include all rows.
+// appends values to series.Values. Rows excluded by selection are skipped (used
+// to drop null-timestamp rows for FIRST/LAST).
 //
 // Non-null values share one backing slice per call, avoiding one heap allocation
 // per value while keeping pointers stable. The sizing predicate must match the
 // fill loop exactly: undercounts panic, but overcounts silently retain dead slots.
-func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
+func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selection rowSelection, nRows int) error {
 	// Resolve the accessor first so unsupported columns fail before mutating series.
 	var valueAt func(int) float64
 	switch col := rawCol.(type) {
@@ -168,16 +202,12 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, validMas
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
 	}
 
-	// Standard aggregations include every row, so nRows is an exact growth hint.
-	// Masked FIRST/LAST rows grow organically to avoid over-reserving dropped rows.
-	if validMask == nil {
-		series.Values = slices.Grow(series.Values, nRows)
-	}
+	series.Values = slices.Grow(series.Values, selection.includedRows)
 
-	backing := make([]float64, countIncludedNonNull(rawCol, validMask, offset, nRows))
+	backing := make([]float64, countIncludedNonNull(rawCol, selection, nRows))
 	bi := 0
 	for i := 0; i < nRows; i++ {
-		if !rowIncluded(validMask, offset, i) {
+		if !selection.includes(i) {
 			continue
 		}
 		if rawCol.IsNull(i) {
@@ -227,18 +257,14 @@ func extractArrowBucketedNumericSeries(
 			perSeriesTime[i] = []time.Time{}
 		}
 	}
-	// rowOffset tracks how many Arrow rows we've seen per spec across records,
-	// used to index into perSeriesValid which is built across all records.
-	rowOffset := make([]int, len(specs))
-	// perSeriesValid tracks which Arrow rows have non-null per-series timestamps.
-	// Rows with null timestamps (empty buckets) are dropped entirely from that
-	// series so that no zero-time entries appear in table panels. nil for specs
-	// that use the shared timestamp.
-	perSeriesValid := make([][]bool, len(specs))
+	recordSelections := make([]rowSelection, len(specs))
 
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
+		for i := range recordSelections {
+			recordSelections[i] = allRows(nRows)
+		}
 
 		// Extract shared timestamps
 		tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
@@ -262,27 +288,15 @@ func extractArrowBucketedNumericSeries(
 			if !ok {
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
-			// valid tracks every row; perSeriesTime stores only non-null timestamps.
-			perSeriesValid[si] = slices.Grow(perSeriesValid[si], nRows)
-			perSeriesTime[si] = slices.Grow(perSeriesTime[si], nRows-perTsCol.NullN())
-			for i := 0; i < nRows; i++ {
-				valid := !perTsCol.IsNull(i)
-				perSeriesValid[si] = append(perSeriesValid[si], valid)
-				if valid {
-					perSeriesTime[si] = append(perSeriesTime[si], time.Unix(0, perTsCol.Value(i)))
-				}
-			}
+			perSeriesTime[si], recordSelections[si] = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
 		}
 
 		// Extract each field's values.
 		// For series with per-series timestamps, rows where the timestamp was null are
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
-			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), perSeriesValid[fi], rowOffset[fi], nRows); err != nil {
+			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), recordSelections[fi], nRows); err != nil {
 				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
-			}
-			if perSeriesValid[fi] != nil {
-				rowOffset[fi] += nRows
 			}
 		}
 	}

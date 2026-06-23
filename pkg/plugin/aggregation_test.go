@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -451,7 +452,7 @@ func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
 		defer col.Release()
 		return testing.AllocsPerRun(100, func() {
 			var s AggregationSeries
-			if err := extractColumnValues(&s, col, nil, 0, n); err != nil {
+			if err := extractColumnValues(&s, col, allRows(n), n); err != nil {
 				t.Fatalf("extractColumnValues: %v", err)
 			}
 		})
@@ -468,6 +469,42 @@ func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
 	const ceiling = 8
 	if small > ceiling {
 		t.Fatalf("allocations for n=100 = %v, want <= %d", small, ceiling)
+	}
+}
+
+// TestExtractArrowFirstLastDenseMaskedAllocationsAreConstant guards the masked
+// FIRST/LAST path against regressing to per-row value or slice-growth allocation.
+func TestExtractArrowFirstLastDenseMaskedAllocationsAreConstant(t *testing.T) {
+	specs := []aggColumnSpec{
+		aggColumnSpecFromEnum(AggFirstPoint),
+		aggColumnSpecFromEnum(AggLastPoint),
+	}
+	measure := func(rows int) float64 {
+		arrowBytes := createBenchmarkArrowFirstLastDense(t, rows)
+		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		return testing.AllocsPerRun(100, func() {
+			series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
+			if err != nil {
+				t.Fatalf("extractArrowBucketedNumericSeries: %v", err)
+			}
+			if len(series) != 2 {
+				t.Fatalf("len(series) = %d, want 2", len(series))
+			}
+			for i, s := range series {
+				if len(s.TimePoints) != rows {
+					t.Fatalf("series[%d] len(TimePoints) = %d, want %d", i, len(s.TimePoints), rows)
+				}
+				if len(s.Values) != rows {
+					t.Fatalf("series[%d] len(Values) = %d, want %d", i, len(s.Values), rows)
+				}
+			}
+		})
+	}
+
+	small := measure(100)
+	large := measure(10000)
+	if large > small {
+		t.Fatalf("dense masked FIRST/LAST allocations grow with row count: n=100 -> %v allocs, n=10000 -> %v allocs (want large <= small)", small, large)
 	}
 }
 
@@ -601,6 +638,32 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 	}
 }
 
+func TestAppendNonNullTimestampsDenseUsesUnmaskedSelection(t *testing.T) {
+	b := array.NewInt64Builder(memory.DefaultAllocator)
+	defer b.Release()
+	b.Append(100)
+	b.Append(200)
+	b.Append(300)
+	col := b.NewInt64Array()
+	defer col.Release()
+
+	gotTimePoints, gotSelection := appendNonNullTimestamps(nil, col)
+	if gotSelection.mask != nil {
+		t.Fatalf("selection mask = %v, want nil for dense timestamp column", gotSelection.mask)
+	}
+	if gotSelection.includedRows != 3 {
+		t.Fatalf("includedRows = %d, want 3", gotSelection.includedRows)
+	}
+	want := []time.Time{
+		time.Unix(0, 100),
+		time.Unix(0, 200),
+		time.Unix(0, 300),
+	}
+	if !slices.Equal(gotTimePoints, want) {
+		t.Fatalf("timePoints = %v, want %v", gotTimePoints, want)
+	}
+}
+
 // TestCountIncludedNonNull pins the predicate used to size extractColumnValues'
 // backing slice. Undercounts panic in the fill loop, but overcounts silently pin
 // dead backing slots, so the include-and-non-null count is checked directly.
@@ -631,60 +694,55 @@ func TestCountIncludedNonNull(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		col    arrow.Array
-		mask   []bool
-		offset int
-		nRows  int
-		want   int
+		name      string
+		col       arrow.Array
+		selection rowSelection
+		nRows     int
+		want      int
 	}{
 		{
-			name:  "no mask, all non-null uses O(1) NullN path",
-			col:   mkFloat64([]float64{1, 2, 3}, nil),
-			nRows: 3, want: 3,
+			name:      "no mask, all non-null uses O(1) NullN path",
+			col:       mkFloat64([]float64{1, 2, 3}, nil),
+			selection: allRows(3),
+			nRows:     3, want: 3,
 		},
 		{
-			name:  "no mask, one null",
-			col:   mkFloat64([]float64{1, 0, 3}, []bool{false, true, false}),
-			nRows: 3, want: 2,
+			name:      "no mask, one null",
+			col:       mkFloat64([]float64{1, 0, 3}, []bool{false, true, false}),
+			selection: allRows(3),
+			nRows:     3, want: 2,
 		},
 		{
-			name:  "no mask, all null",
-			col:   mkFloat64([]float64{0, 0, 0}, []bool{true, true, true}),
-			nRows: 3, want: 0,
+			name:      "no mask, all null",
+			col:       mkFloat64([]float64{0, 0, 0}, []bool{true, true, true}),
+			selection: allRows(3),
+			nRows:     3, want: 0,
 		},
 		{
-			name:  "mask excludes rows, no value nulls",
-			col:   mkFloat64([]float64{1, 2, 3, 4}, nil),
-			mask:  []bool{true, false, true, false},
-			nRows: 4, want: 2,
+			name:      "mask excludes rows, no value nulls",
+			col:       mkFloat64([]float64{1, 2, 3, 4}, nil),
+			selection: rowSelection{mask: []bool{true, false, true, false}, includedRows: 2},
+			nRows:     4, want: 2,
 		},
 		{
 			// Includes a null row and excludes a non-null row so both predicate halves matter.
-			name:  "mask + included row with null value",
-			col:   mkFloat64([]float64{10, 0, 30, 99}, []bool{false, true, false, false}),
-			mask:  []bool{true, true, true, false},
-			nRows: 4, want: 2,
+			name:      "mask + included row with null value",
+			col:       mkFloat64([]float64{10, 0, 30, 99}, []bool{false, true, false, false}),
+			selection: rowSelection{mask: []bool{true, true, true, false}, includedRows: 3},
+			nRows:     4, want: 2,
 		},
 		{
-			// Mask is built across records; offset indexes this record's slice into it.
-			name:   "non-zero offset into mask",
-			col:    mkFloat64([]float64{1, 2, 3}, nil),
-			mask:   []bool{false, false, true, true, false},
-			offset: 2,
-			nRows:  3, want: 2,
-		},
-		{
-			name:  "type-agnostic Uint32 column",
-			col:   mkUint32([]uint32{5, 0, 12}, []bool{false, true, false}),
-			nRows: 3, want: 2,
+			name:      "type-agnostic Uint32 column",
+			col:       mkUint32([]uint32{5, 0, 12}, []bool{false, true, false}),
+			selection: allRows(3),
+			nRows:     3, want: 2,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			defer tc.col.Release()
-			if got := countIncludedNonNull(tc.col, tc.mask, tc.offset, tc.nRows); got != tc.want {
+			if got := countIncludedNonNull(tc.col, tc.selection, tc.nRows); got != tc.want {
 				t.Fatalf("countIncludedNonNull = %d, want %d", got, tc.want)
 			}
 		})
@@ -816,8 +874,8 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 }
 
 // TestTransformArrowFirstLastWithNullsMultiBatch exercises the multi-record-batch
-// path: rowOffset and perSeriesValid must track state correctly across batch
-// boundaries when null timestamps appear in both batches.
+// path: record-local row selections must keep values aligned with per-series
+// timestamps when null timestamps appear in both batches.
 func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
