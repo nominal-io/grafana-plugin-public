@@ -95,7 +95,7 @@ func createBenchmarkArrowBucketedNumeric(
 	return buf.Bytes()
 }
 
-func createBenchmarkArrowFirstLastDense(b testing.TB, rows int) []byte {
+func createDenseFirstLastArrow(b testing.TB, rows int) []byte {
 	b.Helper()
 
 	pool := memory.DefaultAllocator
@@ -142,10 +142,10 @@ func createBenchmarkArrowFirstLastDense(b testing.TB, rows int) []byte {
 	var buf bytes.Buffer
 	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
 	if err := writer.Write(rec); err != nil {
-		b.Fatalf("write benchmark FIRST/LAST Arrow record: %v", err)
+		b.Fatalf("write dense FIRST/LAST Arrow record: %v", err)
 	}
 	if err := writer.Close(); err != nil {
-		b.Fatalf("close benchmark FIRST/LAST Arrow writer: %v", err)
+		b.Fatalf("close dense FIRST/LAST Arrow writer: %v", err)
 	}
 
 	rec.Release()
@@ -208,7 +208,7 @@ func BenchmarkExtractArrowBucketedNumericSeriesFirstLast(b *testing.B) {
 	for _, rows := range []int{1000, 10000} {
 		rows := rows
 		b.Run("rows_"+strconv.Itoa(rows)+"_aggs_2_dense_masked", func(b *testing.B) {
-			arrowBytes := createBenchmarkArrowFirstLastDense(b, rows)
+			arrowBytes := createDenseFirstLastArrow(b, rows)
 			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 
 			b.ReportAllocs()

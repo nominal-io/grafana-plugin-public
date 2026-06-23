@@ -480,7 +480,7 @@ func TestExtractArrowFirstLastDenseMaskedAllocationsAreConstant(t *testing.T) {
 		aggColumnSpecFromEnum(AggLastPoint),
 	}
 	measure := func(rows int) float64 {
-		arrowBytes := createBenchmarkArrowFirstLastDense(t, rows)
+		arrowBytes := createDenseFirstLastArrow(t, rows)
 		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 		return testing.AllocsPerRun(100, func() {
 			series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
