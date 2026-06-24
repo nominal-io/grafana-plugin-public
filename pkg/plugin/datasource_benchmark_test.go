@@ -28,7 +28,8 @@ const (
 type benchmarkLogArgsKind int
 
 const (
-	benchmarkLogArgsEmpty benchmarkLogArgsKind = iota
+	benchmarkLogArgsNil benchmarkLogArgsKind = iota
+	benchmarkLogArgsEmpty
 	benchmarkLogArgsPopulated
 	benchmarkLogArgsWithNominalChannel
 )
@@ -82,6 +83,8 @@ func benchmarkBucketedEnumPlot(rows int) computeapi.BucketedEnumPlot {
 
 func benchmarkLogArgs(kind benchmarkLogArgsKind, i int) map[string]string {
 	switch kind {
+	case benchmarkLogArgsNil:
+		return nil
 	case benchmarkLogArgsEmpty:
 		return map[string]string{}
 	case benchmarkLogArgsWithNominalChannel:
@@ -196,11 +199,14 @@ func BenchmarkPagedLogTransform(b *testing.B) {
 		order    benchmarkLogOrder
 		argsKind benchmarkLogArgsKind
 	}{
+		{name: "rows_250_nil_args_descending", order: benchmarkLogDescending, argsKind: benchmarkLogArgsNil},
+		{name: "rows_250_nil_args_ascending", order: benchmarkLogAscending, argsKind: benchmarkLogArgsNil},
 		{name: "rows_250_empty_args_descending", order: benchmarkLogDescending, argsKind: benchmarkLogArgsEmpty},
 		{name: "rows_250_empty_args_ascending", order: benchmarkLogAscending, argsKind: benchmarkLogArgsEmpty},
 		{name: "rows_250_populated_args_descending", order: benchmarkLogDescending, argsKind: benchmarkLogArgsPopulated},
 		{name: "rows_250_populated_args_ascending", order: benchmarkLogAscending, argsKind: benchmarkLogArgsPopulated},
 		{name: "rows_250_preexisting_nominal_channel_descending", order: benchmarkLogDescending, argsKind: benchmarkLogArgsWithNominalChannel},
+		{name: "rows_250_preexisting_nominal_channel_ascending", order: benchmarkLogAscending, argsKind: benchmarkLogArgsWithNominalChannel},
 	}
 
 	for _, tc := range cases {
