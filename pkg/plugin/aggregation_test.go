@@ -1016,6 +1016,123 @@ func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
 	}
 }
 
+// TestExtractArrowBucketedNumericSeriesDenseMultiBatch exercises the multi-record-batch
+// path for dense (unmasked, NullN()==0) standard aggregations: shared timestamps and
+// per-column backing slices must concatenate correctly across record boundaries, and the
+// value pointers from the first batch must stay valid after the second batch appends more.
+// Covers both the Float64 (mean) and Uint32 (count) arms of extractColumnValues.
+func TestExtractArrowBucketedNumericSeriesDenseMultiBatch(t *testing.T) {
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "mean", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "count", Type: arrow.PrimitiveTypes.Uint32},
+	}, nil)
+
+	// Two batches of differing sizes (3 then 2 rows) to exercise the grow path
+	// across record boundaries. All rows dense (no nulls).
+	type row struct {
+		ts    int64
+		mean  float64
+		count uint32
+	}
+	batches := [][]row{
+		{
+			{ts: 1_000_000_000_000, mean: 1.5, count: 5},
+			{ts: 2_000_000_000_000, mean: 2.5, count: 12},
+			{ts: 3_000_000_000_000, mean: 3.5, count: 7},
+		},
+		{
+			{ts: 4_000_000_000_000, mean: 4.5, count: 9},
+			{ts: 5_000_000_000_000, mean: 5.5, count: 3},
+		},
+	}
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	for _, batch := range batches {
+		n := len(batch)
+		tsB := array.NewInt64Builder(pool)
+		meanB := array.NewFloat64Builder(pool)
+		countB := array.NewUint32Builder(pool)
+		for _, r := range batch {
+			tsB.Append(r.ts)
+			meanB.Append(r.mean)
+			countB.Append(r.count)
+		}
+		cols := []arrow.Array{tsB.NewArray(), meanB.NewArray(), countB.NewArray()}
+		rec := array.NewRecord(schema, cols, int64(n))
+		if err := writer.Write(rec); err != nil {
+			t.Fatalf("write batch: %v", err)
+		}
+		rec.Release()
+		for _, c := range cols {
+			c.Release()
+		}
+		tsB.Release()
+		meanB.Release()
+		countB.Release()
+	}
+	writer.Close()
+
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+	series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{
+		{Name: "mean", ValueCol: "mean"},
+		{Name: "count", ValueCol: "count"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(series))
+	}
+
+	// Flatten the expected rows across both batches in stream order.
+	var wantTs []int64
+	var wantMean []float64
+	var wantCount []float64
+	for _, batch := range batches {
+		for _, r := range batch {
+			wantTs = append(wantTs, r.ts)
+			wantMean = append(wantMean, r.mean)
+			wantCount = append(wantCount, float64(r.count))
+		}
+	}
+
+	mean := series[0]
+	count := series[1]
+
+	// Standard aggregations share end_bucket_timestamp.
+	for _, s := range series {
+		if len(s.TimePoints) != len(wantTs) {
+			t.Fatalf("%s: expected %d timepoints, got %d", s.Name, len(wantTs), len(s.TimePoints))
+		}
+		for i, ts := range wantTs {
+			if !s.TimePoints[i].Equal(time.Unix(0, ts)) {
+				t.Errorf("%s.TimePoints[%d] = %v, want %v", s.Name, i, s.TimePoints[i], time.Unix(0, ts))
+			}
+		}
+	}
+
+	if len(mean.Values) != len(wantMean) {
+		t.Fatalf("mean: expected %d values, got %d", len(wantMean), len(mean.Values))
+	}
+	for i, want := range wantMean {
+		if mean.Values[i] == nil || *mean.Values[i] != want {
+			t.Errorf("mean.Values[%d] = %v, want %f", i, mean.Values[i], want)
+		}
+	}
+
+	if len(count.Values) != len(wantCount) {
+		t.Fatalf("count: expected %d values, got %d", len(wantCount), len(count.Values))
+	}
+	for i, want := range wantCount {
+		if count.Values[i] == nil || *count.Values[i] != want {
+			t.Errorf("count.Values[%d] = %v, want %f", i, count.Values[i], want)
+		}
+	}
+}
+
 func TestValidateAndDedup(t *testing.T) {
 	// All valid, no duplicates
 	deduped, bad := validateAndDedup([]string{"MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT"})
