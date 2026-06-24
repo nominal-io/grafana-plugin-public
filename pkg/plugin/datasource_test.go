@@ -3521,6 +3521,42 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
+	t.Run("sorting preserves source order for equal timestamps", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{
+				{Message: "newest-a", Id: [16]byte{0x03}, Args: map[string]string{}},
+				{Message: "oldest", Id: [16]byte{0x01}, Args: map[string]string{}},
+				{Message: "newest-b", Id: [16]byte{0x04}, Args: map[string]string{}},
+			},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		bodyField := resp.Frames[0].Fields[1]
+		want := []string{"newest-a", "newest-b", "oldest"}
+		for i, wantBody := range want {
+			if got := bodyField.At(i).(string); got != wantBody {
+				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
+			}
+		}
+	})
+
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
 		result := createMockPagedLogResult([]string{}, nil)
 		qm := NominalQueryModel{
