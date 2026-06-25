@@ -230,6 +230,49 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		}
 	})
 
+	t.Run("column length mismatch returns error", func(t *testing.T) {
+		pool := memory.DefaultAllocator
+		schema := arrow.NewSchema([]arrow.Field{
+			{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "mean", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		}, nil)
+		tsBuilder := array.NewInt64Builder(pool)
+		meanBuilder := array.NewFloat64Builder(pool)
+		tsBuilder.Append(1000)
+		tsBuilder.Append(2000)
+		meanBuilder.Append(10.0)
+		meanBuilder.Append(20.0)
+		meanBuilder.AppendNull()
+		tsArr := tsBuilder.NewArray()
+		meanArr := meanBuilder.NewArray()
+		defer tsBuilder.Release()
+		defer meanBuilder.Release()
+		defer tsArr.Release()
+		defer meanArr.Release()
+
+		rec := array.NewRecord(schema, []arrow.Array{tsArr, meanArr}, 2)
+		defer rec.Release()
+
+		var buf bytes.Buffer
+		writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+		writer.Write(rec)
+		writer.Close()
+
+		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("expected column length error, got panic: %v", r)
+			}
+		}()
+		_, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
+		if err == nil {
+			t.Fatal("expected error for column length mismatch, got nil")
+		}
+		if !strings.Contains(err.Error(), "length") || !strings.Contains(err.Error(), "mean") {
+			t.Errorf("error should mention mismatched mean column length, got: %v", err)
+		}
+	})
+
 	t.Run("Uint32 count column is converted to float64", func(t *testing.T) {
 		pool := memory.DefaultAllocator
 		schema := arrow.NewSchema([]arrow.Field{

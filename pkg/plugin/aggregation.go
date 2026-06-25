@@ -128,6 +128,17 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
+func validateRecordColumnLengths(rec arrow.Record) error {
+	nRows := int(rec.NumRows())
+	for i := 0; i < int(rec.NumCols()); i++ {
+		col := rec.Column(i)
+		if col.Len() != nRows {
+			return fmt.Errorf("Arrow record column %q length mismatch: got %d, want %d", rec.ColumnName(i), col.Len(), nRows)
+		}
+	}
+	return nil
+}
+
 type rowSelection struct {
 	mask         []bool
 	includedRows int
@@ -262,6 +273,9 @@ func extractArrowBucketedNumericSeries(
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
+		if err := validateRecordColumnLengths(rec); err != nil {
+			return nil, err
+		}
 		for i := range recordSelections {
 			recordSelections[i] = allRows(nRows)
 		}
