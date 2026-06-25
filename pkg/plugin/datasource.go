@@ -418,6 +418,8 @@ type LogEntry struct {
 	Labels json.RawMessage
 }
 
+const nominalChannelLabel = "nominal.channel"
+
 // marshalLogArgs serializes log Args to JSON and, when available, adds
 // "nominal.channel" so mixed-channel log panels can distinguish rows.
 //
@@ -427,24 +429,14 @@ type LogEntry struct {
 // Copying is intentional: it preserves caller input and keeps nil Args from
 // serializing as JSON null.
 func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
-	out := make(map[string]string, len(args)+1)
-	for k, v := range args {
-		out[k] = v
-	}
-	if channel != "" {
-		if _, exists := out["nominal.channel"]; !exists {
-			out["nominal.channel"] = channel
-		}
-	}
-	labelsJSON, _ := json.Marshal(out)
-	return labelsJSON
+	return marshalLogArgsWithDefault(args, channel, defaultLogLabelsForChannel(channel))
 }
 
 func defaultLogLabelsForChannel(channel string) json.RawMessage {
 	if channel == "" {
 		return json.RawMessage("{}")
 	}
-	labelsJSON, _ := json.Marshal(map[string]string{"nominal.channel": channel})
+	labelsJSON, _ := json.Marshal(map[string]string{nominalChannelLabel: channel})
 	return labelsJSON
 }
 
@@ -456,7 +448,7 @@ func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLa
 		labelsJSON, _ := json.Marshal(args)
 		return labelsJSON
 	}
-	if _, exists := args["nominal.channel"]; exists {
+	if _, exists := args[nominalChannelLabel]; exists {
 		labelsJSON, _ := json.Marshal(args)
 		return labelsJSON
 	}
@@ -465,7 +457,7 @@ func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLa
 	for k, v := range args {
 		out[k] = v
 	}
-	out["nominal.channel"] = channel
+	out[nominalChannelLabel] = channel
 	labelsJSON, _ := json.Marshal(out)
 	return labelsJSON
 }
