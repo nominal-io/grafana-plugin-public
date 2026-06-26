@@ -257,6 +257,72 @@ describe('useAssetSelection', () => {
     expect(mockSearchAssets).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps newer asset search results when an older search resolves late', async () => {
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    const firstSearch = deferred<Asset[]>();
+    const secondSearch = deferred<Asset[]>();
+    mockSearchAssets.mockReset();
+    mockSearchAssets.mockImplementation((_datasourceUrl, searchText) => {
+      if (searchText === 'alpha') {
+        return firstSearch.promise;
+      }
+      if (searchText === 'beta') {
+        return secondSearch.promise;
+      }
+      return Promise.resolve([]);
+    });
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('alpha');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('beta');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).toHaveBeenNthCalledWith(1, '/api/x', 'alpha');
+    expect(mockSearchAssets).toHaveBeenNthCalledWith(2, '/api/x', 'beta');
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      secondSearch.resolve([OTHER_ASSET]);
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(result.current.assetOptions[0]?.value).toBe(OTHER_ASSET.rid);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      firstSearch.resolve([ASSET]);
+      await Promise.resolve();
+    });
+
+    expect(result.current.assetOptions[0]?.value).toBe(OTHER_ASSET.rid);
+  });
+
   it('cancels a pending debounced asset search synchronously when switching to direct mode', async () => {
     const onChange = jest.fn();
     const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }), onChange });

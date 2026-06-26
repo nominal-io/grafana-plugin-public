@@ -58,7 +58,7 @@ const notifyError = (title: string, message: string) => {
   });
 };
 
-const ASSET_SEARCH_DEBOUNCE_MS = 300;
+const ASSET_LOOKUP_DEBOUNCE_MS = 300;
 
 export function useAssetSelection({
   query,
@@ -97,6 +97,7 @@ export function useAssetSelection({
 
   // Debounced asset lookup for search-mode typing. Search-mode entry and Enter run immediately.
   const assetSearchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const assetSearchControllerRef = useRef<AbortController>(undefined);
   const previousAssetSearchInputsRef = useRef({
     assetInputMethod,
     datasourceUrl,
@@ -104,16 +105,30 @@ export function useAssetSelection({
   });
 
   const loadAssets = useCallback(async () => {
+    assetSearchControllerRef.current?.abort();
+    const controller = new AbortController();
+    assetSearchControllerRef.current = controller;
+    const { signal } = controller;
+
     setIsLoadingAssets(true);
     setHasLoadedAssets(false);
     try {
-      setAssets(await searchAssets(datasourceUrl, searchQuery));
+      const foundAssets = await searchAssets(datasourceUrl, searchQuery);
+      if (signal.aborted) {
+        return;
+      }
+      setAssets(foundAssets);
     } catch {
+      if (signal.aborted) {
+        return;
+      }
       notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
       setAssets([]);
     } finally {
-      setIsLoadingAssets(false);
-      setHasLoadedAssets(true);
+      if (!signal.aborted) {
+        setIsLoadingAssets(false);
+        setHasLoadedAssets(true);
+      }
     }
   }, [searchQuery, datasourceUrl]);
 
@@ -255,7 +270,7 @@ export function useAssetSelection({
 
     assetSearchTimerRef.current = setTimeout(() => {
       loadAssets();
-    }, ASSET_SEARCH_DEBOUNCE_MS);
+    }, ASSET_LOOKUP_DEBOUNCE_MS);
 
     return () => clearTimeout(assetSearchTimerRef.current);
   }, [assetInputMethod, datasourceUrl, loadAssets, searchQuery]);
@@ -315,6 +330,7 @@ export function useAssetSelection({
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
+      assetSearchControllerRef.current?.abort();
       eventOwnedConcreteAssetRidRef.current = undefined;
       setAssetInputMethod(method);
       setSelectedAsset(null);
@@ -422,7 +438,7 @@ export function useAssetSelection({
 
       directRidTimerRef.current = setTimeout(() => {
         applyAssetFromRid(ridResolution.resolved, displayLabel, controller.signal);
-      }, 300);
+      }, ASSET_LOOKUP_DEBOUNCE_MS);
     },
     [markInteracted, onChange, applyAssetFromRid, resolveTemplateText]
   );
@@ -442,6 +458,7 @@ export function useAssetSelection({
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
+      assetSearchControllerRef.current?.abort();
     };
   }, []);
 
