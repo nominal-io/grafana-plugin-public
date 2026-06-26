@@ -140,14 +140,152 @@ describe('useAssetSelection', () => {
     expect(consoleErrorCalls).toEqual([]);
   });
 
-  it('loads assets on mount', async () => {
+  it('loads assets immediately on search-mode mount', async () => {
     mockSearchAssets.mockResolvedValue([ASSET]);
-    const hookArgs = args();
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
+    jest.useFakeTimers();
+
     const { result } = renderHook(() => useAssetSelection(hookArgs));
+    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', '');
+
     await waitFor(() => {
       expect(result.current.assetSearchResultCount).toBe(1);
     });
     await waitForAssetSearchToSettle(result);
+  });
+
+  it('skips asset search on direct-mode mount without a RID', async () => {
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'direct' }) });
+    jest.useFakeTimers();
+
+    renderHook(() => useAssetSelection(hookArgs));
+
+    // Let mount effects run. Direct mode should not call the search-list API.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(301);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
+  });
+
+  it('debounces asset searches while typing in search mode', async () => {
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    mockSearchAssets.mockClear();
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('a');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('ab');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('abc');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      jest.advanceTimersByTime(299);
+    });
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(1);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockSearchAssets).toHaveBeenCalledTimes(1);
+    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', 'abc');
+  });
+
+  it('runs a pending debounced asset search immediately when requested', async () => {
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    mockSearchAssets.mockClear();
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('alpha');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.runAssetSearch();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).toHaveBeenCalledTimes(1);
+    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', 'alpha');
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockSearchAssets).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a pending debounced asset search synchronously when switching to direct mode', async () => {
+    const onChange = jest.fn();
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }), onChange });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    mockSearchAssets.mockClear();
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('alpha');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetInputMethod('direct');
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockSearchAssets).not.toHaveBeenCalled();
+    expect(result.current.assetInputMethod).toBe('direct');
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetInputMethod: 'direct' }));
   });
 
   it('selectAsset selects a known asset and marks interaction', async () => {
@@ -174,13 +312,23 @@ describe('useAssetSelection', () => {
     const hookArgs = args({
       query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'direct' }),
     });
+    jest.useFakeTimers();
+
     const { result } = renderHook(() => useAssetSelection(hookArgs));
     await waitFor(() => {
       expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET.rid);
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
-    await waitForAssetSearchToSettle(result);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(301);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     expect(result.current.directRID).toBe(ASSET.rid);
+    expect(mockSearchAssets).not.toHaveBeenCalled();
   });
 
   it('restores a saved search-mode RID from search results without a by-RID fetch', async () => {
@@ -431,15 +579,24 @@ describe('useAssetSelection', () => {
       assetRidResolution: resolveTemplateValue(query.assetRid, replace),
       resolveTemplateText: (value: string) => resolveTemplateValue(value, replace),
     });
+    jest.useFakeTimers();
+
     const { result } = renderHook(() => useAssetSelection(hookArgs));
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
-    await waitForAssetSearchToSettle(result);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(301);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET.rid);
+    expect(mockSearchAssets).not.toHaveBeenCalled();
   });
 
   it('does not rebuild options when resolution references change but primitive fields do not', async () => {

@@ -58,6 +58,8 @@ const notifyError = (title: string, message: string) => {
   });
 };
 
+const ASSET_SEARCH_DEBOUNCE_MS = 300;
+
 export function useAssetSelection({
   query,
   onChange,
@@ -93,6 +95,14 @@ export function useAssetSelection({
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const directRidControllerRef = useRef<AbortController>(undefined);
 
+  // Debounced asset lookup for search-mode typing. Search-mode entry and Enter run immediately.
+  const assetSearchTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const previousAssetSearchInputsRef = useRef({
+    assetInputMethod,
+    datasourceUrl,
+    searchQuery,
+  });
+
   const loadAssets = useCallback(async () => {
     setIsLoadingAssets(true);
     setHasLoadedAssets(false);
@@ -106,6 +116,14 @@ export function useAssetSelection({
       setHasLoadedAssets(true);
     }
   }, [searchQuery, datasourceUrl]);
+
+  const runAssetSearch = useCallback(() => {
+    clearTimeout(assetSearchTimerRef.current);
+    if (assetInputMethod !== 'search') {
+      return;
+    }
+    loadAssets();
+  }, [assetInputMethod, loadAssets]);
 
   /** Fetch an asset by resolved RID and update selectedAsset/dataScopes state.
    *  Returns early without updating state if `signal` is aborted. */
@@ -211,10 +229,36 @@ export function useAssetSelection({
     applyAssetFromRid,
   ]);
 
-  // Load assets on component mount and when search query changes
+  // Load immediately when search mode opens; debounce typed search query changes.
   useEffect(() => {
-    loadAssets();
-  }, [loadAssets]);
+    clearTimeout(assetSearchTimerRef.current);
+
+    const previous = previousAssetSearchInputsRef.current;
+    const searchQueryChanged = previous.searchQuery !== searchQuery;
+    const enteredSearchMode = previous.assetInputMethod !== 'search' && assetInputMethod === 'search';
+    const datasourceChanged = previous.datasourceUrl !== datasourceUrl;
+
+    previousAssetSearchInputsRef.current = {
+      assetInputMethod,
+      datasourceUrl,
+      searchQuery,
+    };
+
+    if (assetInputMethod !== 'search') {
+      return undefined;
+    }
+
+    if (!searchQueryChanged || enteredSearchMode || datasourceChanged) {
+      loadAssets();
+      return undefined;
+    }
+
+    assetSearchTimerRef.current = setTimeout(() => {
+      loadAssets();
+    }, ASSET_SEARCH_DEBOUNCE_MS);
+
+    return () => clearTimeout(assetSearchTimerRef.current);
+  }, [assetInputMethod, datasourceUrl, loadAssets, searchQuery]);
 
   // Update dependent fields when asset changes
   useEffect(() => {
@@ -267,6 +311,7 @@ export function useAssetSelection({
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
       markInteracted();
+      clearTimeout(assetSearchTimerRef.current);
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
@@ -393,6 +438,7 @@ export function useAssetSelection({
   // Clean up timers and in-flight fetches on unmount
   useEffect(() => {
     return () => {
+      clearTimeout(assetSearchTimerRef.current);
       clearTimeout(directRidTimerRef.current);
       directRidControllerRef.current?.abort();
       assetSelectControllerRef.current?.abort();
@@ -474,7 +520,7 @@ export function useAssetSelection({
     isLoadingAssets,
     changeAssetInputMethod,
     changeAssetSearchQuery,
-    runAssetSearch: loadAssets,
+    runAssetSearch,
     selectAsset,
     changeDirectRID,
     selectDataScope,
