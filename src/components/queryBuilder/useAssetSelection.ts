@@ -246,6 +246,11 @@ export function useAssetSelection({
 
   // Load immediately when search mode opens; debounce typed search query changes.
   useEffect(() => {
+    const cancelPendingAssetSearch = () => {
+      clearTimeout(assetSearchTimerRef.current);
+      assetSearchControllerRef.current?.abort();
+    };
+
     clearTimeout(assetSearchTimerRef.current);
 
     const previous = previousAssetSearchInputsRef.current;
@@ -253,6 +258,8 @@ export function useAssetSelection({
     const enteredSearchMode = previous.assetInputMethod !== 'search' && assetInputMethod === 'search';
     const datasourceChanged = previous.datasourceUrl !== datasourceUrl;
 
+    // Keep this snapshot update before any early return. The next run compares
+    // against every observed input state, including direct mode.
     previousAssetSearchInputsRef.current = {
       assetInputMethod,
       datasourceUrl,
@@ -260,19 +267,19 @@ export function useAssetSelection({
     };
 
     if (assetInputMethod !== 'search') {
-      return undefined;
+      return cancelPendingAssetSearch;
     }
 
     if (!searchQueryChanged || enteredSearchMode || datasourceChanged) {
       loadAssets();
-      return undefined;
+      return cancelPendingAssetSearch;
     }
 
     assetSearchTimerRef.current = setTimeout(() => {
       loadAssets();
     }, ASSET_LOOKUP_DEBOUNCE_MS);
 
-    return () => clearTimeout(assetSearchTimerRef.current);
+    return cancelPendingAssetSearch;
   }, [assetInputMethod, datasourceUrl, loadAssets, searchQuery]);
 
   // Update dependent fields when asset changes

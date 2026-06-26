@@ -257,7 +257,7 @@ describe('useAssetSelection', () => {
     expect(mockSearchAssets).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps newer asset search results when an older search resolves late', async () => {
+  it('drops an in-flight asset search when the search query changes before the next debounce fires', async () => {
     const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
     await waitForAssetSearchToSettle(result);
@@ -288,10 +288,58 @@ describe('useAssetSelection', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    expect(mockSearchAssets).toHaveBeenCalledTimes(1);
+    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', 'alpha');
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       result.current.changeAssetSearchQuery('beta');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockSearchAssets).toHaveBeenCalledTimes(1);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      firstSearch.resolve([ASSET]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.assetSearchResultCount).toBe(0);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mockSearchAssets).toHaveBeenCalledTimes(2);
+    expect(mockSearchAssets).toHaveBeenNthCalledWith(2, '/api/x', 'beta');
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      secondSearch.resolve([OTHER_ASSET]);
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(result.current.assetOptions[0]?.value).toBe(OTHER_ASSET.rid);
+    });
+  });
+
+  it('keeps newer forced asset search results when an older same-query search resolves late', async () => {
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }) });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    const firstSearch = deferred<Asset[]>();
+    const secondSearch = deferred<Asset[]>();
+    mockSearchAssets.mockReset();
+    mockSearchAssets.mockImplementationOnce(() => firstSearch.promise).mockImplementationOnce(() => secondSearch.promise);
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('alpha');
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -302,8 +350,15 @@ describe('useAssetSelection', () => {
       await Promise.resolve();
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.runAssetSearch();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
     expect(mockSearchAssets).toHaveBeenNthCalledWith(1, '/api/x', 'alpha');
-    expect(mockSearchAssets).toHaveBeenNthCalledWith(2, '/api/x', 'beta');
+    expect(mockSearchAssets).toHaveBeenNthCalledWith(2, '/api/x', 'alpha');
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
