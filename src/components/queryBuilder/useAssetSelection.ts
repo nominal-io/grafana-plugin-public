@@ -339,6 +339,8 @@ export function useAssetSelection({
       assetSelectControllerRef.current?.abort();
       assetSearchControllerRef.current?.abort();
       eventOwnedConcreteAssetRidRef.current = undefined;
+      setIsLoadingAssets(false);
+      setHasLoadedAssets(false);
       setAssetInputMethod(method);
       setSelectedAsset(null);
       setDataScopes([]);

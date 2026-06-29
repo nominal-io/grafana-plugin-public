@@ -378,6 +378,41 @@ describe('useAssetSelection', () => {
     expect(result.current.assetOptions[0]?.value).toBe(OTHER_ASSET.rid);
   });
 
+  it('clears asset search loading state when switching to direct mode with a search in flight', async () => {
+    const onChange = jest.fn();
+    const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }), onChange });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    await waitForAssetSearchToSettle(result);
+
+    const pendingSearch = deferred<Asset[]>();
+    mockSearchAssets.mockReset().mockReturnValue(pendingSearch.promise);
+    jest.useFakeTimers();
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetSearchQuery('alpha');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.isLoadingAssets).toBe(true);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      result.current.changeAssetInputMethod('direct');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.assetInputMethod).toBe('direct');
+    expect(result.current.isLoadingAssets).toBe(false);
+  });
+
   it('cancels a pending debounced asset search synchronously when switching to direct mode', async () => {
     const onChange = jest.fn();
     const hookArgs = args({ query: makeQuery({ assetInputMethod: 'search' }), onChange });
