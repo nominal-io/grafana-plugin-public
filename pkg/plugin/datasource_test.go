@@ -2090,6 +2090,59 @@ func TestEnumPlotTransformation(t *testing.T) {
 	})
 }
 
+func TestExtractEnumDataFromConjureTruncatesToShortestInput(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+	plot := computeapi.EnumPlot{
+		Timestamps: []api.Timestamp{
+			{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+		},
+		Values:     []int{0},
+		Categories: []string{"idle"},
+	}
+
+	times, values, err := exec.extractEnumDataFromConjure(plot)
+	if err != nil {
+		t.Fatalf("extract enum data: %v", err)
+	}
+	if len(times) != 1 || len(values) != 1 {
+		t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+	}
+	if values[0] != "idle" {
+		t.Fatalf("value = %q, want %q", values[0], "idle")
+	}
+}
+
+func TestExtractBucketedEnumDataFromConjureTruncatesToShortestInput(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+	plot := computeapi.BucketedEnumPlot{
+		Timestamps: []api.Timestamp{
+			{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+		},
+		Buckets: []computeapi.EnumBucket{{
+			Histogram: map[int]safelong.SafeLong{0: safelong.SafeLong(3)},
+			FirstPoint: computeapi.CompactEnumPoint{
+				Timestamp: api.Timestamp{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				Value:     0,
+			},
+		}},
+		Categories: []string{"idle"},
+	}
+
+	times, values, err := exec.extractBucketedEnumDataFromConjure(plot)
+	if err != nil {
+		t.Fatalf("extract bucketed enum data: %v", err)
+	}
+	if len(times) != 1 || len(values) != 1 {
+		t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+	}
+	if values[0] != "idle" {
+		t.Fatalf("value = %q, want %q", values[0], "idle")
+	}
+}
+
 func TestEnumPointTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -3185,6 +3238,93 @@ func TestMarshalLogArgs(t *testing.T) {
 	})
 }
 
+func TestMarshalLogArgsWithDefaultMatchesMarshalLogArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]string
+		channel string
+	}{
+		{name: "nil args with channel", args: nil, channel: "engine.temp"},
+		{name: "empty args with channel", args: map[string]string{}, channel: "engine.temp"},
+		{name: "populated args with channel", args: map[string]string{"host": "srv-1", "level": "error"}, channel: "engine.temp"},
+		{name: "populated args with empty channel", args: map[string]string{"host": "srv-1"}, channel: ""},
+		{name: "pre-existing nominal channel", args: map[string]string{"nominal.channel": "source-value", "host": "srv-1"}, channel: "engine.temp"},
+		{name: "nil args with empty channel", args: nil, channel: ""},
+		{name: "empty args with empty channel", args: map[string]string{}, channel: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLabels := defaultLogLabelsForChannel(tt.channel)
+			got := marshalLogArgsWithDefault(tt.args, tt.channel, defaultLabels)
+			want := marshalLogArgs(tt.args, tt.channel)
+			if string(got) != string(want) {
+				t.Fatalf("marshalLogArgsWithDefault = %s, want %s", string(got), string(want))
+			}
+			parseLogLabels(t, got)
+		})
+	}
+}
+
+func TestMarshalLogArgsWithDefaultDoesNotMutateCallerArgs(t *testing.T) {
+	in := map[string]string{"host": "srv-1"}
+	defaultLabels := defaultLogLabelsForChannel("engine.temp")
+	_ = marshalLogArgsWithDefault(in, "engine.temp", defaultLabels)
+	if _, ok := in["nominal.channel"]; ok {
+		t.Fatalf("input map was mutated: %v", in)
+	}
+}
+
+func TestMarshalLogArgsWithDefaultReturnsJSONObjectForEmptyArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]string
+		channel string
+		want    map[string]string
+	}{
+		{
+			name:    "nil args with channel",
+			args:    nil,
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "empty args with channel",
+			args:    map[string]string{},
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "nil args without channel",
+			args:    nil,
+			channel: "",
+			want:    map[string]string{},
+		},
+		{
+			name:    "empty args without channel",
+			args:    map[string]string{},
+			channel: "",
+			want:    map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLabels := defaultLogLabelsForChannel(tt.channel)
+			got := marshalLogArgsWithDefault(tt.args, tt.channel, defaultLabels)
+			parsed := parseLogLabels(t, got)
+			if len(parsed) != len(tt.want) {
+				t.Fatalf("labels = %v, want %v", parsed, tt.want)
+			}
+			for k, wantValue := range tt.want {
+				if parsed[k] != wantValue {
+					t.Fatalf("labels[%q] = %q, want %q", k, parsed[k], wantValue)
+				}
+			}
+		})
+	}
+}
+
 func TestLogPagedTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -3265,6 +3405,158 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
+	t.Run("empty Args map still yields injected nominal.channel label", func(t *testing.T) {
+		messages := []string{"empty-args entry"}
+		result := createMockPagedLogResult(messages, []map[string]string{{}})
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if len(parsed) != 1 || parsed["nominal.channel"] != "app.logs" {
+			t.Errorf("expected {nominal.channel: app.logs} for empty Args, got %v", parsed)
+		}
+	})
+
+	t.Run("pre-existing nominal.channel label is preserved", func(t *testing.T) {
+		messages := []string{"pre-existing channel entry"}
+		result := createMockPagedLogResult(messages, []map[string]string{{
+			"nominal.channel": "source-channel",
+			"host":            "srv-1",
+		}})
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		parsed := logFrameLabelsAt(t, resp.Frames[0], 0)
+		if parsed["nominal.channel"] != "source-channel" {
+			t.Errorf("expected source nominal.channel preserved, got %v", parsed)
+		}
+		if parsed["host"] != "srv-1" {
+			t.Errorf("expected host preserved, got %v", parsed)
+		}
+	})
+
+	t.Run("mismatched paged log arrays truncate to shortest input", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{{
+				Message: "only value",
+				Id:      [16]byte{0x01},
+				Args:    map[string]string{},
+			}},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		bodyField := resp.Frames[0].Fields[1]
+		if bodyField.Len() != 1 {
+			t.Fatalf("expected 1 log entry after truncation, got %d", bodyField.Len())
+		}
+		if got := bodyField.At(0).(string); got != "only value" {
+			t.Fatalf("body = %q, want %q", got, "only value")
+		}
+	})
+
+	t.Run("already newest-first log response remains in source order", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067260), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{
+				{Message: "newest", Id: [16]byte{0x03}, Args: map[string]string{}},
+				{Message: "middle", Id: [16]byte{0x02}, Args: map[string]string{}},
+				{Message: "oldest", Id: [16]byte{0x01}, Args: map[string]string{}},
+			},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		bodyField := resp.Frames[0].Fields[1]
+		want := []string{"newest", "middle", "oldest"}
+		for i, wantBody := range want {
+			if got := bodyField.At(i).(string); got != wantBody {
+				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
+			}
+		}
+	})
+
+	t.Run("sorting preserves source order for equal timestamps", func(t *testing.T) {
+		pagedLog := computeapi.PagedLogPlot{
+			Timestamps: []api.Timestamp{
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067200), Nanos: safelong.SafeLong(0)},
+				{Seconds: safelong.SafeLong(1704067320), Nanos: safelong.SafeLong(0)},
+			},
+			Values: []computeapi.LogValue{
+				{Message: "newest-a", Id: [16]byte{0x03}, Args: map[string]string{}},
+				{Message: "oldest", Id: [16]byte{0x01}, Args: map[string]string{}},
+				{Message: "newest-b", Id: [16]byte{0x04}, Args: map[string]string{}},
+			},
+		}
+		computeResponse := computeapi.NewComputeNodeResponseFromPagedLog(pagedLog)
+		computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeResult}
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		bodyField := resp.Frames[0].Fields[1]
+		want := []string{"newest-a", "newest-b", "oldest"}
+		for i, wantBody := range want {
+			if got := bodyField.At(i).(string); got != wantBody {
+				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
+			}
+		}
+	})
+
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
 		result := createMockPagedLogResult([]string{}, nil)
 		qm := NominalQueryModel{
@@ -3286,6 +3578,36 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Fatalf("expected 4 fields even when empty, got %d", len(frame.Fields))
 		}
 	})
+}
+
+func TestLogEntriesNewestFirst(t *testing.T) {
+	base := time.Unix(1704067200, 0)
+	entry := func(offsetSeconds int64) LogEntry {
+		return LogEntry{Time: base.Add(time.Duration(offsetSeconds) * time.Second)}
+	}
+
+	tests := []struct {
+		name    string
+		entries []LogEntry
+		want    bool
+	}{
+		{name: "nil slice", entries: nil, want: true},
+		{name: "empty slice", entries: []LogEntry{}, want: true},
+		{name: "single entry", entries: []LogEntry{entry(1)}, want: true},
+		{name: "strict newest first", entries: []LogEntry{entry(3), entry(2), entry(1)}, want: true},
+		{name: "equal timestamps preserve stable order", entries: []LogEntry{entry(3), entry(3), entry(2)}, want: true},
+		{name: "oldest first", entries: []LogEntry{entry(1), entry(2), entry(3)}, want: false},
+		{name: "one inversion", entries: []LogEntry{entry(3), entry(1), entry(2)}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := logEntriesNewestFirst(tt.entries)
+			if got != tt.want {
+				t.Fatalf("logEntriesNewestFirst() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestLogPointTransformation(t *testing.T) {
