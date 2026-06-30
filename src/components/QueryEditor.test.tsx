@@ -218,11 +218,9 @@ describe('channel data type inference effect', () => {
     expect(assetFetches).toHaveLength(1);
   });
 
-  it('fetches a direct-mode RID once even when search-assets resolves mid-flight', async () => {
-    // Gate the by-RID asset fetch so it stays in-flight while search-assets resolves.
-    // On the pre-fix code, setAssets could re-run a query-driven by-RID path, aborting
-    // and re-issuing the same asset/multiple POST (2 calls). The reconciler's direct-mode
-    // inputs stay independent of `assets`, so this fires exactly once.
+  it('fetches a direct-mode RID once without loading search assets on mount', async () => {
+    // Gate the by-RID asset fetch so any duplicate restore would be visible before
+    // the first request resolves.
     let releaseAssetFetch!: () => void;
     const assetFetchGate = new Promise<void>((resolve) => {
       releaseAssetFetch = resolve;
@@ -232,9 +230,6 @@ describe('channel data type inference effect', () => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
         await assetFetchGate;
         return { [ASSET_RID]: ASSET };
-      }
-      if (url.endsWith('/scout/v1/search-assets')) {
-        return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
         return { channels: [] };
@@ -251,15 +246,14 @@ describe('channel data type inference effect', () => {
       />
     );
 
-    // Wait for search-assets to resolve (the trigger for the buggy re-run).
     await waitFor(() => {
-      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/search-assets`)).toBe(true);
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
     });
-    // Let setAssets flush and any (buggy) effect re-run happen while the asset fetch is still gated.
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await Promise.resolve();
     });
+    expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/search-assets`)).toBe(false);
 
     // Release the gated asset fetch and settle.
     // eslint-disable-next-line @typescript-eslint/no-deprecated
@@ -334,10 +328,10 @@ describe('channel data type inference effect', () => {
     });
   });
 
-  it('restores a saved search-mode asset after search assets load', async () => {
+  it('restores a saved search-mode asset via a by-RID fetch', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/search-assets')) {
-        return { results: [ASSET] };
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
       }
       if (url.endsWith('/channels')) {
         return { channels: [] };
@@ -445,6 +439,7 @@ describe('channel data type inference effect', () => {
 
     await screen.findByTestId('channel-combobox');
     const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await lastProps.options('temperature');
     });
@@ -619,6 +614,9 @@ describe('channel data type inference effect', () => {
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/search-assets')) {
         return { results: [ASSET, ASSET_B] };
+      }
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID_B]: ASSET_B };
       }
       if (url.endsWith('/channels')) {
         return { channels: [] };
