@@ -442,6 +442,7 @@ func defaultLogLabelsForChannel(channel string) json.RawMessage {
 
 func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLabels json.RawMessage) json.RawMessage {
 	if len(args) == 0 {
+		// Returns the shared defaultLabels slice; callers must treat it as read-only (it is aliased across rows).
 		return defaultLabels
 	}
 	if channel == "" {
