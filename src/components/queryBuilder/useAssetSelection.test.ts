@@ -417,6 +417,148 @@ describe('useAssetSelection', () => {
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
+  it('hides stale asset controls while a picked RID is loading', async () => {
+    const ASSET_A = ASSET;
+    const ASSET_B: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.bbb',
+      title: 'Asset BBB',
+      dataScopes: [{ ...ASSET.dataScopes[0], dataScopeName: 'new-scope' }],
+    };
+    const pendingFetch = deferred<Asset | null>();
+    mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
+
+    const hookArgs = args();
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset(ASSET_A.rid);
+    });
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
+      expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset(ASSET_B.rid);
+    });
+
+    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
+    expect(result.current.selectedAsset).toBeNull();
+    expect(result.current.selectedAssetSupportedScopeCount).toBe(0);
+    expect(result.current.dataScopeOptions).toEqual([]);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      pendingFetch.resolve(ASSET_B);
+      await pendingFetch.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'new-scope' })]);
+  });
+
+  it('hides stale asset controls while a query-driven RID restore is loading', async () => {
+    const ASSET_A = ASSET;
+    const ASSET_B: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.bbb',
+      title: 'Asset BBB',
+      dataScopes: [{ ...ASSET.dataScopes[0], dataScopeName: 'new-scope' }],
+    };
+    const pendingFetch = deferred<Asset | null>();
+    mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
+
+    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search' });
+    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+      initialProps: args({ query: queryA }),
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
+      expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
+    });
+
+    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search' });
+    rerender(args({ query: queryB }));
+
+    await waitFor(() => {
+      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
+      expect(result.current.selectedAsset).toBeNull();
+    });
+    expect(result.current.selectedAssetSupportedScopeCount).toBe(0);
+    expect(result.current.dataScopeOptions).toEqual([]);
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      pendingFetch.resolve(ASSET_B);
+      await pendingFetch.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'new-scope' })]);
+  });
+
+  it('hides stale asset controls as soon as a direct RID changes', async () => {
+    const ASSET_A = ASSET;
+    const ASSET_B: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.bbb',
+      title: 'Asset BBB',
+      dataScopes: [{ ...ASSET.dataScopes[0], dataScopeName: 'new-scope' }],
+    };
+    const pendingFetch = deferred<Asset | null>();
+    mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
+
+    let currentQuery = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
+    const onChange = jest.fn((nextQuery: NominalQuery) => {
+      currentQuery = nextQuery;
+    });
+    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+      initialProps: args({ query: currentQuery, onChange }),
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
+      expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
+    });
+
+    jest.useFakeTimers();
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.changeDirectRID(ASSET_B.rid);
+    });
+
+    expect(currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' }));
+    expect(result.current.selectedAsset).toBeNull();
+    expect(result.current.selectedAssetSupportedScopeCount).toBe(0);
+    expect(result.current.dataScopeOptions).toEqual([]);
+
+    rerender(args({ query: currentQuery, onChange, hasUserInteracted: true }));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    await waitFor(() => {
+      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      pendingFetch.resolve(ASSET_B);
+      await pendingFetch.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'new-scope' })]);
+  });
+
   it('does not let an old event-owned RID suppress a later query-driven restore', async () => {
     const ASSET_A = ASSET;
     const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
