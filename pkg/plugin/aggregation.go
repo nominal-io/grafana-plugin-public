@@ -203,28 +203,22 @@ func valueBackingLen(col arrow.Array, selection rowSelection) int {
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selection rowSelection, nRows int) error {
 	// Dense columns are the common throughput path and can avoid per-row null
 	// checks plus indirect value dispatch.
+	var valueAt func(int) float64
 	switch col := rawCol.(type) {
 	case *array.Float64:
 		if selection.mask == nil && col.NullN() == 0 {
 			extractDenseFloat64ColumnValues(series, col, nRows)
 			return nil
 		}
+		valueAt = col.Value
 	case *array.Uint32:
 		if selection.mask == nil && col.NullN() == 0 {
 			extractDenseUint32ColumnValues(series, col, nRows)
 			return nil
 		}
+		valueAt = func(i int) float64 { return float64(col.Value(i)) }
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
-	}
-
-	// Resolve the accessor first so unsupported columns fail before mutating series.
-	var valueAt func(int) float64
-	switch col := rawCol.(type) {
-	case *array.Float64:
-		valueAt = col.Value
-	case *array.Uint32:
-		valueAt = func(i int) float64 { return float64(col.Value(i)) }
 	}
 
 	series.Values = slices.Grow(series.Values, selection.includedRows)
