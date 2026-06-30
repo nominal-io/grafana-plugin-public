@@ -1,15 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
-import {
-  createBasicAsset,
-  fetchAssetByRid,
-  getSupportedScopeNames,
-  getSupportedScopes,
-  searchAssets,
-  type Asset,
-} from '../../utils/api';
+import { fetchAssetByRid, searchAssets, type Asset } from '../../utils/api';
 import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
 import {
   changeAssetInputMethodQuery,
@@ -18,6 +11,7 @@ import {
   changeSelectedDataScopeQuery,
 } from './queryMutations';
 import { decideAssetReconcile } from './assetReconcile';
+import { assetIdentityReducer, createEmptyAssetIdentityState, getVisibleAssetIdentity } from './assetIdentity';
 import type { TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod, AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
 
@@ -63,9 +57,11 @@ export function useAssetSelection({
   hasUserInteracted,
   markInteracted,
 }: UseAssetSelectionArgs): AssetSelectionModel {
-  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
-  const [pendingAssetRid, setPendingAssetRid] = useState<string | null>(null);
-  const [dataScopes, setDataScopes] = useState<string[]>([]);
+  const [assetIdentity, dispatchAssetIdentity] = useReducer(
+    assetIdentityReducer,
+    undefined,
+    createEmptyAssetIdentityState
+  );
   const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(query?.assetInputMethod || 'search');
   const [directRID, setDirectRID] = useState(query?.assetInputMethod === 'direct' ? query?.assetRid || '' : '');
 
@@ -81,24 +77,19 @@ export function useAssetSelection({
 
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
-      setPendingAssetRid(resolvedRid);
-      const clearPendingAsset = () => {
-        setPendingAssetRid((pendingRid) => (pendingRid === resolvedRid ? null : pendingRid));
-      };
+      dispatchAssetIdentity({ type: 'beginResolving', rid: resolvedRid });
 
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
           return;
         }
-        if (foundAsset) {
-          setSelectedAsset(foundAsset);
-          setDataScopes(getSupportedScopeNames(foundAsset));
-        } else {
-          setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
-          setDataScopes([]);
-        }
-        clearPendingAsset();
+        dispatchAssetIdentity({
+          type: 'resolveAsset',
+          rid: resolvedRid,
+          asset: foundAsset,
+          fallbackLabel: displayLabel,
+        });
       } catch {
         if (signal?.aborted) {
           return;
@@ -107,9 +98,12 @@ export function useAssetSelection({
           'Unable to load Nominal asset',
           'The RID was kept, but data scopes could not be loaded automatically.'
         );
-        setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
-        setDataScopes([]);
-        clearPendingAsset();
+        dispatchAssetIdentity({
+          type: 'resolveAsset',
+          rid: resolvedRid,
+          asset: null,
+          fallbackLabel: displayLabel,
+        });
       }
     },
     [datasourceUrl]
@@ -130,28 +124,21 @@ export function useAssetSelection({
     [assetRidRaw, assetRidResolved, assetRidHasTemplate, assetRidIsResolved]
   );
 
-  const isResolvingDifferentAsset = pendingAssetRid !== null && selectedAsset?.rid !== pendingAssetRid;
-  const selectedAssetForControls = useMemo(
-    () => (isResolvingDifferentAsset ? null : selectedAsset),
-    [isResolvingDifferentAsset, selectedAsset]
-  );
-  const dataScopesForControls = useMemo(
-    () => (isResolvingDifferentAsset ? [] : dataScopes),
-    [dataScopes, isResolvingDifferentAsset]
-  );
+  const selectedAsset = assetIdentity.selectedAsset;
+  const visibleAssetIdentity = useMemo(() => getVisibleAssetIdentity(assetIdentity), [assetIdentity]);
 
   const assetOptionsContextKey = useMemo(
     () =>
       JSON.stringify([
         datasourceUrl,
-        selectedAssetForControls?.rid || '',
-        pendingAssetRid || '',
+        visibleAssetIdentity.selectedAsset?.rid || '',
+        assetIdentity.pendingAssetRid || '',
         assetRidSnapshot.raw,
         assetRidSnapshot.resolved,
         assetRidSnapshot.hasTemplate,
         assetRidSnapshot.isResolved,
       ]),
-    [assetRidSnapshot, datasourceUrl, pendingAssetRid, selectedAssetForControls?.rid]
+    [assetIdentity.pendingAssetRid, assetRidSnapshot, datasourceUrl, visibleAssetIdentity.selectedAsset?.rid]
   );
   const assetOptionsContextKeyRef = useRef(assetOptionsContextKey);
   assetOptionsContextKeyRef.current = assetOptionsContextKey;
@@ -162,7 +149,11 @@ export function useAssetSelection({
       const requestContextKey = assetOptionsContextKey;
       try {
         const found = await searchAssets(datasourceUrl, searchText);
-        return buildAssetOptions({ assets: found, selectedAsset: selectedAssetForControls, assetRid: assetRidSnapshot });
+        return buildAssetOptions({
+          assets: found,
+          selectedAsset: visibleAssetIdentity.selectedAsset,
+          assetRid: assetRidSnapshot,
+        });
       } catch {
         if (
           isMountedRef.current &&
@@ -174,15 +165,12 @@ export function useAssetSelection({
         return [];
       }
     },
-    [assetOptionsContextKey, datasourceUrl, selectedAssetForControls, assetRidSnapshot]
+    [assetOptionsContextKey, datasourceUrl, visibleAssetIdentity.selectedAsset, assetRidSnapshot]
   );
 
   useEffect(() => {
     const controllers: AbortController[] = [];
-    if (
-      eventOwnedConcreteAssetRidRef.current &&
-      assetRidResolved !== eventOwnedConcreteAssetRidRef.current
-    ) {
+    if (eventOwnedConcreteAssetRidRef.current && assetRidResolved !== eventOwnedConcreteAssetRidRef.current) {
       clearTimeout(directRidTimerRef.current);
       assetSelectControllerRef.current?.abort();
       assetSelectControllerRef.current = undefined;
@@ -240,8 +228,7 @@ export function useAssetSelection({
 
   useEffect(() => {
     if (selectedAsset) {
-      const scopeNames = getSupportedScopeNames(selectedAsset);
-      setDataScopes(scopeNames);
+      const scopeNames = assetIdentity.dataScopes;
 
       if (hasUserInteracted) {
         const q = queryRef.current;
@@ -274,9 +261,7 @@ export function useAssetSelection({
       assetOptionsRequestId.current += 1;
       eventOwnedConcreteAssetRidRef.current = undefined;
       setAssetInputMethod(method);
-      setPendingAssetRid(null);
-      setSelectedAsset(null);
-      setDataScopes([]);
+      dispatchAssetIdentity({ type: 'clear' });
       setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
       onChange(changeAssetInputMethodQuery(query, method));
     },
@@ -299,13 +284,11 @@ export function useAssetSelection({
       } else if (isVariable && selectedRidResolution.isResolved) {
         assetSelectControllerRef.current?.abort();
         eventOwnedConcreteAssetRidRef.current = undefined;
-        setPendingAssetRid(selectedRidResolution.resolved);
+        dispatchAssetIdentity({ type: 'beginResolving', rid: selectedRidResolution.resolved });
       } else {
         assetSelectControllerRef.current?.abort();
         eventOwnedConcreteAssetRidRef.current = undefined;
-        setPendingAssetRid(null);
-        setSelectedAsset(null);
-        setDataScopes([]);
+        dispatchAssetIdentity({ type: 'clear' });
       }
 
       if (isVariable) {
@@ -331,9 +314,7 @@ export function useAssetSelection({
 
       if (!rid.trim()) {
         eventOwnedConcreteAssetRidRef.current = undefined;
-        setPendingAssetRid(null);
-        setSelectedAsset(null);
-        setDataScopes([]);
+        dispatchAssetIdentity({ type: 'clear' });
         onChange(changeDirectAssetRidQuery(queryRef.current, ''));
         return;
       }
@@ -341,19 +322,17 @@ export function useAssetSelection({
       const ridResolution = resolveTemplateText(rid);
       if (!ridResolution.isResolved) {
         eventOwnedConcreteAssetRidRef.current = undefined;
-        setPendingAssetRid(null);
-        setSelectedAsset(null);
-        setDataScopes([]);
+        dispatchAssetIdentity({ type: 'clear' });
         return;
       }
       if (ridResolution.hasTemplate) {
         eventOwnedConcreteAssetRidRef.current = undefined;
-        setPendingAssetRid(ridResolution.resolved);
+        dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
         return;
       }
 
       eventOwnedConcreteAssetRidRef.current = ridResolution.resolved;
-      setPendingAssetRid(ridResolution.resolved);
+      dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
 
       const displayLabel = 'Asset (Direct RID)';
       const controller = new AbortController();
@@ -386,14 +365,14 @@ export function useAssetSelection({
   }, []);
 
   const assetSelectValue = useMemo(
-    () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: selectedAssetForControls }),
-    [assetRidSnapshot, selectedAssetForControls]
+    () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: visibleAssetIdentity.selectedAsset }),
+    [assetRidSnapshot, visibleAssetIdentity.selectedAsset]
   );
 
   const dataScopeOptions = useMemo(
     () =>
       buildDataScopeOptions({
-        dataScopes: dataScopesForControls,
+        dataScopes: visibleAssetIdentity.dataScopes,
         dataScopeName: {
           raw: dataScopeResolution.raw,
           resolved: dataScopeResolution.resolved,
@@ -402,7 +381,7 @@ export function useAssetSelection({
         },
       }),
     [
-      dataScopesForControls,
+      visibleAssetIdentity.dataScopes,
       dataScopeResolution.raw,
       dataScopeResolution.resolved,
       dataScopeResolution.hasTemplate,
@@ -413,8 +392,8 @@ export function useAssetSelection({
   return {
     assetInputMethod,
     directRID,
-    selectedAsset: selectedAssetForControls,
-    selectedAssetSupportedScopeCount: selectedAssetForControls ? getSupportedScopes(selectedAssetForControls).length : 0,
+    selectedAsset: visibleAssetIdentity.selectedAsset,
+    selectedAssetSupportedScopeCount: visibleAssetIdentity.selectedAssetSupportedScopeCount,
     assetOptions,
     assetSelectValue,
     dataScopeOptions,
