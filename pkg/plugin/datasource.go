@@ -420,14 +420,12 @@ type LogEntry struct {
 
 const nominalChannelLabel = "nominal.channel"
 
-// marshalLogArgs serializes log Args to JSON and, when available, adds
-// "nominal.channel" so mixed-channel log panels can distinguish rows.
+// marshalLogArgs serializes log Args to JSON, adding "nominal.channel" (when set, and
+// not already present) so mixed-channel log panels can distinguish rows. Caller Args is
+// never mutated: empty Args returns shared read-only default labels; a fresh map is
+// copied only to inject the channel label.
 //
-// The namespaced label avoids Grafana hiding underscore-prefixed labels. Existing
-// user-provided "nominal.channel" values are preserved.
-//
-// Copying is intentional: it preserves caller input and keeps nil Args from
-// serializing as JSON null.
+// The "nominal." prefix avoids Grafana hiding underscore-prefixed labels.
 func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
 	return marshalLogArgsWithDefault(args, channel, defaultLogLabelsForChannel(channel))
 }
