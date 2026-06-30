@@ -707,10 +707,11 @@ func TestAppendNonNullTimestampsDenseUsesUnmaskedSelection(t *testing.T) {
 	}
 }
 
-// TestCountIncludedNonNull pins the predicate used to size extractColumnValues'
-// backing slice. Undercounts panic in the fill loop, but overcounts silently pin
-// dead backing slots, so the include-and-non-null count is checked directly.
-func TestCountIncludedNonNull(t *testing.T) {
+// TestValueBackingLen pins the backing-slice sizing contract used by
+// extractColumnValues. Unmasked columns keep exact O(1) sizing via NullN;
+// masked FIRST/LAST columns use the selected-row count as a safe upper bound
+// instead of scanning the value column before filling it.
+func TestValueBackingLen(t *testing.T) {
 	mkFloat64 := func(vals []float64, nulls []bool) arrow.Array {
 		b := array.NewFloat64Builder(memory.DefaultAllocator)
 		defer b.Release()
@@ -740,53 +741,51 @@ func TestCountIncludedNonNull(t *testing.T) {
 		name      string
 		col       arrow.Array
 		selection rowSelection
-		nRows     int
 		want      int
 	}{
 		{
 			name:      "no mask, all non-null uses O(1) NullN path",
 			col:       mkFloat64([]float64{1, 2, 3}, nil),
 			selection: allRows(3),
-			nRows:     3, want: 3,
+			want:      3,
 		},
 		{
 			name:      "no mask, one null",
 			col:       mkFloat64([]float64{1, 0, 3}, []bool{false, true, false}),
 			selection: allRows(3),
-			nRows:     3, want: 2,
+			want:      2,
 		},
 		{
 			name:      "no mask, all null",
 			col:       mkFloat64([]float64{0, 0, 0}, []bool{true, true, true}),
 			selection: allRows(3),
-			nRows:     3, want: 0,
+			want:      0,
 		},
 		{
 			name:      "mask excludes rows, no value nulls",
 			col:       mkFloat64([]float64{1, 2, 3, 4}, nil),
 			selection: rowSelection{mask: []bool{true, false, true, false}, includedRows: 2},
-			nRows:     4, want: 2,
+			want:      2,
 		},
 		{
-			// Includes a null row and excludes a non-null row so both predicate halves matter.
-			name:      "mask + included row with null value",
+			name:      "mask + included row with null value uses selected-row upper bound",
 			col:       mkFloat64([]float64{10, 0, 30, 99}, []bool{false, true, false, false}),
 			selection: rowSelection{mask: []bool{true, true, true, false}, includedRows: 3},
-			nRows:     4, want: 2,
+			want:      3,
 		},
 		{
 			name:      "type-agnostic Uint32 column",
 			col:       mkUint32([]uint32{5, 0, 12}, []bool{false, true, false}),
 			selection: allRows(3),
-			nRows:     3, want: 2,
+			want:      2,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			defer tc.col.Release()
-			if got := countIncludedNonNull(tc.col, tc.selection, tc.nRows); got != tc.want {
-				t.Fatalf("countIncludedNonNull = %d, want %d", got, tc.want)
+			if got := valueBackingLen(tc.col, tc.selection); got != tc.want {
+				t.Fatalf("valueBackingLen = %d, want %d", got, tc.want)
 			}
 		})
 	}

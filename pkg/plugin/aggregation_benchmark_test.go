@@ -158,6 +158,74 @@ func createDenseFirstLastArrow(b testing.TB, rows int) []byte {
 	return buf.Bytes()
 }
 
+func createSparseTimestampFirstLastArrow(b testing.TB, rows int) []byte {
+	b.Helper()
+
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "last_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "last_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	firstValueBuilder := array.NewFloat64Builder(pool)
+	firstTimestampBuilder := array.NewInt64Builder(pool)
+	lastValueBuilder := array.NewFloat64Builder(pool)
+	lastTimestampBuilder := array.NewInt64Builder(pool)
+	for row := 0; row < rows; row++ {
+		end := int64(row+1) * int64(time.Second)
+		tsBuilder.Append(end)
+		firstValueBuilder.Append(float64(row))
+		lastValueBuilder.Append(float64(row) + 0.5)
+		if row%10 == 0 {
+			firstTimestampBuilder.AppendNull()
+			lastTimestampBuilder.AppendNull()
+			continue
+		}
+		firstTimestampBuilder.Append(end - int64(time.Millisecond))
+		lastTimestampBuilder.Append(end - int64(time.Microsecond))
+	}
+
+	tsArr := tsBuilder.NewArray()
+	firstValueArr := firstValueBuilder.NewArray()
+	firstTimestampArr := firstTimestampBuilder.NewArray()
+	lastValueArr := lastValueBuilder.NewArray()
+	lastTimestampArr := lastTimestampBuilder.NewArray()
+	tsBuilder.Release()
+	firstValueBuilder.Release()
+	firstTimestampBuilder.Release()
+	lastValueBuilder.Release()
+	lastTimestampBuilder.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{
+		tsArr,
+		firstValueArr,
+		firstTimestampArr,
+		lastValueArr,
+		lastTimestampArr,
+	}, int64(rows))
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		b.Fatalf("write sparse FIRST/LAST Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		b.Fatalf("close sparse FIRST/LAST Arrow writer: %v", err)
+	}
+
+	rec.Release()
+	tsArr.Release()
+	firstValueArr.Release()
+	firstTimestampArr.Release()
+	lastValueArr.Release()
+	lastTimestampArr.Release()
+
+	return buf.Bytes()
+}
+
 func BenchmarkExtractArrowBucketedNumericSeries(b *testing.B) {
 	oneAgg := []aggColumnSpec{aggColumnSpecFromEnum(AggMean)}
 	threeAggs := []aggColumnSpec{
@@ -209,6 +277,20 @@ func BenchmarkExtractArrowBucketedNumericSeriesFirstLast(b *testing.B) {
 		rows := rows
 		b.Run("rows_"+strconv.Itoa(rows)+"_aggs_2_dense_masked", func(b *testing.B) {
 			arrowBytes := createDenseFirstLastArrow(b, rows)
+			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
+				if err != nil {
+					b.Fatalf("extract Arrow FIRST/LAST series: %v", err)
+				}
+				benchmarkExtractArrowBucketedNumericSeriesSink = series
+			}
+		})
+		b.Run("rows_"+strconv.Itoa(rows)+"_aggs_2_sparse_timestamps", func(b *testing.B) {
+			arrowBytes := createSparseTimestampFirstLastArrow(b, rows)
 			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 
 			b.ReportAllocs()

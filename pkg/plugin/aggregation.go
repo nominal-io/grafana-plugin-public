@@ -152,46 +152,46 @@ func (s rowSelection) includes(row int) bool {
 	return s.mask == nil || s.mask[row]
 }
 
+func appendUnixNanos(dst []time.Time, nanos int64) []time.Time {
+	return append(dst, time.Unix(0, nanos))
+}
+
 func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, rowSelection) {
 	nRows := col.Len()
+	// Keep dense timestamp columns on a separate path so the common FIRST/LAST
+	// case avoids a per-row mask branch; appendUnixNanos keeps conversion shared.
 	if col.NullN() == 0 {
 		dst = slices.Grow(dst, nRows)
 		for i := 0; i < nRows; i++ {
-			dst = append(dst, time.Unix(0, col.Value(i)))
+			dst = appendUnixNanos(dst, col.Value(i))
 		}
 		return dst, allRows(nRows)
 	}
 
-	includedRows := nRows - col.NullN()
 	selection := rowSelection{
 		mask:         make([]bool, nRows),
-		includedRows: includedRows,
+		includedRows: nRows - col.NullN(),
 	}
-	dst = slices.Grow(dst, includedRows)
+	dst = slices.Grow(dst, selection.includedRows)
 	for i := 0; i < nRows; i++ {
 		if col.IsNull(i) {
 			continue
 		}
 		selection.mask[i] = true
-		dst = append(dst, time.Unix(0, col.Value(i)))
+		dst = appendUnixNanos(dst, col.Value(i))
 	}
 	return dst, selection
 }
 
-// countIncludedNonNull sizes extractColumnValues' backing slice with the same
-// include-and-non-null predicate used by the fill loop. Unmasked columns use
-// Arrow's O(1) null counter; masked FIRST/LAST columns scan via arrow.Array.
-func countIncludedNonNull(col arrow.Array, selection rowSelection, nRows int) int {
+// valueBackingLen sizes extractColumnValues' shared float backing slice.
+// Unmasked columns use Arrow's O(1) null counter. Masked FIRST/LAST columns use
+// the selected-row count as an upper bound to avoid a second pass over the same
+// rows; null-valued selected rows leave a few unused float64 slots.
+func valueBackingLen(col arrow.Array, selection rowSelection) int {
 	if selection.mask == nil {
-		return nRows - col.NullN()
+		return selection.includedRows - col.NullN()
 	}
-	count := 0
-	for i := 0; i < nRows; i++ {
-		if selection.includes(i) && !col.IsNull(i) {
-			count++
-		}
-	}
-	return count
+	return selection.includedRows
 }
 
 // extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
@@ -199,9 +199,25 @@ func countIncludedNonNull(col arrow.Array, selection rowSelection, nRows int) in
 // to drop null-timestamp rows for FIRST/LAST).
 //
 // Non-null values share one backing slice per call, avoiding one heap allocation
-// per value while keeping pointers stable. The sizing predicate must match the
-// fill loop exactly: undercounts panic, but overcounts silently retain dead slots.
+// per value while keeping pointers stable.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selection rowSelection, nRows int) error {
+	// Dense columns are the common throughput path and can avoid per-row null
+	// checks plus indirect value dispatch.
+	switch col := rawCol.(type) {
+	case *array.Float64:
+		if selection.mask == nil && col.NullN() == 0 {
+			extractDenseFloat64ColumnValues(series, col, nRows)
+			return nil
+		}
+	case *array.Uint32:
+		if selection.mask == nil && col.NullN() == 0 {
+			extractDenseUint32ColumnValues(series, col, nRows)
+			return nil
+		}
+	default:
+		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
+	}
+
 	// Resolve the accessor first so unsupported columns fail before mutating series.
 	var valueAt func(int) float64
 	switch col := rawCol.(type) {
@@ -209,13 +225,11 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 		valueAt = col.Value
 	case *array.Uint32:
 		valueAt = func(i int) float64 { return float64(col.Value(i)) }
-	default:
-		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
 	}
 
 	series.Values = slices.Grow(series.Values, selection.includedRows)
 
-	backing := make([]float64, countIncludedNonNull(rawCol, selection, nRows))
+	backing := make([]float64, valueBackingLen(rawCol, selection))
 	bi := 0
 	for i := 0; i < nRows; i++ {
 		if !selection.includes(i) {
@@ -230,6 +244,26 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 		bi++
 	}
 	return nil
+}
+
+func extractDenseFloat64ColumnValues(series *AggregationSeries, col *array.Float64, nRows int) {
+	series.Values = slices.Grow(series.Values, nRows)
+
+	backing := make([]float64, nRows)
+	for i := 0; i < nRows; i++ {
+		backing[i] = col.Value(i)
+		series.Values = append(series.Values, &backing[i])
+	}
+}
+
+func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32, nRows int) {
+	series.Values = slices.Grow(series.Values, nRows)
+
+	backing := make([]float64, nRows)
+	for i := 0; i < nRows; i++ {
+		backing[i] = float64(col.Value(i))
+		series.Values = append(series.Values, &backing[i])
+	}
 }
 
 // extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
