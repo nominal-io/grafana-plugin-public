@@ -29,8 +29,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: true,
-        searchAsset: undefined,
       })
     ).toEqual([]);
   });
@@ -43,8 +41,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', resolved: '$asset', hasTemplate: true, isResolved: false }),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: false,
-        searchAsset: undefined,
       })
     ).toEqual([{ kind: 'mirrorDirectRaw', raw: '$asset' }]);
   });
@@ -57,8 +53,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: false,
-        searchAsset: undefined,
       })
     ).toEqual([{ kind: 'mirrorDirectRaw', raw: ASSET.rid }]);
   });
@@ -71,22 +65,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: ASSET.rid,
-        searchHasLoaded: true,
-        searchAsset: undefined,
-      })
-    ).toEqual([]);
-  });
-
-  it('waits for search results before selecting or falling back in search mode', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: ASSET.rid,
-        assetInputMethod: 'search',
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: false,
-        searchAsset: undefined,
       })
     ).toEqual([]);
   });
@@ -99,8 +77,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: false,
-        searchAsset: undefined,
       })
     ).toEqual([
       { kind: 'mirrorDirectRaw', raw: ASSET.rid },
@@ -108,21 +84,7 @@ describe('decideAssetReconcile', () => {
     ]);
   });
 
-  it('selects a loaded search result before falling back to a by-RID fetch', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: ASSET.rid,
-        assetInputMethod: 'search',
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: true,
-        searchAsset: ASSET,
-      })
-    ).toEqual([{ kind: 'selectSearchResult', asset: ASSET }]);
-  });
-
-  it('infers direct mode when an untyped saved RID is absent from loaded search results', () => {
+  it('infers direct mode for an untyped saved RID', () => {
     expect(
       decideAssetReconcile({
         assetRid: ASSET.rid,
@@ -130,13 +92,23 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: true,
-        searchAsset: undefined,
       })
     ).toEqual([{ kind: 'inferDirect', raw: ASSET.rid, rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
   });
 
-  it('fetches by RID when a saved search-mode RID is absent from loaded search results', () => {
+  it('fetches by RID (not infer direct) for an untyped saved template RID', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '$asset',
+        assetInputMethod: undefined,
+        selectedAssetRid: undefined,
+        assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' }]);
+  });
+
+  it('fetches by RID for a saved search-mode template RID', () => {
     expect(
       decideAssetReconcile({
         assetRid: '$asset',
@@ -144,13 +116,11 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: true,
-        searchAsset: undefined,
       })
     ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' }]);
   });
 
-  it('fetches a concrete search-mode RID not owned by an event handler when absent from results', () => {
+  it('fetches a concrete search-mode RID not owned by an event handler', () => {
     expect(
       decideAssetReconcile({
         assetRid: ASSET.rid,
@@ -158,8 +128,6 @@ describe('decideAssetReconcile', () => {
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
-        searchHasLoaded: true,
-        searchAsset: undefined,
       })
     ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
   });

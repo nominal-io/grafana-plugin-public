@@ -7,7 +7,7 @@ import {
   buildDataScopeOptions,
   channelsToOptions,
   getAggregationValue,
-  getAssetPickerValue,
+  getAssetSelectValue,
   getChannelSelectValue,
   NUMERIC_AGG_OPTIONS,
   toAggregationComboboxOptions,
@@ -93,12 +93,39 @@ describe('queryBuilderOptions', () => {
     });
   });
 
-  it('returns variable picker value unchanged and direct picker value only when present', () => {
-    const options = [{ label: 'Asset A', value: assetA.rid }];
+  it('builds asset combobox values for empty, concrete pre-fetch, concrete resolved, and template RIDs', () => {
+    // empty -> null (matches getChannelSelectValue's empty behavior)
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('', (v) => v), selectedAsset: null })).toBeNull();
 
-    expect(getAssetPickerValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), assetOptions: options })).toBe('$asset');
-    expect(getAssetPickerValue({ assetRid: resolveTemplateValue(assetA.rid, (value) => value), assetOptions: options })).toBe(assetA.rid);
-    expect(getAssetPickerValue({ assetRid: resolveTemplateValue(assetB.rid, (value) => value), assetOptions: options })).toBe('');
+    // concrete RID, asset not yet resolved -> RID shown as label (brief pre-fetch state)
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetA.rid, (v) => v), selectedAsset: null })).toEqual({
+      value: assetA.rid,
+      label: assetA.rid,
+    });
+
+    // concrete RID, matching selected asset -> title shown
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetA.rid, (v) => v), selectedAsset: assetA })).toEqual({
+      value: assetA.rid,
+      label: 'Asset A',
+    });
+
+    // a stale/mismatched selectedAsset does not leak its title onto a different RID
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue(assetB.rid, (v) => v), selectedAsset: assetA })).toEqual({
+      value: assetB.rid,
+      label: assetB.rid,
+    });
+
+    // resolved template -> "$asset → resolved"
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), selectedAsset: null })).toEqual({
+      value: '$asset',
+      label: `$asset → ${assetA.rid}`,
+    });
+
+    // unresolved template -> raw
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', (v) => v), selectedAsset: null })).toEqual({
+      value: '$asset',
+      label: '$asset',
+    });
   });
 
   it('adds data scope template-variable labels only when the resolved scope is valid', () => {

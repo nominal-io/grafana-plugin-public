@@ -49,17 +49,28 @@ export function buildAssetOptions({
   return options;
 }
 
-export function getAssetPickerValue({
+export function getAssetSelectValue({
   assetRid,
-  assetOptions,
+  selectedAsset,
 }: {
   assetRid: TemplateValueResolution;
-  assetOptions: AssetOption[];
-}): string {
-  if (assetRid.hasTemplate) {
-    return assetRid.raw;
+  selectedAsset: Asset | null;
+}): AssetOption | null {
+  if (!assetRid.raw) {
+    return null;
   }
-  return assetOptions.some((option) => option.value === assetRid.resolved) ? assetRid.resolved : '';
+  if (assetRid.hasTemplate) {
+    // For an async Combobox the label is taken from the value prop directly, so render
+    // the template-aware display label ("$asset → resolved") rather than the raw RID.
+    return { value: assetRid.raw, label: templateDisplayLabel(assetRid) };
+  }
+  const resolved = assetRid.resolved || assetRid.raw;
+  // Show the resolved title once the by-RID fetch has populated the matching asset;
+  // until then (and for any non-matching asset) fall back to the RID itself.
+  if (selectedAsset && selectedAsset.rid === resolved && selectedAsset.title) {
+    return { value: resolved, label: selectedAsset.title };
+  }
+  return { value: resolved, label: resolved };
 }
 
 export function buildDataScopeOptions({
