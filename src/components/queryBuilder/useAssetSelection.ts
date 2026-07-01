@@ -228,6 +228,10 @@ export function useAssetSelection({
 
   useEffect(() => {
     if (selectedAsset) {
+      if (!assetRidIsResolved || selectedAsset.rid !== assetRidResolved) {
+        return;
+      }
+
       const scopeNames = assetIdentity.dataScopes;
 
       if (hasUserInteracted) {
@@ -242,15 +246,14 @@ export function useAssetSelection({
         } else if (!scopeIsValid && q?.dataScopeName) {
           onChange(changeSelectedDataScopeQuery(q, '', assetInputMethod));
         } else if (assetInputMethod === 'search' && !q?.assetRid?.includes('$')) {
-          const resolvedCurrentRid = assetRidResolution.resolved;
-          if (resolvedCurrentRid !== selectedAsset.rid) {
+          if (assetRidResolved !== selectedAsset.rid) {
             onChange(changeSearchAssetRidQuery(q, selectedAsset.rid));
           }
         }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
+  }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted, assetRidResolved, assetRidIsResolved]);
 
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {

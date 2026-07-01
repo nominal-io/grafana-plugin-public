@@ -503,6 +503,49 @@ describe('useAssetSelection', () => {
     expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'new-scope' })]);
   });
 
+  it('does not apply stale selected asset effects while a query-driven RID restore is loading', async () => {
+    const ASSET_A = ASSET;
+    const ASSET_B: Asset = {
+      ...ASSET,
+      rid: 'ri.scout.main.asset.bbb',
+      title: 'Asset BBB',
+      dataScopes: [{ ...ASSET.dataScopes[0], dataScopeName: 'new-scope' }],
+    };
+    const pendingFetch = deferred<Asset | null>();
+    mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
+
+    const onChange = jest.fn();
+    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search', dataScopeName: 'default' });
+    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+      initialProps: args({ query: queryA, onChange, hasUserInteracted: false }),
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
+    });
+    onChange.mockClear();
+
+    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search', dataScopeName: 'default' });
+    rerender(args({ query: queryB, onChange, hasUserInteracted: true }));
+
+    await waitFor(() => {
+      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
+      expect(result.current.selectedAsset).toBeNull();
+    });
+
+    expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET_A.rid }));
+    expect(onChange).not.toHaveBeenCalledWith(expect.objectContaining({ dataScopeName: 'default' }));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      pendingFetch.resolve(ASSET_B);
+      await pendingFetch.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+  });
+
   it('hides stale asset controls as soon as a direct RID changes', async () => {
     const ASSET_A = ASSET;
     const ASSET_B: Asset = {
