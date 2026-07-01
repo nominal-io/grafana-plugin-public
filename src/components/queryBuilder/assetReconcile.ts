@@ -51,7 +51,14 @@ export function decideAssetReconcile({
   }
 
   if (!assetInputMethod) {
-    actions.push({ kind: 'inferDirect', raw: assetRid, rid: assetRidResolution.resolved, label });
+    // A legacy query carrying a template variable ($asset) belongs to search mode, not
+    // the direct-RID input; fetch it like the search-mode template path rather than
+    // inferring 'direct' and stuffing the raw variable into the direct RID field.
+    actions.push(
+      assetRidResolution.hasTemplate
+        ? { kind: 'fetchByRid', rid: assetRidResolution.resolved, label }
+        : { kind: 'inferDirect', raw: assetRid, rid: assetRidResolution.resolved, label }
+    );
     return actions;
   }
 

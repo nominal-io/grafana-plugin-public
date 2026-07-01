@@ -182,7 +182,7 @@ describe('useAssetSelection', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it('loader suppresses alert when request context changes before an old failure', async () => {
+  it('loader alerts for a latest-request failure even after the request context changes', async () => {
     const pending = deferred<Asset[]>();
     mockSearchAssets.mockReturnValue(pending.promise);
     const query = makeQuery();
@@ -198,10 +198,14 @@ describe('useAssetSelection', () => {
       })
     );
 
-    pending.reject(new Error('old failure'));
+    pending.reject(new Error('latest failure'));
 
     await expect(options).resolves.toEqual([]);
-    expect(publish).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: ['Unable to load Nominal assets', 'Check the data source configuration and try again.'],
+      })
+    );
   });
 
   it('selectAsset resolves a picked asset by RID once and marks interaction', async () => {
@@ -834,5 +838,86 @@ describe('useAssetSelection', () => {
 
     expect(mockGetAssetSelectValue).toHaveBeenCalledTimes(1);
     expect(mockBuildDataScopeOptions).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'auto-selects the only data scope when none is saved',
+      scopes: ['default'],
+      savedScope: undefined,
+      expected: { dataScopeName: 'default', assetInputMethod: 'search' },
+    },
+    {
+      name: 'clears a saved data scope the asset does not offer',
+      scopes: ['scope-1', 'scope-2'],
+      savedScope: 'bogus',
+      expected: { dataScopeName: '' },
+    },
+  ])('selected-asset effect reconciles data scope: $name', async ({ scopes, savedScope, expected }) => {
+    const asset: Asset = {
+      ...ASSET,
+      dataScopes: scopes.map((name) => ({ ...ASSET.dataScopes[0], dataScopeName: name })),
+    };
+    mockFetchAssetByRid.mockResolvedValue(asset);
+
+    let currentQuery = makeQuery({ assetRid: asset.rid, assetInputMethod: 'search', dataScopeName: savedScope });
+    const onChange = jest.fn((nextQuery: NominalQuery) => {
+      currentQuery = nextQuery;
+    });
+    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+      initialProps: args({ query: currentQuery, onChange, hasUserInteracted: false }),
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(asset.rid);
+    });
+    onChange.mockClear();
+
+    rerender(args({ query: currentQuery, onChange, hasUserInteracted: true }));
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining(expected));
+    });
+  });
+
+  it('keeps the RID with a fallback asset and alerts when the by-RID fetch fails', async () => {
+    mockFetchAssetByRid.mockRejectedValue(new Error('fetch failed'));
+    const hookArgs = args({
+      query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'direct' }),
+    });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
+    });
+    expect(result.current.selectedAsset?.dataScopes).toEqual([]);
+    expect(result.current.selectedAssetSupportedScopeCount).toBe(0);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: [
+          'Unable to load Nominal asset',
+          'The RID was kept, but data scopes could not be loaded automatically.',
+        ],
+      })
+    );
+  });
+
+  it('selectAsset ignores a whitespace-only value and clears the selection', () => {
+    const onChange = jest.fn();
+    const markInteracted = jest.fn();
+    const hookArgs = args({ onChange, markInteracted });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset('   ');
+    });
+
+    expect(markInteracted).toHaveBeenCalledTimes(1);
+    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(result.current.selectedAsset).toBeNull();
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: '' }));
   });
 });
