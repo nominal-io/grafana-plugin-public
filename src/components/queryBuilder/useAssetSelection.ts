@@ -71,6 +71,10 @@ export function useAssetSelection({
   const isMountedRef = useRef(true);
   const assetOptionsRequestId = useRef(0);
   const assetSelectControllerRef = useRef<AbortController>(undefined);
+  // Tracks the exact concrete RID whose by-RID fetch is owned by a user event
+  // handler (`selectAsset` custom values or `changeDirectRID` debounced input).
+  // Reconcile skips only this RID; set it before onChange so the query update
+  // does not schedule a second fetch for the same event-owned selection.
   const eventOwnedConcreteAssetRidRef = useRef<string | undefined>(undefined);
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const directRidControllerRef = useRef<AbortController>(undefined);
@@ -230,6 +234,12 @@ export function useAssetSelection({
         }
       }
     }
+    // Intentionally omit data-scope resolution deps here. This effect mutates
+    // dataScopeName in response to a selected asset becoming current after user
+    // interaction; the latest query is read through queryRef.current. Template
+    // scopes are preserved for query time, so running on each resolved $scope
+    // change would broaden when concrete dataScopeName can be auto-cleared or
+    // rewritten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted, assetRidResolved, assetRidIsResolved]);
 
