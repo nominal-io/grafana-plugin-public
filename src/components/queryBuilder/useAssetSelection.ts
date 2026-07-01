@@ -127,26 +127,9 @@ export function useAssetSelection({
   const selectedAsset = assetIdentity.selectedAsset;
   const visibleAssetIdentity = useMemo(() => getVisibleAssetIdentity(assetIdentity), [assetIdentity]);
 
-  const assetOptionsContextKey = useMemo(
-    () =>
-      JSON.stringify([
-        datasourceUrl,
-        visibleAssetIdentity.selectedAsset?.rid || '',
-        assetIdentity.pendingAssetRid || '',
-        assetRidSnapshot.raw,
-        assetRidSnapshot.resolved,
-        assetRidSnapshot.hasTemplate,
-        assetRidSnapshot.isResolved,
-      ]),
-    [assetIdentity.pendingAssetRid, assetRidSnapshot, datasourceUrl, visibleAssetIdentity.selectedAsset?.rid]
-  );
-  const assetOptionsContextKeyRef = useRef(assetOptionsContextKey);
-  assetOptionsContextKeyRef.current = assetOptionsContextKey;
-
   const assetOptions = useCallback<AssetOptionsLoader>(
     async (searchText: string): Promise<AssetOption[]> => {
       const requestId = ++assetOptionsRequestId.current;
-      const requestContextKey = assetOptionsContextKey;
       try {
         const found = await searchAssets(datasourceUrl, searchText);
         return buildAssetOptions({
@@ -155,17 +138,16 @@ export function useAssetSelection({
           assetRid: assetRidSnapshot,
         });
       } catch {
-        if (
-          isMountedRef.current &&
-          assetOptionsRequestId.current === requestId &&
-          assetOptionsContextKeyRef.current === requestContextKey
-        ) {
+        // Only the request id gates the alert: each new search bumps it (and so does a
+        // method switch / unmount), so a superseded search stays quiet while a genuine
+        // failure of the latest request always surfaces.
+        if (isMountedRef.current && assetOptionsRequestId.current === requestId) {
           notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
         }
         return [];
       }
     },
-    [assetOptionsContextKey, datasourceUrl, visibleAssetIdentity.selectedAsset, assetRidSnapshot]
+    [datasourceUrl, visibleAssetIdentity.selectedAsset, assetRidSnapshot]
   );
 
   useEffect(() => {
@@ -245,10 +227,6 @@ export function useAssetSelection({
           onChange(changeSelectedDataScopeQuery(q, scopeNames[0], assetInputMethod));
         } else if (!scopeIsValid && q?.dataScopeName) {
           onChange(changeSelectedDataScopeQuery(q, '', assetInputMethod));
-        } else if (assetInputMethod === 'search' && !q?.assetRid?.includes('$')) {
-          if (assetRidResolved !== selectedAsset.rid) {
-            onChange(changeSearchAssetRidQuery(q, selectedAsset.rid));
-          }
         }
       }
     }
@@ -274,6 +252,17 @@ export function useAssetSelection({
   const selectAsset = useCallback(
     (value: string) => {
       markInteracted();
+
+      if (!value.trim()) {
+        // Mirror changeDirectRID: a blank/whitespace selection clears the asset rather
+        // than committing whitespace as the assetRid and firing a doomed by-RID fetch.
+        assetSelectControllerRef.current?.abort();
+        eventOwnedConcreteAssetRidRef.current = undefined;
+        dispatchAssetIdentity({ type: 'clear' });
+        onChange(changeSearchAssetRidQuery(query, ''));
+        return;
+      }
+
       const isVariable = value.includes('$');
       const selectedRidResolution = resolveTemplateText(value);
       const ridToFind = isVariable ? selectedRidResolution.resolved : value;

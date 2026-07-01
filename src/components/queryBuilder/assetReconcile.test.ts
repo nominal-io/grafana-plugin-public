@@ -96,6 +96,18 @@ describe('decideAssetReconcile', () => {
     ).toEqual([{ kind: 'inferDirect', raw: ASSET.rid, rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
   });
 
+  it('fetches by RID (not infer direct) for an untyped saved template RID', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '$asset',
+        assetInputMethod: undefined,
+        selectedAssetRid: undefined,
+        assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' }]);
+  });
+
   it('fetches by RID for a saved search-mode template RID', () => {
     expect(
       decideAssetReconcile({
