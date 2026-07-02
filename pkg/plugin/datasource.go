@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -225,9 +225,9 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				// the next time-range query. Don't assume this sort is redundant: the
 				// compute API's PageInfo contract specifies selection direction (via sign
 				// of PageSize), not response order.
-				sort.SliceStable(result.LogEntries, func(a, b int) bool {
-					return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
-				})
+				if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
+					slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
+				}
 
 				frame := data.NewFrame(qm.Channel)
 				frame.Meta = &data.FrameMeta{
@@ -409,6 +409,8 @@ type TransformResult struct {
 // LogEntry represents a single log entry with its timestamp and metadata.
 // Labels is json.RawMessage (FieldTypeJSON), not a string — Grafana's Logs panel
 // expects a dedicated JSON-typed column for per-entry labels, not a JSON-encoded string.
+// Labels may alias storage shared across entries (empty-Args rows all reference one
+// default-labels slice), so treat it as read-only; copy before mutating.
 type LogEntry struct {
 	Time   time.Time
 	Body   string
@@ -416,26 +418,54 @@ type LogEntry struct {
 	Labels json.RawMessage
 }
 
-// marshalLogArgs serializes log Args to JSON and, when available, adds
-// "nominal.channel" so mixed-channel log panels can distinguish rows.
+const nominalChannelLabel = "nominal.channel"
+
+// marshalLogArgs serializes log Args to JSON, adding "nominal.channel" (when set, and
+// not already present) so mixed-channel log panels can distinguish rows. Caller Args is
+// never mutated: empty Args returns shared read-only default labels; a fresh map is
+// copied only to inject the channel label.
 //
-// The namespaced label avoids Grafana hiding underscore-prefixed labels. Existing
-// user-provided "nominal.channel" values are preserved.
-//
-// Copying is intentional: it preserves caller input and keeps nil Args from
-// serializing as JSON null.
+// The "nominal." prefix avoids Grafana hiding underscore-prefixed labels.
 func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
+	return marshalLogArgsWithDefault(args, channel, defaultLogLabelsForChannel(channel))
+}
+
+func defaultLogLabelsForChannel(channel string) json.RawMessage {
+	if channel == "" {
+		return json.RawMessage("{}")
+	}
+	labelsJSON, _ := json.Marshal(map[string]string{nominalChannelLabel: channel})
+	return labelsJSON
+}
+
+// marshalLogArgsWithDefault is marshalLogArgs with the empty-args result precomputed once
+// by the caller. defaultLabels must be defaultLogLabelsForChannel(channel) for the same
+// channel value — a mismatched pair mislabels every empty-args row.
+func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLabels json.RawMessage) json.RawMessage {
+	if len(args) == 0 {
+		// Returns the shared defaultLabels slice; callers must treat it as read-only (it is aliased across rows).
+		return defaultLabels
+	}
+	if _, exists := args[nominalChannelLabel]; channel == "" || exists {
+		labelsJSON, _ := json.Marshal(args)
+		return labelsJSON
+	}
+
+	// Manual copy instead of maps.Clone: the +1 capacity hint avoids a map grow
+	// when injecting the channel key (maps.Clone sizes for len(args) exactly).
 	out := make(map[string]string, len(args)+1)
 	for k, v := range args {
 		out[k] = v
 	}
-	if channel != "" {
-		if _, exists := out["nominal.channel"]; !exists {
-			out["nominal.channel"] = channel
-		}
-	}
+	out[nominalChannelLabel] = channel
 	labelsJSON, _ := json.Marshal(out)
 	return labelsJSON
+}
+
+// compareLogEntriesNewestFirst orders log entries newest-first; equal timestamps
+// compare as equal so a stable sort preserves source order.
+func compareLogEntriesNewestFirst(a, b LogEntry) int {
+	return b.Time.Compare(a.Time)
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
@@ -535,7 +565,14 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		nil, // arrowBucketedEnumFunc
 		// pagedLogFunc — paginated log response
 		func(paged computeapi.PagedLogPlot) error {
-			for i := 0; i < len(paged.Timestamps) && i < len(paged.Values); i++ {
+			n := min(len(paged.Timestamps), len(paged.Values))
+			if len(paged.Timestamps) != len(paged.Values) {
+				log.DefaultLogger.Warn("Paged log response has mismatched timestamp and value counts; truncating",
+					"timestamps", len(paged.Timestamps), "values", len(paged.Values))
+			}
+			result.LogEntries = make([]LogEntry, 0, n)
+			defaultLogLabels := defaultLogLabelsForChannel(qm.Channel)
+			for i := 0; i < n; i++ {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
@@ -543,12 +580,12 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
 					Body:   val.Message,
 					ID:     val.Id.String(),
-					Labels: marshalLogArgs(val.Args, qm.Channel),
+					Labels: marshalLogArgsWithDefault(val.Args, qm.Channel, defaultLogLabels),
 				})
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
-				"entries", len(paged.Timestamps))
+				"entries", len(result.LogEntries))
 			return nil
 		},
 		// logPointFunc — single log point response
@@ -642,10 +679,11 @@ func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computea
 // Maps integer indices to category strings with bounds checking.
 // Out-of-bounds indices produce "unknown(N)" rather than panicking.
 func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
-	var timePoints []time.Time
-	var values []string
+	n := min(len(enumPlot.Timestamps), len(enumPlot.Values))
+	timePoints := make([]time.Time, 0, n)
+	values := make([]string, 0, n)
 
-	for i := 0; i < len(enumPlot.Timestamps) && i < len(enumPlot.Values); i++ {
+	for i := 0; i < n; i++ {
 		timestamp := enumPlot.Timestamps[i]
 		index := enumPlot.Values[i]
 
@@ -673,10 +711,11 @@ func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.E
 // Uses the histogram mode (most frequent category) as the representative value for each bucket,
 // which is the categorical equivalent of the numeric path's Mean aggregate.
 func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
-	var timePoints []time.Time
-	var values []string
+	n := min(len(bucketed.Timestamps), len(bucketed.Buckets))
+	timePoints := make([]time.Time, 0, n)
+	values := make([]string, 0, n)
 
-	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
+	for i := 0; i < n; i++ {
 		timestamp := bucketed.Timestamps[i]
 		bucket := bucketed.Buckets[i]
 
@@ -684,12 +723,13 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 		nanos := int64(timestamp.Nanos)
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
 
-		// Find the mode (most frequent value) from the histogram.
-		// Falls back to FirstPoint if histogram is empty.
+		// Find the mode (most frequent value) from the histogram, breaking count
+		// ties by lowest category index so results are deterministic across Go's
+		// randomized map iteration. Falls back to FirstPoint if histogram is empty.
 		modeIndex := bucket.FirstPoint.Value
 		maxCount := safelong.SafeLong(0)
 		for idx, count := range bucket.Histogram {
-			if count > maxCount {
+			if count > maxCount || (count == maxCount && count > 0 && idx < modeIndex) {
 				maxCount = count
 				modeIndex = idx
 			}

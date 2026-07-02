@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2090,6 +2091,122 @@ func TestEnumPlotTransformation(t *testing.T) {
 	})
 }
 
+func TestExtractionTruncatesToShortestInput(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+
+	t.Run("enum plot", func(t *testing.T) {
+		plot := computeapi.EnumPlot{
+			Timestamps: []api.Timestamp{
+				testTimestamp(1704067200),
+				testTimestamp(1704067260),
+				testTimestamp(1704067320),
+			},
+			Values:     []int{0},
+			Categories: []string{"idle"},
+		}
+
+		times, values, err := exec.extractEnumDataFromConjure(plot)
+		if err != nil {
+			t.Fatalf("extract enum data: %v", err)
+		}
+		if len(times) != 1 || len(values) != 1 {
+			t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+		}
+		if values[0] != "idle" {
+			t.Fatalf("value = %q, want %q", values[0], "idle")
+		}
+	})
+
+	t.Run("bucketed enum plot", func(t *testing.T) {
+		plot := computeapi.BucketedEnumPlot{
+			Timestamps: []api.Timestamp{
+				testTimestamp(1704067200),
+				testTimestamp(1704067260),
+			},
+			Buckets: []computeapi.EnumBucket{{
+				Histogram: map[int]safelong.SafeLong{0: safelong.SafeLong(3)},
+				FirstPoint: computeapi.CompactEnumPoint{
+					Timestamp: testTimestamp(1704067200),
+					Value:     0,
+				},
+			}},
+			Categories: []string{"idle"},
+		}
+
+		times, values, err := exec.extractBucketedEnumDataFromConjure(plot)
+		if err != nil {
+			t.Fatalf("extract bucketed enum data: %v", err)
+		}
+		if len(times) != 1 || len(values) != 1 {
+			t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
+		}
+		if values[0] != "idle" {
+			t.Fatalf("value = %q, want %q", values[0], "idle")
+		}
+	})
+
+	t.Run("paged log plot", func(t *testing.T) {
+		result := createMockPagedLogResult(
+			[]string{"only value"},
+			[]map[string]string{{}},
+			[]api.Timestamp{
+				testTimestamp(1704067200),
+				testTimestamp(1704067260),
+			},
+		)
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := exec.transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+		bodyField := resp.Frames[0].Fields[1]
+		if bodyField.Len() != 1 {
+			t.Fatalf("expected 1 log entry after truncation, got %d", bodyField.Len())
+		}
+		if got := bodyField.At(0).(string); got != "only value" {
+			t.Fatalf("body = %q, want %q", got, "only value")
+		}
+	})
+}
+
+func TestBucketedEnumModeBreaksTiesByLowestIndex(t *testing.T) {
+	exec := newTestQueryExecution(&Datasource{}, nil)
+	plot := computeapi.BucketedEnumPlot{
+		Timestamps: []api.Timestamp{
+			testTimestamp(1704067200),
+		},
+		Buckets: []computeapi.EnumBucket{{
+			Histogram: map[int]safelong.SafeLong{
+				2: safelong.SafeLong(3),
+				0: safelong.SafeLong(3),
+				1: safelong.SafeLong(1),
+			},
+			FirstPoint: computeapi.CompactEnumPoint{
+				Timestamp: testTimestamp(1704067200),
+				Value:     1,
+			},
+		}},
+		Categories: []string{"idle", "ready", "running"},
+	}
+
+	// Run repeatedly: Go randomizes map iteration order, so a tie broken by
+	// iteration order would flip between "idle" and "running" across runs.
+	for i := 0; i < 50; i++ {
+		_, values, err := exec.extractBucketedEnumDataFromConjure(plot)
+		if err != nil {
+			t.Fatalf("extract bucketed enum data: %v", err)
+		}
+		if len(values) != 1 || values[0] != "idle" {
+			t.Fatalf("iteration %d: values = %v, want [idle]", i, values)
+		}
+	}
+}
+
 func TestEnumPointTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -3061,16 +3178,27 @@ func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
 
 // --- Log query path tests ---
 
+// testTimestamp builds an api.Timestamp at whole-second precision.
+func testTimestamp(seconds int64) api.Timestamp {
+	return api.Timestamp{
+		Seconds: safelong.SafeLong(seconds),
+		Nanos:   safelong.SafeLong(0),
+	}
+}
+
 // createMockPagedLogResult creates a mock ComputeWithUnitsResult with paged log data.
-func createMockPagedLogResult(messages []string, args []map[string]string) computeapi.ComputeWithUnitsResult {
+// A nil timestamps slice auto-generates one ascending minute-spaced timestamp per
+// message; pass timestamps explicitly to control ordering or length mismatches.
+func createMockPagedLogResult(messages []string, args []map[string]string, timestamps []api.Timestamp) computeapi.ComputeWithUnitsResult {
 	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
-	timestamps := make([]api.Timestamp, len(messages))
+	if timestamps == nil {
+		timestamps = make([]api.Timestamp, len(messages))
+		for i := range messages {
+			timestamps[i] = testTimestamp(baseTime + int64(i*60))
+		}
+	}
 	values := make([]computeapi.LogValue, len(messages))
 	for i, msg := range messages {
-		timestamps[i] = api.Timestamp{
-			Seconds: safelong.SafeLong(baseTime + int64(i*60)),
-			Nanos:   safelong.SafeLong(0),
-		}
 		values[i] = computeapi.LogValue{
 			Message: msg,
 			Id:      [16]byte{byte(i)},
@@ -3185,6 +3313,56 @@ func TestMarshalLogArgs(t *testing.T) {
 	})
 }
 
+func TestMarshalLogArgsWithDefaultReturnsJSONObjectForEmptyArgs(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    map[string]string
+		channel string
+		want    map[string]string
+	}{
+		{
+			name:    "nil args with channel",
+			args:    nil,
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "empty args with channel",
+			args:    map[string]string{},
+			channel: "engine.temp",
+			want:    map[string]string{"nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "nil args without channel",
+			args:    nil,
+			channel: "",
+			want:    map[string]string{},
+		},
+		{
+			name:    "empty args without channel",
+			args:    map[string]string{},
+			channel: "",
+			want:    map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defaultLabels := defaultLogLabelsForChannel(tt.channel)
+			got := marshalLogArgsWithDefault(tt.args, tt.channel, defaultLabels)
+			parsed := parseLogLabels(t, got)
+			if len(parsed) != len(tt.want) {
+				t.Fatalf("labels = %v, want %v", parsed, tt.want)
+			}
+			for k, wantValue := range tt.want {
+				if parsed[k] != wantValue {
+					t.Fatalf("labels[%q] = %q, want %q", k, parsed[k], wantValue)
+				}
+			}
+		})
+	}
+}
+
 func TestLogPagedTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -3195,7 +3373,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			{"host": "srv-2", "level": "warn"},
 			{"host": "srv-1", "level": "info"},
 		}
-		result := createMockPagedLogResult(messages, args)
+		result := createMockPagedLogResult(messages, args, nil)
 		qm := NominalQueryModel{
 			Channel:         "app.logs",
 			AssetRid:        "ri.nominal.asset.test",
@@ -3247,7 +3425,7 @@ func TestLogPagedTransformation(t *testing.T) {
 
 	t.Run("nil Args still yields injected nominal.channel label", func(t *testing.T) {
 		messages := []string{"no-args entry"}
-		result := createMockPagedLogResult(messages, nil) // nil args
+		result := createMockPagedLogResult(messages, nil, nil) // nil args
 		qm := NominalQueryModel{
 			Channel:         "app.logs",
 			AssetRid:        "ri.nominal.asset.test",
@@ -3265,8 +3443,38 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
+	t.Run("sorting preserves source order for equal timestamps", func(t *testing.T) {
+		result := createMockPagedLogResult(
+			[]string{"newest-a", "oldest", "newest-b"},
+			[]map[string]string{{}, {}, {}},
+			[]api.Timestamp{
+				testTimestamp(1704067320),
+				testTimestamp(1704067200),
+				testTimestamp(1704067320),
+			},
+		)
+		qm := NominalQueryModel{
+			Channel:         "app.logs",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "log",
+		}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if len(resp.Frames) != 1 {
+			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
+		}
+
+		bodyField := resp.Frames[0].Fields[1]
+		want := []string{"newest-a", "newest-b", "oldest"}
+		for i, wantBody := range want {
+			if got := bodyField.At(i).(string); got != wantBody {
+				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
+			}
+		}
+	})
+
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
-		result := createMockPagedLogResult([]string{}, nil)
+		result := createMockPagedLogResult([]string{}, nil, nil)
 		qm := NominalQueryModel{
 			Channel:         "app.logs",
 			AssetRid:        "ri.nominal.asset.test",
@@ -3286,6 +3494,34 @@ func TestLogPagedTransformation(t *testing.T) {
 			t.Fatalf("expected 4 fields even when empty, got %d", len(frame.Fields))
 		}
 	})
+}
+
+func TestCompareLogEntriesNewestFirst(t *testing.T) {
+	base := time.Unix(1704067200, 0)
+	entry := func(offsetSeconds int64) LogEntry {
+		return LogEntry{Time: base.Add(time.Duration(offsetSeconds) * time.Second)}
+	}
+
+	tests := []struct {
+		name    string
+		entries []LogEntry
+		want    bool
+	}{
+		{name: "strict newest first", entries: []LogEntry{entry(3), entry(2), entry(1)}, want: true},
+		// Equal timestamps must compare as equal (already sorted) so the sort
+		// gate skips them and stable order is preserved.
+		{name: "equal timestamps count as sorted", entries: []LogEntry{entry(3), entry(3), entry(2)}, want: true},
+		{name: "oldest first", entries: []LogEntry{entry(1), entry(2), entry(3)}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slices.IsSortedFunc(tt.entries, compareLogEntriesNewestFirst)
+			if got != tt.want {
+				t.Fatalf("IsSortedFunc(compareLogEntriesNewestFirst) = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestLogPointTransformation(t *testing.T) {
@@ -3339,7 +3575,7 @@ func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
 
 	channelLabel := func(t *testing.T, channel string) string {
 		t.Helper()
-		result := createMockPagedLogResult([]string{"entry"}, []map[string]string{{"host": "srv-1"}})
+		result := createMockPagedLogResult([]string{"entry"}, []map[string]string{{"host": "srv-1"}}, nil)
 		qm := NominalQueryModel{
 			Channel:         channel,
 			AssetRid:        "ri.nominal.asset.test",
@@ -3371,7 +3607,7 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 	// Use batchComputeFunc to inspect each request and return the matching response.
 	logResponse := computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
-			createMockPagedLogResult([]string{"log entry"}, []map[string]string{{"k": "v"}}),
+			createMockPagedLogResult([]string{"log entry"}, []map[string]string{{"k": "v"}}, nil),
 		},
 	}
 	numericResponse := computeapi.BatchComputeWithUnitsResponse{
@@ -3508,7 +3744,7 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockPagedLogResult([]string{"test entry"}, []map[string]string{{"k": "v"}}),
+				createMockPagedLogResult([]string{"test entry"}, []map[string]string{{"k": "v"}}, nil),
 			},
 		},
 	}
