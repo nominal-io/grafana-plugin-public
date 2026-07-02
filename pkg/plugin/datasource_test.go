@@ -2727,9 +2727,30 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 	}
 }
 
+type testArrowMultiAggNullPattern func(row int, column int) bool
+
 // createTestArrowMultiAgg builds an Arrow IPC buffer with end_bucket_timestamp
 // plus multiple named float64 columns (e.g. "mean", "min", "max").
 func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) []byte {
+	return createTestArrowMultiAggWithNullPattern(nil, timestamps, columns, nil)
+}
+
+func createTestArrowMultiAggWithNullPattern(
+	tb testing.TB,
+	timestamps []int64,
+	columns map[string][]float64,
+	nullPattern testArrowMultiAggNullPattern,
+) []byte {
+	if tb != nil {
+		tb.Helper()
+	}
+	failf := func(format string, args ...any) {
+		if tb != nil {
+			tb.Fatalf(format, args...)
+		}
+		panic(fmt.Sprintf(format, args...))
+	}
+
 	pool := memory.DefaultAllocator
 	fields := []arrow.Field{
 		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
@@ -2741,6 +2762,9 @@ func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) [
 		if _, ok := columns[name]; ok {
 			orderedNames = append(orderedNames, name)
 		}
+	}
+	if len(orderedNames) != len(columns) {
+		failf("unsupported multi-aggregation fixture columns; supported columns are %v", colOrder)
 	}
 	for _, name := range orderedNames {
 		fields = append(fields, arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float64, Nullable: true})
@@ -2756,9 +2780,16 @@ func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) [
 	defer tsArr.Release()
 
 	arrays := []arrow.Array{tsArr}
-	for _, name := range orderedNames {
+	for column, name := range orderedNames {
+		if len(columns[name]) != len(timestamps) {
+			failf("column %q has %d values, want %d", name, len(columns[name]), len(timestamps))
+		}
 		b := array.NewFloat64Builder(pool)
-		for _, v := range columns[name] {
+		for row, v := range columns[name] {
+			if nullPattern != nil && nullPattern(row, column) {
+				b.AppendNull()
+				continue
+			}
 			b.Append(v)
 		}
 		arr := b.NewArray()
@@ -2773,9 +2804,11 @@ func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) [
 	var buf bytes.Buffer
 	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
 	if err := writer.Write(rec); err != nil {
-		panic(err)
+		failf("write multi-aggregation Arrow record: %v", err)
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		failf("close multi-aggregation Arrow writer: %v", err)
+	}
 	return buf.Bytes()
 }
 
@@ -2833,69 +2866,17 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 // FIRST_POINT/LAST_POINT: first_value, first_timestamp, last_value, last_timestamp,
 // plus the shared end_bucket_timestamp.
 func createTestArrowFirstLast(
+	tb testing.TB,
 	endBucketTs []int64,
 	firstValues []float64, firstTimestamps []int64,
 	lastValues []float64, lastTimestamps []int64,
 ) []byte {
-	pool := memory.DefaultAllocator
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
-		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "last_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
-		{Name: "last_timestamp", Type: arrow.PrimitiveTypes.Int64},
-	}, nil)
-
-	tsBuilder := array.NewInt64Builder(pool)
-	defer tsBuilder.Release()
-	for _, v := range endBucketTs {
-		tsBuilder.Append(v)
-	}
-	tsArr := tsBuilder.NewArray()
-	defer tsArr.Release()
-
-	firstValBuilder := array.NewFloat64Builder(pool)
-	defer firstValBuilder.Release()
-	for _, v := range firstValues {
-		firstValBuilder.Append(v)
-	}
-	firstValArr := firstValBuilder.NewArray()
-	defer firstValArr.Release()
-
-	firstTsBuilder := array.NewInt64Builder(pool)
-	defer firstTsBuilder.Release()
-	for _, v := range firstTimestamps {
-		firstTsBuilder.Append(v)
-	}
-	firstTsArr := firstTsBuilder.NewArray()
-	defer firstTsArr.Release()
-
-	lastValBuilder := array.NewFloat64Builder(pool)
-	defer lastValBuilder.Release()
-	for _, v := range lastValues {
-		lastValBuilder.Append(v)
-	}
-	lastValArr := lastValBuilder.NewArray()
-	defer lastValArr.Release()
-
-	lastTsBuilder := array.NewInt64Builder(pool)
-	defer lastTsBuilder.Release()
-	for _, v := range lastTimestamps {
-		lastTsBuilder.Append(v)
-	}
-	lastTsArr := lastTsBuilder.NewArray()
-	defer lastTsArr.Release()
-
-	rec := array.NewRecord(schema, []arrow.Array{tsArr, firstValArr, firstTsArr, lastValArr, lastTsArr}, int64(len(endBucketTs)))
-	defer rec.Release()
-
-	var buf bytes.Buffer
-	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	if err := writer.Write(rec); err != nil {
-		panic(err)
-	}
-	writer.Close()
-	return buf.Bytes()
+	tb.Helper()
+	return buildFirstLastArrow(tb, endBucketTs, firstValues, nullableInt64Values{
+		values: firstTimestamps,
+	}, lastValues, nullableInt64Values{
+		values: lastTimestamps,
+	})
 }
 
 func TestTransformArrowFirstLastPoint(t *testing.T) {
@@ -2905,7 +2886,7 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	lastValues := []float64{15.0, 25.0, 35.0}
 	lastTimestamps := []int64{999000000000, 1999000000000, 2999000000000}
 
-	arrowBytes := createTestArrowFirstLast(endBucketTs, firstValues, firstTimestamps, lastValues, lastTimestamps)
+	arrowBytes := createTestArrowFirstLast(t, endBucketTs, firstValues, firstTimestamps, lastValues, lastTimestamps)
 	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 

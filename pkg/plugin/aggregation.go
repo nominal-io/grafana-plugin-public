@@ -128,15 +128,44 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
-func validateRecordColumnLengths(rec arrow.Record) error {
+func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []resolvedSpec) error {
 	nRows := int(rec.NumRows())
-	for i := 0; i < int(rec.NumCols()); i++ {
+	seen := make(map[int]struct{}, 1+len(resolved)*2)
+	checkColumn := func(i int) error {
+		if i < 0 {
+			return nil
+		}
+		if _, ok := seen[i]; ok {
+			return nil
+		}
+		seen[i] = struct{}{}
 		col := rec.Column(i)
 		if col.Len() != nRows {
 			return fmt.Errorf("Arrow record column %q length mismatch: got %d, want %d", rec.ColumnName(i), col.Len(), nRows)
 		}
+		return nil
+	}
+	if err := checkColumn(sharedTsIdx); err != nil {
+		return err
+	}
+	for _, rs := range resolved {
+		if err := checkColumn(rs.valueIdx); err != nil {
+			return err
+		}
+		if err := checkColumn(rs.tsIdx); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+func usesSharedTimestamps(resolved []resolvedSpec) bool {
+	for _, rs := range resolved {
+		if rs.tsIdx < 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type rowSelection struct {
@@ -156,7 +185,7 @@ func appendUnixNanos(dst []time.Time, nanos int64) []time.Time {
 	return append(dst, time.Unix(0, nanos))
 }
 
-func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, rowSelection) {
+func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, rowSelection, error) {
 	nRows := col.Len()
 	// Keep dense timestamp columns on a separate path so the common FIRST/LAST
 	// case avoids a per-row mask branch; appendUnixNanos keeps conversion shared.
@@ -165,22 +194,29 @@ func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, ro
 		for i := 0; i < nRows; i++ {
 			dst = appendUnixNanos(dst, col.Value(i))
 		}
-		return dst, allRows(nRows)
+		return dst, allRows(nRows), nil
 	}
 
+	includedRows := nRows - col.NullN()
+	if includedRows < 0 {
+		return dst, rowSelection{}, fmt.Errorf("Arrow timestamp column null metadata inconsistent: null count %d exceeds rows %d", col.NullN(), nRows)
+	}
 	selection := rowSelection{
 		mask:         make([]bool, nRows),
-		includedRows: nRows - col.NullN(),
+		includedRows: includedRows,
 	}
 	dst = slices.Grow(dst, selection.includedRows)
+	actualIncludedRows := 0
 	for i := 0; i < nRows; i++ {
 		if col.IsNull(i) {
 			continue
 		}
 		selection.mask[i] = true
+		actualIncludedRows++
 		dst = appendUnixNanos(dst, col.Value(i))
 	}
-	return dst, selection
+	selection.includedRows = actualIncludedRows
+	return dst, selection, nil
 }
 
 // valueBackingLen sizes extractColumnValues' shared float backing slice.
@@ -223,7 +259,11 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 
 	series.Values = slices.Grow(series.Values, selection.includedRows)
 
-	backing := make([]float64, valueBackingLen(rawCol, selection))
+	backingLen := valueBackingLen(rawCol, selection)
+	if backingLen < 0 {
+		return fmt.Errorf("Arrow column null metadata inconsistent: null count %d exceeds selected rows %d", rawCol.NullN(), selection.includedRows)
+	}
+	backing := make([]float64, backingLen)
 	bi := 0
 	for i := 0; i < nRows; i++ {
 		if !selection.includes(i) {
@@ -232,6 +272,9 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 		if rawCol.IsNull(i) {
 			series.Values = append(series.Values, nil)
 			continue
+		}
+		if bi >= len(backing) {
+			return fmt.Errorf("Arrow column null metadata inconsistent: more non-null values than declared by null count")
 		}
 		backing[bi] = valueAt(i)
 		series.Values = append(series.Values, &backing[bi])
@@ -243,6 +286,8 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 func extractDenseFloat64ColumnValues(series *AggregationSeries, col *array.Float64, nRows int) {
 	series.Values = slices.Grow(series.Values, nRows)
 
+	// Keep the dense helpers' backing-slice loop in sync: Values stores element
+	// pointers, so backing must be fully sized before any pointer is taken.
 	backing := make([]float64, nRows)
 	for i := 0; i < nRows; i++ {
 		backing[i] = col.Value(i)
@@ -279,6 +324,11 @@ func extractArrowBucketedNumericSeries(
 	if err != nil {
 		return nil, err
 	}
+	needsSharedTimestamps := usesSharedTimestamps(resolved)
+	sharedTsIdxForValidation := sharedTsIdx
+	if !needsSharedTimestamps {
+		sharedTsIdxForValidation = -1
+	}
 
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
 	seriesData := make([]AggregationSeries, len(specs))
@@ -301,22 +351,23 @@ func extractArrowBucketedNumericSeries(
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
-		if err := validateRecordColumnLengths(rec); err != nil {
+		if err := validateRecordColumnLengths(rec, sharedTsIdxForValidation, resolved); err != nil {
 			return nil, err
 		}
 		for i := range recordSelections {
 			recordSelections[i] = allRows(nRows)
 		}
 
-		// Extract shared timestamps
-		tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
-		if !ok {
-			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
-		}
-		// Shared timestamps include every row; grow once per record.
-		sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
-		for i := 0; i < nRows; i++ {
-			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
+		if needsSharedTimestamps {
+			tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
+			if !ok {
+				return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
+			}
+			// Shared timestamps include every row; grow once per record.
+			sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
+			for i := 0; i < nRows; i++ {
+				sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
+			}
 		}
 
 		// Extract per-series timestamps for FIRST_POINT/LAST_POINT.
@@ -330,7 +381,11 @@ func extractArrowBucketedNumericSeries(
 			if !ok {
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
-			perSeriesTime[si], recordSelections[si] = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
+			var err error
+			perSeriesTime[si], recordSelections[si], err = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
+			if err != nil {
+				return nil, fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
+			}
 		}
 
 		// Extract each field's values.
