@@ -3,6 +3,7 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -127,39 +128,181 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 	return tsIdx[0], resolved, nil
 }
 
+func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []resolvedSpec) error {
+	nRows := int(rec.NumRows())
+	seen := make(map[int]struct{}, 1+len(resolved)*2)
+	checkColumn := func(i int) error {
+		if i < 0 {
+			return nil
+		}
+		if _, ok := seen[i]; ok {
+			return nil
+		}
+		seen[i] = struct{}{}
+		col := rec.Column(i)
+		if col.Len() != nRows {
+			return fmt.Errorf("Arrow record column %q length mismatch: got %d, want %d", rec.ColumnName(i), col.Len(), nRows)
+		}
+		return nil
+	}
+	if err := checkColumn(sharedTsIdx); err != nil {
+		return err
+	}
+	for _, rs := range resolved {
+		if err := checkColumn(rs.valueIdx); err != nil {
+			return err
+		}
+		if err := checkColumn(rs.tsIdx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func usesSharedTimestamps(resolved []resolvedSpec) bool {
+	for _, rs := range resolved {
+		if rs.tsIdx < 0 {
+			return true
+		}
+	}
+	return false
+}
+
+type rowSelection struct {
+	mask         []bool
+	includedRows int
+}
+
+func allRows(nRows int) rowSelection {
+	return rowSelection{includedRows: nRows}
+}
+
+func (s rowSelection) includes(row int) bool {
+	return s.mask == nil || s.mask[row]
+}
+
+func appendUnixNanos(dst []time.Time, nanos int64) []time.Time {
+	return append(dst, time.Unix(0, nanos))
+}
+
+func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, rowSelection, error) {
+	nRows := col.Len()
+	// Keep dense timestamp columns on a separate path so the common FIRST/LAST
+	// case avoids a per-row mask branch; appendUnixNanos keeps conversion shared.
+	if col.NullN() == 0 {
+		dst = slices.Grow(dst, nRows)
+		for i := 0; i < nRows; i++ {
+			dst = appendUnixNanos(dst, col.Value(i))
+		}
+		return dst, allRows(nRows), nil
+	}
+
+	includedRows := nRows - col.NullN()
+	if includedRows < 0 {
+		return dst, rowSelection{}, fmt.Errorf("Arrow timestamp column null metadata inconsistent: null count %d exceeds rows %d", col.NullN(), nRows)
+	}
+	selection := rowSelection{
+		mask:         make([]bool, nRows),
+		includedRows: includedRows,
+	}
+	dst = slices.Grow(dst, selection.includedRows)
+	actualIncludedRows := 0
+	for i := 0; i < nRows; i++ {
+		if col.IsNull(i) {
+			continue
+		}
+		selection.mask[i] = true
+		actualIncludedRows++
+		dst = appendUnixNanos(dst, col.Value(i))
+	}
+	selection.includedRows = actualIncludedRows
+	return dst, selection, nil
+}
+
+// valueBackingLen sizes extractColumnValues' shared float backing slice.
+// Unmasked columns use Arrow's O(1) null counter. Masked FIRST/LAST columns use
+// the selected-row count as an upper bound to avoid a second pass over the same
+// rows; null-valued selected rows leave a few unused float64 slots.
+func valueBackingLen(col arrow.Array, selection rowSelection) int {
+	if selection.mask == nil {
+		return selection.includedRows - col.NullN()
+	}
+	return selection.includedRows
+}
+
 // extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
-// appends the values to dest. Rows where validMask[offset+i] is false are skipped
-// (used to drop null-timestamp rows for FIRST/LAST). Pass nil validMask to include all rows.
-func extractColumnValues(dest *[]*float64, rawCol arrow.Array, validMask []bool, offset, nRows int) error {
+// appends values to series.Values. Rows excluded by selection are skipped (used
+// to drop null-timestamp rows for FIRST/LAST).
+//
+// Non-null values share one backing slice per call, avoiding one heap allocation
+// per value while keeping pointers stable.
+func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selection rowSelection, nRows int) error {
+	// Dense columns are the common throughput path and can avoid per-row null
+	// checks plus indirect value dispatch.
+	var valueAt func(int) float64
 	switch col := rawCol.(type) {
 	case *array.Float64:
-		for i := 0; i < nRows; i++ {
-			if validMask != nil && !validMask[offset+i] {
-				continue
-			}
-			if col.IsNull(i) {
-				*dest = append(*dest, nil)
-			} else {
-				v := col.Value(i)
-				*dest = append(*dest, &v)
-			}
+		if selection.mask == nil && col.NullN() == 0 {
+			extractDenseFloat64ColumnValues(series, col, nRows)
+			return nil
 		}
+		valueAt = col.Value
 	case *array.Uint32:
-		for i := 0; i < nRows; i++ {
-			if validMask != nil && !validMask[offset+i] {
-				continue
-			}
-			if col.IsNull(i) {
-				*dest = append(*dest, nil)
-			} else {
-				v := float64(col.Value(i))
-				*dest = append(*dest, &v)
-			}
+		if selection.mask == nil && col.NullN() == 0 {
+			extractDenseUint32ColumnValues(series, col, nRows)
+			return nil
 		}
+		valueAt = func(i int) float64 { return float64(col.Value(i)) }
 	default:
 		return fmt.Errorf("%T (expected Float64 or Uint32)", rawCol)
 	}
+
+	series.Values = slices.Grow(series.Values, selection.includedRows)
+
+	backingLen := valueBackingLen(rawCol, selection)
+	if backingLen < 0 {
+		return fmt.Errorf("Arrow column null metadata inconsistent: null count %d exceeds selected rows %d", rawCol.NullN(), selection.includedRows)
+	}
+	backing := make([]float64, backingLen)
+	bi := 0
+	for i := 0; i < nRows; i++ {
+		if !selection.includes(i) {
+			continue
+		}
+		if rawCol.IsNull(i) {
+			series.Values = append(series.Values, nil)
+			continue
+		}
+		if bi >= len(backing) {
+			return fmt.Errorf("Arrow column null metadata inconsistent: more non-null values than declared by null count")
+		}
+		backing[bi] = valueAt(i)
+		series.Values = append(series.Values, &backing[bi])
+		bi++
+	}
 	return nil
+}
+
+func extractDenseFloat64ColumnValues(series *AggregationSeries, col *array.Float64, nRows int) {
+	series.Values = slices.Grow(series.Values, nRows)
+
+	// Keep the dense helpers' backing-slice loop in sync: Values stores element
+	// pointers, so backing must be fully sized before any pointer is taken.
+	backing := make([]float64, nRows)
+	for i := 0; i < nRows; i++ {
+		backing[i] = col.Value(i)
+		series.Values = append(series.Values, &backing[i])
+	}
+}
+
+func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32, nRows int) {
+	series.Values = slices.Grow(series.Values, nRows)
+
+	backing := make([]float64, nRows)
+	for i := 0; i < nRows; i++ {
+		backing[i] = float64(col.Value(i))
+		series.Values = append(series.Values, &backing[i])
+	}
 }
 
 // extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
@@ -181,6 +324,11 @@ func extractArrowBucketedNumericSeries(
 	if err != nil {
 		return nil, err
 	}
+	needsSharedTimestamps := usesSharedTimestamps(resolved)
+	sharedTsIdxForValidation := sharedTsIdx
+	if !needsSharedTimestamps {
+		sharedTsIdxForValidation = -1
+	}
 
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
 	seriesData := make([]AggregationSeries, len(specs))
@@ -198,26 +346,28 @@ func extractArrowBucketedNumericSeries(
 			perSeriesTime[i] = []time.Time{}
 		}
 	}
-	// rowOffset tracks how many Arrow rows we've seen per spec across records,
-	// used to index into perSeriesValid which is built across all records.
-	rowOffset := make([]int, len(specs))
-	// perSeriesValid tracks which Arrow rows have non-null per-series timestamps.
-	// Rows with null timestamps (empty buckets) are dropped entirely from that
-	// series so that no zero-time entries appear in table panels. nil for specs
-	// that use the shared timestamp.
-	perSeriesValid := make([][]bool, len(specs))
+	recordSelections := make([]rowSelection, len(specs))
 
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
-
-		// Extract shared timestamps
-		tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
-		if !ok {
-			return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
+		if err := validateRecordColumnLengths(rec, sharedTsIdxForValidation, resolved); err != nil {
+			return nil, err
 		}
-		for i := 0; i < nRows; i++ {
-			sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
+		for i := range recordSelections {
+			recordSelections[i] = allRows(nRows)
+		}
+
+		if needsSharedTimestamps {
+			tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
+			if !ok {
+				return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
+			}
+			// Shared timestamps include every row; grow once per record.
+			sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
+			for i := 0; i < nRows; i++ {
+				sharedTimePoints = append(sharedTimePoints, time.Unix(0, tsCol.Value(i)))
+			}
 		}
 
 		// Extract per-series timestamps for FIRST_POINT/LAST_POINT.
@@ -231,12 +381,10 @@ func extractArrowBucketedNumericSeries(
 			if !ok {
 				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
-			for i := 0; i < nRows; i++ {
-				valid := !perTsCol.IsNull(i)
-				perSeriesValid[si] = append(perSeriesValid[si], valid)
-				if valid {
-					perSeriesTime[si] = append(perSeriesTime[si], time.Unix(0, perTsCol.Value(i)))
-				}
+			var err error
+			perSeriesTime[si], recordSelections[si], err = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
+			if err != nil {
+				return nil, fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
 			}
 		}
 
@@ -244,11 +392,8 @@ func extractArrowBucketedNumericSeries(
 		// For series with per-series timestamps, rows where the timestamp was null are
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
-			if err := extractColumnValues(&seriesData[fi].Values, rec.Column(rs.valueIdx), perSeriesValid[fi], rowOffset[fi], nRows); err != nil {
+			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), recordSelections[fi], nRows); err != nil {
 				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
-			}
-			if perSeriesValid[fi] != nil {
-				rowOffset[fi] += nRows
 			}
 		}
 	}
