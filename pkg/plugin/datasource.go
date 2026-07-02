@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -225,10 +225,8 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				// the next time-range query. Don't assume this sort is redundant: the
 				// compute API's PageInfo contract specifies selection direction (via sign
 				// of PageSize), not response order.
-				if !logEntriesNewestFirst(result.LogEntries) {
-					sort.SliceStable(result.LogEntries, func(a, b int) bool {
-						return result.LogEntries[a].Time.After(result.LogEntries[b].Time)
-					})
+				if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
+					slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
 				}
 
 				frame := data.NewFrame(qm.Channel)
@@ -411,6 +409,8 @@ type TransformResult struct {
 // LogEntry represents a single log entry with its timestamp and metadata.
 // Labels is json.RawMessage (FieldTypeJSON), not a string — Grafana's Logs panel
 // expects a dedicated JSON-typed column for per-entry labels, not a JSON-encoded string.
+// Labels may alias storage shared across entries (empty-Args rows all reference one
+// default-labels slice), so treat it as read-only; copy before mutating.
 type LogEntry struct {
 	Time   time.Time
 	Body   string
@@ -438,20 +438,21 @@ func defaultLogLabelsForChannel(channel string) json.RawMessage {
 	return labelsJSON
 }
 
+// marshalLogArgsWithDefault is marshalLogArgs with the empty-args result precomputed once
+// by the caller. defaultLabels must be defaultLogLabelsForChannel(channel) for the same
+// channel value — a mismatched pair mislabels every empty-args row.
 func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLabels json.RawMessage) json.RawMessage {
 	if len(args) == 0 {
 		// Returns the shared defaultLabels slice; callers must treat it as read-only (it is aliased across rows).
 		return defaultLabels
 	}
-	if channel == "" {
-		labelsJSON, _ := json.Marshal(args)
-		return labelsJSON
-	}
-	if _, exists := args[nominalChannelLabel]; exists {
+	if _, exists := args[nominalChannelLabel]; channel == "" || exists {
 		labelsJSON, _ := json.Marshal(args)
 		return labelsJSON
 	}
 
+	// Manual copy instead of maps.Clone: the +1 capacity hint avoids a map grow
+	// when injecting the channel key (maps.Clone sizes for len(args) exactly).
 	out := make(map[string]string, len(args)+1)
 	for k, v := range args {
 		out[k] = v
@@ -461,13 +462,10 @@ func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLa
 	return labelsJSON
 }
 
-func logEntriesNewestFirst(entries []LogEntry) bool {
-	for i := 0; i < len(entries)-1; i++ {
-		if !entries[i].Time.After(entries[i+1].Time) && !entries[i].Time.Equal(entries[i+1].Time) {
-			return false
-		}
-	}
-	return true
+// compareLogEntriesNewestFirst orders log entries newest-first; equal timestamps
+// compare as equal so a stable sort preserves source order.
+func compareLogEntriesNewestFirst(a, b LogEntry) int {
+	return b.Time.Compare(a.Time)
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
@@ -568,6 +566,10 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		// pagedLogFunc — paginated log response
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
+			if len(paged.Timestamps) != len(paged.Values) {
+				log.DefaultLogger.Warn("Paged log response has mismatched timestamp and value counts; truncating",
+					"timestamps", len(paged.Timestamps), "values", len(paged.Values))
+			}
 			result.LogEntries = make([]LogEntry, 0, n)
 			defaultLogLabels := defaultLogLabelsForChannel(qm.Channel)
 			for i := 0; i < n; i++ {
@@ -721,12 +723,13 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 		nanos := int64(timestamp.Nanos)
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
 
-		// Find the mode (most frequent value) from the histogram.
-		// Falls back to FirstPoint if histogram is empty.
+		// Find the mode (most frequent value) from the histogram, breaking count
+		// ties by lowest category index so results are deterministic across Go's
+		// randomized map iteration. Falls back to FirstPoint if histogram is empty.
 		modeIndex := bucket.FirstPoint.Value
 		maxCount := safelong.SafeLong(0)
 		for idx, count := range bucket.Histogram {
-			if count > maxCount {
+			if count > maxCount || (count == maxCount && count > 0 && idx < modeIndex) {
 				maxCount = count
 				modeIndex = idx
 			}
