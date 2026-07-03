@@ -10,8 +10,13 @@ import {
   changeSearchAssetRidQuery,
   changeSelectedDataScopeQuery,
 } from './queryMutations';
-import { decideAssetReconcile } from './assetReconcile';
-import { assetIdentityReducer, createEmptyAssetIdentityState, getVisibleAssetIdentity } from './assetIdentity';
+import { classifyAssetRidEcho, decideAssetReconcile, DIRECT_ASSET_RID_LABEL } from './assetReconcile';
+import {
+  assetIdentityReducer,
+  createEmptyAssetIdentityState,
+  getVisibleAssetIdentity,
+  isAssetFullyResolved,
+} from './assetIdentity';
 import type { TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod, AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
 
@@ -76,24 +81,86 @@ export function useAssetSelection({
   // Reconcile skips only this RID; set it before onChange so the query update
   // does not schedule a second fetch for the same event-owned selection.
   const eventOwnedConcreteAssetRidRef = useRef<string | undefined>(undefined);
+  // Raw assetRid values committed via onChange but not yet echoed back by the
+  // query prop (oldest first), plus the last query value this hook reconciled.
+  // The parent's query state moves monotonically through the values written to
+  // it, so a lagging prop can only re-deliver one of these; anything else is a
+  // genuine external change and must win immediately.
+  const pendingEchoRawsRef = useRef<string[]>([]);
+  const lastReconciledAssetRidRawRef = useRef(query?.assetRid ?? '');
   const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const directRidControllerRef = useRef<AbortController>(undefined);
+
+  // Single owner of the cancel-in-flight-resolution sequence. Every path that
+  // supersedes a pending by-RID fetch must stop the direct-RID debounce, abort
+  // both fetch controllers, and release event ownership; forgetting a step
+  // leaks a controller or strands a pending RID. Returns the RID that was
+  // event-owned so callers can cancel its pending reducer state (the debounced
+  // fetch may not have started yet, so its abort listener may not exist).
+  const cancelInFlightResolution = useCallback(() => {
+    const ownedRid = eventOwnedConcreteAssetRidRef.current;
+    clearTimeout(directRidTimerRef.current);
+    directRidControllerRef.current?.abort();
+    directRidControllerRef.current = undefined;
+    assetSelectControllerRef.current?.abort();
+    assetSelectControllerRef.current = undefined;
+    eventOwnedConcreteAssetRidRef.current = undefined;
+    return ownedRid;
+  }, []);
+
+  const commitQueryWithAssetRid = useCallback(
+    (nextQuery: NominalQuery, committedRaw: string) => {
+      const echoes = pendingEchoRawsRef.current;
+      echoes.push(committedRaw);
+      if (echoes.length > 50) {
+        echoes.shift();
+      }
+      onChange(nextQuery);
+    },
+    [onChange]
+  );
 
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
       dispatchAssetIdentity({ type: 'beginResolving', rid: resolvedRid });
+      const cancelResolving = () => {
+        if (eventOwnedConcreteAssetRidRef.current === resolvedRid) {
+          eventOwnedConcreteAssetRidRef.current = undefined;
+        }
+        if (isMountedRef.current) {
+          dispatchAssetIdentity({ type: 'cancelResolving', rid: resolvedRid });
+        }
+      };
+
+      if (signal?.aborted) {
+        cancelResolving();
+        return;
+      }
+      signal?.addEventListener('abort', cancelResolving, { once: true });
+
+      // Release event ownership as soon as the resolution settles: from here on
+      // the selectedAssetRid guard covers what the ref covered, and a stale ref
+      // must not depend on reconcile's guard ordering to stay harmless. The
+      // identity check protects a newer event-owned RID set while this fetch
+      // was in flight.
+      const resolveWith = (asset: Asset | null) => {
+        if (eventOwnedConcreteAssetRidRef.current === resolvedRid) {
+          eventOwnedConcreteAssetRidRef.current = undefined;
+        }
+        dispatchAssetIdentity({
+          type: 'resolveAsset',
+          rid: resolvedRid,
+          asset,
+          fallbackLabel: displayLabel,
+        });
+      };
 
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
           return;
         }
-        dispatchAssetIdentity({
-          type: 'resolveAsset',
-          rid: resolvedRid,
-          asset: foundAsset,
-          fallbackLabel: displayLabel,
-        });
+        resolveWith(foundAsset);
       } catch {
         if (signal?.aborted) {
           return;
@@ -102,12 +169,9 @@ export function useAssetSelection({
           'Unable to load Nominal asset',
           'The RID was kept, but data scopes could not be loaded automatically.'
         );
-        dispatchAssetIdentity({
-          type: 'resolveAsset',
-          rid: resolvedRid,
-          asset: null,
-          fallbackLabel: displayLabel,
-        });
+        resolveWith(null);
+      } finally {
+        signal?.removeEventListener('abort', cancelResolving);
       }
     },
     [datasourceUrl]
@@ -156,25 +220,35 @@ export function useAssetSelection({
 
   useEffect(() => {
     const controllers: AbortController[] = [];
-    if (eventOwnedConcreteAssetRidRef.current && assetRidResolved !== eventOwnedConcreteAssetRidRef.current) {
-      clearTimeout(directRidTimerRef.current);
-      assetSelectControllerRef.current?.abort();
-      assetSelectControllerRef.current = undefined;
-      directRidControllerRef.current?.abort();
-      directRidControllerRef.current = undefined;
-      eventOwnedConcreteAssetRidRef.current = undefined;
+    const queryAssetRidRaw = query?.assetRid ?? '';
+    const echoStatus = classifyAssetRidEcho({
+      raw: queryAssetRidRaw,
+      lastReconciledRaw: lastReconciledAssetRidRawRef.current,
+      pendingEchoRaws: pendingEchoRawsRef.current,
+    });
+    if (echoStatus === 'lag') {
+      // The prop is re-delivering a value this hook committed itself (or still
+      // holds the pre-commit value); reconciling against it would revert local
+      // edits. The newer echo or a genuine external change re-runs this effect
+      // through the query?.assetRid dependency.
+      return undefined;
+    }
+    if (echoStatus !== 'none') {
+      pendingEchoRawsRef.current = [];
+    }
+    lastReconciledAssetRidRawRef.current = queryAssetRidRaw;
+
+    const eventOwnedConcreteAssetRid = eventOwnedConcreteAssetRidRef.current;
+    if (eventOwnedConcreteAssetRid && assetRidResolved !== eventOwnedConcreteAssetRid) {
+      cancelInFlightResolution();
+      dispatchAssetIdentity({ type: 'cancelResolving', rid: eventOwnedConcreteAssetRid });
     }
 
     const actions = decideAssetReconcile({
       assetRid: query?.assetRid,
       assetInputMethod: query?.assetInputMethod,
       selectedAssetRid: selectedAsset?.rid,
-      assetRidResolution: {
-        raw: assetRidRaw,
-        resolved: assetRidResolved,
-        hasTemplate: assetRidHasTemplate,
-        isResolved: assetRidIsResolved,
-      },
+      assetRidResolution: assetRidSnapshot,
       eventOwnedConcreteAssetRid: eventOwnedConcreteAssetRidRef.current,
     });
 
@@ -197,6 +271,9 @@ export function useAssetSelection({
           applyAssetFromRid(action.rid, action.label, controller.signal);
           break;
         }
+        case 'clearIdentity':
+          dispatchAssetIdentity({ type: 'clear' });
+          break;
       }
     }
 
@@ -206,10 +283,9 @@ export function useAssetSelection({
     query?.assetInputMethod,
     selectedAsset?.rid,
     assetRidResolved,
-    assetRidIsResolved,
-    assetRidHasTemplate,
-    assetRidRaw,
+    assetRidSnapshot,
     applyAssetFromRid,
+    cancelInFlightResolution,
   ]);
 
   useEffect(() => {
@@ -246,17 +322,17 @@ export function useAssetSelection({
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
       markInteracted();
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
-      assetSelectControllerRef.current?.abort();
+      cancelInFlightResolution();
       assetOptionsRequestId.current += 1;
-      eventOwnedConcreteAssetRidRef.current = undefined;
       setAssetInputMethod(method);
       dispatchAssetIdentity({ type: 'clear' });
       setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
-      onChange(changeAssetInputMethodQuery(query, method));
+      // The commit carries assetRid (unchanged), so it must go through the echo
+      // bookkeeping: a plain onChange would leave any un-echoed prior commit in
+      // pendingEchoRaws, and this commit's own echo would classify as 'lag'.
+      commitQueryWithAssetRid(changeAssetInputMethodQuery(query, method), query?.assetRid ?? '');
     },
-    [markInteracted, onChange, query]
+    [cancelInFlightResolution, commitQueryWithAssetRid, markInteracted, query]
   );
 
   const selectAsset = useCallback(
@@ -266,10 +342,9 @@ export function useAssetSelection({
       if (!value.trim()) {
         // Mirror changeDirectRID: a blank/whitespace selection clears the asset rather
         // than committing whitespace as the assetRid and firing a doomed by-RID fetch.
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
+        cancelInFlightResolution();
         dispatchAssetIdentity({ type: 'clear' });
-        onChange(changeSearchAssetRidQuery(query, ''));
+        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ''), '');
         return;
       }
 
@@ -277,74 +352,72 @@ export function useAssetSelection({
       const selectedRidResolution = resolveTemplateText(value);
       const ridToFind = isVariable ? selectedRidResolution.resolved : value;
 
+      if (!isVariable && isAssetFullyResolved(assetIdentity, ridToFind)) {
+        // Re-picking the fully resolved current asset: nothing to fetch. A fallback
+        // asset (empty dataScopes) still refetches so a failed lookup stays retryable.
+        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ridToFind), ridToFind);
+        return;
+      }
+
       if (ridToFind && !ridToFind.includes('$') && !isVariable) {
-        assetSelectControllerRef.current?.abort();
+        cancelInFlightResolution();
         const controller = new AbortController();
         assetSelectControllerRef.current = controller;
         eventOwnedConcreteAssetRidRef.current = ridToFind;
-        applyAssetFromRid(ridToFind, 'Asset (Direct RID)', controller.signal);
+        applyAssetFromRid(ridToFind, DIRECT_ASSET_RID_LABEL, controller.signal);
       } else if (isVariable && selectedRidResolution.isResolved) {
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
+        cancelInFlightResolution();
         dispatchAssetIdentity({ type: 'beginResolving', rid: selectedRidResolution.resolved });
       } else {
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
+        cancelInFlightResolution();
         dispatchAssetIdentity({ type: 'clear' });
       }
 
       if (isVariable) {
-        onChange(changeSearchAssetRidQuery(query, value));
+        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, value), value);
       } else if (ridToFind && !ridToFind.includes('$')) {
-        onChange(changeSearchAssetRidQuery(query, ridToFind));
+        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ridToFind), ridToFind);
       }
     },
-    [applyAssetFromRid, markInteracted, onChange, query, resolveTemplateText]
+    [applyAssetFromRid, assetIdentity, cancelInFlightResolution, commitQueryWithAssetRid, markInteracted, query, resolveTemplateText]
   );
 
   const changeDirectRID = useCallback(
     (rid: string) => {
       markInteracted();
       setDirectRID(rid);
-
-      if (rid.trim()) {
-        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
-      }
-
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
+      cancelInFlightResolution();
 
       if (!rid.trim()) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
         dispatchAssetIdentity({ type: 'clear' });
-        onChange(changeDirectAssetRidQuery(queryRef.current, ''));
+        commitQueryWithAssetRid(changeDirectAssetRidQuery(queryRef.current, ''), '');
         return;
       }
 
       const ridResolution = resolveTemplateText(rid);
-      if (!ridResolution.isResolved) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
-        dispatchAssetIdentity({ type: 'clear' });
-        return;
-      }
-      if (ridResolution.hasTemplate) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
+      const isConcrete = ridResolution.isResolved && !ridResolution.hasTemplate;
+      // Set the event-owned RID before committing the query so the update cannot
+      // schedule a second fetch for the same selection (see the ref comment).
+      eventOwnedConcreteAssetRidRef.current = isConcrete ? ridResolution.resolved : undefined;
+      if (ridResolution.isResolved) {
         dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
+      } else {
+        dispatchAssetIdentity({ type: 'clear' });
+      }
+      commitQueryWithAssetRid(changeDirectAssetRidQuery(queryRef.current, rid), rid);
+
+      if (!isConcrete) {
         return;
       }
 
-      eventOwnedConcreteAssetRidRef.current = ridResolution.resolved;
-      dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
-
-      const displayLabel = 'Asset (Direct RID)';
       const controller = new AbortController();
       directRidControllerRef.current = controller;
 
       directRidTimerRef.current = setTimeout(() => {
-        applyAssetFromRid(ridResolution.resolved, displayLabel, controller.signal);
+        applyAssetFromRid(ridResolution.resolved, DIRECT_ASSET_RID_LABEL, controller.signal);
       }, 300);
     },
-    [markInteracted, onChange, applyAssetFromRid, resolveTemplateText]
+    [applyAssetFromRid, cancelInFlightResolution, commitQueryWithAssetRid, markInteracted, resolveTemplateText]
   );
 
   const selectDataScope = useCallback(
@@ -360,11 +433,9 @@ export function useAssetSelection({
     return () => {
       isMountedRef.current = false;
       assetOptionsRequestId.current += 1;
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
-      assetSelectControllerRef.current?.abort();
+      cancelInFlightResolution();
     };
-  }, []);
+  }, [cancelInFlightResolution]);
 
   const assetSelectValue = useMemo(
     () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: visibleAssetIdentity.selectedAsset }),

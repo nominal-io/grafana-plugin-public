@@ -52,6 +52,32 @@ describe('assetIdentity', () => {
     });
   });
 
+  it('treats an empty pending RID as clearing the selection', () => {
+    expect(
+      assetIdentityReducer(
+        { selectedAsset: assetA, pendingAssetRid: null, dataScopes: ['default'] },
+        { type: 'beginResolving', rid: '' }
+      )
+    ).toEqual(createEmptyAssetIdentityState());
+  });
+
+  it('returns the same state when clearing an already-empty identity', () => {
+    const empty = createEmptyAssetIdentityState();
+
+    expect(assetIdentityReducer(empty, { type: 'clear' })).toBe(empty);
+    expect(assetIdentityReducer(empty, { type: 'beginResolving', rid: '' })).toBe(empty);
+  });
+
+  it('returns the same state when beginResolving repeats the pending RID', () => {
+    const pending = {
+      selectedAsset: assetA,
+      pendingAssetRid: assetB.rid,
+      dataScopes: ['default'],
+    };
+
+    expect(assetIdentityReducer(pending, { type: 'beginResolving', rid: assetB.rid })).toBe(pending);
+  });
+
   it('resolves a pending RID into the selected asset and supported data scopes', () => {
     const pending = assetIdentityReducer(
       { selectedAsset: assetA, pendingAssetRid: null, dataScopes: ['default'] },
@@ -87,6 +113,30 @@ describe('assetIdentity', () => {
         fallbackLabel: 'Asset (Direct RID)',
       })
     ).toBe(pending);
+  });
+
+  it('cancels a matching pending RID without clearing the selected asset', () => {
+    const pending = {
+      selectedAsset: assetA,
+      pendingAssetRid: assetB.rid,
+      dataScopes: ['default'],
+    };
+
+    expect(assetIdentityReducer(pending, { type: 'cancelResolving', rid: assetB.rid })).toEqual({
+      selectedAsset: assetA,
+      pendingAssetRid: null,
+      dataScopes: ['default'],
+    });
+  });
+
+  it('ignores a stale pending RID cancellation', () => {
+    const pending = {
+      selectedAsset: assetA,
+      pendingAssetRid: assetB.rid,
+      dataScopes: ['default'],
+    };
+
+    expect(assetIdentityReducer(pending, { type: 'cancelResolving', rid: assetA.rid })).toBe(pending);
   });
 
   it('uses a basic asset when a pending RID cannot be fetched', () => {

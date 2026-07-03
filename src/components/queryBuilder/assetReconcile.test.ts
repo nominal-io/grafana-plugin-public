@@ -1,5 +1,5 @@
 import type { Asset } from '../../utils/api';
-import { decideAssetReconcile } from './assetReconcile';
+import { classifyAssetRidEcho, decideAssetReconcile } from './assetReconcile';
 import type { TemplateValueResolution } from './templateResolution';
 
 const ASSET: Asset = {
@@ -43,6 +43,30 @@ describe('decideAssetReconcile', () => {
         eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual([{ kind: 'mirrorDirectRaw', raw: '$asset' }]);
+  });
+
+  it('clears asset identity when a search template resolves to an empty RID', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '$asset',
+        assetInputMethod: 'search',
+        selectedAssetRid: ASSET.rid,
+        assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([{ kind: 'clearIdentity' }]);
+  });
+
+  it('mirrors direct raw input and clears asset identity when a direct template resolves to an empty RID', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '$asset',
+        assetInputMethod: 'direct',
+        selectedAssetRid: ASSET.rid,
+        assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([{ kind: 'mirrorDirectRaw', raw: '$asset' }, { kind: 'clearIdentity' }]);
   });
 
   it('stops after mirroring when the resolved direct RID is already selected', () => {
@@ -130,5 +154,36 @@ describe('decideAssetReconcile', () => {
         eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
+  });
+});
+
+describe('classifyAssetRidEcho', () => {
+  const B = 'ri.scout.main.asset.b';
+  const C = 'ri.scout.main.asset.c';
+
+  it('reports none when no commits are awaiting an echo', () => {
+    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: '', pendingEchoRaws: [] })).toBe('none');
+  });
+
+  it('reports sync when the query echoes the newest committed value', () => {
+    expect(classifyAssetRidEcho({ raw: C, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe('sync');
+  });
+
+  it('reports lag when the query echoes an older committed value', () => {
+    expect(classifyAssetRidEcho({ raw: B, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe('lag');
+  });
+
+  it('reports lag when the query still carries the pre-commit value', () => {
+    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe(
+      'lag'
+    );
+  });
+
+  it('reports external for a value this editor never committed', () => {
+    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: '', pendingEchoRaws: [B, C] })).toBe('external');
+  });
+
+  it('prefers sync when the newest commit repeats an older one', () => {
+    expect(classifyAssetRidEcho({ raw: B, lastReconciledRaw: '', pendingEchoRaws: [B, C, B] })).toBe('sync');
   });
 });
