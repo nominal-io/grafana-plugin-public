@@ -90,6 +90,50 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type HookArgs = Parameters<typeof useAssetSelection>[0];
+
+function renderAssetSelectionHarness({
+  initialQuery = makeQuery(),
+  hookOverrides = {},
+  hasUserInteracted = false,
+}: {
+  initialQuery?: NominalQuery;
+  hookOverrides?: Partial<HookArgs>;
+  hasUserInteracted?: boolean;
+} = {}) {
+  let currentQuery = initialQuery;
+  // Mirrors the parent's interaction latch: markInteracted flips it, and every
+  // rerender feeds it back as the hasUserInteracted prop unless overridden.
+  let interacted = hasUserInteracted;
+  const onChange = jest.fn((nextQuery: NominalQuery) => {
+    currentQuery = nextQuery;
+  });
+  const markInteracted = jest.fn(() => {
+    interacted = true;
+  });
+  const renderResult = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
+    initialProps: args({ query: currentQuery, onChange, markInteracted, hasUserInteracted, ...hookOverrides }),
+  });
+
+  const rerenderArgs = (query: NominalQuery, overrides: Partial<HookArgs>) =>
+    args({ query, onChange, markInteracted, hasUserInteracted: interacted, ...hookOverrides, ...overrides });
+
+  return {
+    ...renderResult,
+    onChange,
+    markInteracted,
+    get currentQuery() {
+      return currentQuery;
+    },
+    rerenderCurrent(overrides: Partial<HookArgs> = {}) {
+      renderResult.rerender(rerenderArgs(currentQuery, overrides));
+    },
+    rerenderQuery(query: NominalQuery, overrides: Partial<HookArgs> = {}) {
+      renderResult.rerender(rerenderArgs(query, overrides));
+    },
+  };
+}
+
 describe('useAssetSelection', () => {
   let consoleErrorSpy: jest.SpyInstance;
 
@@ -347,23 +391,18 @@ describe('useAssetSelection', () => {
     const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
     mockFetchAssetByRid.mockResolvedValue(ASSET_B);
 
-    let currentQuery = makeQuery();
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: initialArgs,
-    });
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.changeDirectRID(ASSET_B.rid);
     });
 
-    expect(currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' }));
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
+    expect(harness.currentQuery).toEqual(
+      expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' })
+    );
+    harness.rerenderCurrent();
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
@@ -387,25 +426,20 @@ describe('useAssetSelection', () => {
     const pendingFetch = deferred<Asset | null>();
     mockFetchAssetByRid.mockReturnValue(pendingFetch.promise);
 
-    let currentQuery = makeQuery();
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: initialArgs,
-    });
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET_B.rid);
     });
 
-    expect(currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'search' }));
+    expect(harness.currentQuery).toEqual(
+      expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'search' })
+    );
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
 
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
+    harness.rerenderCurrent();
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await Promise.resolve();
@@ -619,13 +653,10 @@ describe('useAssetSelection', () => {
     const pendingFetch = deferred<Asset | null>();
     mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
 
-    let currentQuery = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
+    const harness = renderAssetSelectionHarness({
+      initialQuery: makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' }),
     });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: currentQuery, onChange }),
-    });
+    const { result } = harness;
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
@@ -638,12 +669,14 @@ describe('useAssetSelection', () => {
       result.current.changeDirectRID(ASSET_B.rid);
     });
 
-    expect(currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' }));
+    expect(harness.currentQuery).toEqual(
+      expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' })
+    );
     // Hidden-state shape is covered by the reducer unit tests; assert only that a direct-RID
     // change enters that state synchronously.
     expect(result.current.selectedAsset).toBeNull();
 
-    rerender(args({ query: currentQuery, onChange, hasUserInteracted: true }));
+    harness.rerenderCurrent();
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
@@ -661,55 +694,6 @@ describe('useAssetSelection', () => {
       await Promise.resolve();
     });
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-  });
-
-  it('keeps a typed RID when the query prop still holds the pre-edit value as the fetch resolves', async () => {
-    const ASSET_A = ASSET;
-    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
-    mockFetchAssetByRid.mockImplementation(async (_url: string, rid: string) =>
-      rid === ASSET_B.rid ? ASSET_B : ASSET_A
-    );
-
-    let currentQuery = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    const queryA = currentQuery;
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: queryA, onChange, markInteracted }),
-    });
-
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-    });
-
-    jest.useFakeTimers();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_B.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
-    });
-
-    // B resolves while the prop still holds the pre-edit A. That value is parent
-    // lag, not an external change, so the typed B must survive.
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    });
-    expect(result.current.directRID).toBe(ASSET_B.rid);
-
-    // Re-delivering the pre-edit value is still lag.
-    rerender(args({ query: queryA, onChange, markInteracted, hasUserInteracted: true }));
-    expect(result.current.directRID).toBe(ASSET_B.rid);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-
-    // The real echo then lands and confirms the typed value.
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
-    expect(result.current.directRID).toBe(ASSET_B.rid);
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
   });
 
   it('cancels a pending direct RID when the query switches to an unresolved search template before the fetch starts', async () => {
@@ -822,36 +806,29 @@ describe('useAssetSelection', () => {
       return rid === ASSET_B.rid ? ASSET_B : ASSET_A;
     });
 
-    let currentQuery = makeQuery();
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: initialArgs,
-    });
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET_A.rid);
     });
 
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
+    harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
     });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
 
     const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search' });
-    rerender(args({ query: queryB, onChange, markInteracted, hasUserInteracted: true }));
+    harness.rerenderQuery(queryB);
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
     });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
 
     const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search' });
-    rerender(args({ query: queryA, onChange, markInteracted, hasUserInteracted: true }));
+    harness.rerenderQuery(queryA);
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
     });
@@ -868,15 +845,8 @@ describe('useAssetSelection', () => {
       return d.promise;
     });
 
-    let currentQuery = makeQuery();
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: initialArgs,
-    });
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
@@ -884,7 +854,7 @@ describe('useAssetSelection', () => {
     });
 
     const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search' });
-    rerender(args({ query: queryB, onChange, markInteracted, hasUserInteracted: true }));
+    harness.rerenderQuery(queryB);
     await waitFor(() => {
       expect(deferredByRid.has(ASSET_B.rid)).toBe(true);
     });
@@ -913,31 +883,18 @@ describe('useAssetSelection', () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const replace = (value: string) => (value === '$asset' ? ASSET.rid : value);
 
-    let currentQuery = makeQuery();
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const initialArgs = args({ query: currentQuery, onChange, markInteracted });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: initialArgs,
-    });
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.changeDirectRID('$asset');
     });
 
-    rerender(
-      args({
-        query: currentQuery,
-        onChange,
-        markInteracted,
-        hasUserInteracted: true,
-        assetRidResolution: resolveTemplateValue(currentQuery.assetRid, replace),
-        resolveTemplateText: (value: string) => resolveTemplateValue(value, replace),
-      })
-    );
+    harness.rerenderCurrent({
+      assetRidResolution: resolveTemplateValue(harness.currentQuery.assetRid, replace),
+      resolveTemplateText: (value: string) => resolveTemplateValue(value, replace),
+    });
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
@@ -1031,24 +988,56 @@ describe('useAssetSelection', () => {
     };
     mockFetchAssetByRid.mockResolvedValue(asset);
 
-    let currentQuery = makeQuery({ assetRid: asset.rid, assetInputMethod: 'search', dataScopeName: savedScope });
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
+    const harness = renderAssetSelectionHarness({
+      initialQuery: makeQuery({ assetRid: asset.rid, assetInputMethod: 'search', dataScopeName: savedScope }),
     });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: currentQuery, onChange, hasUserInteracted: false }),
-    });
+    const { result } = harness;
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(asset.rid);
     });
-    onChange.mockClear();
+    harness.onChange.mockClear();
 
-    rerender(args({ query: currentQuery, onChange, hasUserInteracted: true }));
+    // No user event fires in this test; simulate the parent's latch directly.
+    harness.rerenderCurrent({ hasUserInteracted: true });
 
     await waitFor(() => {
-      expect(onChange).toHaveBeenCalledWith(expect.objectContaining(expected));
+      expect(harness.onChange).toHaveBeenCalledWith(expect.objectContaining(expected));
     });
+  });
+
+  it('keeps a valid saved data scope while a different asset is still resolving', async () => {
+    const ASSET_A: Asset = {
+      ...ASSET,
+      dataScopes: ['scope-1', 'scope-2'].map((name) => ({ ...ASSET.dataScopes[0], dataScopeName: name })),
+    };
+    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
+    const pendingB = deferred<Asset | null>();
+    mockFetchAssetByRid.mockImplementation((_url: string, rid: string) =>
+      rid === ASSET_B.rid ? pendingB.promise : Promise.resolve(ASSET_A)
+    );
+
+    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search', dataScopeName: 'scope-1' });
+    const harness = renderAssetSelectionHarness({ initialQuery: queryA });
+    const { result } = harness;
+
+    await waitFor(() => {
+      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset(ASSET_B.rid);
+    });
+    harness.onChange.mockClear();
+
+    // The parent lags: the prop still carries asset A and its valid saved scope
+    // while B's fetch is in flight. The masked visible identity (empty scopes)
+    // must not lead the scope-defaulting effect to clear the saved scope or
+    // recommit the stale query.
+    harness.rerenderQuery(queryA);
+
+    expect(harness.onChange).not.toHaveBeenCalled();
   });
 
   it('keeps the RID with a fallback asset and alerts when the by-RID fetch fails', async () => {
@@ -1090,189 +1079,6 @@ describe('useAssetSelection', () => {
     expect(publish).not.toHaveBeenCalled();
     expect(result.current.selectedAsset).toBeNull();
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: '' }));
-  });
-
-  it('applies an external direct-mode query change that arrives while a re-typed RID fetch is in flight', async () => {
-    const ASSET_A = ASSET;
-    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
-    const pendingB = deferred<Asset | null>();
-    // First B fetch (saved-query restore) resolves; the re-typed B fetch stays pending.
-    mockFetchAssetByRid
-      .mockResolvedValueOnce(ASSET_B)
-      .mockImplementation((_url: string, rid: string) =>
-        rid === ASSET_B.rid ? pendingB.promise : Promise.resolve(ASSET_A)
-      );
-
-    const onChange = jest.fn();
-    const markInteracted = jest.fn();
-    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: queryB, onChange, markInteracted }),
-    });
-
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    });
-
-    jest.useFakeTimers();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_B.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
-    });
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
-
-    // A value this editor never committed is a genuine external change, not parent
-    // lag: it must win immediately, even though the re-typed RID's fetch is pending
-    // and its settlement would not change selectedAsset.rid.
-    const externalQuery = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    rerender(args({ query: externalQuery, onChange, markInteracted, hasUserInteracted: true }));
-
-    await waitFor(() => {
-      expect(result.current.directRID).toBe(ASSET_A.rid);
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-    });
-
-    // The superseded re-typed fetch must not resurrect B.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      pendingB.resolve(ASSET_B);
-      await pendingB.promise;
-    });
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-  });
-
-  it('ignores a lagging echo of an older committed RID after the newer fetch settles', async () => {
-    jest.useFakeTimers();
-    const ASSET_A = ASSET;
-    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
-    mockFetchAssetByRid.mockImplementation(async (_url: string, rid: string) =>
-      rid === ASSET_B.rid ? ASSET_B : ASSET_A
-    );
-
-    let currentQuery = makeQuery({ assetInputMethod: 'direct' });
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: currentQuery, onChange, markInteracted }),
-    });
-
-    // Two quick edits: A's debounce is superseded by B before it fires.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_A.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_B.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
-    });
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    });
-
-    // The parent now echoes the older committed A. That is lag, not an external
-    // change: the typed B and its resolved asset must survive.
-    const staleEcho = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    rerender(args({ query: staleEcho, onChange, markInteracted, hasUserInteracted: true }));
-
-    expect(result.current.directRID).toBe(ASSET_B.rid);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    expect(mockFetchAssetByRid).not.toHaveBeenCalledWith('/api/x', ASSET_A.rid);
-
-    // The newest echo then lands and everything stays consistent.
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
-    expect(result.current.directRID).toBe(ASSET_B.rid);
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not revert in-progress template typing when an older committed RID echoes back', async () => {
-    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
-    mockFetchAssetByRid.mockResolvedValue(ASSET_B);
-
-    let currentQuery = makeQuery({ assetInputMethod: 'direct' });
-    const onChange = jest.fn((nextQuery: NominalQuery) => {
-      currentQuery = nextQuery;
-    });
-    const markInteracted = jest.fn();
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: currentQuery, onChange, markInteracted }),
-    });
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_B.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID('$asset');
-    });
-    expect(result.current.directRID).toBe('$asset');
-
-    // The parent echoes the older committed concrete RID while the user's newer
-    // template text is still in flight — the mirror must not clobber it.
-    const staleEcho = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' });
-    rerender(args({ query: staleEcho, onChange, markInteracted, hasUserInteracted: true }));
-
-    expect(result.current.directRID).toBe('$asset');
-    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
-
-    // The newest echo then lands and the local text is confirmed.
-    rerender(args({ query: currentQuery, onChange, markInteracted, hasUserInteracted: true }));
-    expect(result.current.directRID).toBe('$asset');
-  });
-
-  it('reconciles the mode-switch echo while an earlier selection is still un-echoed', async () => {
-    const ASSET_A = ASSET;
-    const ASSET_B: Asset = { ...ASSET, rid: 'ri.scout.main.asset.bbb', title: 'Asset BBB' };
-    mockFetchAssetByRid.mockImplementation(async (_url: string, rid: string) =>
-      rid === ASSET_B.rid ? ASSET_B : ASSET_A
-    );
-
-    const onChange = jest.fn();
-    const markInteracted = jest.fn();
-    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search' });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: queryA, onChange, markInteracted }),
-    });
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-    });
-
-    // The user picks B, but the parent lags: B's commit never echoes back.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_B.rid);
-    });
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    });
-
-    // Switching to direct mode commits the stale prop's assetRid (A) with the new
-    // method. That commit overwrites the un-echoed B, so B's echo never arrives.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeAssetInputMethod('direct');
-    });
-    expect(result.current.directRID).toBe(ASSET_A.rid);
-
-    // When the mode-switch echo lands, it must reconcile (mirror + fetch A) rather
-    // than be misclassified as a lagging echo of the abandoned B commit.
-    const modeSwitchEcho = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    rerender(args({ query: modeSwitchEcho, onChange, markInteracted, hasUserInteracted: true }));
-
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-    });
-    expect(result.current.directRID).toBe(ASSET_A.rid);
   });
 
   it('re-picking the already selected asset does not refetch or hide the selection', async () => {

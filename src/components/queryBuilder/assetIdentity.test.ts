@@ -28,7 +28,6 @@ describe('assetIdentity', () => {
     const visible = getVisibleAssetIdentity({
       selectedAsset: assetA,
       pendingAssetRid: assetB.rid,
-      dataScopes: ['default'],
     });
 
     expect(visible).toEqual({
@@ -42,7 +41,6 @@ describe('assetIdentity', () => {
     const visible = getVisibleAssetIdentity({
       selectedAsset: assetA,
       pendingAssetRid: assetA.rid,
-      dataScopes: ['default'],
     });
 
     expect(visible).toEqual({
@@ -54,10 +52,7 @@ describe('assetIdentity', () => {
 
   it('treats an empty pending RID as clearing the selection', () => {
     expect(
-      assetIdentityReducer(
-        { selectedAsset: assetA, pendingAssetRid: null, dataScopes: ['default'] },
-        { type: 'beginResolving', rid: '' }
-      )
+      assetIdentityReducer({ selectedAsset: assetA, pendingAssetRid: null }, { type: 'beginResolving', rid: '' })
     ).toEqual(createEmptyAssetIdentityState());
   });
 
@@ -72,7 +67,6 @@ describe('assetIdentity', () => {
     const pending = {
       selectedAsset: assetA,
       pendingAssetRid: assetB.rid,
-      dataScopes: ['default'],
     };
 
     expect(assetIdentityReducer(pending, { type: 'beginResolving', rid: assetB.rid })).toBe(pending);
@@ -80,7 +74,7 @@ describe('assetIdentity', () => {
 
   it('resolves a pending RID into the selected asset and supported data scopes', () => {
     const pending = assetIdentityReducer(
-      { selectedAsset: assetA, pendingAssetRid: null, dataScopes: ['default'] },
+      { selectedAsset: assetA, pendingAssetRid: null },
       { type: 'beginResolving', rid: assetB.rid }
     );
 
@@ -94,7 +88,6 @@ describe('assetIdentity', () => {
     expect(resolved).toEqual({
       selectedAsset: assetB,
       pendingAssetRid: null,
-      dataScopes: ['new-scope'],
     });
   });
 
@@ -102,7 +95,6 @@ describe('assetIdentity', () => {
     const pending = {
       selectedAsset: assetA,
       pendingAssetRid: assetB.rid,
-      dataScopes: ['default'],
     };
 
     expect(
@@ -119,13 +111,11 @@ describe('assetIdentity', () => {
     const pending = {
       selectedAsset: assetA,
       pendingAssetRid: assetB.rid,
-      dataScopes: ['default'],
     };
 
     expect(assetIdentityReducer(pending, { type: 'cancelResolving', rid: assetB.rid })).toEqual({
       selectedAsset: assetA,
       pendingAssetRid: null,
-      dataScopes: ['default'],
     });
   });
 
@@ -133,7 +123,6 @@ describe('assetIdentity', () => {
     const pending = {
       selectedAsset: assetA,
       pendingAssetRid: assetB.rid,
-      dataScopes: ['default'],
     };
 
     expect(assetIdentityReducer(pending, { type: 'cancelResolving', rid: assetA.rid })).toBe(pending);
@@ -161,7 +150,6 @@ describe('assetIdentity', () => {
         properties: {},
       },
       pendingAssetRid: null,
-      dataScopes: [],
     });
   });
 });

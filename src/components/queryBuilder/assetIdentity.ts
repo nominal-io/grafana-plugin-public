@@ -1,9 +1,8 @@
-import { createBasicAsset, getSupportedScopeNames, getSupportedScopes, type Asset } from '../../utils/api';
+import { createBasicAsset, getSupportedScopeNames, type Asset } from '../../utils/api';
 
 export interface AssetIdentityState {
   selectedAsset: Asset | null;
   pendingAssetRid: string | null;
-  dataScopes: string[];
 }
 
 export interface VisibleAssetIdentity {
@@ -22,13 +21,11 @@ export function createEmptyAssetIdentityState(): AssetIdentityState {
   return {
     selectedAsset: null,
     pendingAssetRid: null,
-    dataScopes: [],
   };
 }
 
 function clearIdentity(state: AssetIdentityState): AssetIdentityState {
-  const isAlreadyEmpty =
-    state.selectedAsset === null && state.pendingAssetRid === null && state.dataScopes.length === 0;
+  const isAlreadyEmpty = state.selectedAsset === null && state.pendingAssetRid === null;
   return isAlreadyEmpty ? state : createEmptyAssetIdentityState();
 }
 
@@ -50,7 +47,6 @@ export function assetIdentityReducer(state: AssetIdentityState, action: AssetIde
       return {
         selectedAsset,
         pendingAssetRid: null,
-        dataScopes: action.asset ? getSupportedScopeNames(action.asset) : [],
       };
     }
     case 'cancelResolving':
@@ -82,11 +78,11 @@ export function getVisibleAssetIdentity(state: AssetIdentityState): VisibleAsset
   const isResolvingDifferentAsset =
     Boolean(state.pendingAssetRid) && state.selectedAsset?.rid !== state.pendingAssetRid;
   const selectedAsset = isResolvingDifferentAsset ? null : state.selectedAsset;
-  const dataScopes = isResolvingDifferentAsset ? [] : state.dataScopes;
+  const dataScopes = selectedAsset ? getSupportedScopeNames(selectedAsset) : [];
 
   return {
     selectedAsset,
     dataScopes,
-    selectedAssetSupportedScopeCount: selectedAsset ? getSupportedScopes(selectedAsset).length : 0,
+    selectedAssetSupportedScopeCount: dataScopes.length,
   };
 }

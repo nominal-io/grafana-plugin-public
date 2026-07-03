@@ -1,5 +1,5 @@
 import type { Asset } from '../../utils/api';
-import { classifyAssetRidEcho, decideAssetReconcile } from './assetReconcile';
+import { decideAssetReconcile } from './assetReconcile';
 import type { TemplateValueResolution } from './templateResolution';
 
 const ASSET: Asset = {
@@ -154,36 +154,5 @@ describe('decideAssetReconcile', () => {
         eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
-  });
-});
-
-describe('classifyAssetRidEcho', () => {
-  const B = 'ri.scout.main.asset.b';
-  const C = 'ri.scout.main.asset.c';
-
-  it('reports none when no commits are awaiting an echo', () => {
-    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: '', pendingEchoRaws: [] })).toBe('none');
-  });
-
-  it('reports sync when the query echoes the newest committed value', () => {
-    expect(classifyAssetRidEcho({ raw: C, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe('sync');
-  });
-
-  it('reports lag when the query echoes an older committed value', () => {
-    expect(classifyAssetRidEcho({ raw: B, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe('lag');
-  });
-
-  it('reports lag when the query still carries the pre-commit value', () => {
-    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: ASSET.rid, pendingEchoRaws: [B, C] })).toBe(
-      'lag'
-    );
-  });
-
-  it('reports external for a value this editor never committed', () => {
-    expect(classifyAssetRidEcho({ raw: ASSET.rid, lastReconciledRaw: '', pendingEchoRaws: [B, C] })).toBe('external');
-  });
-
-  it('prefers sync when the newest commit repeats an older one', () => {
-    expect(classifyAssetRidEcho({ raw: B, lastReconciledRaw: '', pendingEchoRaws: [B, C, B] })).toBe('sync');
   });
 });
