@@ -26,12 +26,17 @@ export function decideAssetReconcile({
 }: AssetReconcileInputs): AssetReconcileAction[] {
   const actions: AssetReconcileAction[] = [];
 
-  if (!assetRid) {
+  if (assetRid === undefined) {
     return actions;
   }
 
   if (assetInputMethod === 'direct') {
     actions.push({ kind: 'mirrorDirectRaw', raw: assetRid });
+  }
+
+  if (assetRid === '') {
+    actions.push({ kind: 'clearIdentity' });
+    return actions;
   }
 
   if (!assetRidResolution.resolved) {

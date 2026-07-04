@@ -8,7 +8,6 @@ export interface AssetIdentityState {
 export interface VisibleAssetIdentity {
   selectedAsset: Asset | null;
   dataScopes: string[];
-  selectedAssetSupportedScopeCount: number;
 }
 
 export type AssetIdentityAction =
@@ -83,6 +82,5 @@ export function getVisibleAssetIdentity(state: AssetIdentityState): VisibleAsset
   return {
     selectedAsset,
     dataScopes,
-    selectedAssetSupportedScopeCount: dataScopes.length,
   };
 }

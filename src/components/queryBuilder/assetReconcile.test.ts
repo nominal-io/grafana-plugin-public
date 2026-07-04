@@ -31,6 +31,27 @@ describe('decideAssetReconcile', () => {
         eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual([]);
+    expect(
+      decideAssetReconcile({
+        assetRid: undefined,
+        assetInputMethod: 'direct',
+        selectedAssetRid: ASSET.rid,
+        assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([]);
+  });
+
+  it('mirrors blank direct input and clears asset identity when a direct RID is cleared', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '',
+        assetInputMethod: 'direct',
+        selectedAssetRid: ASSET.rid,
+        assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toEqual([{ kind: 'mirrorDirectRaw', raw: '' }, { kind: 'clearIdentity' }]);
   });
 
   it('mirrors a direct raw RID but does not fetch an unresolved template', () => {

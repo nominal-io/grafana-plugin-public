@@ -25,7 +25,6 @@ export interface QueryBuilderState {
   assetInputMethod: AssetInputMethod;
   directRID: string;
   selectedAsset: Asset | null;
-  selectedAssetSupportedScopeCount: number;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
   dataScopeOptions: DataScopeOption[];

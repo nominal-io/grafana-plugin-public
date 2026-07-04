@@ -33,7 +33,6 @@ describe('assetIdentity', () => {
     expect(visible).toEqual({
       selectedAsset: null,
       dataScopes: [],
-      selectedAssetSupportedScopeCount: 0,
     });
   });
 
@@ -46,7 +45,6 @@ describe('assetIdentity', () => {
     expect(visible).toEqual({
       selectedAsset: assetA,
       dataScopes: ['default'],
-      selectedAssetSupportedScopeCount: 1,
     });
   });
 

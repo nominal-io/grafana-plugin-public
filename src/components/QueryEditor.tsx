@@ -12,6 +12,7 @@ import {
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
+import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 
@@ -259,7 +260,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             </span>
             <span className={styles.summaryLabel}>Data Scopes:</span>
             <span className={styles.scopeCount}>
-              {state.selectedAssetSupportedScopeCount}
+              {getSupportedScopeNames(state.selectedAsset).length}
             </span>
           </div>
         )}

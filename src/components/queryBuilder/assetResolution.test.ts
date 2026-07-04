@@ -1,21 +1,6 @@
 import { AssetResolutionCoordinator } from './assetResolution';
 
 describe('AssetResolutionCoordinator', () => {
-  it('tracks committed RID echoes and classifies lag versus external changes', () => {
-    const coordinator = new AssetResolutionCoordinator('ri.scout.main.asset.a');
-
-    coordinator.trackCommittedAssetRid('ri.scout.main.asset.b');
-    coordinator.trackCommittedAssetRid('ri.scout.main.asset.c');
-
-    expect(coordinator.consumeQueryAssetRidEcho('ri.scout.main.asset.a')).toBe('lag');
-    expect(coordinator.consumeQueryAssetRidEcho('ri.scout.main.asset.b')).toBe('lag');
-    expect(coordinator.consumeQueryAssetRidEcho('ri.scout.main.asset.c')).toBe('sync');
-
-    coordinator.trackCommittedAssetRid('ri.scout.main.asset.d');
-
-    expect(coordinator.consumeQueryAssetRidEcho('ri.scout.main.asset.external')).toBe('external');
-  });
-
   it('re-arming the direct fetch supersedes the previous one without leaking its timer', () => {
     jest.useFakeTimers();
     const coordinator = new AssetResolutionCoordinator();
@@ -37,41 +22,61 @@ describe('AssetResolutionCoordinator', () => {
     const fetchDirectRid = jest.fn();
 
     coordinator.scheduleDirectRidFetch(fetchDirectRid, 300);
+    const reconcileSignal = coordinator.beginReconcileFetch();
     const signal = coordinator.beginSelectFetch('ri.scout.main.asset.a');
     jest.advanceTimersByTime(300);
 
     expect(fetchDirectRid).not.toHaveBeenCalled();
+    expect(reconcileSignal.aborted).toBe(true);
     expect(signal.aborted).toBe(false);
     expect(coordinator.eventOwnedConcreteAssetRid).toBe('ri.scout.main.asset.a');
   });
 
-  it('cancels direct timers, fetch controllers, and event ownership in one place', () => {
+  it('cancels direct timers, fetch controllers, reconcile fetches, and event ownership in one place', () => {
     jest.useFakeTimers();
     const coordinator = new AssetResolutionCoordinator();
     const fetchDirectRid = jest.fn();
 
     const selectSignal = coordinator.beginSelectFetch('ri.scout.main.asset.a');
     coordinator.scheduleDirectRidFetch(fetchDirectRid, 300);
+    const reconcileSignal = coordinator.beginReconcileFetch();
 
-    expect(coordinator.cancelInFlightResolution()).toBe('ri.scout.main.asset.a');
+    coordinator.cancelInFlightResolution();
 
     jest.advanceTimersByTime(300);
     expect(fetchDirectRid).not.toHaveBeenCalled();
     expect(selectSignal.aborted).toBe(true);
+    expect(reconcileSignal.aborted).toBe(true);
     expect(coordinator.eventOwnedConcreteAssetRid).toBeUndefined();
   });
 
-  it('invalidates superseded asset option failures and suppresses unmounted failures', () => {
+  it('stale reconcile cleanup does not abort the current reconcile fetch', () => {
+    const coordinator = new AssetResolutionCoordinator();
+
+    const firstSignal = coordinator.beginReconcileFetch();
+    const secondSignal = coordinator.beginReconcileFetch();
+
+    coordinator.cancelReconcileFetch(firstSignal);
+
+    expect(firstSignal.aborted).toBe(true);
+    expect(secondSignal.aborted).toBe(false);
+
+    coordinator.cancelReconcileFetch(secondSignal);
+
+    expect(secondSignal.aborted).toBe(true);
+  });
+
+  it('tracks the current asset options request and invalidates it on unmount', () => {
     const coordinator = new AssetResolutionCoordinator();
 
     const first = coordinator.startAssetOptionsRequest();
     const second = coordinator.startAssetOptionsRequest();
 
-    expect(coordinator.shouldPublishAssetOptionsFailure(first)).toBe(false);
-    expect(coordinator.shouldPublishAssetOptionsFailure(second)).toBe(true);
+    expect(coordinator.isCurrentAssetOptionsRequest(first)).toBe(false);
+    expect(coordinator.isCurrentAssetOptionsRequest(second)).toBe(true);
 
     coordinator.markUnmounted();
 
-    expect(coordinator.shouldPublishAssetOptionsFailure(second)).toBe(false);
+    expect(coordinator.isCurrentAssetOptionsRequest(second)).toBe(false);
   });
 });

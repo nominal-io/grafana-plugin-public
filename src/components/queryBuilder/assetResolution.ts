@@ -1,88 +1,13 @@
-export type AssetRidEchoStatus = 'none' | 'sync' | 'lag' | 'external';
 type TimerHandle = ReturnType<typeof setTimeout> | number;
 
-/**
- * Classify the query prop's assetRid against the raw values this editor has
- * committed via onChange but not yet seen echoed back. Because the parent's
- * query state moves monotonically through the values written to it, a lagging
- * prop can only ever deliver a value we committed ourselves (or the value it
- * held before the commits) — anything else is a genuine external change.
- *
- * Known limitation (accepted): if a second writer overwrites an un-echoed
- * commit with a value that collides with an older pending entry or the
- * last-reconciled value, that delivery is indistinguishable from lag and is
- * ignored; the editor stays on its local value until the next user edit
- * commits (any commit re-arms the queue, and a non-colliding external value
- * always classifies 'external' and wins). This requires a lagging or
- * multi-writer parent, which Grafana's synchronous single-writer onChange
- * flow does not produce.
- */
-export function classifyAssetRidEcho({
-  raw,
-  lastReconciledRaw,
-  pendingEchoRaws,
-}: {
-  raw: string;
-  lastReconciledRaw: string;
-  pendingEchoRaws: string[];
-}): AssetRidEchoStatus {
-  if (pendingEchoRaws.length === 0) {
-    return 'none';
-  }
-  if (raw === pendingEchoRaws[pendingEchoRaws.length - 1]) {
-    return 'sync';
-  }
-  if (pendingEchoRaws.includes(raw) || raw === lastReconciledRaw) {
-    return 'lag';
-  }
-  return 'external';
-}
-
 export class AssetResolutionCoordinator {
-  private pendingEchoRaws: string[] = [];
-  private lastReconciledRaw: string;
   private assetOptionsRequestId = 0;
   private mounted = true;
   private directRidTimer: TimerHandle | undefined;
   private directRidController: AbortController | undefined;
   private assetSelectController: AbortController | undefined;
+  private reconcileController: AbortController | undefined;
   private ownedConcreteAssetRid: string | undefined;
-
-  constructor(initialAssetRidRaw = '') {
-    this.lastReconciledRaw = initialAssetRidRaw;
-  }
-
-  trackCommittedAssetRid(committedRaw: string): void {
-    this.pendingEchoRaws.push(committedRaw);
-    if (this.pendingEchoRaws.length > 50) {
-      this.pendingEchoRaws.shift();
-    }
-  }
-
-  /**
-   * Classify AND consume: on 'sync'/'external' this clears the pending echo
-   * queue and advances lastReconciledRaw; 'lag' deliberately mutates nothing
-   * so the newer echo (or a genuine external change) can still be recognized
-   * on a later delivery. Because it consumes the queue, only the single
-   * reconcile effect may call it — a second caller peeking at echo status
-   * would drain the queue and make a real lagging echo classify 'external',
-   * reverting the user's newer local edit.
-   */
-  consumeQueryAssetRidEcho(raw: string): AssetRidEchoStatus {
-    const status = classifyAssetRidEcho({
-      raw,
-      lastReconciledRaw: this.lastReconciledRaw,
-      pendingEchoRaws: this.pendingEchoRaws,
-    });
-    if (status === 'lag') {
-      return status;
-    }
-    if (status !== 'none') {
-      this.pendingEchoRaws = [];
-    }
-    this.lastReconciledRaw = raw;
-    return status;
-  }
 
   startAssetOptionsRequest(): number {
     this.assetOptionsRequestId += 1;
@@ -93,7 +18,7 @@ export class AssetResolutionCoordinator {
     this.assetOptionsRequestId += 1;
   }
 
-  shouldPublishAssetOptionsFailure(requestId: number): boolean {
+  isCurrentAssetOptionsRequest(requestId: number): boolean {
     return this.mounted && this.assetOptionsRequestId === requestId;
   }
 
@@ -140,7 +65,7 @@ export class AssetResolutionCoordinator {
 
   /**
    * Begin an event-owned select fetch: supersedes all in-flight resolution
-   * (direct debounce, both controllers, prior ownership), takes ownership of
+   * (direct debounce, active controllers, prior ownership), takes ownership of
    * `rid`, and returns the abort signal for the new fetch.
    */
   beginSelectFetch(rid: string): AbortSignal {
@@ -149,6 +74,21 @@ export class AssetResolutionCoordinator {
     this.assetSelectController = controller;
     this.ownedConcreteAssetRid = rid;
     return controller.signal;
+  }
+
+  beginReconcileFetch(): AbortSignal {
+    this.cancelReconcileFetch();
+    const controller = new AbortController();
+    this.reconcileController = controller;
+    return controller.signal;
+  }
+
+  cancelReconcileFetch(signal?: AbortSignal): void {
+    if (signal && this.reconcileController?.signal !== signal) {
+      return;
+    }
+    this.reconcileController?.abort();
+    this.reconcileController = undefined;
   }
 
   private cancelDirectRidFetch(): void {
@@ -161,17 +101,14 @@ export class AssetResolutionCoordinator {
   /**
    * Single owner of the cancel-in-flight-resolution sequence. Every path that
    * supersedes a pending by-RID fetch must stop the direct-RID debounce, abort
-   * both fetch controllers, and release event ownership; forgetting a step
-   * leaks a controller or strands a pending RID. Returns the RID that was
-   * event-owned so callers can cancel its pending reducer state (the debounced
-   * fetch may not have started yet, so its abort listener may not exist).
+   * active fetch controllers, and release event ownership; forgetting a step
+   * leaks a controller or strands a pending RID.
    */
-  cancelInFlightResolution(): string | undefined {
-    const ownedRid = this.ownedConcreteAssetRid;
+  cancelInFlightResolution(): void {
     this.cancelDirectRidFetch();
     this.assetSelectController?.abort();
     this.assetSelectController = undefined;
+    this.cancelReconcileFetch();
     this.ownedConcreteAssetRid = undefined;
-    return ownedRid;
   }
 }

@@ -114,7 +114,6 @@ export function useNominalQueryBuilder({
       assetInputMethod: asset.assetInputMethod,
       directRID: asset.directRID,
       selectedAsset: asset.selectedAsset,
-      selectedAssetSupportedScopeCount: asset.selectedAssetSupportedScopeCount,
       assetOptions: asset.assetOptions,
       assetSelectValue: asset.assetSelectValue,
       dataScopeOptions: asset.dataScopeOptions,

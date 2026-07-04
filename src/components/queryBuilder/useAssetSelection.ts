@@ -36,7 +36,6 @@ export interface AssetSelectionModel {
   assetInputMethod: AssetInputMethod;
   directRID: string;
   selectedAsset: Asset | null;
-  selectedAssetSupportedScopeCount: number;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
   dataScopeOptions: DataScopeOption[];
@@ -52,6 +51,8 @@ const notifyError = (title: string, message: string) => {
     payload: [title, message],
   });
 };
+
+const isNominalRid = (value: string): boolean => value.trim().startsWith('ri.');
 
 export function useAssetSelection({
   query,
@@ -73,20 +74,13 @@ export function useAssetSelection({
 
   const queryRef = useRef(query);
   queryRef.current = query;
+  const latestAssetOptionsAssetsRef = useRef<Asset[]>([]);
 
   const resolutionCoordinatorRef = useRef<AssetResolutionCoordinator | null>(null);
   if (!resolutionCoordinatorRef.current) {
-    resolutionCoordinatorRef.current = new AssetResolutionCoordinator(query?.assetRid ?? '');
+    resolutionCoordinatorRef.current = new AssetResolutionCoordinator();
   }
   const resolutionCoordinator = resolutionCoordinatorRef.current;
-
-  const commitQueryWithAssetRid = useCallback(
-    (nextQuery: NominalQuery, committedRaw: string) => {
-      resolutionCoordinator.trackCommittedAssetRid(committedRaw);
-      onChange(nextQuery);
-    },
-    [onChange, resolutionCoordinator]
-  );
 
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
@@ -158,40 +152,46 @@ export function useAssetSelection({
 
   const selectedAsset = assetIdentity.selectedAsset;
   const visibleAssetIdentity = useMemo(() => getVisibleAssetIdentity(assetIdentity), [assetIdentity]);
+  const visibleAssetIdentityRef = useRef(visibleAssetIdentity);
+  visibleAssetIdentityRef.current = visibleAssetIdentity;
+  const assetRidSnapshotRef = useRef(assetRidSnapshot);
+  assetRidSnapshotRef.current = assetRidSnapshot;
+  const clearAssetSelection = useCallback(() => {
+    resolutionCoordinator.cancelInFlightResolution();
+    dispatchAssetIdentity({ type: 'clear' });
+  }, [resolutionCoordinator]);
 
   const assetOptions = useCallback<AssetOptionsLoader>(
     async (searchText: string): Promise<AssetOption[]> => {
       const requestId = resolutionCoordinator.startAssetOptionsRequest();
       try {
         const found = await searchAssets(datasourceUrl, searchText);
+        if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
+          latestAssetOptionsAssetsRef.current = found;
+        }
         return buildAssetOptions({
           assets: found,
-          selectedAsset: visibleAssetIdentity.selectedAsset,
-          assetRid: assetRidSnapshot,
+          selectedAsset: visibleAssetIdentityRef.current.selectedAsset,
+          assetRid: assetRidSnapshotRef.current,
         });
       } catch {
         // Only the request id gates the alert: each new search bumps it (and so does a
         // method switch / unmount), so a superseded search stays quiet while a genuine
         // failure of the latest request always surfaces.
-        if (resolutionCoordinator.shouldPublishAssetOptionsFailure(requestId)) {
+        if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
+          latestAssetOptionsAssetsRef.current = [];
           notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
         }
         return [];
       }
     },
-    [datasourceUrl, resolutionCoordinator, visibleAssetIdentity.selectedAsset, assetRidSnapshot]
+    [datasourceUrl, resolutionCoordinator]
   );
 
   useEffect(() => {
-    const controllers: AbortController[] = [];
-    const queryAssetRidRaw = query?.assetRid ?? '';
-    const echoStatus = resolutionCoordinator.consumeQueryAssetRidEcho(queryAssetRidRaw);
-    if (echoStatus === 'lag') {
-      // The prop is re-delivering a value this hook committed itself (or still
-      // holds the pre-commit value); reconciling against it would revert local
-      // edits. The newer echo or a genuine external change re-runs this effect
-      // through the query?.assetRid dependency.
-      return undefined;
+    let reconcileSignal: AbortSignal | undefined;
+    if (query?.assetInputMethod) {
+      setAssetInputMethod(query.assetInputMethod);
     }
     const eventOwnedConcreteAssetRid = resolutionCoordinator.eventOwnedConcreteAssetRid;
     if (eventOwnedConcreteAssetRid && assetRidResolved !== eventOwnedConcreteAssetRid) {
@@ -213,17 +213,15 @@ export function useAssetSelection({
           setDirectRID(action.raw);
           break;
         case 'fetchByRid': {
-          const controller = new AbortController();
-          controllers.push(controller);
-          applyAssetFromRid(action.rid, action.label, controller.signal);
+          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+          applyAssetFromRid(action.rid, action.label, reconcileSignal);
           break;
         }
         case 'inferDirect': {
           setAssetInputMethod('direct');
           setDirectRID(action.raw);
-          const controller = new AbortController();
-          controllers.push(controller);
-          applyAssetFromRid(action.rid, action.label, controller.signal);
+          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+          applyAssetFromRid(action.rid, action.label, reconcileSignal);
           break;
         }
         case 'clearIdentity':
@@ -232,7 +230,7 @@ export function useAssetSelection({
       }
     }
 
-    return controllers.length > 0 ? () => controllers.forEach((controller) => controller.abort()) : undefined;
+    return reconcileSignal ? () => resolutionCoordinator.cancelReconcileFetch(reconcileSignal) : undefined;
   }, [
     query?.assetRid,
     query?.assetInputMethod,
@@ -284,61 +282,76 @@ export function useAssetSelection({
       resolutionCoordinator.cancelInFlightResolution();
       resolutionCoordinator.invalidateAssetOptionsRequests();
       setAssetInputMethod(method);
-      dispatchAssetIdentity({ type: 'clear' });
       setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
-      // The commit carries assetRid (unchanged), so it must go through the echo
-      // bookkeeping: a plain onChange would leave any un-echoed prior commit in
-      // pendingEchoRaws, and this commit's own echo would classify as 'lag'.
-      commitQueryWithAssetRid(changeAssetInputMethodQuery(query, method), query?.assetRid ?? '');
+      onChange(changeAssetInputMethodQuery(query, method));
     },
-    [commitQueryWithAssetRid, markInteracted, query, resolutionCoordinator]
+    [markInteracted, onChange, query, resolutionCoordinator]
   );
 
   const selectAsset = useCallback(
     (value: string) => {
       markInteracted();
+      const trimmedValue = value.trim();
 
-      if (!value.trim()) {
+      if (!trimmedValue) {
         // Mirror changeDirectRID: a blank/whitespace selection clears the asset rather
         // than committing whitespace as the assetRid and firing a doomed by-RID fetch.
-        resolutionCoordinator.cancelInFlightResolution();
-        dispatchAssetIdentity({ type: 'clear' });
-        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ''), '');
+        clearAssetSelection();
+        onChange(changeSearchAssetRidQuery(query, ''));
         return;
       }
 
-      const isVariable = value.includes('$');
-      const selectedRidResolution = resolveTemplateText(value);
-      const ridToFind = isVariable ? selectedRidResolution.resolved : value;
+      const isVariable = trimmedValue.includes('$');
+      if (!isVariable && !isNominalRid(trimmedValue)) {
+        return;
+      }
+
+      const selectedRidResolution = resolveTemplateText(trimmedValue);
+      const ridToFind = isVariable ? selectedRidResolution.resolved : trimmedValue;
+      const isConcreteRid = Boolean(ridToFind) && !ridToFind.includes('$');
 
       if (!isVariable && isAssetFullyResolved(assetIdentity, ridToFind)) {
         // Re-picking the fully resolved current asset: nothing to fetch. A fallback
         // asset (empty dataScopes) still refetches so a failed lookup stays retryable.
-        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ridToFind), ridToFind);
+        onChange(changeSearchAssetRidQuery(query, ridToFind));
         return;
       }
 
-      if (ridToFind && !ridToFind.includes('$') && !isVariable) {
-        applyAssetFromRid(ridToFind, DIRECT_ASSET_RID_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
+      const displayedAsset = !isVariable
+        ? latestAssetOptionsAssetsRef.current.find((asset) => asset.rid === ridToFind)
+        : undefined;
+      if (isConcreteRid && !isVariable) {
+        if (displayedAsset) {
+          resolutionCoordinator.cancelInFlightResolution();
+          dispatchAssetIdentity({ type: 'beginResolving', rid: ridToFind });
+          dispatchAssetIdentity({
+            type: 'resolveAsset',
+            rid: ridToFind,
+            asset: displayedAsset,
+            fallbackLabel: DIRECT_ASSET_RID_LABEL,
+          });
+        } else {
+          applyAssetFromRid(ridToFind, DIRECT_ASSET_RID_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
+        }
       } else if (isVariable && selectedRidResolution.isResolved) {
         resolutionCoordinator.cancelInFlightResolution();
         dispatchAssetIdentity({ type: 'beginResolving', rid: selectedRidResolution.resolved });
       } else {
-        resolutionCoordinator.cancelInFlightResolution();
-        dispatchAssetIdentity({ type: 'clear' });
+        clearAssetSelection();
       }
 
       if (isVariable) {
-        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, value), value);
-      } else if (ridToFind && !ridToFind.includes('$')) {
-        commitQueryWithAssetRid(changeSearchAssetRidQuery(query, ridToFind), ridToFind);
+        onChange(changeSearchAssetRidQuery(query, trimmedValue));
+      } else if (isConcreteRid) {
+        onChange(changeSearchAssetRidQuery(query, ridToFind));
       }
     },
     [
       applyAssetFromRid,
       assetIdentity,
-      commitQueryWithAssetRid,
+      clearAssetSelection,
       markInteracted,
+      onChange,
       query,
       resolutionCoordinator,
       resolveTemplateText,
@@ -349,25 +362,27 @@ export function useAssetSelection({
     (rid: string) => {
       markInteracted();
       setDirectRID(rid);
-      resolutionCoordinator.cancelInFlightResolution();
 
       if (!rid.trim()) {
-        dispatchAssetIdentity({ type: 'clear' });
-        commitQueryWithAssetRid(changeDirectAssetRidQuery(queryRef.current, ''), '');
+        clearAssetSelection();
+        onChange(changeDirectAssetRidQuery(queryRef.current, ''));
         return;
       }
 
       const ridResolution = resolveTemplateText(rid);
-      const isConcrete = ridResolution.isResolved && !ridResolution.hasTemplate;
+      if (!ridResolution.isResolved) {
+        clearAssetSelection();
+        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
+        return;
+      }
+
+      const isConcrete = !ridResolution.hasTemplate;
+      resolutionCoordinator.cancelInFlightResolution();
       // Set the event-owned RID before committing the query so the update cannot
       // schedule a second fetch for the same selection (see AssetResolutionCoordinator).
       resolutionCoordinator.setEventOwnedConcreteAssetRid(isConcrete ? ridResolution.resolved : undefined);
-      if (ridResolution.isResolved) {
-        dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
-      } else {
-        dispatchAssetIdentity({ type: 'clear' });
-      }
-      commitQueryWithAssetRid(changeDirectAssetRidQuery(queryRef.current, rid), rid);
+      dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
+      onChange(changeDirectAssetRidQuery(queryRef.current, rid));
 
       if (!isConcrete) {
         return;
@@ -377,7 +392,7 @@ export function useAssetSelection({
         applyAssetFromRid(ridResolution.resolved, DIRECT_ASSET_RID_LABEL, signal);
       }, 300);
     },
-    [applyAssetFromRid, commitQueryWithAssetRid, markInteracted, resolutionCoordinator, resolveTemplateText]
+    [applyAssetFromRid, clearAssetSelection, markInteracted, onChange, resolutionCoordinator, resolveTemplateText]
   );
 
   const selectDataScope = useCallback(
@@ -425,7 +440,6 @@ export function useAssetSelection({
     assetInputMethod,
     directRID,
     selectedAsset: visibleAssetIdentity.selectedAsset,
-    selectedAssetSupportedScopeCount: visibleAssetIdentity.selectedAssetSupportedScopeCount,
     assetOptions,
     assetSelectValue,
     dataScopeOptions,
