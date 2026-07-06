@@ -18,7 +18,7 @@ import {
   isAssetFullyResolved,
 } from './assetIdentity';
 import { AssetResolutionCoordinator } from './assetResolution';
-import type { TemplateValueResolution } from './templateResolution';
+import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod, AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
@@ -135,20 +135,10 @@ export function useAssetSelection({
     [datasourceUrl, resolutionCoordinator]
   );
 
-  const assetRidRaw = assetRidResolution.raw;
   const assetRidResolved = assetRidResolution.resolved;
-  const assetRidHasTemplate = assetRidResolution.hasTemplate;
   const assetRidIsResolved = assetRidResolution.isResolved;
-
-  const assetRidSnapshot = useMemo(
-    () => ({
-      raw: assetRidRaw,
-      resolved: assetRidResolved,
-      hasTemplate: assetRidHasTemplate,
-      isResolved: assetRidIsResolved,
-    }),
-    [assetRidRaw, assetRidResolved, assetRidHasTemplate, assetRidIsResolved]
-  );
+  const assetRidSnapshot = useResolutionSnapshot(assetRidResolution);
+  const dataScopeResolutionSnapshot = useResolutionSnapshot(dataScopeResolution);
 
   const selectedAsset = assetIdentity.selectedAsset;
   const visibleAssetIdentity = useMemo(() => getVisibleAssetIdentity(assetIdentity), [assetIdentity]);
@@ -420,20 +410,9 @@ export function useAssetSelection({
     () =>
       buildDataScopeOptions({
         dataScopes: visibleAssetIdentity.dataScopes,
-        dataScopeName: {
-          raw: dataScopeResolution.raw,
-          resolved: dataScopeResolution.resolved,
-          hasTemplate: dataScopeResolution.hasTemplate,
-          isResolved: dataScopeResolution.isResolved,
-        },
+        dataScopeName: dataScopeResolutionSnapshot,
       }),
-    [
-      visibleAssetIdentity.dataScopes,
-      dataScopeResolution.raw,
-      dataScopeResolution.resolved,
-      dataScopeResolution.hasTemplate,
-      dataScopeResolution.isResolved,
-    ]
+    [visibleAssetIdentity.dataScopes, dataScopeResolutionSnapshot]
   );
 
   return {
