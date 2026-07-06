@@ -13,9 +13,6 @@ export interface NominalQuery extends DataQuery {
   // For enum/string channels, this field is ignored — the backend uses Mode.
   aggregations?: string[];
 
-  // Query builder mode - remembers how the query was built
-  assetInputMethod?: 'search' | 'direct';
-
   // Query parameters
   buckets?: number;
   queryType?: 'timeShift' | 'decimation' | 'raw';

@@ -2,8 +2,6 @@ import type { SelectableValue } from '@grafana/data';
 import type { ComboboxOption } from '@grafana/ui';
 import type { Asset } from '../../utils/api';
 
-export type AssetInputMethod = 'search' | 'direct';
-
 export type PickerOption = ComboboxOption<string>;
 export type AssetOption = PickerOption;
 export type DataScopeOption = PickerOption;
@@ -22,8 +20,6 @@ export interface AggregationState {
 }
 
 export interface QueryBuilderState {
-  assetInputMethod: AssetInputMethod;
-  directRID: string;
   selectedAsset: Asset | null;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
@@ -41,9 +37,7 @@ export interface QueryBuilderState {
 }
 
 export interface QueryBuilderCommands {
-  changeAssetInputMethod: (method: AssetInputMethod) => void;
   selectAsset: (assetRid: string) => void;
-  changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
   selectChannel: (selection: ChannelOption) => void;
   changeAggregations: (selected: Array<SelectableValue<string>>) => void;
