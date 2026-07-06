@@ -25,155 +25,113 @@ describe('decideAssetReconcile', () => {
     expect(
       decideAssetReconcile({
         assetRid: undefined,
-        assetInputMethod: undefined,
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([]);
-    expect(
-      decideAssetReconcile({
-        assetRid: undefined,
-        assetInputMethod: 'direct',
-        selectedAssetRid: ASSET.rid,
-        assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
-        eventOwnedConcreteAssetRid: undefined,
-      })
-    ).toEqual([]);
+    ).toBeNull();
   });
 
-  it('mirrors blank direct input and clears asset identity when a direct RID is cleared', () => {
+  it('clears asset identity when the saved RID is empty', () => {
     expect(
       decideAssetReconcile({
         assetRid: '',
-        assetInputMethod: 'direct',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([{ kind: 'mirrorDirectRaw', raw: '' }, { kind: 'clearIdentity' }]);
+    ).toEqual({ kind: 'clearIdentity' });
   });
 
-  it('mirrors a direct raw RID but does not fetch an unresolved template', () => {
+  it('does not fetch an unresolved template', () => {
     expect(
       decideAssetReconcile({
         assetRid: '$asset',
-        assetInputMethod: 'direct',
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', resolved: '$asset', hasTemplate: true, isResolved: false }),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([{ kind: 'mirrorDirectRaw', raw: '$asset' }]);
+    ).toBeNull();
   });
 
-  it('clears asset identity when a search template resolves to an empty RID', () => {
+  it('does nothing when a template has not resolved to a RID yet', () => {
     expect(
       decideAssetReconcile({
         assetRid: '$asset',
-        assetInputMethod: 'search',
+        selectedAssetRid: ASSET.rid,
+        assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: false }),
+        eventOwnedConcreteAssetRid: undefined,
+      })
+    ).toBeNull();
+  });
+
+  it('clears asset identity when a template resolves to an empty RID', () => {
+    expect(
+      decideAssetReconcile({
+        assetRid: '$asset',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: true }),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([{ kind: 'clearIdentity' }]);
+    ).toEqual({ kind: 'clearIdentity' });
   });
 
-  it('mirrors direct raw input and clears asset identity when a direct template resolves to an empty RID', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: '$asset',
-        assetInputMethod: 'direct',
-        selectedAssetRid: ASSET.rid,
-        assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: true }),
-        eventOwnedConcreteAssetRid: undefined,
-      })
-    ).toEqual([{ kind: 'mirrorDirectRaw', raw: '$asset' }, { kind: 'clearIdentity' }]);
-  });
-
-  it('stops after mirroring when the resolved direct RID is already selected', () => {
+  it('does nothing when the resolved RID is already selected', () => {
     expect(
       decideAssetReconcile({
         assetRid: ASSET.rid,
-        assetInputMethod: 'direct',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([{ kind: 'mirrorDirectRaw', raw: ASSET.rid }]);
+    ).toBeNull();
   });
 
-  it('skips a concrete search RID owned by an event handler', () => {
+  it('skips a concrete RID owned by an event handler', () => {
     expect(
       decideAssetReconcile({
         assetRid: ASSET.rid,
-        assetInputMethod: 'search',
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: ASSET.rid,
       })
-    ).toEqual([]);
+    ).toEqual(null);
   });
 
-  it('mirrors and fetches a saved direct RID', () => {
+  it('fetches a concrete saved RID', () => {
     expect(
       decideAssetReconcile({
         assetRid: ASSET.rid,
-        assetInputMethod: 'direct',
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([
-      { kind: 'mirrorDirectRaw', raw: ASSET.rid },
-      { kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (Direct RID)' },
-    ]);
+    ).toEqual({ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (RID)' });
   });
 
-  it('infers direct mode for an untyped saved RID', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: ASSET.rid,
-        assetInputMethod: undefined,
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
-      })
-    ).toEqual([{ kind: 'inferDirect', raw: ASSET.rid, rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
+  it('fetches a concrete saved RID even when legacy inputs still carry an input-method key', () => {
+    const legacyInputs = {
+      assetRid: ASSET.rid,
+      selectedAssetRid: undefined,
+      assetRidResolution: resolution(),
+      eventOwnedConcreteAssetRid: undefined,
+      assetInputMethod: 'direct',
+    };
+    expect(decideAssetReconcile(legacyInputs)).toEqual({
+      kind: 'fetchByRid',
+      rid: ASSET.rid,
+      label: 'Asset (RID)',
+    });
   });
 
-  it('fetches by RID (not infer direct) for an untyped saved template RID', () => {
+  it('fetches a resolved template RID with the template label', () => {
     expect(
       decideAssetReconcile({
         assetRid: '$asset',
-        assetInputMethod: undefined,
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
         eventOwnedConcreteAssetRid: undefined,
       })
-    ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' }]);
-  });
-
-  it('fetches by RID for a saved search-mode template RID', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: '$asset',
-        assetInputMethod: 'search',
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
-        eventOwnedConcreteAssetRid: undefined,
-      })
-    ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' }]);
-  });
-
-  it('fetches a concrete search-mode RID not owned by an event handler', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: ASSET.rid,
-        assetInputMethod: 'search',
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
-      })
-    ).toEqual([{ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (Direct RID)' }]);
+    ).toEqual({ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' });
   });
 });
