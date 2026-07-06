@@ -2,6 +2,8 @@ import { test, expect } from '@grafana/plugin-e2e';
 import { setTimeout } from 'node:timers/promises';
 
 const ASSET_PLACEHOLDER = 'Search assets or paste a RID...';
+const DATA_SCOPE_PLACEHOLDER = 'Choose scope or use $variable...';
+const TEST_ASSET_RID = 'ri.scout.cerulean-staging.asset.test-asset-rid';
 
 async function dismissWhatsNewModal(page: any) {
   const dialog = page.getByRole('dialog', { name: /what's new in grafana/i });
@@ -99,6 +101,12 @@ test('data query should work with asset and channel selection', async ({
 
   const assetInput = queryRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true });
   await expect(assetInput).toBeVisible();
-  await assetInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
-  await expect(assetInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
+  await assetInput.fill(TEST_ASSET_RID);
+  // fill() never fires selectAsset; Enter commits the custom-value option.
+  await assetInput.press('Enter');
+
+  // Data scope only renders for a committed assetRid; the summary RID appears
+  // once the by-RID fetch settles (real or fallback asset).
+  await expect(queryRow.getByPlaceholder(DATA_SCOPE_PLACEHOLDER, { exact: true })).toBeVisible();
+  await expect(queryRow.getByText(TEST_ASSET_RID)).toBeVisible();
 });

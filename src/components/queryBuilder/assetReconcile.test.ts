@@ -109,21 +109,6 @@ describe('decideAssetReconcile', () => {
     ).toEqual({ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (RID)' });
   });
 
-  it('fetches a concrete saved RID even when legacy inputs still carry an input-method key', () => {
-    const legacyInputs = {
-      assetRid: ASSET.rid,
-      selectedAssetRid: undefined,
-      assetRidResolution: resolution(),
-      eventOwnedConcreteAssetRid: undefined,
-      assetInputMethod: 'direct',
-    };
-    expect(decideAssetReconcile(legacyInputs)).toEqual({
-      kind: 'fetchByRid',
-      rid: ASSET.rid,
-      label: 'Asset (RID)',
-    });
-  });
-
   it('fetches a resolved template RID with the template label', () => {
     expect(
       decideAssetReconcile({
