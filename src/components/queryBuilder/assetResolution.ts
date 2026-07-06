@@ -1,10 +1,6 @@
-type TimerHandle = ReturnType<typeof setTimeout> | number;
-
 export class AssetResolutionCoordinator {
   private assetOptionsRequestId = 0;
   private mounted = true;
-  private directRidTimer: TimerHandle | undefined;
-  private directRidController: AbortController | undefined;
   private assetSelectController: AbortController | undefined;
   private reconcileController: AbortController | undefined;
   private ownedConcreteAssetRid: string | undefined;
@@ -12,10 +8,6 @@ export class AssetResolutionCoordinator {
   startAssetOptionsRequest(): number {
     this.assetOptionsRequestId += 1;
     return this.assetOptionsRequestId;
-  }
-
-  invalidateAssetOptionsRequests(): void {
-    this.assetOptionsRequestId += 1;
   }
 
   isCurrentAssetOptionsRequest(requestId: number): boolean {
@@ -36,11 +28,9 @@ export class AssetResolutionCoordinator {
 
   markUnmounted(): void {
     this.mounted = false;
-    this.invalidateAssetOptionsRequests();
-  }
-
-  setEventOwnedConcreteAssetRid(rid: string | undefined): void {
-    this.ownedConcreteAssetRid = rid;
+    // Invalidate any in-flight asset options request so a late failure cannot
+    // alert after unmount.
+    this.assetOptionsRequestId += 1;
   }
 
   clearEventOwnedConcreteAssetRidIfMatches(rid: string): void {
@@ -50,23 +40,10 @@ export class AssetResolutionCoordinator {
   }
 
   /**
-   * Arm the debounced direct-RID fetch. Cancels any previously armed direct
-   * fetch first, so re-typing can never leak the prior timer or controller.
-   * Deliberately does NOT touch select fetches or event ownership — the
-   * direct-RID path sets ownership before committing the query, and a full
-   * cancel here would release it.
-   */
-  scheduleDirectRidFetch(run: (signal: AbortSignal) => void, delayMs: number): void {
-    this.cancelDirectRidFetch();
-    const controller = new AbortController();
-    this.directRidController = controller;
-    this.directRidTimer = setTimeout(() => run(controller.signal), delayMs);
-  }
-
-  /**
-   * Begin an event-owned select fetch: supersedes all in-flight resolution
-   * (direct debounce, active controllers, prior ownership), takes ownership of
-   * `rid`, and returns the abort signal for the new fetch.
+   * Begin an event-owned select fetch: supersedes all in-flight resolution and
+   * takes ownership of `rid`. This is the only place event ownership is set;
+   * it is released by clearEventOwnedConcreteAssetRidIfMatches or
+   * cancelInFlightResolution.
    */
   beginSelectFetch(rid: string): AbortSignal {
     this.cancelInFlightResolution();
@@ -76,6 +53,9 @@ export class AssetResolutionCoordinator {
     return controller.signal;
   }
 
+  // The select/reconcile two-controller split is deliberate: reconcile-effect
+  // cleanup must abort only its own fetch (via the signal-identity check in
+  // cancelReconcileFetch), never an event-owned select fetch.
   beginReconcileFetch(): AbortSignal {
     this.cancelReconcileFetch();
     const controller = new AbortController();
@@ -91,21 +71,13 @@ export class AssetResolutionCoordinator {
     this.reconcileController = undefined;
   }
 
-  private cancelDirectRidFetch(): void {
-    clearTimeout(this.directRidTimer);
-    this.directRidTimer = undefined;
-    this.directRidController?.abort();
-    this.directRidController = undefined;
-  }
-
   /**
    * Single owner of the cancel-in-flight-resolution sequence. Every path that
-   * supersedes a pending by-RID fetch must stop the direct-RID debounce, abort
-   * active fetch controllers, and release event ownership; forgetting a step
-   * leaks a controller or strands a pending RID.
+   * supersedes a pending by-RID fetch must abort the active select and
+   * reconcile controllers and release event ownership; forgetting a step leaks
+   * a controller or strands a pending RID.
    */
   cancelInFlightResolution(): void {
-    this.cancelDirectRidFetch();
     this.assetSelectController?.abort();
     this.assetSelectController = undefined;
     this.cancelReconcileFetch();
