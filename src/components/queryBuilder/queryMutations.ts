@@ -1,41 +1,18 @@
 import { DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
-import type { AssetInputMethod } from './queryBuilderTypes';
 
 const QUERY_BUILDER_EXECUTION_DEFAULTS = {
   queryType: 'decimation' as const,
   buckets: 1000,
 };
 
-export function changeAssetInputMethodQuery(query: NominalQuery, assetInputMethod: AssetInputMethod): NominalQuery {
-  return { ...query, assetInputMethod };
+export function changeAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
+  return { ...query, assetRid };
 }
 
-export function changeSearchAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  return { ...query, assetRid, assetInputMethod: 'search' };
-}
-
-export function changeDirectAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  if (!assetRid.trim()) {
-    return { ...query, assetRid: '', assetInputMethod: 'direct' };
-  }
-
-  return {
-    ...query,
-    assetRid,
-    assetInputMethod: 'direct',
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
-  };
-}
-
-export function changeSelectedDataScopeQuery(
-  query: NominalQuery,
-  dataScopeName: string,
-  assetInputMethod: AssetInputMethod
-): NominalQuery {
+export function changeSelectedDataScopeQuery(query: NominalQuery, dataScopeName: string): NominalQuery {
   return {
     ...query,
     dataScopeName,
-    assetInputMethod,
     ...QUERY_BUILDER_EXECUTION_DEFAULTS,
   };
 }
@@ -45,11 +22,9 @@ export function changeSelectedChannelQuery(
   {
     channel,
     dataType,
-    assetInputMethod,
   }: {
     channel: string;
     dataType: string;
-    assetInputMethod: AssetInputMethod;
   }
 ): NominalQuery {
   return {
@@ -57,7 +32,6 @@ export function changeSelectedChannelQuery(
     channel,
     channelDataType: dataType,
     dataScopeName: query?.dataScopeName || '',
-    assetInputMethod,
     ...QUERY_BUILDER_EXECUTION_DEFAULTS,
   };
 }
