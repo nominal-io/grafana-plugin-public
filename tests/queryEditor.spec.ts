@@ -36,9 +36,9 @@ async function createDashboardWithPanel(request: any) {
 
 async function getQueryEditorRow(panelEditPage: any, page: any) {
   const builtInRow = panelEditPage.getQueryEditorRow('A');
-  const builtInSearchRadio = builtInRow.getByRole('radio', { name: 'Asset Search' });
+  const builtInAssetInput = builtInRow.getByPlaceholder('Search assets');
 
-  if (await builtInSearchRadio.isVisible().catch(() => false)) {
+  if (await builtInAssetInput.isVisible().catch(() => false)) {
     return builtInRow;
   }
 
@@ -62,7 +62,7 @@ test('smoke: should render query editor', async ({ gotoPanelEditPage, page, requ
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
-  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
+  await expect(queryRow.getByPlaceholder('Search assets')).toBeVisible();
 });
 
 test('should trigger new query when search field is changed', async ({
@@ -78,8 +78,6 @@ test('should trigger new query when search field is changed', async ({
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
 
-  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-  await queryRow.getByRole('radio', { name: 'Asset Search' }).check();
   const searchInput = queryRow.getByPlaceholder('Search assets');
   await searchInput.fill('drone');
   await setTimeout(1000);
@@ -97,9 +95,8 @@ test('data query should work with asset and channel selection', async ({
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
 
-  await expect(queryRow.getByRole('radio', { name: 'Asset Search' })).toBeVisible();
-  await queryRow.getByRole('radio', { name: 'Asset RID' }).check();
-  const ridInput = queryRow.getByPlaceholder('ri.scout.cerulean-staging.asset...');
-  await ridInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
-  await expect(ridInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
+  const assetInput = queryRow.getByPlaceholder('Search assets');
+  await expect(assetInput).toBeVisible();
+  await assetInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
+  await expect(assetInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
 });

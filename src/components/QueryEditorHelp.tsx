@@ -40,7 +40,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
 
 const timeSeriesExample: NominalQuery = {
   refId: 'A',
-  assetInputMethod: 'direct',
   assetRid: '${asset}',
   dataScopeName: '${datascope}',
   channel: '${channel}',

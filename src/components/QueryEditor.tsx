@@ -6,7 +6,6 @@ import {
   Input,
   Stack,
   MultiCombobox,
-  RadioButtonGroup,
   useStyles2,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
@@ -39,9 +38,6 @@ const getStyles = (theme: GrafanaTheme2) => ({
       marginBottom: theme.spacing(0.5),
       width: '100%',
     }),
-  methodToggle: css({
-    marginRight: theme.spacing(1),
-  }),
   assetSummary: css({
     marginTop: theme.spacing(0.75),
     padding: theme.spacing(0.75, 1.25),
@@ -125,46 +121,22 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
           <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
-            {/* Asset Input Method */}
-            <div className={styles.methodToggle}>
-              <RadioButtonGroup
-                options={[
-                  { label: 'Asset Search', value: 'search' },
-                  { label: 'Asset RID', value: 'direct' },
-                ]}
-                value={state.assetInputMethod}
-                onChange={commands.changeAssetInputMethod}
-                size="sm"
-              />
-            </div>
-
             {/* Asset Selection */}
-            {state.assetInputMethod === 'search' ? (
-              <InlineField label="Asset" labelWidth={8}>
-                <Combobox
-                  id="nominal-query-asset-picker"
-                  value={state.assetSelectValue}
-                  options={state.assetOptions}
-                  onChange={(selection) => commands.selectAsset(selection.value)}
-                  placeholder="Search assets or paste a RID..."
-                  createCustomValue
-                  isClearable={false}
-                  width="auto"
-                  minWidth={30}
-                  maxWidth={100}
-                  data-testid="asset-combobox"
-                />
-              </InlineField>
-            ) : (
-              <InlineField label="Asset RID" labelWidth={12}>
-                <Input
-                  placeholder="ri.scout.cerulean-staging.asset..."
-                  value={state.directRID}
-                  onChange={(event) => commands.changeDirectRID(event.currentTarget.value)}
-                  width={40}
-                />
-              </InlineField>
-            )}
+            <InlineField label="Asset" labelWidth={8}>
+              <Combobox
+                id="nominal-query-asset-picker"
+                value={state.assetSelectValue}
+                options={state.assetOptions}
+                onChange={(selection) => commands.selectAsset(selection.value)}
+                placeholder="Search assets or paste a RID..."
+                createCustomValue
+                isClearable={false}
+                width="auto"
+                minWidth={30}
+                maxWidth={100}
+                data-testid="asset-combobox"
+              />
+            </InlineField>
 
             {state.assetComplete && (
               <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
