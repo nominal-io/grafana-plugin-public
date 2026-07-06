@@ -80,7 +80,7 @@ describe('assetIdentity', () => {
       type: 'resolveAsset',
       rid: assetB.rid,
       asset: assetB,
-      fallbackLabel: 'Asset (Direct RID)',
+      fallbackLabel: 'Asset (RID)',
     });
 
     expect(resolved).toEqual({
@@ -100,7 +100,7 @@ describe('assetIdentity', () => {
         type: 'resolveAsset',
         rid: assetA.rid,
         asset: assetA,
-        fallbackLabel: 'Asset (Direct RID)',
+        fallbackLabel: 'Asset (RID)',
       })
     ).toBe(pending);
   });
@@ -137,12 +137,12 @@ describe('assetIdentity', () => {
         type: 'resolveAsset',
         rid: assetB.rid,
         asset: null,
-        fallbackLabel: 'Asset (Direct RID)',
+        fallbackLabel: 'Asset (RID)',
       })
     ).toEqual({
       selectedAsset: {
         rid: assetB.rid,
-        title: 'Asset (Direct RID)',
+        title: 'Asset (RID)',
         labels: [],
         dataScopes: [],
         properties: {},

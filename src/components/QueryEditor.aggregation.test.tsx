@@ -22,7 +22,6 @@ const mockDatasource = { url: '/api/datasources/uid/test/resources' } as unknown
 const BASE_QUERY: Partial<NominalQuery> = {
   refId: 'A',
   assetRid: 'ri.scout.main.asset.abc123',
-  assetInputMethod: 'direct',
   dataScopeName: 'default',
   queryType: 'decimation',
   buckets: 1000,

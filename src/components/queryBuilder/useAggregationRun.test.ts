@@ -7,7 +7,6 @@ function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
   return {
     refId: 'A',
     assetRid: 'ri.scout.main.asset.abc',
-    assetInputMethod: 'direct',
     dataScopeName: 'default',
     channel: 'temp',
     queryType: 'decimation',
