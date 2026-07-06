@@ -332,7 +332,7 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
   });
 
-  it('selecting concrete search RID fetches once and keeps it on resolution', async () => {
+  it('selecting a new concrete RID resolves it through the reconcile effect', async () => {
     const pendingFetch = deferred<Asset | null>();
     mockFetchAssetByRid.mockReturnValue(pendingFetch.promise);
 
@@ -345,14 +345,13 @@ describe('useAssetSelection', () => {
     });
 
     expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid }));
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
+    // No immediate fetch: the reconcile effect is the single by-RID fetch trigger.
+    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
 
     harness.rerenderCurrent();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      await Promise.resolve();
+    await waitFor(() => {
+      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     });
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
@@ -365,7 +364,7 @@ describe('useAssetSelection', () => {
 
   it('hides stale asset controls while a picked RID is loading', async () => {
     const ASSET_A = ASSET;
-    const ASSET_B: Asset = {
+    const ASSET_B_LOADING: Asset = {
       ...ASSET,
       rid: 'ri.scout.main.asset.bbb',
       title: 'Asset BBB',
@@ -374,13 +373,14 @@ describe('useAssetSelection', () => {
     const pendingFetch = deferred<Asset | null>();
     mockFetchAssetByRid.mockResolvedValueOnce(ASSET_A).mockReturnValueOnce(pendingFetch.promise);
 
-    const hookArgs = args();
-    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET_A.rid);
     });
+    harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
       expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
@@ -388,22 +388,25 @@ describe('useAssetSelection', () => {
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset(ASSET_B.rid);
+      result.current.selectAsset(ASSET_B_LOADING.rid);
     });
 
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
-    // Hidden-state shape (null asset, 0 scopes, empty scope options) is covered by the
-    // assetIdentity reducer unit tests; here we only assert this path enters that state.
+    // beginResolving masks the stale asset synchronously, before the reconcile fetch.
     expect(result.current.selectedAsset).toBeNull();
+
+    harness.rerenderCurrent();
+    await waitFor(() => {
+      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
-      pendingFetch.resolve(ASSET_B);
+      pendingFetch.resolve(ASSET_B_LOADING);
       await pendingFetch.promise;
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B_LOADING.rid);
   });
 
   it('clears an empty-resolved template so a later matching RID can show the selected asset', async () => {
@@ -502,63 +505,6 @@ describe('useAssetSelection', () => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
     });
     expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it('does not let a stale event-owned fetch overwrite a newer query-driven restore', async () => {
-    const { pending, settle } = deferByRidFetches();
-
-    const harness = renderAssetSelectionHarness();
-    const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
-
-    const queryB = makeQuery({ assetRid: ASSET_B.rid });
-    harness.rerenderQuery(queryB);
-    await waitFor(() => {
-      expect(pending.has(ASSET_B.rid)).toBe(true);
-    });
-
-    // Newer query-driven restore (B) resolves first and wins.
-    await settle(ASSET_B);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-
-    // Stale event-owned fetch (A) resolves afterwards and must be ignored.
-    await settle(ASSET);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-  });
-
-  it('drops a stale event-owned fetch when a newer pick resolves first', async () => {
-    const { pending, settle } = deferByRidFetches();
-
-    const harness = renderAssetSelectionHarness();
-    const { result } = harness;
-
-    // Two consecutive picks: neither RID is in the (empty) search results, so both take
-    // the by-RID fetch path and are in flight at once. beginSelectFetch(B) must supersede
-    // A's controller so A's late response is dropped rather than clobbering B.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_B.rid);
-    });
-    await waitFor(() => {
-      expect(pending.has(ASSET.rid)).toBe(true);
-      expect(pending.has(ASSET_B.rid)).toBe(true);
-    });
-
-    // Newer pick (B) resolves first and wins.
-    await settle(ASSET_B);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-
-    // Stale pick (A) resolves afterwards; its controller was aborted, so it is ignored.
-    await settle(ASSET);
-    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
   it('user-selected template RID reconciles through the query-driven path', async () => {
@@ -728,20 +674,19 @@ describe('useAssetSelection', () => {
 
   it('re-picking the already selected asset does not refetch or hide the selection', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
-    const onChange = jest.fn();
-    const markInteracted = jest.fn();
-    const hookArgs = args({ onChange, markInteracted });
-    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET.rid);
     });
+    harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
-    onChange.mockClear();
+    harness.onChange.mockClear();
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
@@ -750,18 +695,19 @@ describe('useAssetSelection', () => {
 
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET.rid }));
+    expect(harness.onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET.rid }));
   });
 
   it('re-picking a fallback asset after a failed fetch retries the lookup', async () => {
     mockFetchAssetByRid.mockRejectedValueOnce(new Error('transient')).mockResolvedValue(ASSET);
-    const hookArgs = args();
-    const { result } = renderHook(() => useAssetSelection(hookArgs));
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET.rid);
     });
+    harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
@@ -773,8 +719,8 @@ describe('useAssetSelection', () => {
       result.current.selectAsset(ASSET.rid);
     });
 
-    // The re-pick must not be swallowed by the same-RID guard: it retries and
-    // recovers the real asset.
+    // Same-RID retry fetches immediately (reconcile cannot serve an unchanged RID)
+    // and must not be swallowed by the same-RID guard: it recovers the real asset.
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
     await waitFor(() => {
       expect(result.current.selectedAsset?.dataScopes).toEqual(ASSET.dataScopes);

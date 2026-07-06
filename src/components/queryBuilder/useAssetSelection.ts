@@ -74,7 +74,6 @@ export function useAssetSelection({
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
       dispatchAssetIdentity({ type: 'beginResolving', rid: resolvedRid });
       const cancelResolving = () => {
-        resolutionCoordinator.clearEventOwnedConcreteAssetRidIfMatches(resolvedRid);
         if (resolutionCoordinator.isMounted) {
           dispatchAssetIdentity({ type: 'cancelResolving', rid: resolvedRid });
         }
@@ -86,13 +85,7 @@ export function useAssetSelection({
       }
       signal?.addEventListener('abort', cancelResolving, { once: true });
 
-      // Release event ownership as soon as the resolution settles: from here on
-      // the selectedAssetRid guard covers what the ref covered, and a stale ref
-      // must not depend on reconcile's guard ordering to stay harmless. The
-      // identity check protects a newer event-owned RID set while this fetch
-      // was in flight.
       const resolveWith = (asset: Asset | null) => {
-        resolutionCoordinator.clearEventOwnedConcreteAssetRidIfMatches(resolvedRid);
         dispatchAssetIdentity({
           type: 'resolveAsset',
           rid: resolvedRid,
@@ -135,7 +128,7 @@ export function useAssetSelection({
   const assetRidSnapshotRef = useRef(assetRidSnapshot);
   assetRidSnapshotRef.current = assetRidSnapshot;
   const clearAssetSelection = useCallback(() => {
-    resolutionCoordinator.cancelInFlightResolution();
+    resolutionCoordinator.cancelFetch();
     dispatchAssetIdentity({ type: 'clear' });
   }, [resolutionCoordinator]);
 
@@ -168,35 +161,22 @@ export function useAssetSelection({
 
   useEffect(() => {
     let reconcileSignal: AbortSignal | undefined;
-    const eventOwnedConcreteAssetRid = resolutionCoordinator.eventOwnedConcreteAssetRid;
-    if (eventOwnedConcreteAssetRid && assetRidResolved !== eventOwnedConcreteAssetRid) {
-      resolutionCoordinator.cancelInFlightResolution();
-      dispatchAssetIdentity({ type: 'cancelResolving', rid: eventOwnedConcreteAssetRid });
-    }
 
     const action = decideAssetReconcile({
       assetRid: query?.assetRid,
       selectedAssetRid: selectedAsset?.rid,
       assetRidResolution: assetRidSnapshot,
-      eventOwnedConcreteAssetRid: resolutionCoordinator.eventOwnedConcreteAssetRid,
     });
 
     if (action?.kind === 'fetchByRid') {
-      reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+      reconcileSignal = resolutionCoordinator.beginFetch();
       applyAssetFromRid(action.rid, action.label, reconcileSignal);
     } else if (action?.kind === 'clearIdentity') {
       dispatchAssetIdentity({ type: 'clear' });
     }
 
-    return reconcileSignal ? () => resolutionCoordinator.cancelReconcileFetch(reconcileSignal) : undefined;
-  }, [
-    query?.assetRid,
-    selectedAsset?.rid,
-    assetRidResolved,
-    assetRidSnapshot,
-    applyAssetFromRid,
-    resolutionCoordinator,
-  ]);
+    return reconcileSignal ? () => resolutionCoordinator.cancelFetch(reconcileSignal) : undefined;
+  }, [query?.assetRid, selectedAsset?.rid, assetRidSnapshot, applyAssetFromRid, resolutionCoordinator]);
 
   useEffect(() => {
     if (selectedAsset) {
@@ -267,7 +247,8 @@ export function useAssetSelection({
         : undefined;
       if (isConcreteRid && !isVariable) {
         if (displayedAsset) {
-          resolutionCoordinator.cancelInFlightResolution();
+          // Displayed option: resolve immediately from the loaded asset, no fetch.
+          resolutionCoordinator.cancelFetch();
           dispatchAssetIdentity({ type: 'beginResolving', rid: ridToFind });
           dispatchAssetIdentity({
             type: 'resolveAsset',
@@ -275,11 +256,19 @@ export function useAssetSelection({
             asset: displayedAsset,
             fallbackLabel: ASSET_RID_FALLBACK_LABEL,
           });
+        } else if (ridToFind === query?.assetRid) {
+          // Same-RID retry of a fallback asset: the saved RID is unchanged and
+          // beginResolving does not change the raw selectedAsset, so neither
+          // reconcile trigger fires. Fetch directly through the single
+          // controller; this cannot race reconcile.
+          applyAssetFromRid(ridToFind, ASSET_RID_FALLBACK_LABEL, resolutionCoordinator.beginFetch());
         } else {
-          applyAssetFromRid(ridToFind, ASSET_RID_FALLBACK_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
+          // New/changed RID: mask stale controls now; the onChange below changes
+          // assetRid and the reconcile effect performs the by-RID fetch.
+          dispatchAssetIdentity({ type: 'beginResolving', rid: ridToFind });
         }
       } else if (isVariable && selectedRidResolution.isResolved) {
-        resolutionCoordinator.cancelInFlightResolution();
+        resolutionCoordinator.cancelFetch();
         dispatchAssetIdentity({ type: 'beginResolving', rid: selectedRidResolution.resolved });
       } else {
         clearAssetSelection();
@@ -315,7 +304,7 @@ export function useAssetSelection({
     resolutionCoordinator.markMounted();
     return () => {
       resolutionCoordinator.markUnmounted();
-      resolutionCoordinator.cancelInFlightResolution();
+      resolutionCoordinator.cancelFetch();
     };
   }, [resolutionCoordinator]);
 

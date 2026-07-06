@@ -12,14 +12,12 @@ export interface AssetReconcileInputs {
   assetRid: string | undefined;
   selectedAssetRid: string | undefined;
   assetRidResolution: TemplateValueResolution;
-  eventOwnedConcreteAssetRid: string | undefined;
 }
 
 export function decideAssetReconcile({
   assetRid,
   selectedAssetRid,
   assetRidResolution,
-  eventOwnedConcreteAssetRid,
 }: AssetReconcileInputs): AssetReconcileAction | null {
   if (assetRid === undefined) {
     return null;
@@ -41,10 +39,6 @@ export function decideAssetReconcile({
   }
 
   if (selectedAssetRid === assetRidResolution.resolved) {
-    return null;
-  }
-
-  if (!assetRidResolution.hasTemplate && eventOwnedConcreteAssetRid === assetRidResolution.resolved) {
     return null;
   }
 

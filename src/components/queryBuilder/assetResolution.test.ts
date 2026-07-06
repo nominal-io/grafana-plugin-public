@@ -1,42 +1,37 @@
 import { AssetResolutionCoordinator } from './assetResolution';
 
 describe('AssetResolutionCoordinator', () => {
-  it('beginSelectFetch supersedes in-flight work and takes ownership of the RID', () => {
+  it('beginFetch supersedes an in-flight fetch', () => {
     const coordinator = new AssetResolutionCoordinator();
 
-    const reconcileSignal = coordinator.beginReconcileFetch();
-    const signal = coordinator.beginSelectFetch('ri.scout.main.asset.a');
+    const first = coordinator.beginFetch();
+    const second = coordinator.beginFetch();
 
-    expect(reconcileSignal.aborted).toBe(true);
-    expect(signal.aborted).toBe(false);
-    expect(coordinator.eventOwnedConcreteAssetRid).toBe('ri.scout.main.asset.a');
+    expect(first.aborted).toBe(true);
+    expect(second.aborted).toBe(false);
   });
 
-  it('cancels select fetches, reconcile fetches, and event ownership in one place', () => {
+  it('cancelFetch aborts the in-flight fetch', () => {
     const coordinator = new AssetResolutionCoordinator();
 
-    const selectSignal = coordinator.beginSelectFetch('ri.scout.main.asset.a');
-    const reconcileSignal = coordinator.beginReconcileFetch();
+    const signal = coordinator.beginFetch();
+    coordinator.cancelFetch();
 
-    coordinator.cancelInFlightResolution();
-
-    expect(selectSignal.aborted).toBe(true);
-    expect(reconcileSignal.aborted).toBe(true);
-    expect(coordinator.eventOwnedConcreteAssetRid).toBeUndefined();
+    expect(signal.aborted).toBe(true);
   });
 
-  it('stale reconcile cleanup does not abort the current reconcile fetch', () => {
+  it('stale cleanup does not abort the current fetch', () => {
     const coordinator = new AssetResolutionCoordinator();
 
-    const firstSignal = coordinator.beginReconcileFetch();
-    const secondSignal = coordinator.beginReconcileFetch();
+    const firstSignal = coordinator.beginFetch();
+    const secondSignal = coordinator.beginFetch();
 
-    coordinator.cancelReconcileFetch(firstSignal);
+    coordinator.cancelFetch(firstSignal);
 
     expect(firstSignal.aborted).toBe(true);
     expect(secondSignal.aborted).toBe(false);
 
-    coordinator.cancelReconcileFetch(secondSignal);
+    coordinator.cancelFetch(secondSignal);
 
     expect(secondSignal.aborted).toBe(true);
   });

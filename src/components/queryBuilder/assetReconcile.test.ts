@@ -27,7 +27,6 @@ describe('decideAssetReconcile', () => {
         assetRid: undefined,
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toBeNull();
   });
@@ -38,7 +37,6 @@ describe('decideAssetReconcile', () => {
         assetRid: '',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution({ raw: '', resolved: '', isResolved: true }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual({ kind: 'clearIdentity' });
   });
@@ -49,7 +47,6 @@ describe('decideAssetReconcile', () => {
         assetRid: '$asset',
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', resolved: '$asset', hasTemplate: true, isResolved: false }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toBeNull();
   });
@@ -60,7 +57,6 @@ describe('decideAssetReconcile', () => {
         assetRid: '$asset',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: false }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toBeNull();
   });
@@ -71,7 +67,6 @@ describe('decideAssetReconcile', () => {
         assetRid: '$asset',
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution({ raw: '$asset', resolved: '', hasTemplate: true, isResolved: true }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual({ kind: 'clearIdentity' });
   });
@@ -82,20 +77,8 @@ describe('decideAssetReconcile', () => {
         assetRid: ASSET.rid,
         selectedAssetRid: ASSET.rid,
         assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toBeNull();
-  });
-
-  it('skips a concrete RID owned by an event handler', () => {
-    expect(
-      decideAssetReconcile({
-        assetRid: ASSET.rid,
-        selectedAssetRid: undefined,
-        assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: ASSET.rid,
-      })
-    ).toEqual(null);
   });
 
   it('fetches a concrete saved RID', () => {
@@ -104,7 +87,6 @@ describe('decideAssetReconcile', () => {
         assetRid: ASSET.rid,
         selectedAssetRid: undefined,
         assetRidResolution: resolution(),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual({ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset (RID)' });
   });
@@ -115,7 +97,6 @@ describe('decideAssetReconcile', () => {
         assetRid: '$asset',
         selectedAssetRid: undefined,
         assetRidResolution: resolution({ raw: '$asset', hasTemplate: true }),
-        eventOwnedConcreteAssetRid: undefined,
       })
     ).toEqual({ kind: 'fetchByRid', rid: ASSET.rid, label: 'Asset ($asset)' });
   });
