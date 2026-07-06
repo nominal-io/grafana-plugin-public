@@ -1,6 +1,8 @@
 import { test, expect } from '@grafana/plugin-e2e';
 import { setTimeout } from 'node:timers/promises';
 
+const ASSET_PLACEHOLDER = 'Search assets or paste a RID...';
+
 async function dismissWhatsNewModal(page: any) {
   const dialog = page.getByRole('dialog', { name: /what's new in grafana/i });
   if (await dialog.isVisible().catch(() => false)) {
@@ -36,7 +38,7 @@ async function createDashboardWithPanel(request: any) {
 
 async function getQueryEditorRow(panelEditPage: any, page: any) {
   const builtInRow = panelEditPage.getQueryEditorRow('A');
-  const builtInAssetInput = builtInRow.getByPlaceholder('Search assets');
+  const builtInAssetInput = builtInRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true });
 
   if (await builtInAssetInput.isVisible().catch(() => false)) {
     return builtInRow;
@@ -62,7 +64,7 @@ test('smoke: should render query editor', async ({ gotoPanelEditPage, page, requ
   const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
-  await expect(queryRow.getByPlaceholder('Search assets')).toBeVisible();
+  await expect(queryRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true })).toBeVisible();
 });
 
 test('should trigger new query when search field is changed', async ({
@@ -78,7 +80,7 @@ test('should trigger new query when search field is changed', async ({
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
 
-  const searchInput = queryRow.getByPlaceholder('Search assets');
+  const searchInput = queryRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true });
   await searchInput.fill('drone');
   await setTimeout(1000);
   await expect(searchInput).toHaveValue('drone');
@@ -95,7 +97,7 @@ test('data query should work with asset and channel selection', async ({
   await panelEditPage.datasource.set(ds.name);
   const queryRow = await getQueryEditorRow(panelEditPage, page);
 
-  const assetInput = queryRow.getByPlaceholder('Search assets');
+  const assetInput = queryRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true });
   await expect(assetInput).toBeVisible();
   await assetInput.fill('ri.scout.cerulean-staging.asset.test-asset-rid');
   await expect(assetInput).toHaveValue('ri.scout.cerulean-staging.asset.test-asset-rid');
