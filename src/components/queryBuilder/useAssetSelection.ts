@@ -1,16 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, getSupportedScopeNames, searchAssets, type Asset } from '../../utils/api';
 import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
-import {
-  changeAssetInputMethodQuery,
-  changeDirectAssetRidQuery,
-  changeSearchAssetRidQuery,
-  changeSelectedDataScopeQuery,
-} from './queryMutations';
-import { decideAssetReconcile, DIRECT_ASSET_RID_LABEL } from './assetReconcile';
+import { changeAssetRidQuery, changeSelectedDataScopeQuery } from './queryMutations';
+import { ASSET_RID_FALLBACK_LABEL, decideAssetReconcile } from './assetReconcile';
 import {
   assetIdentityReducer,
   createEmptyAssetIdentityState,
@@ -19,7 +14,7 @@ import {
 } from './assetIdentity';
 import { AssetResolutionCoordinator } from './assetResolution';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
-import type { AssetInputMethod, AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
+import type { AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
   query: NominalQuery;
@@ -33,15 +28,11 @@ interface UseAssetSelectionArgs {
 }
 
 export interface AssetSelectionModel {
-  assetInputMethod: AssetInputMethod;
-  directRID: string;
   selectedAsset: Asset | null;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
   dataScopeOptions: DataScopeOption[];
-  changeAssetInputMethod: (method: AssetInputMethod) => void;
   selectAsset: (assetRid: string) => void;
-  changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
 }
 
@@ -69,9 +60,6 @@ export function useAssetSelection({
     undefined,
     createEmptyAssetIdentityState
   );
-  const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(query?.assetInputMethod || 'search');
-  const [directRID, setDirectRID] = useState(query?.assetInputMethod === 'direct' ? query?.assetRid || '' : '');
-
   const queryRef = useRef(query);
   queryRef.current = query;
   const latestAssetOptionsAssetsRef = useRef<Asset[]>([]);
@@ -165,8 +153,8 @@ export function useAssetSelection({
           assetRid: assetRidSnapshotRef.current,
         });
       } catch {
-        // Only the request id gates the alert: each new search bumps it (and so does a
-        // method switch / unmount), so a superseded search stays quiet while a genuine
+        // Only the request id gates the alert: each new search bumps it (and so
+        // does unmount), so a superseded search stays quiet while a genuine
         // failure of the latest request always surfaces.
         if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
           latestAssetOptionsAssetsRef.current = [];
@@ -180,50 +168,29 @@ export function useAssetSelection({
 
   useEffect(() => {
     let reconcileSignal: AbortSignal | undefined;
-    if (query?.assetInputMethod) {
-      setAssetInputMethod(query.assetInputMethod);
-    }
     const eventOwnedConcreteAssetRid = resolutionCoordinator.eventOwnedConcreteAssetRid;
     if (eventOwnedConcreteAssetRid && assetRidResolved !== eventOwnedConcreteAssetRid) {
       resolutionCoordinator.cancelInFlightResolution();
       dispatchAssetIdentity({ type: 'cancelResolving', rid: eventOwnedConcreteAssetRid });
     }
 
-    const actions = decideAssetReconcile({
+    const action = decideAssetReconcile({
       assetRid: query?.assetRid,
-      assetInputMethod: query?.assetInputMethod,
       selectedAssetRid: selectedAsset?.rid,
       assetRidResolution: assetRidSnapshot,
       eventOwnedConcreteAssetRid: resolutionCoordinator.eventOwnedConcreteAssetRid,
     });
 
-    for (const action of actions) {
-      switch (action.kind) {
-        case 'mirrorDirectRaw':
-          setDirectRID(action.raw);
-          break;
-        case 'fetchByRid': {
-          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
-          applyAssetFromRid(action.rid, action.label, reconcileSignal);
-          break;
-        }
-        case 'inferDirect': {
-          setAssetInputMethod('direct');
-          setDirectRID(action.raw);
-          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
-          applyAssetFromRid(action.rid, action.label, reconcileSignal);
-          break;
-        }
-        case 'clearIdentity':
-          dispatchAssetIdentity({ type: 'clear' });
-          break;
-      }
+    if (action?.kind === 'fetchByRid') {
+      reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+      applyAssetFromRid(action.rid, action.label, reconcileSignal);
+    } else if (action?.kind === 'clearIdentity') {
+      dispatchAssetIdentity({ type: 'clear' });
     }
 
     return reconcileSignal ? () => resolutionCoordinator.cancelReconcileFetch(reconcileSignal) : undefined;
   }, [
     query?.assetRid,
-    query?.assetInputMethod,
     selectedAsset?.rid,
     assetRidResolved,
     assetRidSnapshot,
@@ -251,9 +218,9 @@ export function useAssetSelection({
         if (q?.dataScopeName?.includes('$')) {
           // skip - variable will be resolved at query time
         } else if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
-          onChange(changeSelectedDataScopeQuery(q, scopeNames[0], assetInputMethod));
+          onChange(changeSelectedDataScopeQuery(q, scopeNames[0]));
         } else if (!scopeIsValid && q?.dataScopeName) {
-          onChange(changeSelectedDataScopeQuery(q, '', assetInputMethod));
+          onChange(changeSelectedDataScopeQuery(q, ''));
         }
       }
     }
@@ -264,19 +231,7 @@ export function useAssetSelection({
     // change would broaden when concrete dataScopeName can be auto-cleared or
     // rewritten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted, assetRidResolved, assetRidIsResolved]);
-
-  const changeAssetInputMethod = useCallback(
-    (method: AssetInputMethod) => {
-      markInteracted();
-      resolutionCoordinator.cancelInFlightResolution();
-      resolutionCoordinator.invalidateAssetOptionsRequests();
-      setAssetInputMethod(method);
-      setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
-      onChange(changeAssetInputMethodQuery(query, method));
-    },
-    [markInteracted, onChange, query, resolutionCoordinator]
-  );
+  }, [selectedAsset, onChange, hasUserInteracted, assetRidResolved, assetRidIsResolved]);
 
   const selectAsset = useCallback(
     (value: string) => {
@@ -284,10 +239,10 @@ export function useAssetSelection({
       const trimmedValue = value.trim();
 
       if (!trimmedValue) {
-        // Mirror changeDirectRID: a blank/whitespace selection clears the asset rather
-        // than committing whitespace as the assetRid and firing a doomed by-RID fetch.
+        // A blank/whitespace selection clears the asset rather than committing
+        // whitespace as the assetRid and firing a doomed by-RID fetch.
         clearAssetSelection();
-        onChange(changeSearchAssetRidQuery(query, ''));
+        onChange(changeAssetRidQuery(query, ''));
         return;
       }
 
@@ -303,7 +258,7 @@ export function useAssetSelection({
       if (!isVariable && isAssetFullyResolved(assetIdentity, ridToFind)) {
         // Re-picking the fully resolved current asset: nothing to fetch. A fallback
         // asset (empty dataScopes) still refetches so a failed lookup stays retryable.
-        onChange(changeSearchAssetRidQuery(query, ridToFind));
+        onChange(changeAssetRidQuery(query, ridToFind));
         return;
       }
 
@@ -318,10 +273,10 @@ export function useAssetSelection({
             type: 'resolveAsset',
             rid: ridToFind,
             asset: displayedAsset,
-            fallbackLabel: DIRECT_ASSET_RID_LABEL,
+            fallbackLabel: ASSET_RID_FALLBACK_LABEL,
           });
         } else {
-          applyAssetFromRid(ridToFind, DIRECT_ASSET_RID_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
+          applyAssetFromRid(ridToFind, ASSET_RID_FALLBACK_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
         }
       } else if (isVariable && selectedRidResolution.isResolved) {
         resolutionCoordinator.cancelInFlightResolution();
@@ -331,9 +286,9 @@ export function useAssetSelection({
       }
 
       if (isVariable) {
-        onChange(changeSearchAssetRidQuery(query, trimmedValue));
+        onChange(changeAssetRidQuery(query, trimmedValue));
       } else if (isConcreteRid) {
-        onChange(changeSearchAssetRidQuery(query, ridToFind));
+        onChange(changeAssetRidQuery(query, ridToFind));
       }
     },
     [
@@ -348,49 +303,12 @@ export function useAssetSelection({
     ]
   );
 
-  const changeDirectRID = useCallback(
-    (rid: string) => {
-      markInteracted();
-      setDirectRID(rid);
-
-      if (!rid.trim()) {
-        clearAssetSelection();
-        onChange(changeDirectAssetRidQuery(queryRef.current, ''));
-        return;
-      }
-
-      const ridResolution = resolveTemplateText(rid);
-      if (!ridResolution.isResolved) {
-        clearAssetSelection();
-        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
-        return;
-      }
-
-      const isConcrete = !ridResolution.hasTemplate;
-      resolutionCoordinator.cancelInFlightResolution();
-      // Set the event-owned RID before committing the query so the update cannot
-      // schedule a second fetch for the same selection (see AssetResolutionCoordinator).
-      resolutionCoordinator.setEventOwnedConcreteAssetRid(isConcrete ? ridResolution.resolved : undefined);
-      dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
-      onChange(changeDirectAssetRidQuery(queryRef.current, rid));
-
-      if (!isConcrete) {
-        return;
-      }
-
-      resolutionCoordinator.scheduleDirectRidFetch((signal) => {
-        applyAssetFromRid(ridResolution.resolved, DIRECT_ASSET_RID_LABEL, signal);
-      }, 300);
-    },
-    [applyAssetFromRid, clearAssetSelection, markInteracted, onChange, resolutionCoordinator, resolveTemplateText]
-  );
-
   const selectDataScope = useCallback(
     (dataScopeName: string) => {
       markInteracted();
-      onChange(changeSelectedDataScopeQuery(query, dataScopeName, assetInputMethod));
+      onChange(changeSelectedDataScopeQuery(query, dataScopeName));
     },
-    [assetInputMethod, markInteracted, onChange, query]
+    [markInteracted, onChange, query]
   );
 
   useEffect(() => {
@@ -416,15 +334,11 @@ export function useAssetSelection({
   );
 
   return {
-    assetInputMethod,
-    directRID,
     selectedAsset: visibleAssetIdentity.selectedAsset,
     assetOptions,
     assetSelectValue,
     dataScopeOptions,
-    changeAssetInputMethod,
     selectAsset,
-    changeDirectRID,
     selectDataScope,
   };
 }

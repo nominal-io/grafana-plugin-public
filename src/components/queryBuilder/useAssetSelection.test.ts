@@ -135,15 +135,14 @@ function renderAssetSelectionHarness({
   };
 }
 
-async function renderSavedDirectAsset() {
+async function renderSavedAsset() {
   mockFetchAssetByRid.mockResolvedValue(ASSET);
-  const query = makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'direct' });
+  const query = makeQuery({ assetRid: ASSET.rid });
   const view = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
     initialProps: args({ query }),
   });
 
   await waitFor(() => {
-    expect(view.result.current.directRID).toBe(ASSET.rid);
     expect(view.result.current.selectedAsset?.rid).toBe(ASSET.rid);
   });
   return view;
@@ -229,22 +228,6 @@ describe('useAssetSelection', () => {
     );
   });
 
-  it('loader suppresses alert after switching away from search mode', async () => {
-    const pending = deferred<Asset[]>();
-    mockSearchAssets.mockReturnValue(pending.promise);
-    const { result } = renderHook(() => useAssetSelection(args()));
-
-    const options = result.current.assetOptions('asset');
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeAssetInputMethod('direct');
-    });
-    pending.reject(new Error('stale failure'));
-
-    await expect(options).resolves.toEqual([]);
-    expect(publish).not.toHaveBeenCalled();
-  });
-
   it('selectAsset uses the displayed asset without fetching and marks interaction', async () => {
     mockSearchAssets.mockResolvedValue([ASSET]);
     mockFetchAssetByRid.mockRejectedValue(new Error('transient fetch failure'));
@@ -262,7 +245,7 @@ describe('useAssetSelection', () => {
     });
 
     expect(markInteracted).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET.rid, assetInputMethod: 'search' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET.rid }));
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
     expect(result.current.selectedAsset).toEqual(ASSET);
     expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
@@ -310,54 +293,21 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
   });
 
-  it('restores saved direct-mode RID by fetching asset', async () => {
-    await renderSavedDirectAsset();
-    expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
-  });
+  it('clears the selected asset when a saved RID is removed', async () => {
+    const { result, rerender } = await renderSavedAsset();
 
-  it('mirrors saved direct-mode RID changes into the direct input', async () => {
-    const ASSET_A = ASSET;
-    mockFetchAssetByRid.mockImplementation(async (_url: string, rid: string) => {
-      return rid === ASSET_B.rid ? ASSET_B : ASSET_A;
-    });
-
-    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'direct' });
-    const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
-      initialProps: args({ query: queryA }),
-    });
+    rerender(args({ query: makeQuery({ assetRid: '' }) }));
 
     await waitFor(() => {
-      expect(result.current.directRID).toBe(ASSET_A.rid);
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
-    });
-
-    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' });
-    rerender(args({ query: queryB }));
-
-    await waitFor(() => {
-      expect(result.current.directRID).toBe(ASSET_B.rid);
-    });
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
-    });
-  });
-
-  it('clears selected asset and direct input when a saved direct RID is removed', async () => {
-    const { result, rerender } = await renderSavedDirectAsset();
-
-    rerender(args({ query: makeQuery({ assetRid: '', assetInputMethod: 'direct' }) }));
-
-    await waitFor(() => {
-      expect(result.current.directRID).toBe('');
       expect(result.current.selectedAsset).toBeNull();
       expect(result.current.dataScopeOptions).toEqual([]);
     });
   });
 
-  it('restores saved search-mode RID via single by-RID fetch', async () => {
+  it('restores a saved concrete RID via a single by-RID fetch', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const hookArgs = args({
-      query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'search' }),
+      query: makeQuery({ assetRid: ASSET.rid }),
     });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
 
@@ -368,118 +318,18 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
   });
 
-  it('infers direct mode for saved RID without explicit input method', async () => {
+  it('restores a legacy saved query that still carries the removed input-method key', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
-    const hookArgs = args({
-      query: makeQuery({ assetRid: ASSET.rid }),
-    });
+    // Old dashboards persisted assetInputMethod; the stale JSON key must be
+    // ignored by the single reconcile path. The cast mimics untyped saved JSON.
+    const legacyQuery = { ...makeQuery({ assetRid: ASSET.rid }), assetInputMethod: 'direct' } as NominalQuery;
+    const hookArgs = args({ query: legacyQuery });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
-    expect(result.current.assetInputMethod).toBe('direct');
-    expect(result.current.directRID).toBe(ASSET.rid);
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
-  });
-
-  it('changeAssetInputMethod preserves the selected asset and scope options without refetching the unchanged RID', async () => {
-    mockFetchAssetByRid.mockResolvedValue(ASSET);
-    const harness = renderAssetSelectionHarness();
-    const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
-
-    await waitFor(() => {
-      expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-      expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
-    });
-    harness.rerenderCurrent();
-    mockFetchAssetByRid.mockClear();
-    harness.onChange.mockClear();
-    harness.markInteracted.mockClear();
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeAssetInputMethod('direct');
-    });
-
-    expect(harness.markInteracted).toHaveBeenCalledTimes(1);
-    expect(result.current.assetInputMethod).toBe('direct');
-    expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
-    expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET.rid, assetInputMethod: 'direct' }));
-
-    harness.rerenderCurrent();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
-    expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
-
-    harness.onChange.mockClear();
-    harness.markInteracted.mockClear();
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeAssetInputMethod('search');
-    });
-
-    expect(harness.markInteracted).toHaveBeenCalledTimes(1);
-    expect(result.current.assetInputMethod).toBe('search');
-    expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
-    expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET.rid, assetInputMethod: 'search' }));
-
-    harness.rerenderCurrent();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
-    expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
-    expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
-  });
-
-  it('user-entered concrete direct RID fetch stays with debounced direct handler, not query reconcile', async () => {
-    jest.useFakeTimers();
-    mockFetchAssetByRid.mockResolvedValue(ASSET_B);
-
-    const harness = renderAssetSelectionHarness();
-    const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.changeDirectRID(ASSET_B.rid);
-    });
-
-    expect(harness.currentQuery).toEqual(
-      expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'direct' })
-    );
-    harness.rerenderCurrent();
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
-    });
-
-    await waitFor(() => {
-      expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
-    });
-    expect(mockFetchAssetByRid).toHaveBeenCalledWith('/api/x', ASSET_B.rid);
   });
 
   it('selecting concrete search RID fetches once and keeps it on resolution', async () => {
@@ -494,9 +344,7 @@ describe('useAssetSelection', () => {
       result.current.selectAsset(ASSET_B.rid);
     });
 
-    expect(harness.currentQuery).toEqual(
-      expect.objectContaining({ assetRid: ASSET_B.rid, assetInputMethod: 'search' })
-    );
+    expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid }));
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
 
     harness.rerenderCurrent();
@@ -558,31 +406,12 @@ describe('useAssetSelection', () => {
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
-  it.each([
-    {
-      method: 'search' as const,
-      actWithTemplate: (result: ReturnType<typeof renderAssetSelectionHarness>['result']) => {
-        // eslint-disable-next-line @typescript-eslint/no-deprecated
-        act(() => {
-          result.current.selectAsset('$asset');
-        });
-      },
-    },
-    {
-      method: 'direct' as const,
-      actWithTemplate: (result: ReturnType<typeof renderAssetSelectionHarness>['result']) => {
-        // eslint-disable-next-line @typescript-eslint/no-deprecated
-        act(() => {
-          result.current.changeDirectRID('$asset');
-        });
-      },
-    },
-  ])('clears an empty-resolved $method template so a later matching RID can show the selected asset', async ({ method, actWithTemplate }) => {
+  it('clears an empty-resolved template so a later matching RID can show the selected asset', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const replaceEmpty = (value: string) => (value === '$asset' ? '' : value);
     const onChange = jest.fn();
     const markInteracted = jest.fn();
-    const queryA = makeQuery({ assetRid: ASSET.rid, assetInputMethod: method });
+    const queryA = makeQuery({ assetRid: ASSET.rid });
     const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
       initialProps: args({
         query: queryA,
@@ -596,12 +425,14 @@ describe('useAssetSelection', () => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
 
-    actWithTemplate(result);
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset('$asset');
+    });
 
-    // The parent renders the committed '$asset' (which resolves empty)...
     rerender(
       args({
-        query: makeQuery({ assetRid: '$asset', assetInputMethod: method }),
+        query: makeQuery({ assetRid: '$asset' }),
         onChange,
         markInteracted,
         hasUserInteracted: true,
@@ -611,16 +442,12 @@ describe('useAssetSelection', () => {
     );
     expect(result.current.selectedAsset).toBeNull();
 
-    // ...then a later external change back to the concrete RID restores the asset:
-    // the selection must not be wedged behind pendingAssetRid = ''.
     rerender(args({ query: queryA, onChange, markInteracted, hasUserInteracted: true }));
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
     expect(mockFetchAssetByRid).not.toHaveBeenCalledWith('/api/x', '');
-
-    // The empty resolver really did resolve the selection to an empty RID.
     expect(resolveTemplateValue('$asset', replaceEmpty).resolved).toBe('');
   });
 
@@ -646,7 +473,6 @@ describe('useAssetSelection', () => {
     const markInteracted = jest.fn();
     const queryA = makeQuery({
       assetRid: ASSET_A_SINGLE_SCOPE.rid,
-      assetInputMethod: 'search',
       dataScopeName: 'a-scope',
     });
     const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useAssetSelection(nextArgs), {
@@ -657,7 +483,7 @@ describe('useAssetSelection', () => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A_SINGLE_SCOPE.rid);
     });
 
-    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search', dataScopeName: 'b-scope' });
+    const queryB = makeQuery({ assetRid: ASSET_B.rid, dataScopeName: 'b-scope' });
     rerender(args({ query: queryB, onChange, markInteracted, hasUserInteracted: true }));
 
     // Controls hide as soon as the different RID starts resolving (shape asserted
@@ -689,7 +515,7 @@ describe('useAssetSelection', () => {
       result.current.selectAsset(ASSET.rid);
     });
 
-    const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search' });
+    const queryB = makeQuery({ assetRid: ASSET_B.rid });
     harness.rerenderQuery(queryB);
     await waitFor(() => {
       expect(pending.has(ASSET_B.rid)).toBe(true);
@@ -735,38 +561,35 @@ describe('useAssetSelection', () => {
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
-  it('user-entered direct template RID reconciles through query-driven path', async () => {
-    jest.useFakeTimers();
+  it('user-selected template RID reconciles through the query-driven path', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const replace = (value: string) => (value === '$asset' ? ASSET.rid : value);
 
-    const harness = renderAssetSelectionHarness();
+    const harness = renderAssetSelectionHarness({
+      hookOverrides: { resolveTemplateText: (value: string) => resolveTemplateValue(value, replace) },
+    });
     const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.changeDirectRID('$asset');
+      result.current.selectAsset('$asset');
     });
+    expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: '$asset' }));
 
     harness.rerenderCurrent({
       assetRidResolution: resolveTemplateValue(harness.currentQuery.assetRid, replace),
-      resolveTemplateText: (value: string) => resolveTemplateValue(value, replace),
     });
 
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      jest.advanceTimersByTime(300);
-    });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
   });
 
-  it('saved direct-mode template RID fetches once', async () => {
+  it('saved template RID fetches once', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const replace = (v: string) => (v === '$asset' ? ASSET.rid : v);
-    const query = makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' });
+    const query = makeQuery({ assetRid: '$asset' });
     const hookArgs = args({
       query,
       assetRidResolution: resolveTemplateValue(query.assetRid, replace),
@@ -780,10 +603,10 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
   });
 
-  it('saved search-mode RID under StrictMode restores', async () => {
+  it('saved RID under StrictMode restores', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const hookArgs = args({
-      query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'search' }),
+      query: makeQuery({ assetRid: ASSET.rid }),
     });
     const { result } = renderHook(() => useAssetSelection(hookArgs), { wrapper: StrictMode });
 
@@ -797,7 +620,7 @@ describe('useAssetSelection', () => {
       name: 'auto-selects the only data scope when none is saved',
       scopes: ['default'],
       savedScope: undefined,
-      expected: { dataScopeName: 'default', assetInputMethod: 'search' },
+      expected: { dataScopeName: 'default' },
     },
     {
       name: 'clears a saved data scope the asset does not offer',
@@ -813,7 +636,7 @@ describe('useAssetSelection', () => {
     mockFetchAssetByRid.mockResolvedValue(asset);
 
     const harness = renderAssetSelectionHarness({
-      initialQuery: makeQuery({ assetRid: asset.rid, assetInputMethod: 'search', dataScopeName: savedScope }),
+      initialQuery: makeQuery({ assetRid: asset.rid, dataScopeName: savedScope }),
     });
     const { result } = harness;
 
@@ -840,7 +663,7 @@ describe('useAssetSelection', () => {
       rid === ASSET_B.rid ? pendingB.promise : Promise.resolve(ASSET_A)
     );
 
-    const queryA = makeQuery({ assetRid: ASSET_A.rid, assetInputMethod: 'search', dataScopeName: 'scope-1' });
+    const queryA = makeQuery({ assetRid: ASSET_A.rid, dataScopeName: 'scope-1' });
     const harness = renderAssetSelectionHarness({ initialQuery: queryA });
     const { result } = harness;
 
@@ -866,7 +689,7 @@ describe('useAssetSelection', () => {
   it('keeps the RID with a fallback asset and alerts when the by-RID fetch fails', async () => {
     mockFetchAssetByRid.mockRejectedValue(new Error('fetch failed'));
     const hookArgs = args({
-      query: makeQuery({ assetRid: ASSET.rid, assetInputMethod: 'direct' }),
+      query: makeQuery({ assetRid: ASSET.rid }),
     });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
 
