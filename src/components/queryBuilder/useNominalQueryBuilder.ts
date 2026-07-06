@@ -54,7 +54,6 @@ export function useNominalQueryBuilder({
     query,
     onChange,
     selectedAsset: asset.selectedAsset,
-    assetInputMethod: asset.assetInputMethod,
     channelResolution: queryResolution.channel,
     dataScopeResolution: queryResolution.dataScopeName,
     datasourceUrl,
@@ -100,19 +99,16 @@ export function useNominalQueryBuilder({
     return () => clearTimeout(copiedTimerRef.current);
   }, []);
 
-  // Step completion status
-  const assetComplete =
-    asset.assetInputMethod === 'search'
-      ? queryResolution.assetRid.resolved !== '' && queryResolution.assetRid.isResolved
-      : asset.directRID.trim() !== '';
+  // Step completion status. Asset is complete only when the saved RID actually
+  // resolves - a template variable without a value does not open the
+  // scope/channel fields.
+  const assetComplete = queryResolution.assetRid.resolved !== '' && queryResolution.assetRid.isResolved;
   const configComplete = assetComplete && Boolean(query?.dataScopeName) && Boolean(query?.channel);
   // Show the channel selector whenever an asset is selected (even if dataScopes is empty).
   const hasChannelSearch = asset.selectedAsset !== null;
 
   return {
     state: {
-      assetInputMethod: asset.assetInputMethod,
-      directRID: asset.directRID,
       selectedAsset: asset.selectedAsset,
       assetOptions: asset.assetOptions,
       assetSelectValue: asset.assetSelectValue,
@@ -129,9 +125,7 @@ export function useNominalQueryBuilder({
       aggregationState: aggregation.aggregationState,
     },
     commands: {
-      changeAssetInputMethod: asset.changeAssetInputMethod,
       selectAsset: asset.selectAsset,
-      changeDirectRID: asset.changeDirectRID,
       selectDataScope: asset.selectDataScope,
       selectChannel: channel.selectChannel,
       changeAggregations: aggregation.changeAggregations,
