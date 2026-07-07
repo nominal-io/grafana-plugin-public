@@ -92,6 +92,14 @@ function deferByRidFetches() {
 }
 
 type HookArgs = Parameters<typeof useAssetSelection>[0];
+type AssetSelectionResult = { current: Pick<ReturnType<typeof useAssetSelection>, 'selectAsset'> };
+
+function selectAsset(result: AssetSelectionResult, assetRid: string): void {
+  // eslint-disable-next-line @typescript-eslint/no-deprecated
+  act(() => {
+    result.current.selectAsset(assetRid);
+  });
+}
 
 function renderAssetSelectionHarness({
   initialQuery = makeQuery(),
@@ -204,12 +212,10 @@ describe('useAssetSelection', () => {
     first.reject(new Error('first failed'));
     second.resolve([ASSET]);
     await expect(firstOptions).resolves.toEqual([]);
-    await expect(secondOptions).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ value: ASSET.rid })]));
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    await expect(secondOptions).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ value: ASSET.rid })])
+    );
+    selectAsset(result, ASSET.rid);
 
     expect(publish).not.toHaveBeenCalled();
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
@@ -238,11 +244,7 @@ describe('useAssetSelection', () => {
 
     const options = await result.current.assetOptions('asset a');
     expect(options).toEqual(expect.arrayContaining([expect.objectContaining({ value: ASSET.rid })]));
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    selectAsset(result, ASSET.rid);
 
     expect(markInteracted).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET.rid }));
@@ -256,11 +258,7 @@ describe('useAssetSelection', () => {
     const markInteracted = jest.fn();
     const hookArgs = args({ onChange, markInteracted });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset('asset a');
-    });
+    selectAsset(result, 'asset a');
 
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
@@ -338,11 +336,7 @@ describe('useAssetSelection', () => {
 
     const harness = renderAssetSelectionHarness();
     const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_B.rid);
-    });
+    selectAsset(result, ASSET_B.rid);
 
     expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: ASSET_B.rid }));
     // No immediate fetch: the reconcile effect is the single by-RID fetch trigger.
@@ -375,21 +369,13 @@ describe('useAssetSelection', () => {
 
     const harness = renderAssetSelectionHarness();
     const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_A.rid);
-    });
+    selectAsset(result, ASSET_A.rid);
     harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
       expect(result.current.dataScopeOptions).toEqual([expect.objectContaining({ value: 'default' })]);
     });
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_B_LOADING.rid);
-    });
+    selectAsset(result, ASSET_B_LOADING.rid);
 
     // beginResolving masks the stale asset synchronously, before the reconcile fetch.
     expect(result.current.selectedAsset).toBeNull();
@@ -427,11 +413,7 @@ describe('useAssetSelection', () => {
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset('$asset');
-    });
+    selectAsset(result, '$asset');
 
     rerender(
       args({
@@ -515,11 +497,7 @@ describe('useAssetSelection', () => {
       hookOverrides: { resolveTemplateText: (value: string) => resolveTemplateValue(value, replace) },
     });
     const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset('$asset');
-    });
+    selectAsset(result, '$asset');
     expect(harness.currentQuery).toEqual(expect.objectContaining({ assetRid: '$asset' }));
 
     harness.rerenderCurrent({
@@ -616,11 +594,7 @@ describe('useAssetSelection', () => {
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET_A.rid);
     });
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET_B.rid);
-    });
+    selectAsset(result, ASSET_B.rid);
     harness.onChange.mockClear();
 
     // The parent still renders asset A and its valid saved scope
@@ -659,11 +633,7 @@ describe('useAssetSelection', () => {
     const markInteracted = jest.fn();
     const hookArgs = args({ onChange, markInteracted });
     const { result } = renderHook(() => useAssetSelection(hookArgs));
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset('   ');
-    });
+    selectAsset(result, '   ');
 
     expect(markInteracted).toHaveBeenCalledTimes(1);
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
@@ -676,22 +646,14 @@ describe('useAssetSelection', () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const harness = renderAssetSelectionHarness();
     const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    selectAsset(result, ASSET.rid);
     harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     harness.onChange.mockClear();
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    selectAsset(result, ASSET.rid);
 
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
@@ -702,22 +664,14 @@ describe('useAssetSelection', () => {
     mockFetchAssetByRid.mockRejectedValueOnce(new Error('transient')).mockResolvedValue(ASSET);
     const harness = renderAssetSelectionHarness();
     const { result } = harness;
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    selectAsset(result, ASSET.rid);
     harness.rerenderCurrent();
     await waitFor(() => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
     // Failed fetch left a fallback asset without data scopes.
     expect(result.current.selectedAsset?.dataScopes).toEqual([]);
-
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    act(() => {
-      result.current.selectAsset(ASSET.rid);
-    });
+    selectAsset(result, ASSET.rid);
 
     // Same-RID retry fetches immediately (reconcile cannot serve an unchanged RID)
     // and must not be swallowed by the same-RID guard: it recovers the real asset.
