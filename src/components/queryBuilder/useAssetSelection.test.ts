@@ -68,6 +68,29 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+// Installs a fetch-by-RID mock that defers every lookup and hands back per-RID
+// settle handles, so a test can stage several by-RID fetches in flight at once and
+// resolve them out of order (newer first, stale last) to exercise the abort guards.
+function deferByRidFetches() {
+  const pending = new Map<string, ReturnType<typeof deferred<Asset | null>>>();
+  mockFetchAssetByRid.mockImplementation((_url: string, rid: string) => {
+    const entry = deferred<Asset | null>();
+    pending.set(rid, entry);
+    return entry.promise;
+  });
+  const settle = async (asset: Asset) => {
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      const entry = pending.get(asset.rid)!;
+      entry.resolve(asset);
+      await entry.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+  return { pending, settle };
+}
+
 type HookArgs = Parameters<typeof useAssetSelection>[0];
 
 function renderAssetSelectionHarness({
@@ -258,6 +281,33 @@ describe('useAssetSelection', () => {
 
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('commits an unresolved template variable and clears the resolved selection', async () => {
+    // The harness's default resolver leaves any "$var" unresolved (identity replace).
+    mockSearchAssets.mockResolvedValue([ASSET]);
+    const onChange = jest.fn();
+    const hookArgs = args({ onChange });
+    const { result } = renderHook(() => useAssetSelection(hookArgs));
+
+    // Establish a resolved selection via a displayed option (no by-RID fetch).
+    await result.current.assetOptions('asset a');
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset(ASSET.rid);
+    });
+    expect(result.current.selectedAsset).toEqual(ASSET);
+
+    // Selecting an unresolved template variable clears the visible selection...
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset('$missing');
+    });
+    expect(result.current.selectedAsset).toBeNull();
+    // ...but persists the raw variable so it resolves once the variable is defined.
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ assetRid: '$missing' }));
+    // No by-RID fetch is attempted for the unresolved variable itself.
+    expect(mockFetchAssetByRid).not.toHaveBeenCalled();
   });
 
   it('restores saved direct-mode RID by fetching asset', async () => {
@@ -629,44 +679,59 @@ describe('useAssetSelection', () => {
   });
 
   it('does not let a stale event-owned fetch overwrite a newer query-driven restore', async () => {
-    const ASSET_A = ASSET;
-    const deferredByRid = new Map<string, ReturnType<typeof deferred<Asset | null>>>();
-    mockFetchAssetByRid.mockImplementation((_url: string, rid: string) => {
-      const d = deferred<Asset | null>();
-      deferredByRid.set(rid, d);
-      return d.promise;
-    });
+    const { pending, settle } = deferByRidFetches();
 
     const harness = renderAssetSelectionHarness();
     const { result } = harness;
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
-      result.current.selectAsset(ASSET_A.rid);
+      result.current.selectAsset(ASSET.rid);
     });
 
     const queryB = makeQuery({ assetRid: ASSET_B.rid, assetInputMethod: 'search' });
     harness.rerenderQuery(queryB);
     await waitFor(() => {
-      expect(deferredByRid.has(ASSET_B.rid)).toBe(true);
+      expect(pending.has(ASSET_B.rid)).toBe(true);
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      deferredByRid.get(ASSET_B.rid)!.resolve(ASSET_B);
-      await deferredByRid.get(ASSET_B.rid)!.promise;
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    // Newer query-driven restore (B) resolves first and wins.
+    await settle(ASSET_B);
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
 
+    // Stale event-owned fetch (A) resolves afterwards and must be ignored.
+    await settle(ASSET);
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+  });
+
+  it('drops a stale event-owned fetch when a newer pick resolves first', async () => {
+    const { pending, settle } = deferByRidFetches();
+
+    const harness = renderAssetSelectionHarness();
+    const { result } = harness;
+
+    // Two consecutive picks: neither RID is in the (empty) search results, so both take
+    // the by-RID fetch path and are in flight at once. beginSelectFetch(B) must supersede
+    // A's controller so A's late response is dropped rather than clobbering B.
     // eslint-disable-next-line @typescript-eslint/no-deprecated
-    await act(async () => {
-      deferredByRid.get(ASSET_A.rid)!.resolve(ASSET_A);
-      await deferredByRid.get(ASSET_A.rid)!.promise;
-      await Promise.resolve();
-      await Promise.resolve();
+    act(() => {
+      result.current.selectAsset(ASSET.rid);
     });
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => {
+      result.current.selectAsset(ASSET_B.rid);
+    });
+    await waitFor(() => {
+      expect(pending.has(ASSET.rid)).toBe(true);
+      expect(pending.has(ASSET_B.rid)).toBe(true);
+    });
+
+    // Newer pick (B) resolves first and wins.
+    await settle(ASSET_B);
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+
+    // Stale pick (A) resolves afterwards; its controller was aborted, so it is ignored.
+    await settle(ASSET);
     expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
   });
 
