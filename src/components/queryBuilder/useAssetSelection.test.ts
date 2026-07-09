@@ -489,6 +489,33 @@ describe('useAssetSelection', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('drops a stale query-driven asset fetch when a newer restore resolves first', async () => {
+    const { pending, settle } = deferByRidFetches();
+
+    // Saved query restores asset A, whose by-RID fetch is left in flight.
+    const harness = renderAssetSelectionHarness({ initialQuery: makeQuery({ assetRid: ASSET.rid }) });
+    const { result } = harness;
+    await waitFor(() => {
+      expect(pending.has(ASSET.rid)).toBe(true);
+    });
+
+    // The query changes to asset B before A resolves; reconcile's beginFetch must
+    // supersede A's controller so both fetches are in flight at once.
+    harness.rerenderQuery(makeQuery({ assetRid: ASSET_B.rid }));
+    await waitFor(() => {
+      expect(pending.has(ASSET_B.rid)).toBe(true);
+    });
+
+    // Newer restore (B) resolves first and wins.
+    await settle(ASSET_B);
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+
+    // Stale restore (A) resolves afterwards; its controller was aborted, so the late
+    // response must not clobber B.
+    await settle(ASSET);
+    expect(result.current.selectedAsset?.rid).toBe(ASSET_B.rid);
+  });
+
   it('user-selected template RID reconciles through the query-driven path', async () => {
     mockFetchAssetByRid.mockResolvedValue(ASSET);
     const replace = (value: string) => (value === '$asset' ? ASSET.rid : value);

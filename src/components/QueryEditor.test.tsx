@@ -193,6 +193,31 @@ describe('channel data type inference effect', () => {
     });
   });
 
+  it('keeps data scope and channel fields hidden while a saved asset template is unresolved', async () => {
+    // $asset has no value yet, so it resolves to itself: assetComplete stays false.
+    mockReplaceOverrides['$asset'] = '$asset';
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: '$asset', dataScopeName: '' })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={mockDatasource}
+      />
+    );
+
+    const assetInput = await screen.findByTestId('asset-combobox');
+    expect(assetInput).toHaveValue('$asset');
+
+    // With assetComplete false the dependent fields never open...
+    expect(screen.queryByTestId('data-scope-combobox')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('query-editor-channel-aggregation-row')).not.toBeInTheDocument();
+
+    // ...and no by-RID asset fetch is attempted for the unresolved template.
+    await settleEffects();
+    expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(false);
+  });
+
   it('fetches a saved template RID only once on mount (no restore/resolved double fetch)', async () => {
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
