@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { NominalQuery } from '../../types';
 
 export interface TemplateValueResolution {
@@ -14,6 +15,20 @@ export interface QueryTemplateResolution {
 }
 
 export type TemplateValueReplacer = (value: string) => string;
+
+export function useResolutionSnapshot(value: TemplateValueResolution): TemplateValueResolution {
+  const { raw, resolved, hasTemplate, isResolved } = value;
+
+  return useMemo(
+    () => ({
+      raw,
+      resolved,
+      hasTemplate,
+      isResolved,
+    }),
+    [raw, resolved, hasTemplate, isResolved]
+  );
+}
 
 export function resolveTemplateValue(rawValue: string | undefined, replace: TemplateValueReplacer): TemplateValueResolution {
   const raw = rawValue || '';

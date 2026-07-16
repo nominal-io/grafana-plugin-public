@@ -1,25 +1,25 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
-import {
-  createBasicAsset,
-  fetchAssetByRid,
-  getSupportedScopeNames,
-  getSupportedScopes,
-  searchAssets,
-  type Asset,
-} from '../../utils/api';
-import { buildAssetOptions, buildDataScopeOptions, getAssetPickerValue } from './queryBuilderOptions';
+import { fetchAssetByRid, getSupportedScopeNames, searchAssets, type Asset } from '../../utils/api';
+import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
 import {
   changeAssetInputMethodQuery,
   changeDirectAssetRidQuery,
   changeSearchAssetRidQuery,
   changeSelectedDataScopeQuery,
 } from './queryMutations';
-import { decideAssetReconcile } from './assetReconcile';
-import type { TemplateValueResolution } from './templateResolution';
-import type { AssetInputMethod, AssetOption, DataScopeOption } from './queryBuilderTypes';
+import { decideAssetReconcile, DIRECT_ASSET_RID_LABEL } from './assetReconcile';
+import {
+  assetIdentityReducer,
+  createEmptyAssetIdentityState,
+  getVisibleAssetIdentity,
+  isAssetFullyResolved,
+} from './assetIdentity';
+import { AssetResolutionCoordinator } from './assetResolution';
+import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
+import type { AssetInputMethod, AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
   query: NominalQuery;
@@ -35,17 +35,11 @@ interface UseAssetSelectionArgs {
 export interface AssetSelectionModel {
   assetInputMethod: AssetInputMethod;
   directRID: string;
-  searchQuery: string;
   selectedAsset: Asset | null;
-  assetSearchResultCount: number;
-  selectedAssetSupportedScopeCount: number;
-  assetOptions: AssetOption[];
-  assetSelectValue: string;
+  assetOptions: AssetOptionsLoader;
+  assetSelectValue: AssetOption | null;
   dataScopeOptions: DataScopeOption[];
-  isLoadingAssets: boolean;
   changeAssetInputMethod: (method: AssetInputMethod) => void;
-  changeAssetSearchQuery: (value: string) => void;
-  runAssetSearch: () => void;
   selectAsset: (assetRid: string) => void;
   changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
@@ -58,6 +52,8 @@ const notifyError = (title: string, message: string) => {
   });
 };
 
+const isNominalRid = (value: string): boolean => value.trim().startsWith('ri.');
+
 export function useAssetSelection({
   query,
   onChange,
@@ -68,61 +64,61 @@ export function useAssetSelection({
   hasUserInteracted,
   markInteracted,
 }: UseAssetSelectionArgs): AssetSelectionModel {
-  const [assets, setAssets] = useState<Asset[]>([]);
-  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
-  const [dataScopes, setDataScopes] = useState<string[]>([]);
-  const [isLoadingAssets, setIsLoadingAssets] = useState(false);
-  const [hasLoadedAssets, setHasLoadedAssets] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [assetIdentity, dispatchAssetIdentity] = useReducer(
+    assetIdentityReducer,
+    undefined,
+    createEmptyAssetIdentityState
+  );
   const [assetInputMethod, setAssetInputMethod] = useState<AssetInputMethod>(query?.assetInputMethod || 'search');
   const [directRID, setDirectRID] = useState(query?.assetInputMethod === 'direct' ? query?.assetRid || '' : '');
 
-  // Latest query for effects/callbacks, read via ref to avoid onChange -> query -> effect cycles.
   const queryRef = useRef(query);
   queryRef.current = query;
+  const latestAssetOptionsAssetsRef = useRef<Asset[]>([]);
 
-  // AbortController for search-mode asset selection - cancels in-flight fetch on rapid re-selection
-  const assetSelectControllerRef = useRef<AbortController>(undefined);
+  const resolutionCoordinatorRef = useRef<AssetResolutionCoordinator | null>(null);
+  if (!resolutionCoordinatorRef.current) {
+    resolutionCoordinatorRef.current = new AssetResolutionCoordinator();
+  }
+  const resolutionCoordinator = resolutionCoordinatorRef.current;
 
-  // Tracks the exact concrete RID whose by-RID fetch is owned by a user event handler
-  // (`selectAsset` custom values or `changeDirectRID` debounced input). Query-driven
-  // reconciliation skips only this RID, so saved/query-driven concrete RIDs can still restore.
-  const eventOwnedConcreteAssetRidRef = useRef<string | undefined>(undefined);
-
-  // Debounced asset lookup for direct RID input - fires after user stops typing
-  const directRidTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const directRidControllerRef = useRef<AbortController>(undefined);
-
-  const loadAssets = useCallback(async () => {
-    setIsLoadingAssets(true);
-    setHasLoadedAssets(false);
-    try {
-      setAssets(await searchAssets(datasourceUrl, searchQuery));
-    } catch {
-      notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
-      setAssets([]);
-    } finally {
-      setIsLoadingAssets(false);
-      setHasLoadedAssets(true);
-    }
-  }, [searchQuery, datasourceUrl]);
-
-  /** Fetch an asset by resolved RID and update selectedAsset/dataScopes state.
-   *  Returns early without updating state if `signal` is aborted. */
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
+      dispatchAssetIdentity({ type: 'beginResolving', rid: resolvedRid });
+      const cancelResolving = () => {
+        resolutionCoordinator.clearEventOwnedConcreteAssetRidIfMatches(resolvedRid);
+        if (resolutionCoordinator.isMounted) {
+          dispatchAssetIdentity({ type: 'cancelResolving', rid: resolvedRid });
+        }
+      };
+
+      if (signal?.aborted) {
+        cancelResolving();
+        return;
+      }
+      signal?.addEventListener('abort', cancelResolving, { once: true });
+
+      // Release event ownership as soon as the resolution settles: from here on
+      // the selectedAssetRid guard covers what the ref covered, and a stale ref
+      // must not depend on reconcile's guard ordering to stay harmless. The
+      // identity check protects a newer event-owned RID set while this fetch
+      // was in flight.
+      const resolveWith = (asset: Asset | null) => {
+        resolutionCoordinator.clearEventOwnedConcreteAssetRidIfMatches(resolvedRid);
+        dispatchAssetIdentity({
+          type: 'resolveAsset',
+          rid: resolvedRid,
+          asset,
+          fallbackLabel: displayLabel,
+        });
+      };
+
       try {
         const foundAsset = await fetchAssetByRid(datasourceUrl, resolvedRid);
         if (signal?.aborted) {
           return;
         }
-        if (foundAsset) {
-          setSelectedAsset(foundAsset);
-          setDataScopes(getSupportedScopeNames(foundAsset));
-        } else {
-          setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
-          setDataScopes([]);
-        }
+        resolveWith(foundAsset);
       } catch {
         if (signal?.aborted) {
           return;
@@ -131,207 +127,225 @@ export function useAssetSelection({
           'Unable to load Nominal asset',
           'The RID was kept, but data scopes could not be loaded automatically.'
         );
-        setSelectedAsset(createBasicAsset(resolvedRid, displayLabel));
-        setDataScopes([]);
+        resolveWith(null);
+      } finally {
+        signal?.removeEventListener('abort', cancelResolving);
       }
     },
-    [datasourceUrl]
+    [datasourceUrl, resolutionCoordinator]
   );
 
-  const assetRidRaw = assetRidResolution.raw;
   const assetRidResolved = assetRidResolution.resolved;
-  const assetRidHasTemplate = assetRidResolution.hasTemplate;
   const assetRidIsResolved = assetRidResolution.isResolved;
+  const assetRidSnapshot = useResolutionSnapshot(assetRidResolution);
+  const dataScopeResolutionSnapshot = useResolutionSnapshot(dataScopeResolution);
 
-  const queryReconcileUsesSearchResults = query?.assetInputMethod !== 'direct';
-  const queryReconcileSearchHasLoaded = queryReconcileUsesSearchResults ? hasLoadedAssets : false;
-  const queryReconcileSearchAsset = queryReconcileUsesSearchResults
-    ? assets.find((asset) => asset.rid === assetRidResolved)
-    : undefined;
+  const selectedAsset = assetIdentity.selectedAsset;
+  const visibleAssetIdentity = useMemo(() => getVisibleAssetIdentity(assetIdentity), [assetIdentity]);
+  const visibleAssetIdentityRef = useRef(visibleAssetIdentity);
+  visibleAssetIdentityRef.current = visibleAssetIdentity;
+  const assetRidSnapshotRef = useRef(assetRidSnapshot);
+  assetRidSnapshotRef.current = assetRidSnapshot;
+  const clearAssetSelection = useCallback(() => {
+    resolutionCoordinator.cancelInFlightResolution();
+    dispatchAssetIdentity({ type: 'clear' });
+  }, [resolutionCoordinator]);
 
-  // Reconcile selected asset state from the saved/query-driven RID.
-  //
-  // This is the only query-driven path allowed to schedule a by-RID asset fetch. Concrete
-  // user-entered/custom RIDs are owned by their event handlers; template-backed RIDs stay
-  // query-driven so dashboard variable changes refetch the resolved asset.
+  const assetOptions = useCallback<AssetOptionsLoader>(
+    async (searchText: string): Promise<AssetOption[]> => {
+      const requestId = resolutionCoordinator.startAssetOptionsRequest();
+      try {
+        const found = await searchAssets(datasourceUrl, searchText);
+        if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
+          latestAssetOptionsAssetsRef.current = found;
+        }
+        return buildAssetOptions({
+          assets: found,
+          selectedAsset: visibleAssetIdentityRef.current.selectedAsset,
+          assetRid: assetRidSnapshotRef.current,
+        });
+      } catch {
+        // Only the request id gates the alert: each new search bumps it (and so does a
+        // method switch / unmount), so a superseded search stays quiet while a genuine
+        // failure of the latest request always surfaces.
+        if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
+          latestAssetOptionsAssetsRef.current = [];
+          notifyError('Unable to load Nominal assets', 'Check the data source configuration and try again.');
+        }
+        return [];
+      }
+    },
+    [datasourceUrl, resolutionCoordinator]
+  );
+
   useEffect(() => {
-    const controllers: AbortController[] = [];
+    let reconcileSignal: AbortSignal | undefined;
+    if (query?.assetInputMethod) {
+      setAssetInputMethod(query.assetInputMethod);
+    }
+    const eventOwnedConcreteAssetRid = resolutionCoordinator.eventOwnedConcreteAssetRid;
+    if (eventOwnedConcreteAssetRid && assetRidResolved !== eventOwnedConcreteAssetRid) {
+      resolutionCoordinator.cancelInFlightResolution();
+      dispatchAssetIdentity({ type: 'cancelResolving', rid: eventOwnedConcreteAssetRid });
+    }
+
     const actions = decideAssetReconcile({
       assetRid: query?.assetRid,
       assetInputMethod: query?.assetInputMethod,
       selectedAssetRid: selectedAsset?.rid,
-      assetRidResolution: {
-        raw: assetRidRaw,
-        resolved: assetRidResolved,
-        hasTemplate: assetRidHasTemplate,
-        isResolved: assetRidIsResolved,
-      },
-      eventOwnedConcreteAssetRid: eventOwnedConcreteAssetRidRef.current,
-      searchHasLoaded: queryReconcileSearchHasLoaded,
-      searchAsset: queryReconcileSearchAsset,
+      assetRidResolution: assetRidSnapshot,
+      eventOwnedConcreteAssetRid: resolutionCoordinator.eventOwnedConcreteAssetRid,
     });
 
     for (const action of actions) {
       switch (action.kind) {
         case 'mirrorDirectRaw':
-          setDirectRID((prev) => prev || action.raw);
+          setDirectRID(action.raw);
           break;
         case 'fetchByRid': {
-          const controller = new AbortController();
-          controllers.push(controller);
-          applyAssetFromRid(action.rid, action.label, controller.signal);
+          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+          applyAssetFromRid(action.rid, action.label, reconcileSignal);
           break;
         }
-        case 'selectSearchResult':
-          setAssetInputMethod('search');
-          setSelectedAsset(action.asset);
-          break;
         case 'inferDirect': {
           setAssetInputMethod('direct');
           setDirectRID(action.raw);
-          const controller = new AbortController();
-          controllers.push(controller);
-          applyAssetFromRid(action.rid, action.label, controller.signal);
+          reconcileSignal = resolutionCoordinator.beginReconcileFetch();
+          applyAssetFromRid(action.rid, action.label, reconcileSignal);
           break;
         }
+        case 'clearIdentity':
+          dispatchAssetIdentity({ type: 'clear' });
+          break;
       }
     }
 
-    return controllers.length > 0 ? () => controllers.forEach((controller) => controller.abort()) : undefined;
+    return reconcileSignal ? () => resolutionCoordinator.cancelReconcileFetch(reconcileSignal) : undefined;
   }, [
     query?.assetRid,
     query?.assetInputMethod,
     selectedAsset?.rid,
     assetRidResolved,
-    assetRidIsResolved,
-    assetRidHasTemplate,
-    assetRidRaw,
-    queryReconcileSearchHasLoaded,
-    queryReconcileSearchAsset,
+    assetRidSnapshot,
     applyAssetFromRid,
+    resolutionCoordinator,
   ]);
 
-  // Load assets on component mount and when search query changes
-  useEffect(() => {
-    loadAssets();
-  }, [loadAssets]);
-
-  // Update dependent fields when asset changes
   useEffect(() => {
     if (selectedAsset) {
-      const scopeNames = getSupportedScopeNames(selectedAsset);
-      setDataScopes(scopeNames);
+      if (!assetRidIsResolved || selectedAsset.rid !== assetRidResolved) {
+        return;
+      }
 
-      // Only auto-update query if user has interacted with the query builder
-      // This prevents unwanted resets when just editing panel display settings
+      // Derive scopes from the raw selected asset, not the visible view: the
+      // visible view masks to [] while a different asset's resolution is
+      // pending, which would misclassify the saved scope as invalid and clear
+      // it even though the guard above confirmed this asset is current.
+      const scopeNames = getSupportedScopeNames(selectedAsset);
+
       if (hasUserInteracted) {
         const q = queryRef.current;
-        // NOTE: resolution (dataScopeResolution/assetRidResolution) is read from the closure of
-        // the render that scheduled this effect, while `q` is the latest query via ref. They are
-        // consistent because the effect fires on selectedAsset/assetInputMethod/hasUserInteracted
-        // changes, and at that render the resolution is derived from the same query. The original
-        // re-resolved live via getTemplateSrv() here; this is intentionally render-time instead.
-        // Check if current dataScopeName is valid for the new asset
         const resolvedCurrentScope = dataScopeResolution.resolved;
         const scopeIsValid = scopeNames.includes(resolvedCurrentScope);
 
-        // Preserve template variables - don't overwrite $variable with resolved scope
         if (q?.dataScopeName?.includes('$')) {
           // skip - variable will be resolved at query time
-        }
-        // Auto-select data scope if only one available
-        else if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
+        } else if (scopeNames.length === 1 && q?.dataScopeName !== scopeNames[0]) {
           onChange(changeSelectedDataScopeQuery(q, scopeNames[0], assetInputMethod));
-        }
-        // Clear invalid data scope when asset changes
-        else if (!scopeIsValid && q?.dataScopeName) {
+        } else if (!scopeIsValid && q?.dataScopeName) {
           onChange(changeSelectedDataScopeQuery(q, '', assetInputMethod));
-        }
-        // Update query with selected asset only if it has changed (search mode)
-        // Preserve template variables - don't overwrite $variable with resolved RID
-        else if (assetInputMethod === 'search' && !q?.assetRid?.includes('$')) {
-          const resolvedCurrentRid = assetRidResolution.resolved;
-          if (resolvedCurrentRid !== selectedAsset.rid) {
-            onChange(changeSearchAssetRidQuery(q, selectedAsset.rid));
-          }
         }
       }
     }
-    // Intentionally omit asset/data-scope resolution deps here. This effect mutates
-    // query fields in response to selected-asset/user-interaction changes, while the
-    // latest query is read through queryRef.current. Running it on template-resolution
-    // changes would broaden when dataScopeName/assetRid can be auto-cleared or rewritten.
+    // Intentionally omit data-scope resolution deps here. This effect mutates
+    // dataScopeName in response to a selected asset becoming current after user
+    // interaction; the latest query is read through queryRef.current. Template
+    // scopes are preserved for query time, so running on each resolved $scope
+    // change would broaden when concrete dataScopeName can be auto-cleared or
+    // rewritten.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted]);
+  }, [selectedAsset, onChange, assetInputMethod, hasUserInteracted, assetRidResolved, assetRidIsResolved]);
 
   const changeAssetInputMethod = useCallback(
     (method: AssetInputMethod) => {
       markInteracted();
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
-      assetSelectControllerRef.current?.abort();
-      eventOwnedConcreteAssetRidRef.current = undefined;
+      resolutionCoordinator.cancelInFlightResolution();
+      resolutionCoordinator.invalidateAssetOptionsRequests();
       setAssetInputMethod(method);
-      setSelectedAsset(null);
-      setDataScopes([]);
-      // Populate directRID from existing query when switching to direct mode
       setDirectRID(method === 'direct' ? query?.assetRid || '' : '');
-      // Only update input method, preserve other query values (assetRid, channel, dataScopeName)
-      // so users don't lose their selection when quickly toggling between modes.
       onChange(changeAssetInputMethodQuery(query, method));
     },
-    [markInteracted, onChange, query]
+    [markInteracted, onChange, query, resolutionCoordinator]
   );
-
-  const changeAssetSearchQuery = useCallback((value: string) => {
-    setSearchQuery(value);
-  }, []);
 
   const selectAsset = useCallback(
     (value: string) => {
       markInteracted();
-      const isVariable = value.includes('$');
+      const trimmedValue = value.trim();
 
-      // Resolve to actual RID for asset lookup (variables need resolution)
-      const selectedRidResolution = resolveTemplateText(value);
-      const ridToFind = isVariable ? selectedRidResolution.resolved : value;
-      const asset = assets.find((a) => a.rid === ridToFind);
-
-      if (asset) {
-        // Abort any in-flight search-mode fetch from a previous selection
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
-        setSelectedAsset(asset);
-      } else if (ridToFind && !ridToFind.includes('$') && !isVariable) {
-        // Concrete custom RIDs are event-owned: fetch immediately instead of waiting
-        // for query reconciliation, and avoid a UI flash while the fetch is in flight.
-        assetSelectControllerRef.current?.abort();
-        const controller = new AbortController();
-        assetSelectControllerRef.current = controller;
-        eventOwnedConcreteAssetRidRef.current = ridToFind;
-        applyAssetFromRid(ridToFind, 'Asset (Direct RID)', controller.signal);
-      } else if (isVariable && selectedRidResolution.isResolved) {
-        // Template-backed selections are query-owned so future variable resolution changes
-        // refetch through the same reconcile path. Keep the current selected asset until
-        // reconciliation replaces it.
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
-      } else {
-        assetSelectControllerRef.current?.abort();
-        eventOwnedConcreteAssetRidRef.current = undefined;
-        setSelectedAsset(null);
+      if (!trimmedValue) {
+        // Mirror changeDirectRID: a blank/whitespace selection clears the asset rather
+        // than committing whitespace as the assetRid and firing a doomed by-RID fetch.
+        clearAssetSelection();
+        onChange(changeSearchAssetRidQuery(query, ''));
+        return;
       }
 
-      // Store variable syntax if variable, resolved RID if fetched directly, or asset RID from search
+      const isVariable = trimmedValue.includes('$');
+      if (!isVariable && !isNominalRid(trimmedValue)) {
+        return;
+      }
+
+      const selectedRidResolution = resolveTemplateText(trimmedValue);
+      const ridToFind = isVariable ? selectedRidResolution.resolved : trimmedValue;
+      const isConcreteRid = Boolean(ridToFind) && !ridToFind.includes('$');
+
+      if (!isVariable && isAssetFullyResolved(assetIdentity, ridToFind)) {
+        // Re-picking the fully resolved current asset: nothing to fetch. A fallback
+        // asset (empty dataScopes) still refetches so a failed lookup stays retryable.
+        onChange(changeSearchAssetRidQuery(query, ridToFind));
+        return;
+      }
+
+      const displayedAsset = !isVariable
+        ? latestAssetOptionsAssetsRef.current.find((asset) => asset.rid === ridToFind)
+        : undefined;
+      if (isConcreteRid && !isVariable) {
+        if (displayedAsset) {
+          resolutionCoordinator.cancelInFlightResolution();
+          dispatchAssetIdentity({ type: 'beginResolving', rid: ridToFind });
+          dispatchAssetIdentity({
+            type: 'resolveAsset',
+            rid: ridToFind,
+            asset: displayedAsset,
+            fallbackLabel: DIRECT_ASSET_RID_LABEL,
+          });
+        } else {
+          applyAssetFromRid(ridToFind, DIRECT_ASSET_RID_LABEL, resolutionCoordinator.beginSelectFetch(ridToFind));
+        }
+      } else if (isVariable && selectedRidResolution.isResolved) {
+        resolutionCoordinator.cancelInFlightResolution();
+        dispatchAssetIdentity({ type: 'beginResolving', rid: selectedRidResolution.resolved });
+      } else {
+        clearAssetSelection();
+      }
+
       if (isVariable) {
-        onChange(changeSearchAssetRidQuery(query, value));
-      } else if (asset) {
-        onChange(changeSearchAssetRidQuery(query, asset.rid));
-      } else if (ridToFind && !ridToFind.includes('$')) {
+        onChange(changeSearchAssetRidQuery(query, trimmedValue));
+      } else if (isConcreteRid) {
         onChange(changeSearchAssetRidQuery(query, ridToFind));
       }
     },
-    [applyAssetFromRid, assets, markInteracted, onChange, query, resolveTemplateText]
+    [
+      applyAssetFromRid,
+      assetIdentity,
+      clearAssetSelection,
+      markInteracted,
+      onChange,
+      query,
+      resolutionCoordinator,
+      resolveTemplateText,
+    ]
   );
 
   const changeDirectRID = useCallback(
@@ -339,47 +353,36 @@ export function useAssetSelection({
       markInteracted();
       setDirectRID(rid);
 
-      // Update query model immediately so the value is persisted
-      if (rid.trim()) {
-        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
-      }
-
-      // Cancel any in-flight debounce / fetch
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
-
       if (!rid.trim()) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
-        setSelectedAsset(null);
-        setDataScopes([]);
+        clearAssetSelection();
         onChange(changeDirectAssetRidQuery(queryRef.current, ''));
         return;
       }
 
-      // Resolve template variables
       const ridResolution = resolveTemplateText(rid);
-      // Template-backed RIDs are query-owned so dashboard variable changes use the
-      // same reconcile path. Concrete direct RIDs stay event-owned and debounced.
       if (!ridResolution.isResolved) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
-        return;
-      }
-      if (ridResolution.hasTemplate) {
-        eventOwnedConcreteAssetRidRef.current = undefined;
+        clearAssetSelection();
+        onChange(changeDirectAssetRidQuery(queryRef.current, rid));
         return;
       }
 
-      eventOwnedConcreteAssetRidRef.current = ridResolution.resolved;
+      const isConcrete = !ridResolution.hasTemplate;
+      resolutionCoordinator.cancelInFlightResolution();
+      // Set the event-owned RID before committing the query so the update cannot
+      // schedule a second fetch for the same selection (see AssetResolutionCoordinator).
+      resolutionCoordinator.setEventOwnedConcreteAssetRid(isConcrete ? ridResolution.resolved : undefined);
+      dispatchAssetIdentity({ type: 'beginResolving', rid: ridResolution.resolved });
+      onChange(changeDirectAssetRidQuery(queryRef.current, rid));
 
-      const displayLabel = 'Asset (Direct RID)';
-      const controller = new AbortController();
-      directRidControllerRef.current = controller;
+      if (!isConcrete) {
+        return;
+      }
 
-      directRidTimerRef.current = setTimeout(() => {
-        applyAssetFromRid(ridResolution.resolved, displayLabel, controller.signal);
+      resolutionCoordinator.scheduleDirectRidFetch((signal) => {
+        applyAssetFromRid(ridResolution.resolved, DIRECT_ASSET_RID_LABEL, signal);
       }, 300);
     },
-    [markInteracted, onChange, applyAssetFromRid, resolveTemplateText]
+    [applyAssetFromRid, clearAssetSelection, markInteracted, onChange, resolutionCoordinator, resolveTemplateText]
   );
 
   const selectDataScope = useCallback(
@@ -390,91 +393,36 @@ export function useAssetSelection({
     [assetInputMethod, markInteracted, onChange, query]
   );
 
-  // Clean up timers and in-flight fetches on unmount
   useEffect(() => {
+    resolutionCoordinator.markMounted();
     return () => {
-      clearTimeout(directRidTimerRef.current);
-      directRidControllerRef.current?.abort();
-      assetSelectControllerRef.current?.abort();
+      resolutionCoordinator.markUnmounted();
+      resolutionCoordinator.cancelInFlightResolution();
     };
-  }, []);
-
-  const assetOptions = useMemo(
-    () =>
-      buildAssetOptions({
-        assets,
-        selectedAsset,
-        assetRid: {
-          raw: assetRidResolution.raw,
-          resolved: assetRidResolution.resolved,
-          hasTemplate: assetRidResolution.hasTemplate,
-          isResolved: assetRidResolution.isResolved,
-        },
-      }),
-    [
-      assets,
-      selectedAsset,
-      assetRidResolution.raw,
-      assetRidResolution.resolved,
-      assetRidResolution.hasTemplate,
-      assetRidResolution.isResolved,
-    ]
-  );
+  }, [resolutionCoordinator]);
 
   const assetSelectValue = useMemo(
-    () =>
-      getAssetPickerValue({
-        assetRid: {
-          raw: assetRidResolution.raw,
-          resolved: assetRidResolution.resolved,
-          hasTemplate: assetRidResolution.hasTemplate,
-          isResolved: assetRidResolution.isResolved,
-        },
-        assetOptions,
-      }),
-    [
-      assetRidResolution.raw,
-      assetRidResolution.resolved,
-      assetRidResolution.hasTemplate,
-      assetRidResolution.isResolved,
-      assetOptions,
-    ]
+    () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: visibleAssetIdentity.selectedAsset }),
+    [assetRidSnapshot, visibleAssetIdentity.selectedAsset]
   );
 
   const dataScopeOptions = useMemo(
     () =>
       buildDataScopeOptions({
-        dataScopes,
-        dataScopeName: {
-          raw: dataScopeResolution.raw,
-          resolved: dataScopeResolution.resolved,
-          hasTemplate: dataScopeResolution.hasTemplate,
-          isResolved: dataScopeResolution.isResolved,
-        },
+        dataScopes: visibleAssetIdentity.dataScopes,
+        dataScopeName: dataScopeResolutionSnapshot,
       }),
-    [
-      dataScopes,
-      dataScopeResolution.raw,
-      dataScopeResolution.resolved,
-      dataScopeResolution.hasTemplate,
-      dataScopeResolution.isResolved,
-    ]
+    [visibleAssetIdentity.dataScopes, dataScopeResolutionSnapshot]
   );
 
   return {
     assetInputMethod,
     directRID,
-    searchQuery,
-    selectedAsset,
-    assetSearchResultCount: assets.length,
-    selectedAssetSupportedScopeCount: selectedAsset ? getSupportedScopes(selectedAsset).length : 0,
+    selectedAsset: visibleAssetIdentity.selectedAsset,
     assetOptions,
     assetSelectValue,
     dataScopeOptions,
-    isLoadingAssets,
     changeAssetInputMethod,
-    changeAssetSearchQuery,
-    runAssetSearch: loadAssets,
     selectAsset,
     changeDirectRID,
     selectDataScope,

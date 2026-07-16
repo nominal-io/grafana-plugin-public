@@ -9,6 +9,7 @@ export type AssetOption = PickerOption;
 export type DataScopeOption = PickerOption;
 export type ChannelOption = PickerOption & { dataType?: string };
 export type ChannelOptionsLoader = (searchText: string) => Promise<ChannelOption[]>;
+export type AssetOptionsLoader = (searchText: string) => Promise<AssetOption[]>;
 
 export type AggregationDisplayKind = 'string' | 'log' | 'numeric';
 export type AggregationOption = SelectableValue<string> & { value: string };
@@ -23,16 +24,12 @@ export interface AggregationState {
 export interface QueryBuilderState {
   assetInputMethod: AssetInputMethod;
   directRID: string;
-  searchQuery: string;
   selectedAsset: Asset | null;
-  assetSearchResultCount: number;
-  selectedAssetSupportedScopeCount: number;
-  assetOptions: AssetOption[];
-  assetSelectValue: string;
+  assetOptions: AssetOptionsLoader;
+  assetSelectValue: AssetOption | null;
   dataScopeOptions: DataScopeOption[];
   channelOptions: ChannelOptionsLoader;
   channelSelectValue: ChannelOption | null;
-  isLoadingAssets: boolean;
   resolvedAssetRid: string;
   resolvedDataScopeName: string;
   resolvedChannel: string;
@@ -45,8 +42,6 @@ export interface QueryBuilderState {
 
 export interface QueryBuilderCommands {
   changeAssetInputMethod: (method: AssetInputMethod) => void;
-  changeAssetSearchQuery: (searchQuery: string) => void;
-  runAssetSearch: () => void;
   selectAsset: (assetRid: string) => void;
   changeDirectRID: (rid: string) => void;
   selectDataScope: (dataScopeName: string) => void;

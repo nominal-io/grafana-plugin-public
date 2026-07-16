@@ -1,12 +1,13 @@
-import type { Asset } from '../../utils/api';
 import type { AssetInputMethod } from './queryBuilderTypes';
 import type { TemplateValueResolution } from './templateResolution';
+
+export const DIRECT_ASSET_RID_LABEL = 'Asset (Direct RID)';
 
 export type AssetReconcileAction =
   | { kind: 'mirrorDirectRaw'; raw: string }
   | { kind: 'fetchByRid'; rid: string; label: string }
-  | { kind: 'selectSearchResult'; asset: Asset }
-  | { kind: 'inferDirect'; raw: string; rid: string; label: string };
+  | { kind: 'inferDirect'; raw: string; rid: string; label: string }
+  | { kind: 'clearIdentity' };
 
 export interface AssetReconcileInputs {
   assetRid: string | undefined;
@@ -14,8 +15,6 @@ export interface AssetReconcileInputs {
   selectedAssetRid: string | undefined;
   assetRidResolution: TemplateValueResolution;
   eventOwnedConcreteAssetRid: string | undefined;
-  searchHasLoaded: boolean;
-  searchAsset: Asset | undefined;
 }
 
 export function decideAssetReconcile({
@@ -24,12 +23,10 @@ export function decideAssetReconcile({
   selectedAssetRid,
   assetRidResolution,
   eventOwnedConcreteAssetRid,
-  searchHasLoaded,
-  searchAsset,
 }: AssetReconcileInputs): AssetReconcileAction[] {
   const actions: AssetReconcileAction[] = [];
 
-  if (!assetRid) {
+  if (assetRid === undefined) {
     return actions;
   }
 
@@ -37,7 +34,19 @@ export function decideAssetReconcile({
     actions.push({ kind: 'mirrorDirectRaw', raw: assetRid });
   }
 
-  if (!assetRidResolution.resolved || !assetRidResolution.isResolved) {
+  if (assetRid === '') {
+    actions.push({ kind: 'clearIdentity' });
+    return actions;
+  }
+
+  if (!assetRidResolution.resolved) {
+    if (assetRidResolution.isResolved) {
+      actions.push({ kind: 'clearIdentity' });
+    }
+    return actions;
+  }
+
+  if (!assetRidResolution.isResolved) {
     return actions;
   }
 
@@ -49,24 +58,22 @@ export function decideAssetReconcile({
     return actions;
   }
 
-  const label = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : 'Asset (Direct RID)';
+  const label = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : DIRECT_ASSET_RID_LABEL;
 
   if (assetInputMethod === 'direct') {
     actions.push({ kind: 'fetchByRid', rid: assetRidResolution.resolved, label });
     return actions;
   }
 
-  if (!searchHasLoaded) {
-    return actions;
-  }
-
-  if (searchAsset) {
-    actions.push({ kind: 'selectSearchResult', asset: searchAsset });
-    return actions;
-  }
-
   if (!assetInputMethod) {
-    actions.push({ kind: 'inferDirect', raw: assetRid, rid: assetRidResolution.resolved, label });
+    // A legacy query carrying a template variable ($asset) belongs to search mode, not
+    // the direct-RID input; fetch it like the search-mode template path rather than
+    // inferring 'direct' and stuffing the raw variable into the direct RID field.
+    actions.push(
+      assetRidResolution.hasTemplate
+        ? { kind: 'fetchByRid', rid: assetRidResolution.resolved, label }
+        : { kind: 'inferDirect', raw: assetRid, rid: assetRidResolution.resolved, label }
+    );
     return actions;
   }
 

@@ -1,5 +1,11 @@
+import { renderHook } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
-import { resolveQueryTemplateValues, resolveTemplateValue, templateDisplayLabel } from './templateResolution';
+import {
+  resolveQueryTemplateValues,
+  resolveTemplateValue,
+  templateDisplayLabel,
+  useResolutionSnapshot,
+} from './templateResolution';
 
 describe('templateResolution', () => {
   const replace = (value: string) =>
@@ -54,5 +60,27 @@ describe('templateResolution', () => {
     expect(templateDisplayLabel({ raw: 'primary', resolved: 'primary', hasTemplate: false, isResolved: true })).toBe(
       'primary'
     );
+  });
+
+  it('memoizes resolution snapshots by primitive fields', () => {
+    const value = {
+      raw: '$scope',
+      resolved: 'primary',
+      hasTemplate: true,
+      isResolved: true,
+    };
+    const { result, rerender } = renderHook(({ resolution }) => useResolutionSnapshot(resolution), {
+      initialProps: { resolution: value },
+    });
+    const snapshot = result.current;
+
+    rerender({ resolution: { ...value } });
+
+    expect(result.current).toBe(snapshot);
+
+    rerender({ resolution: { ...value, resolved: 'secondary' } });
+
+    expect(result.current).not.toBe(snapshot);
+    expect(result.current.resolved).toBe('secondary');
   });
 });

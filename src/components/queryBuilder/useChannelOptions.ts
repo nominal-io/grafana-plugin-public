@@ -5,7 +5,7 @@ import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
-import type { TemplateValueResolution } from './templateResolution';
+import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
 import type { AssetInputMethod, ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
@@ -91,20 +91,7 @@ export function useChannelOptions({
   const channelOptionsContextKeyRef = useRef(channelOptionsContext.key);
   channelOptionsContextKeyRef.current = channelOptionsContext.key;
 
-  const channelResolutionSnapshot = useMemo(
-    () => ({
-      raw: channelResolution.raw,
-      resolved: channelResolution.resolved,
-      hasTemplate: channelResolution.hasTemplate,
-      isResolved: channelResolution.isResolved,
-    }),
-    [
-      channelResolution.raw,
-      channelResolution.resolved,
-      channelResolution.hasTemplate,
-      channelResolution.isResolved,
-    ]
-  );
+  const channelResolutionSnapshot = useResolutionSnapshot(channelResolution);
 
   const channelOptions = useCallback<ChannelOptionsLoader>(
     async (searchText: string): Promise<ChannelOption[]> => {

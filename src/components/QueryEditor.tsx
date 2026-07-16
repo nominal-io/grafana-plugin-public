@@ -12,6 +12,7 @@ import {
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
+import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 
@@ -139,40 +140,21 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
             {/* Asset Selection */}
             {state.assetInputMethod === 'search' ? (
-              <>
-                <InlineField label="Search" labelWidth={8}>
-                  <Input
-                    placeholder="Search assets"
-                    value={state.searchQuery}
-                    onChange={(event) => commands.changeAssetSearchQuery(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        commands.runAssetSearch();
-                      }
-                    }}
-                    width={20}
-                  />
-                </InlineField>
-
-                {state.assetSearchResultCount > 0 && (
-                  <InlineField label="Asset" labelWidth={8} loading={state.isLoadingAssets}>
-                    <Combobox
-                      id="nominal-query-asset-picker"
-                      key={`asset-select-${state.assetSearchResultCount}-${state.selectedAsset?.rid || ''}`}
-                      options={state.assetOptions}
-                      value={state.assetSelectValue}
-                      onChange={(selection) => commands.selectAsset(selection.value)}
-                      width="auto"
-                      minWidth={30}
-                      maxWidth={100}
-                      placeholder="Choose asset..."
-                      isClearable={false}
-                      createCustomValue
-                      data-testid="asset-combobox"
-                    />
-                  </InlineField>
-                )}
-              </>
+              <InlineField label="Asset" labelWidth={8}>
+                <Combobox
+                  id="nominal-query-asset-picker"
+                  value={state.assetSelectValue}
+                  options={state.assetOptions}
+                  onChange={(selection) => commands.selectAsset(selection.value)}
+                  placeholder="Search assets or paste a RID..."
+                  createCustomValue
+                  isClearable={false}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  data-testid="asset-combobox"
+                />
+              </InlineField>
             ) : (
               <InlineField label="Asset RID" labelWidth={12}>
                 <Input
@@ -278,7 +260,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             </span>
             <span className={styles.summaryLabel}>Data Scopes:</span>
             <span className={styles.scopeCount}>
-              {state.selectedAssetSupportedScopeCount}
+              {getSupportedScopeNames(state.selectedAsset).length}
             </span>
           </div>
         )}
