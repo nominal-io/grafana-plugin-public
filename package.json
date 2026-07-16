@@ -94,7 +94,8 @@
       "form-data": ">=4.0.6",
       "protobufjs": ">=8.6.0",
       "ws": ">=8.21.0",
-      "js-cookie": ">=3.0.7"
+      "js-cookie": ">=3.0.7",
+      "websocket-driver": ">=0.7.5"
     }
   }
 }
