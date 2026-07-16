@@ -137,7 +137,6 @@ describe('channel data type inference effect', () => {
     return {
       refId: 'A',
       assetRid: ASSET_RID,
-      assetInputMethod: 'direct',
       dataScopeName: 'default',
       queryType: 'decimation',
       buckets: 1000,
@@ -162,7 +161,7 @@ describe('channel data type inference effect', () => {
     });
   });
 
-  it('restores a saved direct RID query into the direct RID input', async () => {
+  it('restores a saved legacy direct-mode RID query into the asset combobox', async () => {
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
         return { [ASSET_RID]: ASSET };
@@ -170,25 +169,56 @@ describe('channel data type inference effect', () => {
       if (url.endsWith('/scout/v1/search-assets')) {
         return { results: [ASSET] };
       }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
       return {};
     });
 
+    // Old dashboards persisted assetInputMethod; the stale JSON key must be
+    // ignored and the query must restore through the single Combobox path.
+    const legacyQuery = { ...makeQuery({ assetRid: '$asset' }), assetInputMethod: 'direct' } as NominalQuery;
+
+    render(
+      <QueryEditor query={legacyQuery} onChange={jest.fn()} onRunQuery={jest.fn()} datasource={mockDatasource} />
+    );
+
+    const assetInput = await screen.findByTestId('asset-combobox');
+    expect(assetInput).toHaveValue(`$asset → ${ASSET_RID}`);
+    expect(screen.queryByText('Asset Search')).not.toBeInTheDocument();
+    expect(screen.queryByText('Asset RID')).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+    });
+  });
+
+  it('keeps data scope and channel fields hidden while a saved asset template is unresolved', async () => {
+    // $asset has no value yet, so it resolves to itself: assetComplete stays false.
+    mockReplaceOverrides['$asset'] = '$asset';
+
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        query={makeQuery({ assetRid: '$asset', dataScopeName: '' })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
       />
     );
 
-    expect(screen.getByDisplayValue('$asset')).toBeInTheDocument();
-    await waitFor(() => {
-      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
-    });
+    const assetInput = await screen.findByTestId('asset-combobox');
+    expect(assetInput).toHaveValue('$asset');
+
+    // With assetComplete false the dependent fields never open...
+    expect(screen.queryByTestId('data-scope-combobox')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('query-editor-channel-aggregation-row')).not.toBeInTheDocument();
+
+    // ...and no by-RID asset fetch is attempted for the unresolved template.
+    await settleEffects();
+    expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(false);
   });
 
-  it('fetches a saved direct template RID only once on mount (no restore/resolved double fetch)', async () => {
+  it('fetches a saved template RID only once on mount (no restore/resolved double fetch)', async () => {
     post.mockImplementation(async (url: string) => {
       if (url.endsWith('/scout/v1/asset/multiple')) {
         return { [ASSET_RID]: ASSET };
@@ -204,7 +234,7 @@ describe('channel data type inference effect', () => {
 
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        query={makeQuery({ assetRid: '$asset' })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -221,7 +251,7 @@ describe('channel data type inference effect', () => {
     expect(assetFetches).toHaveLength(1);
   });
 
-  it('refetches the asset when a direct-mode template variable resolves to a new RID', async () => {
+  it('refetches the asset when a template variable resolves to a new RID', async () => {
     const ASSET_RID_B = 'ri.scout.main.asset.def456';
     const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
 
@@ -245,7 +275,7 @@ describe('channel data type inference effect', () => {
 
     const { rerender } = render(
       <QueryEditor
-        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        query={makeQuery({ assetRid: '$asset' })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -265,7 +295,7 @@ describe('channel data type inference effect', () => {
     mockReplaceOverrides['$asset'] = ASSET_RID_B;
     rerender(
       <QueryEditor
-        query={makeQuery({ assetRid: '$asset', assetInputMethod: 'direct' })}
+        query={makeQuery({ assetRid: '$asset' })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -299,7 +329,7 @@ describe('channel data type inference effect', () => {
 
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        query={makeQuery({ assetRid: ASSET_RID })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -549,7 +579,7 @@ describe('channel data type inference effect', () => {
 
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'search' })}
+        query={makeQuery({ assetRid: ASSET_RID })}
         onChange={onChange}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -582,7 +612,7 @@ describe('channel data type inference effect', () => {
 
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: 'default' })}
+        query={makeQuery({ assetRid: ASSET_RID, dataScopeName: 'default' })}
         onChange={onChange}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -646,7 +676,7 @@ describe('channel data type inference effect', () => {
 
     render(
       <QueryEditor
-        query={makeQuery({ assetRid: ASSET_RID, assetInputMethod: 'direct', dataScopeName: '$scope' })}
+        query={makeQuery({ assetRid: ASSET_RID, dataScopeName: '$scope' })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}

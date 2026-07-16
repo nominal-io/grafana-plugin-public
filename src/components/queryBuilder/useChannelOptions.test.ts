@@ -2,7 +2,7 @@
 import { act, renderHook } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { searchChannels, type Asset, type Channel } from '../../utils/api';
-import type { AssetInputMethod, ChannelOption } from './queryBuilderTypes';
+import type { ChannelOption } from './queryBuilderTypes';
 import { buildChannelOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { resolveTemplateValue, type TemplateValueResolution } from './templateResolution';
 import { useChannelOptions } from './useChannelOptions';
@@ -75,7 +75,6 @@ function args(overrides: Record<string, unknown> = {}) {
     query,
     onChange: jest.fn(),
     selectedAsset: ASSET as Asset | null,
-    assetInputMethod: 'search' as AssetInputMethod,
     channelResolution: resolveTemplateValue(query.channel, replace),
     dataScopeResolution: resolveTemplateValue(query.dataScopeName, replace),
     datasourceUrl: '/api/x',

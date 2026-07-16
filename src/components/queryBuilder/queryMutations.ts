@@ -1,41 +1,29 @@
 import { DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
-import type { AssetInputMethod } from './queryBuilderTypes';
 
 const QUERY_BUILDER_EXECUTION_DEFAULTS = {
   queryType: 'decimation' as const,
   buckets: 1000,
 };
 
-export function changeAssetInputMethodQuery(query: NominalQuery, assetInputMethod: AssetInputMethod): NominalQuery {
-  return { ...query, assetInputMethod };
-}
-
-export function changeSearchAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  return { ...query, assetRid, assetInputMethod: 'search' };
-}
-
-export function changeDirectAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  if (!assetRid.trim()) {
-    return { ...query, assetRid: '', assetInputMethod: 'direct' };
+// Removes the legacy `assetInputMethod` key that older dashboards persisted.
+// The field was removed from NominalQuery; without this, every write would
+// re-persist the stale key because the helpers spread the incoming query.
+export function normalizeLegacyQuery(query: NominalQuery): NominalQuery {
+  if (!Object.prototype.hasOwnProperty.call(query, 'assetInputMethod')) {
+    return query;
   }
-
-  return {
-    ...query,
-    assetRid,
-    assetInputMethod: 'direct',
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
-  };
+  const { assetInputMethod: _assetInputMethod, ...rest } = query as NominalQuery & { assetInputMethod?: unknown };
+  return rest;
 }
 
-export function changeSelectedDataScopeQuery(
-  query: NominalQuery,
-  dataScopeName: string,
-  assetInputMethod: AssetInputMethod
-): NominalQuery {
+export function changeAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
+  return { ...normalizeLegacyQuery(query), assetRid };
+}
+
+export function changeSelectedDataScopeQuery(query: NominalQuery, dataScopeName: string): NominalQuery {
   return {
-    ...query,
+    ...normalizeLegacyQuery(query),
     dataScopeName,
-    assetInputMethod,
     ...QUERY_BUILDER_EXECUTION_DEFAULTS,
   };
 }
@@ -45,30 +33,27 @@ export function changeSelectedChannelQuery(
   {
     channel,
     dataType,
-    assetInputMethod,
   }: {
     channel: string;
     dataType: string;
-    assetInputMethod: AssetInputMethod;
   }
 ): NominalQuery {
   return {
-    ...query,
+    ...normalizeLegacyQuery(query),
     channel,
     channelDataType: dataType,
     dataScopeName: query?.dataScopeName || '',
-    assetInputMethod,
     ...QUERY_BUILDER_EXECUTION_DEFAULTS,
   };
 }
 
 export function inferChannelDataTypeQuery(query: NominalQuery, channelDataType: string): NominalQuery {
-  return { ...query, channelDataType };
+  return { ...normalizeLegacyQuery(query), channelDataType };
 }
 
 export function changeAggregationsQuery(query: NominalQuery, aggregations: string[]): NominalQuery {
   return {
-    ...query,
+    ...normalizeLegacyQuery(query),
     aggregations: aggregations.length > 0 ? aggregations : [...DEFAULT_AGGREGATIONS],
   };
 }

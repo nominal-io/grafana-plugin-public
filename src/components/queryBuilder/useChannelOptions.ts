@@ -6,13 +6,12 @@ import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/a
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
-import type { AssetInputMethod, ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
+import type { ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
   selectedAsset: Asset | null;
-  assetInputMethod: AssetInputMethod;
   channelResolution: TemplateValueResolution;
   dataScopeResolution: TemplateValueResolution;
   datasourceUrl: string;
@@ -67,7 +66,6 @@ export function useChannelOptions({
   query,
   onChange,
   selectedAsset,
-  assetInputMethod,
   channelResolution,
   dataScopeResolution,
   datasourceUrl,
@@ -185,11 +183,10 @@ export function useChannelOptions({
         changeSelectedChannelQuery(query, {
           channel: selection?.value || '',
           dataType: selection?.dataType || '',
-          assetInputMethod,
         })
       );
     },
-    [assetInputMethod, markInteracted, onChange, query]
+    [markInteracted, onChange, query]
   );
 
   useEffect(() => {
