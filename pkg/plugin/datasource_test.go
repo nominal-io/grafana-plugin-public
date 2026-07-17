@@ -3983,3 +3983,122 @@ func TestSendBatchKillCallsClientAndSwallowsErrors(t *testing.T) {
 		t.Fatalf("expected 2 ids in kill call, got %d", len(calls[0]))
 	}
 }
+
+func singleBatchableQuery(timeRange backend.TimeRange) []backend.DataQuery {
+	return makeBatchableQueries(1, timeRange)
+}
+
+func newKillTestRequest(queries []backend.DataQuery) *backend.QueryDataRequest {
+	return &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: queries,
+	}
+}
+
+func TestBatchComputeStampsSharedRequestID(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
+	}
+	ds := &Datasource{computeService: mockService}
+	defer ds.Dispose()
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	req := newKillTestRequest(makeBatchableQueries(3, timeRange))
+
+	if _, err := ds.QueryData(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reqs := mockService.lastBatchRequest.Requests
+	if len(reqs) != 3 {
+		t.Fatalf("expected 3 subrequests, got %d", len(reqs))
+	}
+	first := reqs[0].RequestId
+	if first == nil {
+		t.Fatal("expected RequestId to be stamped on subrequests")
+	}
+	for i, r := range reqs {
+		if r.RequestId == nil || *r.RequestId != *first {
+			t.Fatalf("subrequest %d does not share the batch RequestId", i)
+		}
+	}
+}
+
+func TestKillEnqueuedOnTransportError(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeError: fmt.Errorf("connection reset"),
+	}
+	ds := &Datasource{computeService: mockService}
+	defer ds.Dispose()
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	req := newKillTestRequest(singleBatchableQuery(timeRange))
+
+	if _, err := ds.QueryData(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
+
+	stamped := mockService.lastBatchRequest.Requests[0].RequestId
+	kills := mockService.killCallsSnapshot()
+	if len(kills) != 1 || len(kills[0]) != 1 || kills[0][0] != *stamped {
+		t.Fatalf("expected one kill for the stamped RequestId, got %v", kills)
+	}
+}
+
+func TestKillEnqueuedOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mockService := &mockComputeService{}
+	mockService.batchComputeCtxFunc = func(callCtx context.Context, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+		cancel() // superseded mid-call: server "succeeds" but the tick is dead
+		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
+	}
+	ds := &Datasource{computeService: mockService}
+	defer ds.Dispose()
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	req := newKillTestRequest(singleBatchableQuery(timeRange))
+
+	if _, err := ds.QueryData(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
+}
+
+func TestNoKillOnConfirmedSuccess(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeResponse: makeBatchComputeWithUnitsResponse(1),
+	}
+	ds := &Datasource{computeService: mockService}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	req := newKillTestRequest(singleBatchableQuery(timeRange))
+
+	if _, err := ds.QueryData(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	ds.Dispose()
+	if kills := mockService.killCallsSnapshot(); len(kills) != 0 {
+		t.Fatalf("expected no kill on confirmed success, got %v", kills)
+	}
+}
