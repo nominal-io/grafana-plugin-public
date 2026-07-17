@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -22,6 +23,7 @@ import (
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/pkg/uuid"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
@@ -104,16 +106,50 @@ type Datasource struct {
 
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
+
+	// Protect lazy initialization and prevent recreation after disposal.
+	killMu        sync.Mutex
+	kills         *killCoalescer
+	killsDisposed bool
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
 	return d.resourceHTTPClient
 }
 
+// killCoalescer returns the per-instance coalescer, or nil after disposal.
+func (d *Datasource) killCoalescer() *killCoalescer {
+	d.killMu.Lock()
+	defer d.killMu.Unlock()
+	if d.kills == nil && !d.killsDisposed {
+		d.kills = newKillCoalescer(d.sendBatchKill, killFlushInterval)
+	}
+	return d.kills
+}
+
+// sendBatchKill is the coalescer's flush func: one best-effort BatchKillRequests
+// call, never retried. Failures are debug-logged with counts only, no ids or
+// user data (plugin-signing constraint); unknown/finished ids are a server-side
+// no-op, so nothing needs to be done about them.
+func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token, ids []uuid.UUID) {
+	err := d.computeService.BatchKillRequests(ctx, token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
+	if err != nil {
+		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids), "error", err)
+	}
+}
+
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewSampleDatasource factory function.
 func (d *Datasource) Dispose() {
+	d.killMu.Lock()
+	d.killsDisposed = true
+	kills := d.kills
+	d.kills = nil
+	d.killMu.Unlock()
+	if kills != nil {
+		kills.dispose()
+	}
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
 	}
