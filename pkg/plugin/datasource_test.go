@@ -31,6 +31,7 @@ import (
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/pkg/uuid"
 )
 
 func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *NominalQueryExecution {
@@ -785,6 +786,12 @@ type mockComputeService struct {
 	// batchComputeFunc, if set, is called instead of using the static responses.
 	// Useful for tests with nondeterministic call ordering (e.g. parallel batches).
 	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
+
+	// Receives the caller context and takes precedence over batchComputeFunc.
+	batchComputeCtxFunc func(ctx context.Context, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
+
+	killCalls [][]uuid.UUID
+	killError error
 }
 
 func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
@@ -804,16 +811,23 @@ func (m *mockComputeService) ComputeUnits(ctx context.Context, authHeader bearer
 
 func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.batchComputeCalls++
 	m.lastBatchRequest = requestArg
 	m.batchRequests = append(m.batchRequests, requestArg)
+	callIndex := m.batchComputeCalls - 1
+	ctxFunc, fn := m.batchComputeCtxFunc, m.batchComputeFunc
+	m.mu.Unlock()
 
-	if m.batchComputeFunc != nil {
-		return m.batchComputeFunc(requestArg)
+	// A blocking callback must not hold the mock mutex.
+	if ctxFunc != nil {
+		return ctxFunc(ctx, requestArg)
+	}
+	if fn != nil {
+		return fn(requestArg)
 	}
 
-	callIndex := m.batchComputeCalls - 1
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if callIndex < len(m.batchComputeErrors) && m.batchComputeErrors[callIndex] != nil {
 		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeErrors[callIndex]
 	}
@@ -835,7 +849,16 @@ func (m *mockComputeService) ComputeWithUnits(ctx context.Context, authHeader be
 }
 
 func (m *mockComputeService) BatchKillRequests(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.BatchKillRequestsRequest) error {
-	return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.killCalls = append(m.killCalls, append([]uuid.UUID(nil), requestArg.RequestIds...))
+	return m.killError
+}
+
+func (m *mockComputeService) killCallsSnapshot() [][]uuid.UUID {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]uuid.UUID(nil), m.killCalls...)
 }
 
 func TestBatchQueryExecution(t *testing.T) {
@@ -3913,5 +3936,50 @@ func TestFieldConfigForEnum(t *testing.T) {
 	}
 	if got.DisplayNameFromDS != "engine_state" {
 		t.Errorf("DisplayNameFromDS = %q, want %q", got.DisplayNameFromDS, "engine_state")
+	}
+}
+
+func TestDisposeStopsKillCoalescer(t *testing.T) {
+	ds := &Datasource{computeService: &mockComputeService{}}
+
+	kc := ds.killCoalescer()
+	if kc == nil {
+		t.Fatal("expected lazy-initialized kill coalescer")
+	}
+	if ds.killCoalescer() != kc {
+		t.Fatal("expected killCoalescer() to return the same instance")
+	}
+
+	ds.Dispose()
+
+	select {
+	case <-kc.done:
+	default:
+		t.Fatal("kill coalescer goroutine still running after Dispose")
+	}
+
+	if ds.killCoalescer() != nil {
+		t.Fatal("killCoalescer() must refuse lazy creation after Dispose")
+	}
+}
+
+func TestDisposeWithoutCoalescerIsSafe(t *testing.T) {
+	ds := &Datasource{}
+	ds.Dispose()
+}
+
+func TestSendBatchKillCallsClientAndSwallowsErrors(t *testing.T) {
+	mockService := &mockComputeService{killError: fmt.Errorf("boom")}
+	ds := &Datasource{computeService: mockService}
+
+	ids := []uuid.UUID{uuid.NewUUID(), uuid.NewUUID()}
+	ds.sendBatchKill(context.Background(), bearertoken.Token("t"), ids)
+
+	calls := mockService.killCallsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 kill call (no retry), got %d", len(calls))
+	}
+	if len(calls[0]) != 2 {
+		t.Fatalf("expected 2 ids in kill call, got %d", len(calls[0]))
 	}
 }
