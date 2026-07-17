@@ -833,6 +833,10 @@ func (m *mockComputeService) ComputeWithUnits(ctx context.Context, authHeader be
 	return computeapi.ComputeWithUnitsResponse{}, nil
 }
 
+func (m *mockComputeService) BatchKillRequests(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.BatchKillRequestsRequest) error {
+	return nil
+}
+
 func TestBatchQueryExecution(t *testing.T) {
 	// Create mock compute service
 	mockService := &mockComputeService{}

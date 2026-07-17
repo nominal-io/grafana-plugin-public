@@ -95,6 +95,9 @@ func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) comp
 		func(computeapi1.FrequencyDomainV2) error { return fmt.Errorf("expected series node, got frequencyV2") },
 		func(computeapi1.Histogram) error { return fmt.Errorf("expected series node, got histogram") },
 		func(computeapi1.CurveFit) error { return fmt.Errorf("expected series node, got curve") },
+		func(computeapi1.SummarizeMultivariate) error {
+			return fmt.Errorf("expected series node, got multivariate")
+		},
 		func(string) error { return fmt.Errorf("unknown computable node type") },
 	)
 	if err != nil {

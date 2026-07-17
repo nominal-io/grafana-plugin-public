@@ -616,6 +616,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		nil, // arrowArrayFunc
 		nil, // arrowBucketedStructFunc
 		nil, // arrowFullResolutionFunc
+		nil, // arrowBucketedMultivariateFunc
+		nil, // multivariateFunc
 		func(typeName string) error {
 			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
 			return nil
