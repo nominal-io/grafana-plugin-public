@@ -9,6 +9,7 @@ import (
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/uuid"
 )
 
 type NominalQueryExecution struct {
@@ -140,6 +141,14 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
 		}
 
+		// One UUID per outbound call, shared by all its subrequests: the server
+		// suffixes a per-operation UUID onto each ClickHouse query_id, so one
+		// requestId kills the whole batch without collision.
+		requestID := uuid.NewUUID()
+		for i := range computeRequests {
+			computeRequests[i].RequestId = &requestID
+		}
+
 		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
 			Requests: computeRequests,
 		}
@@ -152,6 +161,16 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		)
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+		if err != nil || ctx.Err() != nil {
+			// Not confirmed success: the server may still be running the query
+			// (superseded tick, transport failure with a live server query).
+			// Killing an unknown, never-started, or finished id is a documented
+			// no-op, so over-killing on failure is free. A nil coalescer means
+			// the instance was disposed mid-request: drop the kill.
+			if kc := e.datasource.killCoalescer(); kc != nil {
+				kc.enqueue(requestID, bearerToken)
+			}
+		}
 		if err != nil {
 			logErrorWithConjureFields("Batch compute API call failed", err,
 				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
