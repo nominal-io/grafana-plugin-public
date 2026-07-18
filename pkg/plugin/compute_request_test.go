@@ -268,8 +268,8 @@ func TestBuildComputeRequest(t *testing.T) {
 	}
 
 	timeRange := backend.TimeRange{
-		From: time.Unix(1704067200, 0), // 2024-01-01 00:00:00 UTC
-		To:   time.Unix(1704153600, 0), // 2024-01-02 00:00:00 UTC
+		From: time.Unix(1704067200, 100_000_000), // 2024-01-01 00:00:00.100 UTC
+		To:   time.Unix(1704067200, 900_000_000), // 2024-01-01 00:00:00.900 UTC
 	}
 
 	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange, 0)
@@ -277,8 +277,14 @@ func TestBuildComputeRequest(t *testing.T) {
 	if int64(req.Start.Seconds) != 1704067200 {
 		t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, 1704067200)
 	}
-	if int64(req.End.Seconds) != 1704153600 {
-		t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, 1704153600)
+	if int64(req.Start.Nanos) != 100_000_000 {
+		t.Errorf("Start.Nanos = %d, want %d", req.Start.Nanos, 100_000_000)
+	}
+	if int64(req.End.Seconds) != 1704067200 {
+		t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, 1704067200)
+	}
+	if int64(req.End.Nanos) != 900_000_000 {
+		t.Errorf("End.Nanos = %d, want %d", req.End.Nanos, 900_000_000)
 	}
 	// The series plan must be wrapped into a node.
 	if req.Node == (computeapi1.ComputableNode{}) {
