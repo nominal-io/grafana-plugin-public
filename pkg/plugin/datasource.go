@@ -127,15 +127,14 @@ func (d *Datasource) killCoalescer() *killCoalescer {
 	return d.kills
 }
 
-// sendBatchKill is the coalescer's flush func: one best-effort BatchKillRequests
-// call, never retried. Failures are debug-logged with counts only, no ids or
-// user data (plugin-signing constraint); unknown/finished ids are a server-side
-// no-op, so nothing needs to be done about them.
+// sendBatchKill sends one best-effort batch without retries or sensitive logging.
 func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token, ids []uuid.UUID) {
 	err := d.computeService.BatchKillRequests(ctx, token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
 	if err != nil {
-		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids), "error", err)
+		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids))
+		return
 	}
+	log.DefaultLogger.Debug("BatchKillRequests flushed", "count", len(ids))
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
