@@ -4062,7 +4062,7 @@ func TestKillEnqueuedOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	mockService := &mockComputeService{}
 	mockService.batchComputeCtxFunc = func(callCtx context.Context, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-		cancel() // superseded mid-call: server "succeeds" but the tick is dead
+		cancel() // supersede the in-flight request
 		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
 	}
 	ds := &Datasource{computeService: mockService}

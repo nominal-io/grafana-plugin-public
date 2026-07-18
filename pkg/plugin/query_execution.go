@@ -141,9 +141,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
 		}
 
-		// One UUID per outbound call, shared by all its subrequests: the server
-		// suffixes a per-operation UUID onto each ClickHouse query_id, so one
-		// requestId kills the whole batch without collision.
+		// A shared request ID lets one kill cancel the entire batch.
 		requestID := uuid.NewUUID()
 		for i := range computeRequests {
 			computeRequests[i].RequestId = &requestID
@@ -162,11 +160,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
 		if err != nil || ctx.Err() != nil {
-			// Not confirmed success: the server may still be running the query
-			// (superseded tick, transport failure with a live server query).
-			// Killing an unknown, never-started, or finished id is a documented
-			// no-op, so over-killing on failure is free. A nil coalescer means
-			// the instance was disposed mid-request: drop the kill.
+			// Kill unconfirmed work; unknown and finished IDs are harmless.
 			if kc := e.datasource.killCoalescer(); kc != nil {
 				kc.enqueue(requestID, bearerToken)
 			}

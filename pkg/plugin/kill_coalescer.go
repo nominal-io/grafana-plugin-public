@@ -28,7 +28,6 @@ type killEntry struct {
 	token bearertoken.Token
 }
 
-// killCoalescer periodically flushes buffered request IDs in batches.
 type killCoalescer struct {
 	flushFn  killFlushFunc
 	interval time.Duration
