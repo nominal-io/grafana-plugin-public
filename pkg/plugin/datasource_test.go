@@ -4000,6 +4000,16 @@ func newKillTestRequest(queries []backend.DataQuery) *backend.QueryDataRequest {
 	}
 }
 
+// newSingleQueryKillRequest builds the standard single-query, one-hour request
+// shared by the kill-on-transport-error and no-kill-on-success tests.
+func newSingleQueryKillRequest() *backend.QueryDataRequest {
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	return newKillTestRequest(singleBatchableQuery(timeRange))
+}
+
 func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
@@ -4039,11 +4049,7 @@ func TestKillEnqueuedOnTransportError(t *testing.T) {
 	ds := &Datasource{computeService: mockService}
 	defer ds.Dispose()
 
-	timeRange := backend.TimeRange{
-		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-	}
-	req := newKillTestRequest(singleBatchableQuery(timeRange))
+	req := newSingleQueryKillRequest()
 
 	if _, err := ds.QueryData(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -4087,11 +4093,7 @@ func TestNoKillOnConfirmedSuccess(t *testing.T) {
 	}
 	ds := &Datasource{computeService: mockService}
 
-	timeRange := backend.TimeRange{
-		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-	}
-	req := newKillTestRequest(singleBatchableQuery(timeRange))
+	req := newSingleQueryKillRequest()
 
 	if _, err := ds.QueryData(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
