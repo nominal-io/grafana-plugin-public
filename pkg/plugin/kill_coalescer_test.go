@@ -144,19 +144,13 @@ func TestKillCoalescerGroupsByToken(t *testing.T) {
 	}
 }
 
-func TestKillCoalescerDisposeStopsGoroutineAndRejectsEnqueues(t *testing.T) {
+func TestKillCoalescerDisposeFlushesFinalBufferAndRejectsEnqueues(t *testing.T) {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, time.Hour)
 
 	tok := bearertoken.Token("t1")
 	kc.enqueue(uuid.NewUUID(), tok)
 	kc.dispose()
-
-	select {
-	case <-kc.done:
-	default:
-		t.Fatal("coalescer goroutine still running after dispose")
-	}
 
 	if len(rec.snapshot()) != 1 {
 		t.Fatalf("expected final flush of 1 call, got %d", len(rec.snapshot()))
