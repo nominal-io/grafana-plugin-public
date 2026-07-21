@@ -420,45 +420,53 @@ type LogEntry struct {
 
 const nominalChannelLabel = "nominal.channel"
 
-// marshalLogArgs serializes log Args to JSON, adding "nominal.channel" (when set, and
-// not already present) so mixed-channel log panels can distinguish rows. Caller Args is
-// never mutated: empty Args returns shared read-only default labels; a fresh map is
-// copied only to inject the channel label.
-//
-// The "nominal." prefix avoids Grafana hiding underscore-prefixed labels.
-func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
-	return marshalLogArgsWithDefault(args, channel, defaultLogLabelsForChannel(channel))
+var emptyLogLabels = json.RawMessage("{}")
+
+type logLabelEncoder struct {
+	defaultLabels json.RawMessage
 }
 
-func defaultLogLabelsForChannel(channel string) json.RawMessage {
-	if channel == "" {
-		return json.RawMessage("{}")
+func newLogLabelEncoder(channel string) logLabelEncoder {
+	return logLabelEncoder{defaultLabels: defaultLogLabelsForChannel(channel)}
+}
+
+func (e logLabelEncoder) encode(args map[string]string) json.RawMessage {
+	defaults := e.defaultLabels
+	if len(defaults) == 0 {
+		defaults = emptyLogLabels
 	}
-	labelsJSON, _ := json.Marshal(map[string]string{nominalChannelLabel: channel})
-	return labelsJSON
-}
-
-// marshalLogArgsWithDefault is marshalLogArgs with the empty-args result precomputed once
-// by the caller. defaultLabels must be defaultLogLabelsForChannel(channel) for the same
-// channel value — a mismatched pair mislabels every empty-args row.
-func marshalLogArgsWithDefault(args map[string]string, channel string, defaultLabels json.RawMessage) json.RawMessage {
 	if len(args) == 0 {
-		// Returns the shared defaultLabels slice; callers must treat it as read-only (it is aliased across rows).
-		return defaultLabels
+		// Returns the shared defaults slice; callers must treat it as read-only.
+		return defaults
 	}
-	if _, exists := args[nominalChannelLabel]; channel == "" || exists {
+	// Defaults longer than "{}" carry the nominal.channel key; deriving this
+	// from length keeps the splice below unreachable with an empty default.
+	injectChannel := len(defaults) > len(emptyLogLabels)
+	if _, exists := args[nominalChannelLabel]; !injectChannel || exists {
 		labelsJSON, _ := json.Marshal(args)
 		return labelsJSON
 	}
 
-	// Manual copy instead of maps.Clone: the +1 capacity hint avoids a map grow
-	// when injecting the channel key (maps.Clone sizes for len(args) exactly).
-	out := make(map[string]string, len(args)+1)
-	for k, v := range args {
-		out[k] = v
+	// Both halves are encoding/json objects; defaults is non-empty here.
+	labelsJSON, _ := json.Marshal(args)
+	labelsJSON[len(labelsJSON)-1] = ','
+	return append(labelsJSON, defaults[1:]...)
+}
+
+// marshalLogArgs serializes log Args to JSON, adding "nominal.channel" (when set, and
+// not already present) so mixed-channel log panels can distinguish rows. Caller Args is
+// never mutated, and empty Args returns shared read-only default labels.
+//
+// The "nominal." prefix avoids Grafana hiding underscore-prefixed labels.
+func marshalLogArgs(args map[string]string, channel string) json.RawMessage {
+	return newLogLabelEncoder(channel).encode(args)
+}
+
+func defaultLogLabelsForChannel(channel string) json.RawMessage {
+	if channel == "" {
+		return emptyLogLabels
 	}
-	out[nominalChannelLabel] = channel
-	labelsJSON, _ := json.Marshal(out)
+	labelsJSON, _ := json.Marshal(map[string]string{nominalChannelLabel: channel})
 	return labelsJSON
 }
 
@@ -571,7 +579,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 					"timestamps", len(paged.Timestamps), "values", len(paged.Values))
 			}
 			result.LogEntries = make([]LogEntry, 0, n)
-			defaultLogLabels := defaultLogLabelsForChannel(qm.Channel)
+			labelEncoder := newLogLabelEncoder(qm.Channel)
 			for i := 0; i < n; i++ {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
@@ -580,7 +588,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
 					Body:   val.Message,
 					ID:     val.Id.String(),
-					Labels: marshalLogArgsWithDefault(val.Args, qm.Channel, defaultLogLabels),
+					Labels: labelEncoder.encode(val.Args),
 				})
 			}
 			result.IsLog = true

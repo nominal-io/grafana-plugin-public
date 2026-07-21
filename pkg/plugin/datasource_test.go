@@ -3344,6 +3344,53 @@ func TestMarshalLogArgs(t *testing.T) {
 	}
 }
 
+func TestLogLabelEncoderZeroValue(t *testing.T) {
+	encoder := logLabelEncoder{}
+	tests := []struct {
+		name    string
+		args    map[string]string
+		want    map[string]string
+		wantRaw string
+	}{
+		{name: "nil args", args: nil, want: map[string]string{}, wantRaw: "{}"},
+		{name: "empty args", args: map[string]string{}, want: map[string]string{}, wantRaw: "{}"},
+		{
+			name: "populated args",
+			args: map[string]string{"host": "srv-1", "level": "error"},
+			want: map[string]string{"host": "srv-1", "level": "error"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sourceBefore map[string]string
+			if tt.args != nil {
+				sourceBefore = make(map[string]string, len(tt.args))
+				for key, value := range tt.args {
+					sourceBefore[key] = value
+				}
+			}
+
+			got := encoder.encode(tt.args)
+			if !json.Valid(got) {
+				t.Fatalf("encode() = %q, want valid JSON", got)
+			}
+			if tt.wantRaw != "" && string(got) != tt.wantRaw {
+				t.Errorf("encode() = %q, want %q", got, tt.wantRaw)
+			}
+			if parsed := parseLogLabels(t, got); !reflect.DeepEqual(parsed, tt.want) {
+				t.Errorf("encode() decoded = %v, want %v", parsed, tt.want)
+			}
+			if !reflect.DeepEqual(tt.args, sourceBefore) {
+				t.Errorf("encode() mutated args to %v, started with %v", tt.args, sourceBefore)
+			}
+			if repeated := encoder.encode(tt.args); !bytes.Equal(repeated, got) {
+				t.Errorf("repeated encode() = %q, want byte-identical %q", repeated, got)
+			}
+		})
+	}
+}
+
 func TestLogPagedTransformation(t *testing.T) {
 	ds := &Datasource{}
 
