@@ -348,7 +348,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	c.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
 }
 
-func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid) ([]datasourceapi.ChannelMetadata, error) {
+func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid, searchText string) ([]datasourceapi.ChannelMetadata, error) {
 	if c == nil || c.datasourceService == nil || len(dataSourceRids) == 0 {
 		return nil, nil
 	}
@@ -359,7 +359,7 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 
 	for {
 		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
-			FuzzySearchText: "",
+			FuzzySearchText: searchText,
 			DataSources:     dataSourceRids,
 			PageSize:        &pageSize,
 			NextPageToken:   nextPageToken,

@@ -2,11 +2,39 @@ import {
   DataSourceInstanceSettings,
   CoreApp,
   ScopedVars,
-  MetricFindValue
+  MetricFindValue,
+  LegacyMetricFindQueryOptions,
+  getSearchFilterScopedVar,
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
+
+const searchFilterToken = '$__searchFilter';
+
+type ChannelVariableArgs = {
+  assetRidRaw: string;
+  dataScopeNameRaw: string;
+  searchTextRaw: string;
+};
+
+function parseChannelVariableArgs(rawArgs: string): ChannelVariableArgs | undefined {
+  const args = rawArgs.split(',').map((arg) => arg.trim());
+  if (args.length < 1 || args.length > 3 || !args[0]) {
+    return undefined;
+  }
+
+  const [assetRidRaw, secondArgRaw = '', thirdArgRaw = ''] = args;
+  if (args.length === 2 && secondArgRaw === searchFilterToken) {
+    return { assetRidRaw, dataScopeNameRaw: '', searchTextRaw: secondArgRaw };
+  }
+
+  return {
+    assetRidRaw,
+    dataScopeNameRaw: secondArgRaw,
+    searchTextRaw: thirdArgRaw,
+  };
+}
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
@@ -55,23 +83,39 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * Supports query types:
    * - "assets", "assets()", or empty: Returns all assets with text=title, value=rid
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
+   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
-   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
+   * - "channels(<assetRid>, <dataScopeName>, <search>)": Returns channels matching search text
+   * - "channels(<assetRid>, , <search>)": Returns channels matching search text across all datascopes
+   * - "channels(<assetRid>, $__searchFilter)": Shortcut for unscoped dynamic channel search
    */
-  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+  async metricFindQuery(query: string, options?: LegacyMetricFindQueryOptions): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
-    const scopedVars = options?.scopedVars;
+    const scopedVars: ScopedVars = {
+      ...options?.scopedVars,
+      ...getSearchFilterScopedVar({ query: trimmedQuery, wildcardChar: '', options }),
+    };
 
-    // Handle channels query: channels(<assetRid>) or channels(<assetRid>, <dataScopeName>)
-    const channelsMatch = trimmedQuery.match(/^channels\(([^,)]+)(?:,\s*([^)]+))?\)$/i);
+    // Handle channels query:
+    // channels(<assetRid>), channels(<assetRid>, <dataScopeName>),
+    // channels(<assetRid>, <dataScopeName>, <search>), or channels(<assetRid>, , <search>)
+    const channelsMatch = trimmedQuery.match(/^channels\(([^)]*)\)$/i);
     if (channelsMatch) {
-      const assetRidRaw = channelsMatch[1].trim();
-      const dataScopeNameRaw = channelsMatch[2]?.trim() || '';
-      const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
-      const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
-      return this.fetchChannelVariables(assetRid, dataScopeName);
+      const channelArgs = parseChannelVariableArgs(channelsMatch[1]);
+      if (!channelArgs) {
+        return [];
+      }
+
+      const assetRid = getTemplateSrv().replace(channelArgs.assetRidRaw, scopedVars);
+      const dataScopeName = channelArgs.dataScopeNameRaw
+        ? getTemplateSrv().replace(channelArgs.dataScopeNameRaw, scopedVars)
+        : '';
+      const searchText = channelArgs.searchTextRaw
+        ? getTemplateSrv().replace(channelArgs.searchTextRaw, scopedVars)
+        : '';
+      return this.fetchChannelVariables(assetRid, dataScopeName, searchText);
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
@@ -164,13 +208,17 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return this.validateMetricFindResponse(response, 'datascope');
   }
 
-  private async fetchChannelVariables(assetRid: string, dataScopeName: string): Promise<MetricFindValue[]> {
+  private async fetchChannelVariables(assetRid: string, dataScopeName: string, searchText: string): Promise<MetricFindValue[]> {
     // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
     }
     // If dataScopeName contains unresolved variable, return empty
     if (dataScopeName && dataScopeName.includes('$')) {
+      return [];
+    }
+    // If search text contains unresolved variable, return empty
+    if (searchText && searchText.includes('$')) {
       return [];
     }
 
@@ -181,6 +229,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         {
           assetRid: assetRid,
           dataScopeName: dataScopeName,
+          searchText: searchText,
         }
       );
     } catch {

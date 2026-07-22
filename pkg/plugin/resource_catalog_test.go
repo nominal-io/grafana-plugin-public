@@ -168,6 +168,68 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	}
 }
 
+func TestTemplateVariableCatalogChannelVariablesForwardsSearchTextAndHandlesUnresolvedSearchText(t *testing.T) {
+	assetRid := "ri.scout.main.asset.1"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{Name: api.Channel("temperature")},
+			},
+		},
+	}
+	nominalCatalog := newNominalCatalog(server.Client(), mockDS)
+	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{
+			ApiKey: "test-key",
+		},
+	}
+
+	values, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{
+		AssetRid:      assetRid,
+		DataScopeName: "scope-a",
+		SearchText:    "temp",
+	})
+	if err != nil {
+		t.Fatalf("ChannelVariables returned error: %v", err)
+	}
+	if len(values) != 1 || values[0] != (metricFindValue{Text: "temperature", Value: "temperature"}) {
+		t.Fatalf("values = %+v, want temperature metric value", values)
+	}
+	if mockDS.searchChannelsRequest.FuzzySearchText != "temp" {
+		t.Fatalf("FuzzySearchText = %q, want temp", mockDS.searchChannelsRequest.FuzzySearchText)
+	}
+
+	callsBeforeUnresolved := mockDS.searchChannelsCalls
+	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{
+		AssetRid:      assetRid,
+		DataScopeName: "scope-a",
+		SearchText:    "$channelSearch",
+	})
+	if err != nil {
+		t.Fatalf("unresolved ChannelVariables returned error: %v", err)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("unresolved values = %v, want empty", unresolved)
+	}
+	if mockDS.searchChannelsCalls != callsBeforeUnresolved {
+		t.Fatalf("SearchChannels calls = %d, want unchanged %d", mockDS.searchChannelsCalls, callsBeforeUnresolved)
+	}
+}
+
 // ============================================================================
 // CallResource handler tests
 // ============================================================================
@@ -704,6 +766,31 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
+	t.Run("forwards searchText to channel search", func(t *testing.T) {
+		server := newTestAssetServer(t, makeAssetWithDS(), nil)
+		defer server.Close()
+
+		mockDS := &mockDatasourceService{
+			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+				},
+			},
+		}
+
+		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "temp"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if mockDS.searchChannelsRequest.FuzzySearchText != "temp" {
+			t.Fatalf("FuzzySearchText = %q, want temp", mockDS.searchChannelsRequest.FuzzySearchText)
+		}
+	})
+
 	t.Run("uses connection datasource RID when type is connection", func(t *testing.T) {
 		connectionRid := "ri.scout.main.data-source.conn1"
 		connAsset := map[string]SingleAssetResponse{
@@ -813,6 +900,21 @@ func TestHandleChannelVariables(t *testing.T) {
 		ds.settings.JSONData = []byte(`{`)
 
 		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "dataScopeName": "$scope"})
+		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+		resp := callResourceAndCapture(t, ds, req)
+		if resp.Status != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+		}
+		if string(resp.Body) != "[]" {
+			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
+		}
+	})
+
+	t.Run("unresolved template variable in searchText skips settings load", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.settings.JSONData = []byte(`{`)
+
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "$channelSearch"})
 		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
