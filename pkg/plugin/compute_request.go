@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"time"
+
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
@@ -18,15 +20,12 @@ const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
-	startSeconds := timeRange.From.Unix()
-	endSeconds := timeRange.To.Unix()
-
 	seriesPlan := e.buildSeriesPlan(qm, maxDataPoints)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
 	return computeapi1.ComputeNodeRequest{
-		Start:   timestampFromUnix(startSeconds),
-		End:     timestampFromUnix(endSeconds),
+		Start:   timestampFromTime(timeRange.From),
+		End:     timestampFromTime(timeRange.To),
 		Node:    node,
 		Context: e.buildComputeContext(qm),
 	}
@@ -144,10 +143,10 @@ func zeroDurationConstant() computeapi1.DurationConstant {
 	})
 }
 
-func timestampFromUnix(seconds int64) api.Timestamp {
+func timestampFromTime(value time.Time) api.Timestamp {
 	return api.Timestamp{
-		Seconds: safelong.SafeLong(seconds),
-		Nanos:   safelong.SafeLong(0),
+		Seconds: safelong.SafeLong(value.Unix()),
+		Nanos:   safelong.SafeLong(value.Nanosecond()),
 		Picos:   nil,
 	}
 }
