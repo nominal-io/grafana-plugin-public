@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.14.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.13.0...nominal-grafana-plugin@0.14.0) (2026-07-22)
+
+
+### Features
+
+* asset search via single combobox ([#101](https://github.com/nominal-io/grafana-plugin-public/issues/101)) ([af778d8](https://github.com/nominal-io/grafana-plugin-public/commit/af778d8af3ee300c7845cfed722e57b88a503233))
+* consolidate to single asset selection flow ([#103](https://github.com/nominal-io/grafana-plugin-public/issues/103)) ([a4c417f](https://github.com/nominal-io/grafana-plugin-public/commit/a4c417f588d079036b6ead6ac60929ae3c08d3cb))
+
+
+### Bug Fixes
+
+* preserve sub-second time range precision in compute requests ([#106](https://github.com/nominal-io/grafana-plugin-public/issues/106)) ([301c18e](https://github.com/nominal-io/grafana-plugin-public/commit/301c18e83505d6ed5babd4a9c5e4f149c609333c))
+
+
+### Chores
+
+* remediate high and critical dependency vulnerabilities ([#105](https://github.com/nominal-io/grafana-plugin-public/issues/105)) ([90afe62](https://github.com/nominal-io/grafana-plugin-public/commit/90afe62502ef74b0063f15940830b571b1c72e74))
+* update Go toolchain to 1.26.5 ([#104](https://github.com/nominal-io/grafana-plugin-public/issues/104)) ([86a6e96](https://github.com/nominal-io/grafana-plugin-public/commit/86a6e96a0f9949916ecfc46485c41e6cbfd5837b))
+
 ## [0.13.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.2...nominal-grafana-plugin@0.13.0) (2026-07-07)
 
 
