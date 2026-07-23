@@ -19,6 +19,7 @@ import (
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
+	"golang.org/x/sync/singleflight"
 )
 
 // assetCacheTTL controls how long fetched asset metadata is cached.
@@ -26,6 +27,11 @@ const assetCacheTTL = 5 * time.Minute
 
 // sweepInterval limits lazy cache cleanup triggered by writes.
 const sweepInterval = 30 * time.Minute
+
+// detachedLookupTimeout bounds the shared, caller-detached catalog lookups.
+// context.WithoutCancel strips the caller's deadline along with its cancel,
+// so the detached flight needs its own upper bound against a hung backend.
+const detachedLookupTimeout = 30 * time.Second
 
 const maxChannelVariables = 5000
 
@@ -53,6 +59,7 @@ type NominalCatalog struct {
 	assetCacheMu        sync.Mutex
 	assetCache          map[string]assetCacheEntry
 	assetCacheLastSweep time.Time // guarded by assetCacheMu
+	assetGroup          singleflight.Group
 
 	channelMetadataCacheMu        sync.Mutex
 	channelMetadataCache          map[string]channelMetadataCacheEntry
@@ -178,17 +185,47 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	}
 	c.assetCacheMu.Unlock()
 
-	asset, err := c.fetchAssetByRidUncached(ctx, config, assetRid)
-	if err != nil {
-		return nil, err
+	ch := c.assetGroup.DoChan(assetRid, func() (any, error) {
+		// Re-check under the group: another flight may have stored this key
+		// between this caller's cache miss and entering the group.
+		c.assetCacheMu.Lock()
+		if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+			c.assetCacheMu.Unlock()
+			return entry.asset, nil
+		}
+		c.assetCacheMu.Unlock()
+
+		// Detach from the caller's context: this fetch is shared across all
+		// concurrent callers for this RID, so one caller's cancellation must
+		// not fail the others. The timeout bounds the detached work.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		asset, fetchErr := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		c.assetCacheMu.Lock()
+		c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+		sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
+		c.assetCacheMu.Unlock()
+		return asset, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		// The flight keeps running detached and will populate the cache for
+		// other callers; this caller honors its own cancellation promptly.
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		if res.Shared {
+			log.DefaultLogger.Debug("asset lookup coalesced")
+		}
+		// clone() is nil-safe; a not-found asset is cached and returned as nil.
+		return res.Val.(*SingleAssetResponse).clone(), nil
 	}
-
-	c.assetCacheMu.Lock()
-	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-	sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
-	c.assetCacheMu.Unlock()
-
-	return asset.clone(), nil
 }
 
 // sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
