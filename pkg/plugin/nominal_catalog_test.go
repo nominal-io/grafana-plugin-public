@@ -2,10 +2,14 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -501,5 +505,147 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	}
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	}
+}
+
+func TestNominalCatalogFetchAssetByRidCoalescesConcurrentCalls(t *testing.T) {
+	assetRid := "ri.scout.main.asset.coalesce"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+	var calls int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/scout/v1/asset/multiple" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&calls, 1)
+		<-release // block so concurrent callers coalesce onto this in-flight request
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Coalesced",
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]*SingleAssetResponse, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = catalog.FetchAssetByRid(context.Background(), config, assetRid)
+		}(i)
+	}
+	// Best-effort concurrency inducement, not a correctness barrier: a late
+	// goroutine hits the cache or the in-flight re-check and issues no HTTP
+	// call, so the calls == 1 assertion cannot flake.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("asset fetch HTTP calls = %d, want 1 (concurrent calls should coalesce)", got)
+	}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("goroutine %d error: %v", i, errs[i])
+		}
+		if results[i] == nil || results[i].Title != "Coalesced" {
+			t.Fatalf("goroutine %d result = %+v, want Coalesced asset", i, results[i])
+		}
+	}
+}
+
+func TestNominalCatalogFetchAssetByRidCanceledCallerReturnsPromptly(t *testing.T) {
+	assetRid := "ri.scout.main.asset.detach"
+	var calls int32
+	var arrivedOnce sync.Once
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/scout/v1/asset/multiple" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&calls, 1)
+		arrivedOnce.Do(func() { close(arrived) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]SingleAssetResponse{
+			assetRid: {Rid: assetRid, Title: "Detached"},
+		})
+	}))
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		asset *SingleAssetResponse
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		a, err := catalog.FetchAssetByRid(ctx, config, assetRid)
+		done <- result{a, err}
+	}()
+
+	<-arrived // the shared fetch is in flight and blocked on the server
+	cancel()
+
+	// The canceled caller must return promptly while the server is still
+	// blocked, without waiting for the shared flight.
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("FetchAssetByRid error = %v, want context.Canceled", got.err)
+		}
+		if got.asset != nil {
+			t.Fatalf("asset = %+v, want nil for the canceled caller", got.asset)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled caller did not return while the shared fetch was still in flight")
+	}
+
+	// The detached flight must survive the cancellation and populate the cache.
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		catalog.assetCacheMu.Lock()
+		_, stored := catalog.assetCache[assetRid]
+		catalog.assetCacheMu.Unlock()
+		if stored {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("detached fetch never populated the cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	asset, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
+	if err != nil || asset == nil || asset.Title != "Detached" {
+		t.Fatalf("follow-up fetch = (%+v, %v), want the Detached asset from cache", asset, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("HTTP calls = %d, want 1 (the detached flight's result should serve the follow-up)", got)
 	}
 }
