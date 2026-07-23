@@ -354,163 +354,104 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	}
 }
 
-func TestNominalCatalogSweepEvictsExpiredAssets(t *testing.T) {
-	catalog := newNominalCatalog(nil, nil)
-
-	catalog.assetCacheMu.Lock()
-	catalog.assetCache["expired"] = assetCacheEntry{
-		asset:     &SingleAssetResponse{Rid: "expired"},
-		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
-	}
-	catalog.assetCache["fresh"] = assetCacheEntry{
-		asset:     &SingleAssetResponse{Rid: "fresh"},
-		fetchedAt: time.Now(),
-	}
-	// Force the interval gate open so the sweep runs on this call.
-	catalog.assetCacheLastSweep = time.Now().Add(-2 * sweepInterval)
-	catalog.maybeSweepAssetCacheLocked()
-	_, expiredPresent := catalog.assetCache["expired"]
-	_, freshPresent := catalog.assetCache["fresh"]
-	catalog.assetCacheMu.Unlock()
-
-	if expiredPresent {
-		t.Fatal("expired asset entry was not swept")
-	}
-	if !freshPresent {
-		t.Fatal("fresh asset entry was incorrectly swept")
-	}
-}
-
-func TestNominalCatalogSweepRespectsInterval(t *testing.T) {
-	catalog := newNominalCatalog(nil, nil)
-
-	catalog.assetCacheMu.Lock()
-	catalog.assetCache["expired"] = assetCacheEntry{
-		asset:     &SingleAssetResponse{Rid: "expired"},
-		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
-	}
-	// Recent sweep: the interval gate is closed, so nothing should be evicted.
-	catalog.assetCacheLastSweep = time.Now()
-	catalog.maybeSweepAssetCacheLocked()
-	_, expiredPresent := catalog.assetCache["expired"]
-	catalog.assetCacheMu.Unlock()
-
-	if !expiredPresent {
-		t.Fatal("sweep ran before the interval elapsed")
-	}
-}
-
-func TestNominalCatalogFetchAssetByRidSweepsOnStore(t *testing.T) {
-	assetRid := "ri.scout.main.asset.sweepwire"
+func TestNominalCatalogAssetCacheSweepOnStore(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.sweepwire"
 	var fetchCount int
 	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {Rid: assetRid, Title: "Sweep Wire"},
 	}, &fetchCount)
-	defer server.Close()
+	t.Cleanup(server.Close)
 
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
 	}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
 
-	catalog.assetCacheMu.Lock()
-	catalog.assetCache["expired"] = assetCacheEntry{
-		asset:     &SingleAssetResponse{Rid: "expired"},
-		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
 	}
-	catalog.assetCacheLastSweep = time.Now().Add(-2 * sweepInterval)
-	catalog.assetCacheMu.Unlock()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+			catalog.assetCache["expired"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "expired"},
+				fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.assetCache["fresh"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "fresh"},
+				fetchedAt: time.Now(),
+			}
+			catalog.assetCacheLastSweep = tt.lastSweep
 
-	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err != nil {
-		t.Fatalf("FetchAssetByRid error: %v", err)
-	}
+			if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err != nil {
+				t.Fatalf("FetchAssetByRid error: %v", err)
+			}
 
-	catalog.assetCacheMu.Lock()
-	_, expiredPresent := catalog.assetCache["expired"]
-	_, storedPresent := catalog.assetCache[assetRid]
-	catalog.assetCacheMu.Unlock()
-
-	if expiredPresent {
-		t.Fatal("real store did not sweep the expired entry (sweep is not wired into FetchAssetByRid)")
-	}
-	if !storedPresent {
-		t.Fatal("fetched asset was not stored")
-	}
-}
-
-func TestNominalCatalogSweepEvictsExpiredChannelMetadata(t *testing.T) {
-	catalog := newNominalCatalog(nil, nil)
-
-	catalog.channelMetadataCacheMu.Lock()
-	catalog.channelMetadataCache = map[string]channelMetadataCacheEntry{}
-	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
-		channelDataType: "numeric",
-		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
-	}
-	catalog.channelMetadataCache["asset|scope|fresh"] = channelMetadataCacheEntry{
-		channelDataType: "numeric",
-		fetchedAt:       time.Now(),
-	}
-	catalog.channelCacheLastSweep = time.Now().Add(-2 * sweepInterval)
-	catalog.maybeSweepChannelCacheLocked()
-	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
-	_, freshPresent := catalog.channelMetadataCache["asset|scope|fresh"]
-	catalog.channelMetadataCacheMu.Unlock()
-
-	if expiredPresent {
-		t.Fatal("expired channel metadata entry was not swept")
-	}
-	if !freshPresent {
-		t.Fatal("fresh channel metadata entry was incorrectly swept")
+			catalog.assetCacheMu.Lock()
+			_, expiredPresent := catalog.assetCache["expired"]
+			_, freshPresent := catalog.assetCache["fresh"]
+			_, storedPresent := catalog.assetCache[assetRid]
+			catalog.assetCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("fetched asset was not stored")
+			}
+		})
 	}
 }
 
-func TestNominalCatalogChannelSweepRespectsInterval(t *testing.T) {
-	catalog := newNominalCatalog(nil, nil)
-
-	catalog.channelMetadataCacheMu.Lock()
-	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
-		channelDataType: "numeric",
-		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
 	}
-	// Recent sweep: the interval gate is closed, so nothing should be evicted.
-	catalog.channelCacheLastSweep = time.Now()
-	catalog.maybeSweepChannelCacheLocked()
-	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
-	catalog.channelMetadataCacheMu.Unlock()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(nil, nil)
+			catalog.channelMetadataCache["expired"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.channelMetadataCache["fresh"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now(),
+			}
+			catalog.channelCacheLastSweep = tt.lastSweep
 
-	if !expiredPresent {
-		t.Fatal("channel sweep ran before the interval elapsed")
-	}
-}
+			catalog.storeChannelMetadata("stored", channelMetadataCacheEntry{
+				channelDataType: "string",
+				fetchedAt:       time.Now(),
+			})
 
-func TestNominalCatalogStoreChannelMetadataSweepsOnStore(t *testing.T) {
-	catalog := newNominalCatalog(nil, nil)
-
-	catalog.channelMetadataCacheMu.Lock()
-	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
-		channelDataType: "numeric",
-		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
-	}
-	catalog.channelCacheLastSweep = time.Now().Add(-2 * sweepInterval)
-	catalog.channelMetadataCacheMu.Unlock()
-
-	catalog.storeChannelMetadata("asset|scope|fresh", channelMetadataCacheEntry{
-		channelDataType: "string",
-		fetchedAt:       time.Now(),
-	})
-
-	catalog.channelMetadataCacheMu.Lock()
-	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
-	_, freshPresent := catalog.channelMetadataCache["asset|scope|fresh"]
-	catalog.channelMetadataCacheMu.Unlock()
-
-	if expiredPresent {
-		t.Fatal("real store did not sweep the expired entry (sweep is not wired into storeChannelMetadata)")
-	}
-	if !freshPresent {
-		t.Fatal("stored entry missing")
+			catalog.channelMetadataCacheMu.Lock()
+			_, expiredPresent := catalog.channelMetadataCache["expired"]
+			_, freshPresent := catalog.channelMetadataCache["fresh"]
+			_, storedPresent := catalog.channelMetadataCache["stored"]
+			catalog.channelMetadataCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("new entry was not stored")
+			}
+		})
 	}
 }
 
