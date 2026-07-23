@@ -17,6 +17,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
 
@@ -652,5 +653,186 @@ func TestNominalCatalogFetchAssetByRidCanceledCallerReturnsPromptly(t *testing.T
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("HTTP calls = %d, want 1 (the detached flight's result should serve the follow-up)", got)
+	}
+}
+
+func TestNominalCatalogInferChannelMetadataCoalescesConcurrentCalls(t *testing.T) {
+	assetRid := "ri.scout.main.asset.infercoalesce"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	var assetFetchCount int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/scout/v1/asset/multiple" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		atomic.AddInt32(&assetFetchCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Infer Asset",
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	var searchCalls int32
+	mockDS := &mockDatasourceService{
+		searchChannelsFunc: func(_ context.Context, _ bearertoken.Token, _ datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+			atomic.AddInt32(&searchCalls, 1)
+			<-release // block so concurrent callers coalesce onto this in-flight lookup
+			return datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:       api.Channel("state"),
+						DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "dataset1")),
+						DataType:   &stringType,
+					},
+				},
+			}, nil
+		},
+	}
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	const n = 8
+	var wg sync.WaitGroup
+	// Not named models: that would shadow the imported models package.
+	queryModels := make([]NominalQueryModel, n)
+	for i := 0; i < n; i++ {
+		queryModels[i] = NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			catalog.InferChannelMetadata(context.Background(), config, &queryModels[i])
+		}(i)
+	}
+	// Best-effort concurrency inducement, not a correctness barrier: a late
+	// goroutine hits the outer cache check or the in-flight re-check and
+	// issues no search, so the searchCalls == 1 assertion cannot flake.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&searchCalls); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1 (concurrent inference should coalesce)", got)
+	}
+	if got := atomic.LoadInt32(&assetFetchCount); got != 1 {
+		t.Fatalf("asset fetch HTTP calls = %d, want 1 (the single coalesced flight should fetch the asset once)", got)
+	}
+	for i := 0; i < n; i++ {
+		if queryModels[i].ChannelDataType != ChannelDataTypeString {
+			t.Fatalf("model %d ChannelDataType = %q, want %q", i, queryModels[i].ChannelDataType, ChannelDataTypeString)
+		}
+	}
+}
+
+func TestNominalCatalogInferChannelMetadataCanceledCallerReturnsPromptly(t *testing.T) {
+	assetRid := "ri.scout.main.asset.infercancel"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/scout/v1/asset/multiple" {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]SingleAssetResponse{
+			assetRid: {
+				Rid:   assetRid,
+				Title: "Infer Cancel",
+				DataScopes: []AssetDataScope{
+					{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	var searchCalls int32
+	var arrivedOnce sync.Once
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	mockDS := &mockDatasourceService{
+		searchChannelsFunc: func(_ context.Context, _ bearertoken.Token, _ datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+			atomic.AddInt32(&searchCalls, 1)
+			arrivedOnce.Do(func() { close(arrived) })
+			<-release
+			return datasourceapi.SearchChannelsResponse{
+				Results: []datasourceapi.ChannelMetadata{
+					{
+						Name:       api.Channel("state"),
+						DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "dataset1")),
+						DataType:   &stringType,
+					},
+				},
+			}, nil
+		},
+	}
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
+	done := make(chan struct{})
+	go func() {
+		catalog.InferChannelMetadata(ctx, config, &qm)
+		close(done)
+	}()
+
+	<-arrived // the shared lookup is in flight and blocked in SearchChannels
+	cancel()
+
+	// The canceled caller must return promptly, unenriched, while the shared
+	// lookup is still blocked.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled caller did not return while the shared lookup was still in flight")
+	}
+	if qm.ChannelDataType != ChannelDataTypeNumeric {
+		t.Fatalf("canceled caller was enriched: ChannelDataType = %q", qm.ChannelDataType)
+	}
+
+	// The detached flight must survive the cancellation and store the entry.
+	close(release)
+	cacheKey := channelMetadataCacheKey(assetRid, "scope-a", "state")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, hit := catalog.lookupChannelMetadata(cacheKey); hit {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("detached lookup never populated the cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	qm2 := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
+	catalog.InferChannelMetadata(context.Background(), config, &qm2)
+	if qm2.ChannelDataType != ChannelDataTypeString {
+		t.Fatalf("follow-up ChannelDataType = %q, want %q (should be served from cache)", qm2.ChannelDataType, ChannelDataTypeString)
+	}
+	if got := atomic.LoadInt32(&searchCalls); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1 (the detached flight's result should serve the follow-up)", got)
+	}
+}
+
+func TestChannelMetadataCacheKeyDelimiterSafe(t *testing.T) {
+	a := channelMetadataCacheKey("asset", "scope|x", "chan")
+	b := channelMetadataCacheKey("asset", "scope", "x|chan")
+	if a == b {
+		t.Fatalf("cache keys collide for delimiter-containing names: %q", a)
 	}
 }
