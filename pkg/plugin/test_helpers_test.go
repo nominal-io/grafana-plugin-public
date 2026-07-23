@@ -33,6 +33,12 @@ func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader b
 	return m.searchChannelsResponse, m.searchChannelsError
 }
 
+func (m *mockDatasourceService) searchChannelsCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.searchChannelsCalls
+}
+
 func (m *mockDatasourceService) SearchFilteredChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchFilteredChannelsRequest) (datasourceapi.SearchFilteredChannelsResponse, error) {
 	return datasourceapi.SearchFilteredChannelsResponse{}, nil
 }

@@ -183,6 +183,13 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	}
 	c.assetCacheMu.Unlock()
 
+	// Do not turn work from a caller that is already gone into a detached
+	// backend request. Flights started by live callers remain detached below so
+	// cancellation from one waiter cannot fail the other waiters.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	ch := c.assetGroup.DoChan(assetRid, func() (any, error) {
 		// Re-check under the group: another flight may have stored this key
 		// between this caller's cache miss and entering the group.
@@ -393,6 +400,9 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 
 	if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
 		applyChannelMetadata(qm, entry)
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 
