@@ -439,6 +439,81 @@ func TestNominalCatalogFetchAssetByRidSweepsOnStore(t *testing.T) {
 	}
 }
 
+func TestNominalCatalogSweepEvictsExpiredChannelMetadata(t *testing.T) {
+	catalog := newNominalCatalog(nil, nil)
+
+	catalog.channelMetadataCacheMu.Lock()
+	catalog.channelMetadataCache = map[string]channelMetadataCacheEntry{}
+	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
+		channelDataType: "numeric",
+		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+	}
+	catalog.channelMetadataCache["asset|scope|fresh"] = channelMetadataCacheEntry{
+		channelDataType: "numeric",
+		fetchedAt:       time.Now(),
+	}
+	catalog.channelCacheLastSweep = time.Now().Add(-2 * sweepInterval)
+	catalog.maybeSweepChannelCacheLocked()
+	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
+	_, freshPresent := catalog.channelMetadataCache["asset|scope|fresh"]
+	catalog.channelMetadataCacheMu.Unlock()
+
+	if expiredPresent {
+		t.Fatal("expired channel metadata entry was not swept")
+	}
+	if !freshPresent {
+		t.Fatal("fresh channel metadata entry was incorrectly swept")
+	}
+}
+
+func TestNominalCatalogChannelSweepRespectsInterval(t *testing.T) {
+	catalog := newNominalCatalog(nil, nil)
+
+	catalog.channelMetadataCacheMu.Lock()
+	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
+		channelDataType: "numeric",
+		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+	}
+	// Recent sweep: the interval gate is closed, so nothing should be evicted.
+	catalog.channelCacheLastSweep = time.Now()
+	catalog.maybeSweepChannelCacheLocked()
+	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
+	catalog.channelMetadataCacheMu.Unlock()
+
+	if !expiredPresent {
+		t.Fatal("channel sweep ran before the interval elapsed")
+	}
+}
+
+func TestNominalCatalogStoreChannelMetadataSweepsOnStore(t *testing.T) {
+	catalog := newNominalCatalog(nil, nil)
+
+	catalog.channelMetadataCacheMu.Lock()
+	catalog.channelMetadataCache["asset|scope|expired"] = channelMetadataCacheEntry{
+		channelDataType: "numeric",
+		fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+	}
+	catalog.channelCacheLastSweep = time.Now().Add(-2 * sweepInterval)
+	catalog.channelMetadataCacheMu.Unlock()
+
+	catalog.storeChannelMetadata("asset|scope|fresh", channelMetadataCacheEntry{
+		channelDataType: "string",
+		fetchedAt:       time.Now(),
+	})
+
+	catalog.channelMetadataCacheMu.Lock()
+	_, expiredPresent := catalog.channelMetadataCache["asset|scope|expired"]
+	_, freshPresent := catalog.channelMetadataCache["asset|scope|fresh"]
+	catalog.channelMetadataCacheMu.Unlock()
+
+	if expiredPresent {
+		t.Fatal("real store did not sweep the expired entry (sweep is not wired into storeChannelMetadata)")
+	}
+	if !freshPresent {
+		t.Fatal("stored entry missing")
+	}
+}
+
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
