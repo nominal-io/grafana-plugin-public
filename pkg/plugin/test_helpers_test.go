@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -20,6 +21,7 @@ import (
 )
 
 type mockDatasourceService struct {
+	mu                     sync.Mutex // guards searchChannelsCalls and searchChannelsRequest
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
@@ -29,8 +31,10 @@ type mockDatasourceService struct {
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+	m.mu.Lock()
 	m.searchChannelsCalls++
 	m.searchChannelsRequest = queryArg
+	m.mu.Unlock()
 	if m.searchChannelsFunc != nil {
 		return m.searchChannelsFunc(ctx, authHeader, queryArg)
 	}
