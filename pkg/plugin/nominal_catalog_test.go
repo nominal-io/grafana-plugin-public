@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
@@ -350,6 +351,91 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	}
 	if fetchCount != 0 {
 		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
+	}
+}
+
+func TestNominalCatalogSweepEvictsExpiredAssets(t *testing.T) {
+	catalog := newNominalCatalog(nil, nil)
+
+	catalog.assetCacheMu.Lock()
+	catalog.assetCache["expired"] = assetCacheEntry{
+		asset:     &SingleAssetResponse{Rid: "expired"},
+		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+	}
+	catalog.assetCache["fresh"] = assetCacheEntry{
+		asset:     &SingleAssetResponse{Rid: "fresh"},
+		fetchedAt: time.Now(),
+	}
+	// Force the interval gate open so the sweep runs on this call.
+	catalog.assetCacheLastSweep = time.Now().Add(-2 * sweepInterval)
+	catalog.maybeSweepAssetCacheLocked()
+	_, expiredPresent := catalog.assetCache["expired"]
+	_, freshPresent := catalog.assetCache["fresh"]
+	catalog.assetCacheMu.Unlock()
+
+	if expiredPresent {
+		t.Fatal("expired asset entry was not swept")
+	}
+	if !freshPresent {
+		t.Fatal("fresh asset entry was incorrectly swept")
+	}
+}
+
+func TestNominalCatalogSweepRespectsInterval(t *testing.T) {
+	catalog := newNominalCatalog(nil, nil)
+
+	catalog.assetCacheMu.Lock()
+	catalog.assetCache["expired"] = assetCacheEntry{
+		asset:     &SingleAssetResponse{Rid: "expired"},
+		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+	}
+	// Recent sweep: the interval gate is closed, so nothing should be evicted.
+	catalog.assetCacheLastSweep = time.Now()
+	catalog.maybeSweepAssetCacheLocked()
+	_, expiredPresent := catalog.assetCache["expired"]
+	catalog.assetCacheMu.Unlock()
+
+	if !expiredPresent {
+		t.Fatal("sweep ran before the interval elapsed")
+	}
+}
+
+func TestNominalCatalogFetchAssetByRidSweepsOnStore(t *testing.T) {
+	assetRid := "ri.scout.main.asset.sweepwire"
+	var fetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {Rid: assetRid, Title: "Sweep Wire"},
+	}, &fetchCount)
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	catalog.assetCacheMu.Lock()
+	catalog.assetCache["expired"] = assetCacheEntry{
+		asset:     &SingleAssetResponse{Rid: "expired"},
+		fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+	}
+	catalog.assetCacheLastSweep = time.Now().Add(-2 * sweepInterval)
+	catalog.assetCacheMu.Unlock()
+
+	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err != nil {
+		t.Fatalf("FetchAssetByRid error: %v", err)
+	}
+
+	catalog.assetCacheMu.Lock()
+	_, expiredPresent := catalog.assetCache["expired"]
+	_, storedPresent := catalog.assetCache[assetRid]
+	catalog.assetCacheMu.Unlock()
+
+	if expiredPresent {
+		t.Fatal("real store did not sweep the expired entry (sweep is not wired into FetchAssetByRid)")
+	}
+	if !storedPresent {
+		t.Fatal("fetched asset was not stored")
 	}
 }
 
