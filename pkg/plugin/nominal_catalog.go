@@ -53,6 +53,7 @@ type NominalCatalog struct {
 
 	channelMetadataCacheMu sync.Mutex
 	channelMetadataCache   map[string]channelMetadataCacheEntry
+	channelCacheLastSweep  time.Time // guarded by channelMetadataCacheMu
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
@@ -203,6 +204,25 @@ func (c *NominalCatalog) maybeSweepAssetCacheLocked() {
 	c.assetCacheLastSweep = time.Now()
 	if removed > 0 {
 		log.DefaultLogger.Debug("asset metadata cache swept", "removed", removed, "remaining", len(c.assetCache))
+	}
+}
+
+// maybeSweepChannelCacheLocked deletes expired channel-metadata entries at most
+// once per sweepInterval. Caller must hold c.channelMetadataCacheMu.
+func (c *NominalCatalog) maybeSweepChannelCacheLocked() {
+	if time.Since(c.channelCacheLastSweep) < sweepInterval {
+		return
+	}
+	removed := 0
+	for k, entry := range c.channelMetadataCache {
+		if time.Since(entry.fetchedAt) >= assetCacheTTL {
+			delete(c.channelMetadataCache, k)
+			removed++
+		}
+	}
+	c.channelCacheLastSweep = time.Now()
+	if removed > 0 {
+		log.DefaultLogger.Debug("channel metadata cache swept", "removed", removed, "remaining", len(c.channelMetadataCache))
 	}
 }
 
@@ -451,6 +471,7 @@ func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMeta
 		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	c.channelMetadataCache[cacheKey] = entry
+	c.maybeSweepChannelCacheLocked()
 }
 
 // getChannelMetadataDescription extracts description from channel metadata
