@@ -144,6 +144,14 @@ func (m *mockDatasourceService) GetAvailableTagValues(ctx context.Context, authH
 	return datasourceapi.GetAvailableTagValuesResponse{}, nil
 }
 
+func (m *mockDatasourceService) BatchGetSeriesCount(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetSeriesCountRequest) (datasourceapi.BatchGetSeriesCountResponse, error) {
+	return datasourceapi.BatchGetSeriesCountResponse{}, nil
+}
+
+func (m *mockDatasourceService) GetMatchingChannelsWithTags(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.GetMatchingChannelsWithTagsRequest) (datasourceapi.GetMatchingChannelsWithTagsResponse, error) {
+	return datasourceapi.GetMatchingChannelsWithTagsResponse{}, nil
+}
+
 // Verify mock types implement their interfaces at compile time
 var _ authapi.AuthenticationServiceV2Client = (*mockAuthService)(nil)
 var _ datasourceservice.DataSourceServiceClient = (*mockDatasourceService)(nil)
