@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 
 var benchmarkSinkTransformResult TransformResult
 var benchmarkSinkDataResponse backend.DataResponse
+var benchmarkSinkLogLabels json.RawMessage
 
 func suppressBenchmarkLogs() {
 	sdklog.DefaultLogger = sdklog.NewNullLogger()
@@ -113,6 +115,47 @@ func benchmarkPagedLogResult(rows int, order benchmarkLogOrder, argsKind benchma
 		args[i] = benchmarkLogArgs(argsKind, i)
 	}
 	return createMockPagedLogResult(messages, args, timestamps)
+}
+
+func BenchmarkMarshalLogArgsPopulated(b *testing.B) {
+	args := benchmarkLogArgs(benchmarkLogArgsPopulated, 0)
+	cases := []struct {
+		name    string
+		channel string
+	}{
+		{name: "standard_channel", channel: "app.logs"},
+		{
+			name:    "long_channel",
+			channel: "organizations/nominal/production/telemetry/platforms/primary/agents/collector/services/journald/channels/application/system/runtime/logs",
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			warmup := marshalLogArgs(args, tc.channel)
+			if !json.Valid(warmup) {
+				b.Fatalf("marshal log args returned invalid JSON: %q", string(warmup))
+			}
+			var labels map[string]string
+			if err := json.Unmarshal(warmup, &labels); err != nil {
+				b.Fatalf("unmarshal log labels: %v", err)
+			}
+			if len(labels) != len(args)+1 || labels[nominalChannelLabel] != tc.channel {
+				b.Fatalf("unexpected log labels: %v", labels)
+			}
+			for key, value := range args {
+				if labels[key] != value {
+					b.Fatalf("log label %q = %q, want %q", key, labels[key], value)
+				}
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchmarkSinkLogLabels = marshalLogArgs(args, tc.channel)
+			}
+		})
+	}
 }
 
 func BenchmarkExtractEnumDataFromConjure(b *testing.B) {
