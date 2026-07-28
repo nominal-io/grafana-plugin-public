@@ -19,6 +19,7 @@ import (
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
+	"golang.org/x/sync/singleflight"
 )
 
 // assetCacheTTL controls how long fetched asset metadata is cached.
@@ -27,6 +28,11 @@ const assetCacheTTL = 5 * time.Minute
 // sweepInterval bounds how often expired entries are swept from the caches.
 // Sweeps run lazily on writes, so an idle cache stops sweeping on its own.
 const sweepInterval = 30 * time.Minute
+
+// detachedLookupTimeout bounds the shared, caller-detached catalog lookups.
+// context.WithoutCancel strips the caller's deadline along with its cancel,
+// so the detached flight needs its own upper bound against a hung backend.
+const detachedLookupTimeout = 30 * time.Second
 
 const maxChannelVariables = 5000
 
@@ -50,10 +56,12 @@ type NominalCatalog struct {
 	assetCacheMu        sync.Mutex
 	assetCache          map[string]assetCacheEntry
 	assetCacheLastSweep time.Time // guarded by assetCacheMu
+	assetGroup          singleflight.Group
 
 	channelMetadataCacheMu sync.Mutex
 	channelMetadataCache   map[string]channelMetadataCacheEntry
 	channelCacheLastSweep  time.Time // guarded by channelMetadataCacheMu
+	channelGroup           singleflight.Group
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
@@ -175,17 +183,54 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	}
 	c.assetCacheMu.Unlock()
 
-	asset, err := c.fetchAssetByRidUncached(ctx, config, assetRid)
-	if err != nil {
+	// Do not turn work from a caller that is already gone into a detached
+	// backend request. Flights started by live callers remain detached below so
+	// cancellation from one waiter cannot fail the other waiters.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	c.assetCacheMu.Lock()
-	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-	c.maybeSweepAssetCacheLocked()
-	c.assetCacheMu.Unlock()
+	ch := c.assetGroup.DoChan(assetRid, func() (any, error) {
+		// Re-check under the group: another flight may have stored this key
+		// between this caller's cache miss and entering the group.
+		c.assetCacheMu.Lock()
+		if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+			c.assetCacheMu.Unlock()
+			return entry.asset, nil
+		}
+		c.assetCacheMu.Unlock()
 
-	return asset.clone(), nil
+		// Detach from the caller's context: this fetch is shared across all
+		// concurrent callers for this RID, so one caller's cancellation must
+		// not fail the others. The timeout bounds the detached work.
+		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		asset, fetchErr := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		c.assetCacheMu.Lock()
+		c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+		c.maybeSweepAssetCacheLocked()
+		c.assetCacheMu.Unlock()
+		return asset, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		// The flight keeps running detached and will populate the cache for
+		// other callers; this caller honors its own cancellation promptly.
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		if res.Shared {
+			log.DefaultLogger.Debug("asset lookup coalesced")
+		}
+		// clone() is nil-safe; a not-found asset is cached and returned as nil.
+		return res.Val.(*SingleAssetResponse).clone(), nil
+	}
 }
 
 // maybeSweepAssetCacheLocked deletes expired asset entries at most once per
@@ -351,46 +396,89 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 		return
 	}
 
-	cacheKey := qm.AssetRid + "|" + qm.DataScopeName + "|" + qm.Channel
+	cacheKey := channelMetadataCacheKey(qm.AssetRid, qm.DataScopeName, qm.Channel)
 
 	if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
 		applyChannelMetadata(qm, entry)
 		return
 	}
-
-	asset, err := c.FetchAssetByRid(ctx, config, qm.AssetRid)
-	if err != nil {
-		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
+	if ctx.Err() != nil {
 		return
+	}
+
+	assetRid := qm.AssetRid
+	dataScopeName := qm.DataScopeName
+	channel := qm.Channel
+	ch := c.channelGroup.DoChan(cacheKey, func() (any, error) {
+		// Re-check under the group: another flight may have stored this key
+		// between this caller's cache miss and entering the group.
+		if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
+			return entry, nil
+		}
+		// Detach the shared lookup from any single caller's cancellation and
+		// bound it with its own timeout; see FetchAssetByRid for the rationale.
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
+	})
+
+	select {
+	case <-ctx.Done():
+		// Canceled callers skip enrichment; the detached flight still stores
+		// the result for future queries.
+		return
+	case res := <-ch:
+		if res.Err != nil {
+			// Best-effort enrichment: inference failures are non-fatal, the
+			// query proceeds without metadata.
+			return
+		}
+		if res.Shared {
+			log.DefaultLogger.Debug("channel metadata lookup coalesced")
+		}
+		applyChannelMetadata(qm, res.Val.(channelMetadataCacheEntry))
+	}
+}
+
+// computeChannelMetadata performs the uncached lookup and stores the result,
+// including a negative entry for searched-but-not-found channels. Bailouts
+// return a zero entry and nil error without storing; backend failures return
+// the error so the caller can skip enrichment.
+func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, cacheKey, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
+	asset, err := c.FetchAssetByRid(ctx, config, assetRid)
+	if err != nil {
+		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", assetRid, "error", err)
+		return channelMetadataCacheEntry{}, err
 	}
 	if asset == nil {
-		return
+		return channelMetadataCacheEntry{}, nil
 	}
 
-	dataSourceRids := c.DataSourceRidsForScope(asset, qm.DataScopeName)
+	dataSourceRids := c.DataSourceRidsForScope(asset, dataScopeName)
 	if len(dataSourceRids) == 0 {
-		return
+		return channelMetadataCacheEntry{}, nil
 	}
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{qm.Channel},
+		ExactMatch:  []string{channel},
 		DataSources: dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
-		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", qm.AssetRid, "error", err)
-		return
+		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", assetRid, "error", err)
+		return channelMetadataCacheEntry{}, err
 	}
 
-	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, qm.Channel); ok {
-		applyChannelMetadata(qm, entry)
+	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, channel); ok {
 		entry.fetchedAt = time.Now()
 		c.storeChannelMetadata(cacheKey, entry)
-		return
+		return entry, nil
 	}
 
-	c.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
+	entry := channelMetadataCacheEntry{fetchedAt: time.Now()}
+	c.storeChannelMetadata(cacheKey, entry)
+	return entry, nil
 }
 
 func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid) ([]datasourceapi.ChannelMetadata, error) {
@@ -447,6 +535,13 @@ func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata,
 		return entry, true
 	}
 	return channelMetadataCacheEntry{}, false
+}
+
+// channelMetadataCacheKey builds the cache and singleflight key for a channel
+// metadata lookup. %q escapes each part, so names containing the separator
+// cannot produce colliding keys.
+func channelMetadataCacheKey(assetRid, dataScopeName, channel string) string {
+	return fmt.Sprintf("%q|%q|%q", assetRid, dataScopeName, channel)
 }
 
 // lookupChannelMetadata returns a cached channel metadata entry if present and

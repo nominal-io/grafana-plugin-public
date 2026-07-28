@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"sync"
 
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
@@ -12,6 +13,7 @@ import (
 
 // mockDatasourceService is shared by datasource, resource, and catalog tests.
 type mockDatasourceService struct {
+	mu                     sync.Mutex // guards searchChannelsCalls and searchChannelsRequest
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
@@ -21,12 +23,20 @@ type mockDatasourceService struct {
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+	m.mu.Lock()
 	m.searchChannelsCalls++
 	m.searchChannelsRequest = queryArg
+	m.mu.Unlock()
 	if m.searchChannelsFunc != nil {
 		return m.searchChannelsFunc(ctx, authHeader, queryArg)
 	}
 	return m.searchChannelsResponse, m.searchChannelsError
+}
+
+func (m *mockDatasourceService) searchChannelsCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.searchChannelsCalls
 }
 
 func (m *mockDatasourceService) SearchFilteredChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchFilteredChannelsRequest) (datasourceapi.SearchFilteredChannelsResponse, error) {
