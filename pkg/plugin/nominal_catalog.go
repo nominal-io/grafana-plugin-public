@@ -24,6 +24,10 @@ import (
 // assetCacheTTL controls how long fetched asset metadata is cached.
 const assetCacheTTL = 5 * time.Minute
 
+// sweepInterval bounds how often expired entries are swept from the caches.
+// Sweeps run lazily on writes, so an idle cache stops sweeping on its own.
+const sweepInterval = 30 * time.Minute
+
 const maxChannelVariables = 5000
 
 // assetCacheEntry holds a cached asset response with its fetch time.
@@ -43,11 +47,13 @@ type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
 
-	assetCacheMu sync.Mutex
-	assetCache   map[string]assetCacheEntry
+	assetCacheMu        sync.Mutex
+	assetCache          map[string]assetCacheEntry
+	assetCacheLastSweep time.Time // guarded by assetCacheMu
 
 	channelMetadataCacheMu sync.Mutex
 	channelMetadataCache   map[string]channelMetadataCacheEntry
+	channelCacheLastSweep  time.Time // guarded by channelMetadataCacheMu
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
@@ -176,9 +182,48 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 
 	c.assetCacheMu.Lock()
 	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	c.maybeSweepAssetCacheLocked()
 	c.assetCacheMu.Unlock()
 
 	return asset.clone(), nil
+}
+
+// maybeSweepAssetCacheLocked deletes expired asset entries at most once per
+// sweepInterval. Caller must hold c.assetCacheMu.
+func (c *NominalCatalog) maybeSweepAssetCacheLocked() {
+	if time.Since(c.assetCacheLastSweep) < sweepInterval {
+		return
+	}
+	removed := 0
+	for k, entry := range c.assetCache {
+		if time.Since(entry.fetchedAt) >= assetCacheTTL {
+			delete(c.assetCache, k)
+			removed++
+		}
+	}
+	c.assetCacheLastSweep = time.Now()
+	if removed > 0 {
+		log.DefaultLogger.Debug("asset metadata cache swept", "removed", removed, "remaining", len(c.assetCache))
+	}
+}
+
+// maybeSweepChannelCacheLocked deletes expired channel-metadata entries at most
+// once per sweepInterval. Caller must hold c.channelMetadataCacheMu.
+func (c *NominalCatalog) maybeSweepChannelCacheLocked() {
+	if time.Since(c.channelCacheLastSweep) < sweepInterval {
+		return
+	}
+	removed := 0
+	for k, entry := range c.channelMetadataCache {
+		if time.Since(entry.fetchedAt) >= assetCacheTTL {
+			delete(c.channelMetadataCache, k)
+			removed++
+		}
+	}
+	c.channelCacheLastSweep = time.Now()
+	if removed > 0 {
+		log.DefaultLogger.Debug("channel metadata cache swept", "removed", removed, "remaining", len(c.channelMetadataCache))
+	}
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
@@ -426,6 +471,7 @@ func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMeta
 		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	c.channelMetadataCache[cacheKey] = entry
+	c.maybeSweepChannelCacheLocked()
 }
 
 // getChannelMetadataDescription extracts description from channel metadata

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
@@ -350,6 +351,107 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	}
 	if fetchCount != 0 {
 		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
+	}
+}
+
+func TestNominalCatalogAssetCacheSweepOnStore(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.sweepwire"
+	var fetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {Rid: assetRid, Title: "Sweep Wire"},
+	}, &fetchCount)
+	t.Cleanup(server.Close)
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+			catalog.assetCache["expired"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "expired"},
+				fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.assetCache["fresh"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "fresh"},
+				fetchedAt: time.Now(),
+			}
+			catalog.assetCacheLastSweep = tt.lastSweep
+
+			if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err != nil {
+				t.Fatalf("FetchAssetByRid error: %v", err)
+			}
+
+			catalog.assetCacheMu.Lock()
+			_, expiredPresent := catalog.assetCache["expired"]
+			_, freshPresent := catalog.assetCache["fresh"]
+			_, storedPresent := catalog.assetCache[assetRid]
+			catalog.assetCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("fetched asset was not stored")
+			}
+		})
+	}
+}
+
+func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(nil, nil)
+			catalog.channelMetadataCache["expired"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.channelMetadataCache["fresh"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now(),
+			}
+			catalog.channelCacheLastSweep = tt.lastSweep
+
+			catalog.storeChannelMetadata("stored", channelMetadataCacheEntry{
+				channelDataType: "string",
+				fetchedAt:       time.Now(),
+			})
+
+			catalog.channelMetadataCacheMu.Lock()
+			_, expiredPresent := catalog.channelMetadataCache["expired"]
+			_, freshPresent := catalog.channelMetadataCache["fresh"]
+			_, storedPresent := catalog.channelMetadataCache["stored"]
+			catalog.channelMetadataCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("new entry was not stored")
+			}
+		})
 	}
 }
 
