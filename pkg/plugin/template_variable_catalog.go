@@ -33,6 +33,7 @@ type datascopesVariableRequest struct {
 type channelVariablesRequest struct {
 	AssetRid      string `json:"assetRid"`
 	DataScopeName string `json:"dataScopeName"`
+	SearchText    string `json:"searchText"`
 }
 
 type templateVariableCatalogErrorKind int
@@ -130,7 +131,7 @@ func (c *TemplateVariableCatalog) Datascopes(ctx context.Context, config *models
 }
 
 func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *models.PluginSettings, req channelVariablesRequest) ([]metricFindValue, error) {
-	if hasUnresolvedTemplateVariable(req.AssetRid, req.DataScopeName) {
+	if hasUnresolvedTemplateVariable(req.AssetRid, req.DataScopeName, req.SearchText) {
 		return []metricFindValue{}, nil
 	}
 
@@ -148,7 +149,7 @@ func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *
 	}
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids)
+	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids, req.SearchText)
 	if err != nil {
 		return nil, &templateVariableCatalogError{kind: templateVariableChannelSearchError, err: err}
 	}

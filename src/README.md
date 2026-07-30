@@ -75,21 +75,29 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 ### Variable queries
 
-- `assets` returns every asset in the workspace. Use it as the top variable in an asset-driven dashboard built from scratch.
-- `assets(engine)` returns assets matching the search text `engine`. Matching is case-insensitive, tolerates minor typos, and looks at the asset's name, description, labels, and properties — so `engine`, `engines`, and `enigne` all find `Engine 1`. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern — `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
+- `assets` returns up to 500 assets from the workspace. Use it as the top variable in a smaller asset-driven dashboard built from scratch.
+- `assets($__searchFilter)` enables Grafana's dynamic dropdown search. Opening the dropdown loads unfiltered assets; typing in the dropdown re-runs the Nominal asset search with the typed text. Use this for large workspaces where the target asset might not be in the initially loaded result set.
+- `assets(engine)` returns assets matching the search text `engine`. Matching is case-insensitive, tolerates minor typos, and looks at the asset's name, description, labels, and properties - so `engine`, `engines`, and `enigne` all find `Engine 1`. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern - `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
-- `channels(${asset})` returns the union of channel names across **all** data scopes on the selected asset, deduplicated by name. Most useful when your asset has a single primary data scope, or when your fleet uses a consistent scope name that you can pin as a literal in each panel's data scope field. If channels with the same name exist in multiple scopes, the variable shows the name once — the actual data returned depends on which scope is set in each panel.
+- `channels(${asset})` returns up to 5,000 channel names across all supported data scopes on the selected asset, deduplicated by name. Use it when your asset has a single primary data scope or when panels pin a literal data scope.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
+- `channels(${asset}, ${datascope}, $__searchFilter)` enables Grafana's dynamic dropdown search for channels in the selected data scope. Use it for assets with large channel catalogs.
+- `channels(${asset}, , $__searchFilter)` searches channels across all supported data scopes on the selected asset. The second argument is intentionally empty.
+- `channels(${asset}, $__searchFilter)` is a shortcut for unscoped dynamic channel search, equivalent to `channels(${asset}, , $__searchFilter)`.
+
+The same search slot accepts fixed text: `assets:engine`, `channels(${asset}, ${datascope}, temp)`, and `channels(${asset}, , temp)`. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
+
+Scope names containing commas or delimiter-like characters should be referenced through a variable such as `${datascope}` instead of hardcoded inline. Channel arguments are split before Grafana variable interpolation, so `channels(${asset}, ${datascope}, $__searchFilter)` preserves the selected scope name as one value.
 
 ### Common patterns
 
 **Single-asset multi-channel monitoring.** One named asset, several panels, no template variables. Each panel shows one or more channels from the asset's data scopes. This is the most common layout for a dedicated operations dashboard like "Test stand monitoring", "Motor qualification", or "Vehicle road test".
 
-**Single-asset deep-dive.** Three chained variables (`assets`, `datascopes(${asset})`, `channels(${asset}, ${datascope})`) drive every panel. Switching the asset cascades through scopes and channels automatically. Use this when you want one reusable dashboard that works for any asset with the same data scope and channel schema.
+**Single-asset deep-dive.** Three chained variables (`assets($__searchFilter)`, `datascopes(${asset})`, `channels(${asset}, ${datascope}, $__searchFilter)`) drive every panel. Switching the asset cascades through scopes and channels automatically. Use this when you want one reusable dashboard that works for any asset with the same data scope and channel schema, including assets and channels outside the initially loaded option lists.
 
-**Fleet view.** One filtered asset variable (e.g. `assets(engine)`) set to multi-value, plus `channels(${asset})` for a flat channel picker. Each panel shows the same channel as multiple series, one per selected asset. This pattern assumes every asset in the fleet exposes the same channel under the same data scope name; pin that scope as a literal in each panel's **Data scope** field rather than parameterizing it.
+**Fleet view.** One filtered asset variable (for example, `assets(engine)` or `assets($__searchFilter)`) set to multi-value, plus a channel variable scoped to the same data scope used by the panels (for example, `channels(${asset}, primary, $__searchFilter)`). Populate the channel picker from one representative asset before expanding the asset variable to multiple values, or use a separate single-value representative asset variable for channel lookup. Each panel shows the same channel as multiple series, one per selected asset. This pattern assumes every asset in the fleet exposes the same channel under the same data scope name; pin that scope as a literal in each panel's **Data scope** field rather than parameterizing it. Use `channels(${asset}, , $__searchFilter)` only when you intentionally want a flat cross-scope channel picker.
 
-**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope})` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset instead of one panel with multiple series.
+**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope}, $__searchFilter)` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset instead of one panel with multiple series.
 
 ## Troubleshooting
 
