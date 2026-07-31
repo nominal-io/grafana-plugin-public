@@ -497,6 +497,16 @@ func compareLogEntriesNewestFirst(a, b LogEntry) int {
 	return b.Time.Compare(a.Time)
 }
 
+// unsupportedComputeResponse builds an AcceptFuncs handler for a response arm
+// the plugin cannot render. Never pass nil to AcceptFuncs: the generated
+// dispatcher invokes handlers without nil checks, and a nil handler panics
+// the plugin process.
+func unsupportedComputeResponse[T any](typeName string) func(T) error {
+	return func(T) error {
+		return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
+	}
+}
+
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
@@ -506,9 +516,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 
 	// Use the conjure union visitor pattern to handle different response types
 	visitErr := response.AcceptFuncs(
-		nil, // rangeFunc
-		nil, // rangesSummaryFunc
-		nil, // rangeValueFunc
+		unsupportedComputeResponse[[]computeapi.Range]("range"),
+		unsupportedComputeResponse[computeapi.RangesSummary]("rangesSummary"),
+		unsupportedComputeResponse[*computeapi.Range]("rangeValue"),
 		func(numeric computeapi.NumericPlot) error {
 			timePoints, values, err := e.extractNumericDataFromConjure(numeric)
 			if err != nil {
@@ -529,8 +539,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = false
 			return nil
 		},
-		nil, // numericPointFunc
-		nil, // singlePointFunc
+		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
+		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
 		// arrowNumericFunc - Not reachable from SummarizeSeries with Buckets.
 		// Returns a clear error rather than speculative parsing of an unverified schema.
 		func(arrowNumeric computeapi.ArrowNumericPlot) error {
@@ -590,8 +600,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = true
 			return nil
 		},
-		nil, // arrowEnumFunc
-		nil, // arrowBucketedEnumFunc
+		unsupportedComputeResponse[computeapi.ArrowEnumPlot]("arrowEnum"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedEnumPlot]("arrowBucketedEnum"),
 		// pagedLogFunc — paginated log response
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
@@ -632,21 +642,22 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsLog = true
 			return nil
 		},
-		nil, // cartesianFunc
-		nil, // bucketedCartesianFunc
-		nil, // bucketedCartesian3dFunc
-		nil, // frequencyDomainFunc
-		nil, // frequencyDomainV2Func
-		nil, // bucketedFrequencyDomainFunc
-		nil, // numericHistogramFunc
-		nil, // enumHistogramFunc
-		nil, // curveFitFunc
-		nil, // groupedFunc
-		nil, // arrowArrayFunc
-		nil, // arrowBucketedStructFunc
-		nil, // arrowFullResolutionFunc
-		nil, // arrowBucketedMultivariateFunc
-		nil, // multivariateFunc
+		unsupportedComputeResponse[computeapi.CartesianPlot]("cartesian"),
+		unsupportedComputeResponse[computeapi.BucketedCartesianPlot]("bucketedCartesian"),
+		unsupportedComputeResponse[computeapi.BucketedCartesian3dPlot]("bucketedCartesian3d"),
+		unsupportedComputeResponse[computeapi.FrequencyDomainPlot]("frequencyDomain"),
+		unsupportedComputeResponse[computeapi.FrequencyDomainPlotV2]("frequencyDomainV2"),
+		unsupportedComputeResponse[computeapi.BucketedFrequencyDomainPlot]("bucketedFrequencyDomain"),
+		unsupportedComputeResponse[computeapi.NumericHistogramPlot]("numericHistogram"),
+		unsupportedComputeResponse[computeapi.EnumHistogramPlot]("enumHistogram"),
+		unsupportedComputeResponse[computeapi.CurveFitResult]("curveFit"),
+		// grouped is an ordinary multi-series response; unsupported until a real renderer lands.
+		unsupportedComputeResponse[computeapi.GroupedComputeNodeResponses]("grouped"),
+		unsupportedComputeResponse[computeapi.ArrowArrayPlot]("array"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedStructPlot]("bucketedStruct"),
+		unsupportedComputeResponse[computeapi.ArrowFullResolutionPlot]("fullResolution"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedMultivariatePlot]("arrowBucketedMultivariate"),
+		unsupportedComputeResponse[computeapi.BucketedMultivariatePlot]("multivariate"),
 		func(typeName string) error {
 			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
 			return nil
