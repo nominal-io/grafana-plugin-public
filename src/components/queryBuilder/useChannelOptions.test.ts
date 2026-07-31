@@ -356,4 +356,39 @@ describe('useChannelOptions', () => {
       expect(mockGetChannelSelectValue).toHaveBeenCalledTimes(1);
     }
   );
+
+  it('reorders server results so an exact channel name match is first', async () => {
+    const exact = 'vehicle.telemetry.engine_metrics.rpm_rx_count';
+    const variant = 'vehicle_telemetry_engine_metrics_rpm_rx_count';
+    mockSearchChannels.mockResolvedValue([
+      { name: variant, dataSource: 'ds', description: '', dataType: 'numeric' },
+      { name: exact, dataSource: 'ds', description: '', dataType: 'numeric' },
+    ]);
+    const { result } = renderHook(() => useChannelOptions(args()));
+
+    let options: ChannelOption[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      options = await result.current.channelOptions(exact);
+    });
+
+    expect(options.map((option) => option.value)).toEqual([exact, variant]);
+  });
+
+  it('appends the template channel entry during a literal search instead of pinning it first', async () => {
+    const exact = 'vehicle.telemetry.engine_metrics.rpm_rx_count';
+    mockSearchChannels.mockResolvedValue([{ name: exact, dataSource: 'ds', description: '', dataType: 'numeric' }]);
+    const query = makeQuery({ channel: '$chan' });
+    const { result } = renderHook(() =>
+      useChannelOptions(args({ query, channelResolution: resolveTemplateValue('$chan', (value) => value) }))
+    );
+
+    let options: ChannelOption[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      options = await result.current.channelOptions(exact);
+    });
+
+    expect(options.map((option) => option.value)).toEqual([exact, '$chan']);
+  });
 });

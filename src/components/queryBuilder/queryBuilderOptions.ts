@@ -125,19 +125,35 @@ export function channelsToOptions(channels: Channel[]): ChannelOption[] {
   }));
 }
 
+function shouldPinTemplateFirst(raw: string, searchText: string): boolean {
+  const trimmed = searchText.trim();
+  if (!trimmed) {
+    return true;
+  }
+  return trimmed.startsWith('$') && raw.toLowerCase().startsWith(trimmed.toLowerCase());
+}
+
 export function buildChannelOptions({
   channelResults,
   channel,
+  searchText = '',
 }: {
   channelResults: ChannelOption[];
   channel: TemplateValueResolution;
+  searchText?: string;
 }): ChannelOption[] {
   const options = [...channelResults];
   if (channel.hasTemplate && !options.some((option) => option.value === channel.raw)) {
-    options.unshift({
+    const templateOption = {
       label: channel.isResolved && channel.resolved ? templateDisplayLabel(channel) : channel.raw,
       value: channel.raw,
-    });
+    };
+    // Row 0 is the Combobox's default Enter target; a literal search must leave it to the best match.
+    if (shouldPinTemplateFirst(channel.raw, searchText)) {
+      options.unshift(templateOption);
+    } else {
+      options.push(templateOption);
+    }
   }
   return options;
 }
