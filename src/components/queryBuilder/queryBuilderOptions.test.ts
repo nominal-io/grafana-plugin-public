@@ -192,6 +192,22 @@ describe('queryBuilderOptions', () => {
     });
   });
 
+  it('pins the template entry for blank or variable-prefix searches and appends it for literal searches', () => {
+    const channel = resolveTemplateValue('$chan', () => 'temperature');
+    const channelResults = channelsToOptions([
+      { name: 'temp.a', dataSource: 'ds', description: '', dataType: 'numeric' },
+    ]);
+    const values = (searchText?: string) =>
+      buildChannelOptions({ channelResults, channel, searchText }).map((option) => option.value);
+
+    expect(values()).toEqual(['$chan', 'temp.a']);
+    expect(values('')).toEqual(['$chan', 'temp.a']);
+    expect(values('$ch')).toEqual(['$chan', 'temp.a']);
+    expect(values('$chan')).toEqual(['$chan', 'temp.a']);
+    expect(values('temp')).toEqual(['temp.a', '$chan']);
+    expect(values('$other')).toEqual(['temp.a', '$chan']);
+  });
+
   it('builds channel combobox values for empty, plain, resolved, and unresolved channels', () => {
     expect(getChannelSelectValue({ channel: resolveTemplateValue('', (value) => value) })).toBeNull();
     expect(
