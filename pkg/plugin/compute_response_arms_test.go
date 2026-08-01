@@ -121,6 +121,12 @@ func TestComputeResponseArmTableIsExhaustive(t *testing.T) {
 			armCount, len(computeResponseArms),
 		)
 	}
+
+	for name := range unsupportedComputeResponseArms {
+		if _, ok := computeResponseArms[name]; !ok {
+			t.Errorf("unsupported arm %q is missing from computeResponseArms; a misspelled key silently drops that arm's error assertion", name)
+		}
+	}
 }
 
 func TestComputeResponseArmHandling(t *testing.T) {
