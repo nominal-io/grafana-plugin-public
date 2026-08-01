@@ -9,91 +9,46 @@ import (
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 )
 
+// arm adapts a union constructor into a zero-value builder; *new(T) is nil
+// for pointer and slice payloads, which the dispatcher must tolerate.
+func arm[T any](ctor func(T) computeapi.ComputeNodeResponse) func() computeapi.ComputeNodeResponse {
+	return func() computeapi.ComputeNodeResponse { return ctor(*new(T)) }
+}
+
 // computeResponseArms maps every known ComputeNodeResponse arm to a builder
-// producing a valid instance of that arm. Optional-payload arms use nil on
-// purpose: the dispatcher invokes their handlers even for nil payloads.
+// producing a valid instance of that arm.
 var computeResponseArms = map[string]func() computeapi.ComputeNodeResponse{
-	"range": func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromRange(nil) },
-	"rangesSummary": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromRangesSummary(computeapi.RangesSummary{})
-	},
-	"rangeValue": func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromRangeValue(nil) },
-	"numeric": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromNumeric(computeapi.NumericPlot{})
-	},
-	"bucketedNumeric": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedNumeric(computeapi.BucketedNumericPlot{})
-	},
-	"numericPoint": func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromNumericPoint(nil) },
-	"singlePoint":  func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromSinglePoint(nil) },
-	"arrowNumeric": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArrowNumeric(computeapi.ArrowNumericPlot{})
-	},
-	"arrowBucketedNumeric": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowBucketedNumericPlot{})
-	},
-	"enum": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromEnum(computeapi.EnumPlot{})
-	},
-	"enumPoint": func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromEnumPoint(nil) },
-	"bucketedEnum": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedEnum(computeapi.BucketedEnumPlot{})
-	},
-	"arrowEnum": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArrowEnum(computeapi.ArrowEnumPlot{})
-	},
-	"arrowBucketedEnum": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArrowBucketedEnum(computeapi.ArrowBucketedEnumPlot{})
-	},
-	"pagedLog": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromPagedLog(computeapi.PagedLogPlot{})
-	},
-	"logPoint": func() computeapi.ComputeNodeResponse { return computeapi.NewComputeNodeResponseFromLogPoint(nil) },
-	"cartesian": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromCartesian(computeapi.CartesianPlot{})
-	},
-	"bucketedCartesian": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedCartesian(computeapi.BucketedCartesianPlot{})
-	},
-	"bucketedCartesian3d": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedCartesian3d(computeapi.BucketedCartesian3dPlot{})
-	},
-	"frequencyDomain": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromFrequencyDomain(computeapi.FrequencyDomainPlot{})
-	},
-	"frequencyDomainV2": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromFrequencyDomainV2(computeapi.FrequencyDomainPlotV2{})
-	},
-	"bucketedFrequencyDomain": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedFrequencyDomain(computeapi.BucketedFrequencyDomainPlot{})
-	},
-	"numericHistogram": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromNumericHistogram(computeapi.NumericHistogramPlot{})
-	},
-	"enumHistogram": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromEnumHistogram(computeapi.EnumHistogramPlot{})
-	},
-	"curveFit": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromCurveFit(computeapi.CurveFitResult{})
-	},
-	"grouped": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromGrouped(computeapi.GroupedComputeNodeResponses{})
-	},
-	"array": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArray(computeapi.ArrowArrayPlot{})
-	},
-	"bucketedStruct": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromBucketedStruct(computeapi.ArrowBucketedStructPlot{})
-	},
-	"fullResolution": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromFullResolution(computeapi.ArrowFullResolutionPlot{})
-	},
-	"arrowBucketedMultivariate": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromArrowBucketedMultivariate(computeapi.ArrowBucketedMultivariatePlot{})
-	},
-	"multivariate": func() computeapi.ComputeNodeResponse {
-		return computeapi.NewComputeNodeResponseFromMultivariate(computeapi.BucketedMultivariatePlot{})
-	},
+	"range":                     arm(computeapi.NewComputeNodeResponseFromRange),
+	"rangesSummary":             arm(computeapi.NewComputeNodeResponseFromRangesSummary),
+	"rangeValue":                arm(computeapi.NewComputeNodeResponseFromRangeValue),
+	"numeric":                   arm(computeapi.NewComputeNodeResponseFromNumeric),
+	"bucketedNumeric":           arm(computeapi.NewComputeNodeResponseFromBucketedNumeric),
+	"numericPoint":              arm(computeapi.NewComputeNodeResponseFromNumericPoint),
+	"singlePoint":               arm(computeapi.NewComputeNodeResponseFromSinglePoint),
+	"arrowNumeric":              arm(computeapi.NewComputeNodeResponseFromArrowNumeric),
+	"arrowBucketedNumeric":      arm(computeapi.NewComputeNodeResponseFromArrowBucketedNumeric),
+	"enum":                      arm(computeapi.NewComputeNodeResponseFromEnum),
+	"enumPoint":                 arm(computeapi.NewComputeNodeResponseFromEnumPoint),
+	"bucketedEnum":              arm(computeapi.NewComputeNodeResponseFromBucketedEnum),
+	"arrowEnum":                 arm(computeapi.NewComputeNodeResponseFromArrowEnum),
+	"arrowBucketedEnum":         arm(computeapi.NewComputeNodeResponseFromArrowBucketedEnum),
+	"pagedLog":                  arm(computeapi.NewComputeNodeResponseFromPagedLog),
+	"logPoint":                  arm(computeapi.NewComputeNodeResponseFromLogPoint),
+	"cartesian":                 arm(computeapi.NewComputeNodeResponseFromCartesian),
+	"bucketedCartesian":         arm(computeapi.NewComputeNodeResponseFromBucketedCartesian),
+	"bucketedCartesian3d":       arm(computeapi.NewComputeNodeResponseFromBucketedCartesian3d),
+	"frequencyDomain":           arm(computeapi.NewComputeNodeResponseFromFrequencyDomain),
+	"frequencyDomainV2":         arm(computeapi.NewComputeNodeResponseFromFrequencyDomainV2),
+	"bucketedFrequencyDomain":   arm(computeapi.NewComputeNodeResponseFromBucketedFrequencyDomain),
+	"numericHistogram":          arm(computeapi.NewComputeNodeResponseFromNumericHistogram),
+	"enumHistogram":             arm(computeapi.NewComputeNodeResponseFromEnumHistogram),
+	"curveFit":                  arm(computeapi.NewComputeNodeResponseFromCurveFit),
+	"grouped":                   arm(computeapi.NewComputeNodeResponseFromGrouped),
+	"array":                     arm(computeapi.NewComputeNodeResponseFromArray),
+	"bucketedStruct":            arm(computeapi.NewComputeNodeResponseFromBucketedStruct),
+	"fullResolution":            arm(computeapi.NewComputeNodeResponseFromFullResolution),
+	"arrowBucketedMultivariate": arm(computeapi.NewComputeNodeResponseFromArrowBucketedMultivariate),
+	"multivariate":              arm(computeapi.NewComputeNodeResponseFromMultivariate),
 }
 
 // unsupportedComputeResponseArms marks the arms that must return a
