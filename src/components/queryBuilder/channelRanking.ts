@@ -43,7 +43,8 @@ function hasBoundedMatch(candidate: string, query: string): boolean {
 function startsAtWordBoundary(candidate: string, query: string): boolean {
   let index = candidate.indexOf(query);
   while (index !== -1) {
-    if (index > 0 && WORD_BOUNDARY_CHARS.has(candidate[index - 1])) {
+    // index 0 cannot reach here: matchRank tests startsWith before calling this.
+    if (WORD_BOUNDARY_CHARS.has(candidate[index - 1])) {
       return true;
     }
     index = candidate.indexOf(query, index + 1);
@@ -80,9 +81,10 @@ function matchRank(name: string, query: string, lowerQuery: string): number {
   return NO_MATCH;
 }
 
-function naturalCompare(a: string, b: string): number {
-  return a.localeCompare(b, undefined, { sensitivity: 'base', numeric: true });
-}
+// Hoisted: localeCompare with an options object builds a fresh collator per call,
+// which dominates the sort at the 1000-channel page size.
+const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+const naturalCompare = collator.compare;
 
 /** Reorders server results so the best match is first: the SearchChannels API
  *  scores '.'/'_' variants of a name identically (pg_trgm) and tie-breaks by
