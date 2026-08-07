@@ -409,6 +409,9 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 		if !strings.HasPrefix(s.ua, wantPrefix) {
 			t.Errorf("QueryData UA = %q, want prefix %q (did the entry point skip contextWithPluginRequestIdentity?)", s.ua, wantPrefix)
 		}
+		if got := ds.killIdentity().PluginVersion; got != pluginVersion {
+			t.Errorf("killIdentity().PluginVersion = %q, want %q", got, pluginVersion)
+		}
 	})
 
 	t.Run("CallResource", func(t *testing.T) {
@@ -479,46 +482,6 @@ func TestCheckHealth_SurfacesInstanceID(t *testing.T) {
 	wantLabel := "errorInstanceId: " + failingInstanceID
 	if !strings.Contains(result.Message, wantLabel) {
 		t.Errorf("Message = %q, missing labeled instance id %q", result.Message, wantLabel)
-	}
-}
-
-func TestQueryDataSeedsKillIdentity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(conjureErrorBody("00000000-0000-0000-0000-000000000000")))
-	}))
-	defer srv.Close()
-
-	conjureClient, err := conjurehttpclient.NewClient(
-		conjurehttpclient.WithBaseURLs([]string{srv.URL}),
-		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
-	)
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	settings := backend.DataSourceInstanceSettings{
-		JSONData:                []byte(`{"baseUrl": "` + srv.URL + `"}`),
-		DecryptedSecureJSONData: map[string]string{"apiKey": "x"},
-	}
-	ds := &Datasource{
-		settings:    settings,
-		authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
-	}
-	defer ds.Dispose()
-
-	_, err = ds.QueryData(context.Background(), &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			PluginVersion:              "9.9.9-test",
-			DataSourceInstanceSettings: &settings,
-		},
-		Queries: []backend.DataQuery{{RefID: "A", JSON: []byte(`{"queryType": "connectionTest"}`)}},
-	})
-	if err != nil {
-		t.Fatalf("QueryData returned err: %v", err)
-	}
-	if got := ds.killIdentity().PluginVersion; got != "9.9.9-test" {
-		t.Errorf("killIdentity().PluginVersion = %q, want %q", got, "9.9.9-test")
 	}
 }
 

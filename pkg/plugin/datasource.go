@@ -108,9 +108,9 @@ type Datasource struct {
 	templateVariableCatalog *TemplateVariableCatalog
 
 	// Protect lazy initialization and prevent recreation after disposal.
-	killMu        sync.Mutex
-	kills         *killCoalescer
-	killsDisposed bool
+	killMu            sync.Mutex
+	coalescer         *killCoalescer
+	coalescerDisposed bool
 	// Written on QueryData so detached kill flushes can identify themselves.
 	killUA userAgentComponents
 }
@@ -123,10 +123,10 @@ func (d *Datasource) getResourceHTTPClient() *http.Client {
 func (d *Datasource) killCoalescer() *killCoalescer {
 	d.killMu.Lock()
 	defer d.killMu.Unlock()
-	if d.kills == nil && !d.killsDisposed {
-		d.kills = newKillCoalescer(d.sendBatchKill, killFlushInterval)
+	if d.coalescer == nil && !d.coalescerDisposed {
+		d.coalescer = newKillCoalescer(d.sendBatchKill, killFlushInterval)
 	}
-	return d.kills
+	return d.coalescer
 }
 
 func (d *Datasource) rememberKillIdentity(pc backend.PluginContext) {
@@ -142,7 +142,7 @@ func (d *Datasource) killIdentity() userAgentComponents {
 	return d.killUA
 }
 
-// sendBatchKill sends one best-effort batch without retries or sensitive logging.
+// sendBatchKill sends one best-effort batch without plugin-level retries or sensitive logging.
 func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token, ids []uuid.UUID) {
 	// Flush contexts are detached from any request, so restore caller identity.
 	if ua := d.killIdentity(); ua != (userAgentComponents{}) {
@@ -161,12 +161,12 @@ func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token,
 // be disposed and a new one will be created using NewSampleDatasource factory function.
 func (d *Datasource) Dispose() {
 	d.killMu.Lock()
-	d.killsDisposed = true
-	kills := d.kills
-	d.kills = nil
+	d.coalescerDisposed = true
+	coalescer := d.coalescer
+	d.coalescer = nil
 	d.killMu.Unlock()
-	if kills != nil {
-		kills.dispose()
+	if coalescer != nil {
+		coalescer.dispose()
 	}
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
