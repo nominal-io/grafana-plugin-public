@@ -20,7 +20,7 @@ const (
 	killFlushTimeout = 5 * time.Second
 )
 
-// killFlushFunc performs one best-effort BatchKillRequests call without retries.
+// killFlushFunc performs one best-effort BatchKillRequests call without plugin-level retries.
 type killFlushFunc func(ctx context.Context, token bearertoken.Token, ids []uuid.UUID)
 
 type killEntry struct {
