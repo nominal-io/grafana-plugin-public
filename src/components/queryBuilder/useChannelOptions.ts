@@ -3,7 +3,6 @@ import { AppEvents } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
-import { rankChannelOptions } from './channelRanking';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
@@ -106,7 +105,7 @@ export function useChannelOptions({
         // Combobox discards superseded resolved async options before they reach the menu.
         // The local request/context guard below is only for alert side effects.
         return buildChannelOptions({
-          channelResults: rankChannelOptions(channelsToOptions(channels), searchText),
+          channelResults: channelsToOptions(channels),
           channel: channelResolutionSnapshot,
           searchText,
         });

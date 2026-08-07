@@ -186,10 +186,34 @@ describe('queryBuilderOptions', () => {
       { name: 'temperature', dataSource: 'ds', description: 'Ambient temperature', dataType: 'numeric' },
     ]);
 
-    expect(buildChannelOptions({ channelResults: options, channel: resolveTemplateValue('$chan', () => 'temperature') })[0]).toEqual({
+    expect(
+      buildChannelOptions({
+        channelResults: options,
+        channel: resolveTemplateValue('$chan', () => 'temperature'),
+        searchText: '',
+      })[0]
+    ).toEqual({
       label: '$chan → temperature',
       value: '$chan',
     });
+  });
+
+  it('ranks the server results and leaves the template entry out of the ranking', () => {
+    const channelResults = channelsToOptions([
+      { name: 'a.rpm.raw', dataSource: 'ds', description: '', dataType: 'numeric' },
+      { name: 'ramp', dataSource: 'ds', description: '', dataType: 'numeric' },
+      { name: 'rpm', dataSource: 'ds', description: '', dataType: 'numeric' },
+    ]);
+
+    const values = buildChannelOptions({
+      channelResults,
+      channel: resolveTemplateValue('$rpm', (value) => value),
+      searchText: 'rpm',
+    }).map((option) => option.value);
+
+    // '$rpm' is a contains-match, so ranking it with the rest would lift it above the
+    // non-matching 'ramp' instead of leaving it last.
+    expect(values).toEqual(['rpm', 'a.rpm.raw', 'ramp', '$rpm']);
   });
 
   it('pins the template entry for blank or variable-prefix searches and appends it for literal searches', () => {
@@ -197,10 +221,9 @@ describe('queryBuilderOptions', () => {
     const channelResults = channelsToOptions([
       { name: 'temp.a', dataSource: 'ds', description: '', dataType: 'numeric' },
     ]);
-    const values = (searchText?: string) =>
+    const values = (searchText: string) =>
       buildChannelOptions({ channelResults, channel, searchText }).map((option) => option.value);
 
-    expect(values()).toEqual(['$chan', 'temp.a']);
     expect(values('')).toEqual(['$chan', 'temp.a']);
     expect(values('$ch')).toEqual(['$chan', 'temp.a']);
     expect(values('$chan')).toEqual(['$chan', 'temp.a']);
