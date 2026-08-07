@@ -503,8 +503,12 @@ func compareLogEntriesNewestFirst(a, b LogEntry) int {
 // the plugin process.
 func unsupportedComputeResponse[T any](typeName string) func(T) error {
 	return func(T) error {
-		return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
+		return unsupportedComputeResponseError(typeName)
 	}
+}
+
+func unsupportedComputeResponseError(typeName string) error {
+	return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
 }
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
@@ -660,7 +664,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[computeapi.BucketedMultivariatePlot]("multivariate"),
 		func(typeName string) error {
 			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
-			return nil
+			return unsupportedComputeResponseError(typeName)
 		},
 	)
 

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -104,5 +105,21 @@ func TestComputeResponseArmHandling(t *testing.T) {
 				t.Fatalf("error for arm %q should use the standard unsupported message, got: %v", name, err)
 			}
 		})
+	}
+}
+
+func TestUnknownComputeResponseReturnsError(t *testing.T) {
+	var response computeapi.ComputeNodeResponse
+	if err := json.Unmarshal([]byte(`{"type":"futureResponse"}`), &response); err != nil {
+		t.Fatalf("decode future compute response: %v", err)
+	}
+
+	e := &NominalQueryExecution{}
+	_, err := e.transformNominalResponseFromClient(response, NominalQueryModel{})
+	if err == nil {
+		t.Fatal("expected an error for an unknown compute response, got nil")
+	}
+	if !strings.Contains(err.Error(), `compute response type "futureResponse" is not supported by the plugin`) {
+		t.Fatalf("unknown response should use the standard unsupported message, got: %v", err)
 	}
 }
