@@ -9,6 +9,7 @@ import (
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/uuid"
 )
 
 type NominalQueryExecution struct {
@@ -140,6 +141,12 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
 		}
 
+		// A shared request ID lets one kill cancel the entire batch.
+		requestID := uuid.NewUUID()
+		for i := range computeRequests {
+			computeRequests[i].RequestId = &requestID
+		}
+
 		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
 			Requests: computeRequests,
 		}
@@ -152,6 +159,12 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		)
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+		if err != nil || ctx.Err() != nil {
+			// Kill unconfirmed work; unknown and finished IDs are harmless.
+			if kc := e.datasource.killCoalescer(); kc != nil {
+				kc.enqueue(requestID, bearerToken)
+			}
+		}
 		if err != nil {
 			logErrorWithConjureFields("Batch compute API call failed", err,
 				"chunkStart", chunkStart, "chunkEnd", chunkEnd)

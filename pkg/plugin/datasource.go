@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -22,6 +23,7 @@ import (
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/pkg/uuid"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
@@ -104,16 +106,68 @@ type Datasource struct {
 
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
+
+	// Protect lazy initialization and prevent recreation after disposal.
+	killMu            sync.Mutex
+	coalescer         *killCoalescer
+	coalescerDisposed bool
+	// Written on QueryData so detached kill flushes can identify themselves.
+	killUA userAgentComponents
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
 	return d.resourceHTTPClient
 }
 
+// killCoalescer returns the per-instance coalescer, or nil after disposal.
+func (d *Datasource) killCoalescer() *killCoalescer {
+	d.killMu.Lock()
+	defer d.killMu.Unlock()
+	if d.coalescer == nil && !d.coalescerDisposed {
+		d.coalescer = newKillCoalescer(d.sendBatchKill, killFlushInterval)
+	}
+	return d.coalescer
+}
+
+func (d *Datasource) rememberKillIdentity(pc backend.PluginContext) {
+	ua := userAgentComponentsFromPluginContext(pc)
+	d.killMu.Lock()
+	d.killUA = ua
+	d.killMu.Unlock()
+}
+
+func (d *Datasource) killIdentity() userAgentComponents {
+	d.killMu.Lock()
+	defer d.killMu.Unlock()
+	return d.killUA
+}
+
+// sendBatchKill sends one best-effort batch without plugin-level retries or sensitive logging.
+func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token, ids []uuid.UUID) {
+	// Flush contexts are detached from any request, so restore caller identity.
+	if ua := d.killIdentity(); ua != (userAgentComponents{}) {
+		ctx = contextWithUserAgentComponents(ctx, ua)
+	}
+	err := d.computeService.BatchKillRequests(ctx, token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
+	if err != nil {
+		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids))
+		return
+	}
+	log.DefaultLogger.Debug("BatchKillRequests flushed", "count", len(ids))
+}
+
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewSampleDatasource factory function.
 func (d *Datasource) Dispose() {
+	d.killMu.Lock()
+	d.coalescerDisposed = true
+	coalescer := d.coalescer
+	d.coalescer = nil
+	d.killMu.Unlock()
+	if coalescer != nil {
+		coalescer.dispose()
+	}
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
 	}
@@ -130,6 +184,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	d.rememberKillIdentity(req.PluginContext)
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
