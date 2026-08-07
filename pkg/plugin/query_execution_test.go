@@ -6,6 +6,7 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 )
 
 // preparedNumericQueries builds one batchable numeric query per RefID.
@@ -51,5 +52,35 @@ func TestUnsupportedResponseAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if numericResp.Error != nil {
 		t.Fatalf("numeric query must not be poisoned by its sibling, got error: %v", numericResp.Error)
+	}
+}
+
+// A panic anywhere inside a batch partition (here, inside the compute client
+// call itself) must become error responses for that partition's queries, not
+// a process crash. This exercises the recover backstop in the batch goroutines.
+func TestExecutePreparedBatchesSurvivesPanicInBatch(t *testing.T) {
+	mock := &mockComputeService{}
+	mock.batchComputeFunc = func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+		panic("sentinel-batch-panic-detail-must-not-surface")
+	}
+	ds := &Datasource{computeService: mock}
+	e := newTestQueryExecution(ds, nil)
+
+	results := e.executePreparedBatches(context.Background(), preparedNumericQueries("A", "B"))
+
+	if len(results) != 2 {
+		t.Fatalf("expected error responses for both queries, got %d responses", len(results))
+	}
+	for _, refID := range []string{"A", "B"} {
+		resp, ok := results[refID]
+		if !ok {
+			t.Fatalf("missing response for %s", refID)
+		}
+		if resp.Error == nil {
+			t.Fatalf("expected an error response for %s after batch panic, got nil error", refID)
+		}
+		if got := resp.Error.Error(); got != "Internal error while executing query batch" {
+			t.Fatalf("expected the exact generic internal-error message for %s, got: %q", refID, got)
+		}
 	}
 }

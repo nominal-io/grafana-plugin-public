@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -72,7 +73,23 @@ func (e *NominalQueryExecution) executePreparedBatches(ctx context.Context, prep
 
 	logBatch, otherBatch := partitionPreparedQueries(prepared)
 
-	runBatch := func(label string, batch queryBatch) map[string]backend.DataResponse {
+	runBatch := func(label string, batch queryBatch) (results map[string]backend.DataResponse) {
+		// An unrecovered panic on this goroutine would kill the whole plugin
+		// process. Convert it into per-query errors for this partition.
+		defer func() {
+			if r := recover(); r != nil {
+				log.DefaultLogger.Error("Recovered panic while executing query batch",
+					"partition", label,
+					"panicType", fmt.Sprintf("%T", r),
+					"stack", string(debug.Stack()),
+				)
+				results = make(map[string]backend.DataResponse, len(batch.queries))
+				for _, q := range batch.queries {
+					results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal,
+						"Internal error while executing query batch")
+				}
+			}
+		}()
 		if len(batch.queries) == 0 {
 			return nil
 		}
