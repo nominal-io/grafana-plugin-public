@@ -66,7 +66,10 @@ func TestExecutePreparedBatchesSurvivesPanicInBatch(t *testing.T) {
 	ds := &Datasource{computeService: mock}
 	e := newTestQueryExecution(ds, nil)
 
-	results := e.executePreparedBatches(context.Background(), preparedNumericQueries("A", "B"))
+	var results map[string]backend.DataResponse
+	withExpectedRecoveredPanics(t, 1, func() {
+		results = e.executePreparedBatches(context.Background(), preparedNumericQueries("A", "B"))
+	})
 
 	if len(results) != 2 {
 		t.Fatalf("expected error responses for both queries, got %d responses", len(results))

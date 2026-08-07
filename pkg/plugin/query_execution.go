@@ -78,6 +78,7 @@ func (e *NominalQueryExecution) executePreparedBatches(ctx context.Context, prep
 		// process. Convert it into per-query errors for this partition.
 		defer func() {
 			if r := recover(); r != nil {
+				noteRecoveredPanic()
 				log.DefaultLogger.Error("Recovered panic while executing query batch",
 					"partition", label,
 					"panicType", fmt.Sprintf("%T", r),
