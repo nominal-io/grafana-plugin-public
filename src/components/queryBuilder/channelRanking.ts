@@ -89,7 +89,8 @@ const naturalCompare = collator.compare;
 /** Reorders server results so the best match is first: the SearchChannels API
  *  scores '.'/'_' variants of a name identically (pg_trgm) and tie-breaks by
  *  row UUID, while the Combobox default-highlights row 0. Never drops rows;
- *  non-matches keep server order at the end. */
+ *  non-matches keep server order at the end. Always returns a new array, so
+ *  callers may mutate the result. */
 export function rankChannelOptions(options: ChannelOption[], searchText: string): ChannelOption[] {
   const query = searchText.trim();
   if (!query) {

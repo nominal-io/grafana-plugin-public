@@ -1,5 +1,6 @@
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
+import { rankChannelOptions } from './channelRanking';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
@@ -133,16 +134,20 @@ function shouldPinTemplateFirst(raw: string, searchText: string): boolean {
   return trimmed.startsWith('$') && raw.toLowerCase().startsWith(trimmed.toLowerCase());
 }
 
+/** Ranks the server results against searchText, then pins or appends the
+ *  template-variable entry around them; the entry itself is never ranked.
+ *  Ranking lives here so no caller can build the list without it, and so it sits
+ *  next to shouldPinTemplateFirst: both decide position from searchText. */
 export function buildChannelOptions({
   channelResults,
   channel,
-  searchText = '',
+  searchText,
 }: {
   channelResults: ChannelOption[];
   channel: TemplateValueResolution;
-  searchText?: string;
+  searchText: string;
 }): ChannelOption[] {
-  const options = [...channelResults];
+  const options = rankChannelOptions(channelResults, searchText);
   if (channel.hasTemplate && !options.some((option) => option.value === channel.raw)) {
     const templateOption = {
       label: channel.isResolved && channel.resolved ? templateDisplayLabel(channel) : channel.raw,
