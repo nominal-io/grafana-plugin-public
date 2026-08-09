@@ -155,8 +155,8 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	if values[0] != (metricFindValue{Text: "state", Value: "state"}) || values[1] != (metricFindValue{Text: "rpm", Value: "rpm"}) {
 		t.Fatalf("values = %+v, want state/rpm metric values", values)
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
 
 	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: assetRid, DataScopeName: "$scope"})
@@ -699,8 +699,9 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 
 		// Verify only scope-a's datasource RID was sent
-		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
-			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(mockDS.searchChannelsRequest.DataSources))
+		request := mockDS.searchChannelsRequestSnapshot()
+		if len(request.DataSources) != 1 {
+			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(request.DataSources))
 		}
 	})
 
@@ -737,10 +738,11 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 
 		// Verify the connection RID was sent to SearchChannels
-		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
-			t.Fatalf("expected 1 datasource RID, got %d", len(mockDS.searchChannelsRequest.DataSources))
+		request := mockDS.searchChannelsRequestSnapshot()
+		if len(request.DataSources) != 1 {
+			t.Fatalf("expected 1 datasource RID, got %d", len(request.DataSources))
 		}
-		gotRid := mockDS.searchChannelsRequest.DataSources[0].String()
+		gotRid := request.DataSources[0].String()
 		if gotRid != connectionRid {
 			t.Errorf("datasource RID = %q, want %q", gotRid, connectionRid)
 		}
