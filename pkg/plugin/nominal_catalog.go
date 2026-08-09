@@ -24,8 +24,7 @@ import (
 // assetCacheTTL controls how long fetched asset metadata is cached.
 const assetCacheTTL = 5 * time.Minute
 
-// sweepInterval bounds how often expired entries are swept from the caches.
-// Sweeps run lazily on writes, so an idle cache stops sweeping on its own.
+// sweepInterval limits lazy cache cleanup triggered by writes.
 const sweepInterval = 30 * time.Minute
 
 const maxChannelVariables = 5000
@@ -51,9 +50,9 @@ type NominalCatalog struct {
 	assetCache          map[string]assetCacheEntry
 	assetCacheLastSweep time.Time // guarded by assetCacheMu
 
-	channelMetadataCacheMu sync.Mutex
-	channelMetadataCache   map[string]channelMetadataCacheEntry
-	channelCacheLastSweep  time.Time // guarded by channelMetadataCacheMu
+	channelMetadataCacheMu        sync.Mutex
+	channelMetadataCache          map[string]channelMetadataCacheEntry
+	channelMetadataCacheLastSweep time.Time // guarded by channelMetadataCacheMu
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
@@ -188,39 +187,39 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	return asset.clone(), nil
 }
 
-// maybeSweepAssetCacheLocked deletes expired asset entries at most once per
-// sweepInterval. Caller must hold c.assetCacheMu.
+// Caller must hold c.assetCacheMu.
 func (c *NominalCatalog) maybeSweepAssetCacheLocked() {
-	if time.Since(c.assetCacheLastSweep) < sweepInterval {
+	now := time.Now()
+	if now.Sub(c.assetCacheLastSweep) < sweepInterval {
 		return
 	}
 	removed := 0
 	for k, entry := range c.assetCache {
-		if time.Since(entry.fetchedAt) >= assetCacheTTL {
+		if now.Sub(entry.fetchedAt) >= assetCacheTTL {
 			delete(c.assetCache, k)
 			removed++
 		}
 	}
-	c.assetCacheLastSweep = time.Now()
+	c.assetCacheLastSweep = now
 	if removed > 0 {
 		log.DefaultLogger.Debug("asset metadata cache swept", "removed", removed, "remaining", len(c.assetCache))
 	}
 }
 
-// maybeSweepChannelCacheLocked deletes expired channel-metadata entries at most
-// once per sweepInterval. Caller must hold c.channelMetadataCacheMu.
+// Caller must hold c.channelMetadataCacheMu.
 func (c *NominalCatalog) maybeSweepChannelCacheLocked() {
-	if time.Since(c.channelCacheLastSweep) < sweepInterval {
+	now := time.Now()
+	if now.Sub(c.channelMetadataCacheLastSweep) < sweepInterval {
 		return
 	}
 	removed := 0
 	for k, entry := range c.channelMetadataCache {
-		if time.Since(entry.fetchedAt) >= assetCacheTTL {
+		if now.Sub(entry.fetchedAt) >= assetCacheTTL {
 			delete(c.channelMetadataCache, k)
 			removed++
 		}
 	}
-	c.channelCacheLastSweep = time.Now()
+	c.channelMetadataCacheLastSweep = now
 	if removed > 0 {
 		log.DefaultLogger.Debug("channel metadata cache swept", "removed", removed, "remaining", len(c.channelMetadataCache))
 	}
