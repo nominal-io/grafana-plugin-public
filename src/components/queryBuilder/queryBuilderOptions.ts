@@ -21,6 +21,19 @@ function assetToOption(asset: Asset): AssetOption {
   };
 }
 
+function getAssetTemplateLabel(
+  assetRid: TemplateValueResolution,
+  selectedAsset: Asset | null,
+  fallbackLabel: string
+): string {
+  const resolvedTitle =
+    selectedAsset?.rid === assetRid.resolved && selectedAsset.title && !selectedAsset.title.includes('$')
+      ? selectedAsset.title
+      : undefined;
+
+  return resolvedTitle ? `${assetRid.raw} \u2192 ${resolvedTitle}` : fallbackLabel;
+}
+
 export function buildAssetOptions({
   assets,
   selectedAsset,
@@ -37,10 +50,8 @@ export function buildAssetOptions({
   }
 
   if (assetRid.hasTemplate && !options.some((option) => option.value === assetRid.raw)) {
-    const resolvedTitle = selectedAsset?.title;
-    const label = resolvedTitle && !resolvedTitle.includes('$') ? `${assetRid.raw} \u2192 ${resolvedTitle}` : assetRid.raw;
     options.unshift({
-      label,
+      label: getAssetTemplateLabel(assetRid, selectedAsset, assetRid.raw),
       value: assetRid.raw,
       description: 'Template variable',
     });
@@ -60,9 +71,12 @@ export function getAssetSelectValue({
     return null;
   }
   if (assetRid.hasTemplate) {
-    // For an async Combobox the label is taken from the value prop directly, so render
-    // the template-aware display label ("$asset → resolved") rather than the raw RID.
-    return { value: assetRid.raw, label: templateDisplayLabel(assetRid) };
+    // For an async Combobox the label is taken from the value prop directly. Once the
+    // resolved asset is loaded, show its human-readable title instead of its RID.
+    return {
+      value: assetRid.raw,
+      label: getAssetTemplateLabel(assetRid, selectedAsset, templateDisplayLabel(assetRid)),
+    };
   }
   const resolved = assetRid.resolved || assetRid.raw;
   // Show the resolved title once the by-RID fetch has populated the matching asset;

@@ -1,5 +1,5 @@
 import { DEFAULT_AGGREGATIONS, AggregationType } from '../../types';
-import type { Asset } from '../../utils/api';
+import { createBasicAsset, type Asset } from '../../utils/api';
 import { resolveTemplateValue } from './templateResolution';
 import {
   buildAssetOptions,
@@ -115,16 +115,42 @@ describe('queryBuilderOptions', () => {
       label: assetB.rid,
     });
 
-    // resolved template -> "$asset → resolved"
+    // resolved template before the asset lookup completes -> "$asset → resolved RID"
     expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), selectedAsset: null })).toEqual({
       value: '$asset',
       label: `$asset → ${assetA.rid}`,
+    });
+
+    // resolved template after the matching asset lookup completes -> "$asset → asset title"
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), selectedAsset: assetA })).toEqual({
+      value: '$asset',
+      label: '$asset → Asset A',
+    });
+
+    // a stale/mismatched selected asset does not leak its title onto the resolved template
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetB.rid), selectedAsset: assetA })).toEqual({
+      value: '$asset',
+      label: `$asset → ${assetB.rid}`,
     });
 
     // unresolved template -> raw
     expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', (v) => v), selectedAsset: null })).toEqual({
       value: '$asset',
       label: '$asset',
+    });
+  });
+
+  it('shows the resolved RID when template asset metadata cannot be loaded', () => {
+    const fallbackAsset = createBasicAsset(assetA.rid, 'Asset ($asset)');
+
+    expect(
+      getAssetSelectValue({
+        assetRid: resolveTemplateValue('$asset', () => assetA.rid),
+        selectedAsset: fallbackAsset,
+      })
+    ).toEqual({
+      value: '$asset',
+      label: `$asset → ${assetA.rid}`,
     });
   });
 
