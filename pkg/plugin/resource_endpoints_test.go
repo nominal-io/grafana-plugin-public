@@ -543,8 +543,9 @@ func TestHandleChannelVariables(t *testing.T) {
 			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
 
-		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
-			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(mockDS.searchChannelsRequest.DataSources))
+		request := mockDS.searchChannelsRequestSnapshot()
+		if len(request.DataSources) != 1 {
+			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(request.DataSources))
 		}
 	})
 
@@ -580,10 +581,11 @@ func TestHandleChannelVariables(t *testing.T) {
 			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
 
-		if len(mockDS.searchChannelsRequest.DataSources) != 1 {
-			t.Fatalf("expected 1 datasource RID, got %d", len(mockDS.searchChannelsRequest.DataSources))
+		request := mockDS.searchChannelsRequestSnapshot()
+		if len(request.DataSources) != 1 {
+			t.Fatalf("expected 1 datasource RID, got %d", len(request.DataSources))
 		}
-		gotRid := mockDS.searchChannelsRequest.DataSources[0].String()
+		gotRid := request.DataSources[0].String()
 		if gotRid != connectionRid {
 			t.Errorf("datasource RID = %q, want %q", gotRid, connectionRid)
 		}
