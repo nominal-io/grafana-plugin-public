@@ -497,10 +497,7 @@ func compareLogEntriesNewestFirst(a, b LogEntry) int {
 	return b.Time.Compare(a.Time)
 }
 
-// unsupportedComputeResponse builds an AcceptFuncs handler for a response arm
-// the plugin cannot render. Never pass nil to AcceptFuncs: the generated
-// dispatcher invokes handlers without nil checks, and a nil handler panics
-// the plugin process.
+// AcceptFuncs invokes the selected handler without checking for nil.
 func unsupportedComputeResponse[T any](typeName string) func(T) error {
 	return func(T) error {
 		return unsupportedComputeResponseError(typeName)
@@ -662,10 +659,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[computeapi.ArrowFullResolutionPlot]("fullResolution"),
 		unsupportedComputeResponse[computeapi.ArrowBucketedMultivariatePlot]("arrowBucketedMultivariate"),
 		unsupportedComputeResponse[computeapi.BucketedMultivariatePlot]("multivariate"),
-		func(typeName string) error {
-			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
-			return unsupportedComputeResponseError(typeName)
-		},
+		unsupportedComputeResponseError,
 	)
 
 	if visitErr != nil {
