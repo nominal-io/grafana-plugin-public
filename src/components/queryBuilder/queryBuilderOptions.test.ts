@@ -93,6 +93,27 @@ describe('queryBuilderOptions', () => {
     });
   });
 
+  it('preserves dollar signs in resolved asset titles', () => {
+    const assetWithDollarTitle = { ...assetA, title: 'Flight $5 Sensor' };
+    const assetRid = resolveTemplateValue('$asset', () => assetWithDollarTitle.rid);
+
+    expect(
+      buildAssetOptions({
+        assets: [],
+        selectedAsset: assetWithDollarTitle,
+        assetRid,
+      })[0]
+    ).toEqual({
+      label: '$asset \u2192 Flight $5 Sensor',
+      value: '$asset',
+      description: 'Template variable',
+    });
+    expect(getAssetSelectValue({ assetRid, selectedAsset: assetWithDollarTitle })).toEqual({
+      value: '$asset',
+      label: '$asset \u2192 Flight $5 Sensor',
+    });
+  });
+
   it('builds asset combobox values for empty, concrete pre-fetch, concrete resolved, and template RIDs', () => {
     // empty -> null (matches getChannelSelectValue's empty behavior)
     expect(getAssetSelectValue({ assetRid: resolveTemplateValue('', (v) => v), selectedAsset: null })).toBeNull();

@@ -1,5 +1,6 @@
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
+import { templateAssetFallbackLabel } from './assetReconcile';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
@@ -27,7 +28,9 @@ function getAssetTemplateLabel(
   fallbackLabel: string
 ): string {
   const resolvedTitle =
-    selectedAsset?.rid === assetRid.resolved && selectedAsset.title && !selectedAsset.title.includes('$')
+    selectedAsset?.rid === assetRid.resolved &&
+    selectedAsset.title &&
+    selectedAsset.title !== templateAssetFallbackLabel(assetRid.raw)
       ? selectedAsset.title
       : undefined;
 
