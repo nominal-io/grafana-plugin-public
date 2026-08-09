@@ -787,9 +787,6 @@ type mockComputeService struct {
 	// Useful for tests with nondeterministic call ordering (e.g. parallel batches).
 	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
 
-	// Receives the caller context and takes precedence over batchComputeFunc.
-	batchComputeCtxFunc func(ctx context.Context, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
-
 	killCalls [][]uuid.UUID
 	killError error
 }
@@ -811,23 +808,16 @@ func (m *mockComputeService) ComputeUnits(ctx context.Context, authHeader bearer
 
 func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.batchComputeCalls++
 	m.lastBatchRequest = requestArg
 	m.batchRequests = append(m.batchRequests, requestArg)
+
+	if m.batchComputeFunc != nil {
+		return m.batchComputeFunc(requestArg)
+	}
+
 	callIndex := m.batchComputeCalls - 1
-	ctxFunc, fn := m.batchComputeCtxFunc, m.batchComputeFunc
-	m.mu.Unlock()
-
-	// A blocking callback must not hold the mock mutex.
-	if ctxFunc != nil {
-		return ctxFunc(ctx, requestArg)
-	}
-	if fn != nil {
-		return fn(requestArg)
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if callIndex < len(m.batchComputeErrors) && m.batchComputeErrors[callIndex] != nil {
 		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeErrors[callIndex]
 	}
@@ -3940,12 +3930,15 @@ func TestFieldConfigForEnum(t *testing.T) {
 }
 
 func TestDisposeStopsKillCoalescer(t *testing.T) {
-	ds := &Datasource{computeService: &mockComputeService{}}
+	// Dispose also runs for instances that never queried, so it must not panic.
+	(&Datasource{}).Dispose()
 
+	ds := &Datasource{computeService: &mockComputeService{}}
 	kc := ds.killCoalescer()
 	if kc == nil {
 		t.Fatal("expected lazy-initialized kill coalescer")
 	}
+	// A second instance would leak a goroutine and strand the first buffer.
 	if ds.killCoalescer() != kc {
 		t.Fatal("expected killCoalescer() to return the same instance")
 	}
@@ -3957,12 +3950,7 @@ func TestDisposeStopsKillCoalescer(t *testing.T) {
 	}
 }
 
-func TestDisposeWithoutCoalescerIsSafe(t *testing.T) {
-	ds := &Datasource{}
-	ds.Dispose()
-}
-
-func TestSendBatchKillCallsClientAndSwallowsErrors(t *testing.T) {
+func TestSendBatchKillDoesNotRetry(t *testing.T) {
 	mockService := &mockComputeService{killError: fmt.Errorf("boom")}
 	ds := &Datasource{computeService: mockService}
 
@@ -3973,12 +3961,12 @@ func TestSendBatchKillCallsClientAndSwallowsErrors(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected exactly 1 kill call (no retry), got %d", len(calls))
 	}
-	if len(calls[0]) != 2 {
-		t.Fatalf("expected 2 ids in kill call, got %d", len(calls[0]))
+	if !slices.Equal(calls[0], ids) {
+		t.Fatalf("expected kill call to carry ids %v, got %v", ids, calls[0])
 	}
 }
 
-func newKillRequest(queryCount int) *backend.QueryDataRequest {
+func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
@@ -4001,7 +3989,7 @@ func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	ds := &Datasource{computeService: mockService}
 	defer ds.Dispose()
 
-	req := newKillRequest(3)
+	req := newBatchQueryRequest(3)
 
 	if _, err := ds.QueryData(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -4022,61 +4010,71 @@ func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	}
 }
 
-func TestKillEnqueuedOnTransportError(t *testing.T) {
-	mockService := &mockComputeService{
-		batchComputeError: fmt.Errorf("connection reset"),
-	}
-	ds := &Datasource{computeService: mockService}
-	defer ds.Dispose()
-
-	req := newKillRequest(1)
-
-	if _, err := ds.QueryData(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
-
-	stamped := mockService.lastBatchRequest.Requests[0].RequestId
-	kills := mockService.killCallsSnapshot()
-	if len(kills) != 1 || len(kills[0]) != 1 || kills[0][0] != *stamped {
-		t.Fatalf("expected one kill for the stamped RequestId, got %v", kills)
-	}
-}
-
-func TestKillEnqueuedOnContextCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	mockService := &mockComputeService{}
-	mockService.batchComputeCtxFunc = func(callCtx context.Context, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-		cancel() // supersede the in-flight request
-		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
-	}
-	ds := &Datasource{computeService: mockService}
-	defer ds.Dispose()
-
-	req := newKillRequest(1)
-
-	if _, err := ds.QueryData(ctx, req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// A batch is killed exactly when its success was never confirmed.
+func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func() (context.Context, *mockComputeService)
+		wantKill bool
+	}{
+		{
+			name: "transport error",
+			setup: func() (context.Context, *mockComputeService) {
+				return context.Background(), &mockComputeService{batchComputeError: fmt.Errorf("connection reset")}
+			},
+			wantKill: true,
+		},
+		{
+			name: "context canceled mid-flight",
+			setup: func() (context.Context, *mockComputeService) {
+				ctx, cancel := context.WithCancel(context.Background())
+				mockService := &mockComputeService{}
+				mockService.batchComputeFunc = func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+					cancel() // supersede the in-flight request
+					return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
+				}
+				return ctx, mockService
+			},
+			wantKill: true,
+		},
+		{
+			name: "confirmed success",
+			setup: func() (context.Context, *mockComputeService) {
+				return context.Background(), &mockComputeService{batchComputeResponse: makeBatchComputeWithUnitsResponse(1)}
+			},
+			wantKill: false,
+		},
 	}
 
-	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, mockService := tt.setup()
+			ds := &Datasource{computeService: mockService}
 
-func TestNoKillOnConfirmedSuccess(t *testing.T) {
-	mockService := &mockComputeService{
-		batchComputeResponse: makeBatchComputeWithUnitsResponse(1),
-	}
-	ds := &Datasource{computeService: mockService}
+			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	req := newKillRequest(1)
+			if tt.wantKill {
+				waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
+			}
+			// Dispose flushes what is still buffered, so no-kill cannot pass by outrunning the ticker.
+			ds.Dispose()
 
-	if _, err := ds.QueryData(context.Background(), req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	ds.Dispose()
-	if kills := mockService.killCallsSnapshot(); len(kills) != 0 {
-		t.Fatalf("expected no kill on confirmed success, got %v", kills)
+			kills := mockService.killCallsSnapshot()
+			if !tt.wantKill {
+				if len(kills) != 0 {
+					t.Fatalf("expected no kill, got %v", kills)
+				}
+				return
+			}
+			stamped := mockService.lastBatchRequest.Requests[0].RequestId
+			if stamped == nil {
+				t.Fatal("expected RequestId to be stamped on the batch")
+			}
+			if len(kills) != 1 || !slices.Equal(kills[0], []uuid.UUID{*stamped}) {
+				t.Fatalf("expected one kill for stamped RequestId %v, got %v", *stamped, kills)
+			}
+		})
 	}
 }

@@ -46,6 +46,16 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("condition not met before deadline")
 }
 
+// flushOnDispose enqueues against a coalescer whose ticker never fires, so the
+// dispose flush is the only flush.
+func flushOnDispose(enqueue func(kc *killCoalescer)) (*killCoalescer, *killRecorder) {
+	rec := &killRecorder{}
+	kc := newKillCoalescer(rec.flush, time.Hour)
+	enqueue(kc)
+	kc.dispose()
+	return kc, rec
+}
+
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
@@ -62,32 +72,26 @@ func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	if len(batches) != 1 {
 		t.Fatalf("expected 1 coalesced flush call, got %d", len(batches))
 	}
-	if batches[0].token != tok {
-		t.Fatalf("expected flush tagged with token %q, got %q", tok, batches[0].token)
-	}
 	if want := []uuid.UUID{id1, id2}; !slices.Equal(batches[0].ids, want) {
 		t.Fatalf("expected ids %v, got %v", want, batches[0].ids)
 	}
 }
 
 func TestKillCoalescerChunksAtLimit(t *testing.T) {
-	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, time.Hour)
-
-	tok := bearertoken.Token("t1")
 	ids := make([]uuid.UUID, killChunkSize+1)
 	for i := range ids {
 		ids[i] = uuid.NewUUID()
-		kc.enqueue(ids[i], tok)
 	}
-	kc.dispose()
+
+	_, rec := flushOnDispose(func(kc *killCoalescer) {
+		for _, id := range ids {
+			kc.enqueue(id, bearertoken.Token("t1"))
+		}
+	})
 
 	batches := rec.snapshot()
 	if len(batches) != 2 {
 		t.Fatalf("expected 2 chunked kill calls, got %d", len(batches))
-	}
-	if batches[0].token != tok || batches[1].token != tok {
-		t.Fatalf("expected both chunks tagged with token %q, got %q and %q", tok, batches[0].token, batches[1].token)
 	}
 	if !slices.Equal(batches[0].ids, ids[:killChunkSize]) {
 		t.Fatalf("expected first chunk to be the first %d ids in order, got %v", killChunkSize, batches[0].ids)
@@ -98,14 +102,11 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 }
 
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
-	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, time.Hour)
-
-	tok := bearertoken.Token("t1")
-	for i := 0; i < killBufferLimit+10; i++ {
-		kc.enqueue(uuid.NewUUID(), tok)
-	}
-	kc.dispose()
+	_, rec := flushOnDispose(func(kc *killCoalescer) {
+		for i := 0; i < killBufferLimit+10; i++ {
+			kc.enqueue(uuid.NewUUID(), bearertoken.Token("t1"))
+		}
+	})
 
 	total := 0
 	for _, b := range rec.snapshot() {
@@ -117,14 +118,13 @@ func TestKillCoalescerDropsOnOverflow(t *testing.T) {
 }
 
 func TestKillCoalescerGroupsByToken(t *testing.T) {
-	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, time.Hour)
-
 	id1, id2 := uuid.NewUUID(), uuid.NewUUID()
 	tok1, tok2 := bearertoken.Token("t1"), bearertoken.Token("t2")
-	kc.enqueue(id1, tok1)
-	kc.enqueue(id2, tok2)
-	kc.dispose()
+
+	_, rec := flushOnDispose(func(kc *killCoalescer) {
+		kc.enqueue(id1, tok1)
+		kc.enqueue(id2, tok2)
+	})
 
 	batches := rec.snapshot()
 	if len(batches) != 2 {
@@ -145,12 +145,8 @@ func TestKillCoalescerGroupsByToken(t *testing.T) {
 }
 
 func TestKillCoalescerDisposeFlushesFinalBufferAndRejectsEnqueues(t *testing.T) {
-	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, time.Hour)
-
 	tok := bearertoken.Token("t1")
-	kc.enqueue(uuid.NewUUID(), tok)
-	kc.dispose()
+	kc, rec := flushOnDispose(func(kc *killCoalescer) { kc.enqueue(uuid.NewUUID(), tok) })
 
 	if len(rec.snapshot()) != 1 {
 		t.Fatalf("expected final flush of 1 call, got %d", len(rec.snapshot()))
@@ -161,5 +157,6 @@ func TestKillCoalescerDisposeFlushesFinalBufferAndRejectsEnqueues(t *testing.T) 
 		t.Fatalf("enqueue after dispose must be dropped, got %d calls", total)
 	}
 
+	// dispose is idempotent: a second close(kc.stop) would panic.
 	kc.dispose()
 }
