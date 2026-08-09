@@ -356,10 +356,9 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 
 func TestNominalCatalogAssetCacheSweepOnStore(t *testing.T) {
 	const assetRid = "ri.scout.main.asset.sweepwire"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {Rid: assetRid, Title: "Sweep Wire"},
-	}, &fetchCount)
+	}, nil)
 	t.Cleanup(server.Close)
 
 	config := &models.PluginSettings{
@@ -430,7 +429,7 @@ func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
 				channelDataType: "numeric",
 				fetchedAt:       time.Now(),
 			}
-			catalog.channelCacheLastSweep = tt.lastSweep
+			catalog.channelMetadataCacheLastSweep = tt.lastSweep
 
 			catalog.storeChannelMetadata("stored", channelMetadataCacheEntry{
 				channelDataType: "string",
