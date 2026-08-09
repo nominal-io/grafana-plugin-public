@@ -261,8 +261,8 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 	if prepared.Model.ChannelDataType != "string" {
 		t.Fatalf("ChannelDataType = %q, want string", prepared.Model.ChannelDataType)
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("expected one channel lookup, got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("expected one channel lookup, got %d", got)
 	}
 }
 
@@ -484,8 +484,8 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			if prep2.Model.ChannelUnit != tt.wantUnit {
 				t.Errorf("cache-hit ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, tt.wantUnit)
 			}
-			if mockDS.searchChannelsCalls != 1 {
-				t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+			if got := mockDS.searchChannelsCallCount(); got != 1 {
+				t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", got)
 			}
 		})
 	}
@@ -1104,8 +1104,9 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	if len(mockCompute.lastBatchRequest.Requests) != 1 {
 		t.Fatalf("expected 1 compute request, got %d", len(mockCompute.lastBatchRequest.Requests))
 	}
-	if len(mockDS.searchChannelsRequest.ExactMatch) != 1 || mockDS.searchChannelsRequest.ExactMatch[0] != "state" {
-		t.Fatalf("expected exact-match channel lookup for state, got %v", mockDS.searchChannelsRequest.ExactMatch)
+	searchRequest := mockDS.searchChannelsRequestSnapshot()
+	if len(searchRequest.ExactMatch) != 1 || searchRequest.ExactMatch[0] != "state" {
+		t.Fatalf("expected exact-match channel lookup for state, got %v", searchRequest.ExactMatch)
 	}
 
 	response := resp.Responses["A"]
@@ -2660,8 +2661,8 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	if int(assetFetches.Load()) != 1 {
 		t.Errorf("expected 1 asset fetch call (cached), got %d", int(assetFetches.Load()))
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", got)
 	}
 }
 
@@ -2804,8 +2805,8 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if mockDS.searchChannelsCalls != 1 {
-		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", got)
 	}
 }
 

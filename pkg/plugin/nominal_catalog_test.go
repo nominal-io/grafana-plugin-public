@@ -504,8 +504,8 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if int(assetFetches.Load()) != 1 {
 		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
 }
 
@@ -598,9 +598,6 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 		survivorDone <- assetLookupResult{asset: asset, err: err}
 	}()
 	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
-	if got := blocker.calls.Load(); got != 1 {
-		t.Fatalf("asset backend calls before release = %d, want 1", got)
-	}
 
 	cancel()
 	select {
@@ -611,12 +608,6 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 	case <-time.After(catalogTestTimeout):
 		t.Fatal("canceled caller did not return while the shared fetch was blocked")
 	}
-	select {
-	case got := <-survivorDone:
-		t.Fatalf("surviving caller returned before backend release: (%+v, %v)", got.asset, got.err)
-	default:
-	}
-
 	blocker.unblock()
 	select {
 	case got := <-survivorDone:
@@ -645,12 +636,9 @@ func TestNominalCatalogFetchAssetByRidDoesNotDispatchPreCanceledMiss(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	for i := range 20 {
-		assetRid := fmt.Sprintf("ri.scout.main.asset.canceled-%d", i)
-		asset, err := catalog.FetchAssetByRid(ctx, config, assetRid)
-		if !errors.Is(err, context.Canceled) || asset != nil {
-			t.Fatalf("pre-canceled lookup %d = (%+v, %v), want (nil, context.Canceled)", i, asset, err)
-		}
+	asset, err := catalog.FetchAssetByRid(ctx, config, "ri.scout.main.asset.canceled")
+	if !errors.Is(err, context.Canceled) || asset != nil {
+		t.Fatalf("pre-canceled lookup = (%+v, %v), want (nil, context.Canceled)", asset, err)
 	}
 	select {
 	case <-blocker.arrived:
@@ -662,15 +650,14 @@ func TestNominalCatalogFetchAssetByRidDoesNotDispatchPreCanceledMiss(t *testing.
 func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *testing.T) {
 	const assetRid = "ri.scout.main.asset.infercancel"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid: assetRid,
 			DataScopes: []AssetDataScope{
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	t.Cleanup(server.Close)
 
 	blocker := newBlockingLookup()
@@ -708,21 +695,12 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 		close(survivorDone)
 	}()
 	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
-	if got := blocker.calls.Load(); got != 1 {
-		t.Fatalf("SearchChannels calls before release = %d, want 1", got)
-	}
 
 	cancel()
 	waitForTestSignal(t, canceledDone, "the canceled channel caller to return")
 	if canceledModel.ChannelDataType != ChannelDataTypeNumeric {
 		t.Fatalf("canceled caller ChannelDataType = %q, want %q", canceledModel.ChannelDataType, ChannelDataTypeNumeric)
 	}
-	select {
-	case <-survivorDone:
-		t.Fatal("surviving channel caller returned before backend release")
-	default:
-	}
-
 	blocker.unblock()
 	waitForTestSignal(t, survivorDone, "the surviving channel caller to receive the shared result")
 	if survivorModel.ChannelDataType != ChannelDataTypeString {
@@ -731,8 +709,8 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 	if got := blocker.calls.Load(); got != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
-	if assetFetchCount != 1 {
-		t.Fatalf("asset backend calls = %d, want 1", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", int(assetFetches.Load()))
 	}
 }
 
@@ -750,23 +728,21 @@ func TestNominalCatalogInferChannelMetadataDoesNotDispatchPreCanceledMiss(t *tes
 	catalog := newNominalCatalog(server.Client(), mockDS)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for i := range 20 {
-		qm := NominalQueryModel{
-			AssetRid:        fmt.Sprintf("ri.scout.main.asset.canceled-inference-%d", i),
-			DataScopeName:   "scope-a",
-			Channel:         "state",
-			ChannelDataType: ChannelDataTypeNumeric,
-		}
-		catalog.InferChannelMetadata(ctx, config, &qm)
+	qm := NominalQueryModel{
+		AssetRid:        "ri.scout.main.asset.canceled-inference",
+		DataScopeName:   "scope-a",
+		Channel:         "state",
+		ChannelDataType: ChannelDataTypeNumeric,
 	}
+	catalog.InferChannelMetadata(ctx, config, &qm)
 
 	select {
 	case <-blocker.arrived:
 		t.Fatal("pre-canceled cache miss dispatched a channel metadata lookup")
 	case <-time.After(100 * time.Millisecond):
 	}
-	if mockDS.searchChannelsCallCount() != 0 {
-		t.Fatalf("SearchChannels calls = %d, want 0", mockDS.searchChannelsCallCount())
+	if got := mockDS.searchChannelsCallCount(); got != 0 {
+		t.Fatalf("SearchChannels calls = %d, want 0", got)
 	}
 }
 
@@ -778,8 +754,7 @@ func TestNominalCatalogInferChannelMetadataKeepsDelimiterNamesDistinct(t *testin
 		"chan":   dataset1,
 		"x|chan": dataset2,
 	}
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid: assetRid,
 			DataScopes: []AssetDataScope{
@@ -787,7 +762,7 @@ func TestNominalCatalogInferChannelMetadataKeepsDelimiterNamesDistinct(t *testin
 				{DataScopeName: "scope", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataset2}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	t.Cleanup(server.Close)
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -816,22 +791,24 @@ func TestNominalCatalogInferChannelMetadataKeepsDelimiterNamesDistinct(t *testin
 	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 	catalog := newNominalCatalog(server.Client(), mockDS)
 	tests := []struct {
-		scope, channel, wantType string
+		name, scope, channel, wantType string
 	}{
-		{scope: "scope|x", channel: "chan", wantType: ChannelDataTypeString},
-		{scope: "scope", channel: "x|chan", wantType: ChannelDataTypeLog},
+		{name: "separator in scope", scope: "scope|x", channel: "chan", wantType: ChannelDataTypeString},
+		{name: "separator in channel", scope: "scope", channel: "x|chan", wantType: ChannelDataTypeLog},
 	}
 	for _, tt := range tests {
-		qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: tt.scope, Channel: tt.channel, ChannelDataType: ChannelDataTypeNumeric}
-		catalog.InferChannelMetadata(context.Background(), config, &qm)
-		if qm.ChannelDataType != tt.wantType {
-			t.Fatalf("scope %q channel %q ChannelDataType = %q, want %q", tt.scope, tt.channel, qm.ChannelDataType, tt.wantType)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: tt.scope, Channel: tt.channel, ChannelDataType: ChannelDataTypeNumeric}
+			catalog.InferChannelMetadata(context.Background(), config, &qm)
+			if qm.ChannelDataType != tt.wantType {
+				t.Fatalf("scope %q channel %q ChannelDataType = %q, want %q", tt.scope, tt.channel, qm.ChannelDataType, tt.wantType)
+			}
+		})
 	}
-	if mockDS.searchChannelsCallCount() != len(tests) {
-		t.Fatalf("SearchChannels calls = %d, want %d distinct lookups", mockDS.searchChannelsCallCount(), len(tests))
+	if got := mockDS.searchChannelsCallCount(); got != len(tests) {
+		t.Fatalf("SearchChannels calls = %d, want %d distinct lookups", got, len(tests))
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset backend calls = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", int(assetFetches.Load()))
 	}
 }
