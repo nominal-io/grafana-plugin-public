@@ -111,8 +111,6 @@ type Datasource struct {
 	killMu            sync.Mutex
 	coalescer         *killCoalescer
 	coalescerDisposed bool
-	// Written on QueryData so detached kill flushes can identify themselves.
-	killUA userAgentComponents
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
@@ -129,26 +127,10 @@ func (d *Datasource) killCoalescer() *killCoalescer {
 	return d.coalescer
 }
 
-func (d *Datasource) rememberKillIdentity(pc backend.PluginContext) {
-	ua := userAgentComponentsFromPluginContext(pc)
-	d.killMu.Lock()
-	d.killUA = ua
-	d.killMu.Unlock()
-}
-
-func (d *Datasource) killIdentity() userAgentComponents {
-	d.killMu.Lock()
-	defer d.killMu.Unlock()
-	return d.killUA
-}
-
-// sendBatchKill sends one best-effort batch without plugin-level retries or sensitive logging.
-func (d *Datasource) sendBatchKill(ctx context.Context, token bearertoken.Token, ids []uuid.UUID) {
-	// Flush contexts are detached from any request, so restore caller identity.
-	if ua := d.killIdentity(); ua != (userAgentComponents{}) {
-		ctx = contextWithUserAgentComponents(ctx, ua)
-	}
-	err := d.computeService.BatchKillRequests(ctx, token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
+// sendBatchKill sends one best-effort batch without logging sensitive values.
+func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids []uuid.UUID) {
+	ctx = contextWithUserAgentComponents(ctx, target.ua)
+	err := d.computeService.BatchKillRequests(ctx, target.token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
 	if err != nil {
 		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids))
 		return
@@ -184,7 +166,6 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
-	d.rememberKillIdentity(req.PluginContext)
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available

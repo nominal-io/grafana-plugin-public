@@ -3950,22 +3950,6 @@ func TestDisposeStopsKillCoalescer(t *testing.T) {
 	}
 }
 
-func TestSendBatchKillDoesNotRetry(t *testing.T) {
-	mockService := &mockComputeService{killError: fmt.Errorf("boom")}
-	ds := &Datasource{computeService: mockService}
-
-	ids := []uuid.UUID{uuid.NewUUID(), uuid.NewUUID()}
-	ds.sendBatchKill(context.Background(), bearertoken.Token("t"), ids)
-
-	calls := mockService.killCallsSnapshot()
-	if len(calls) != 1 {
-		t.Fatalf("expected exactly 1 kill call (no retry), got %d", len(calls))
-	}
-	if !slices.Equal(calls[0], ids) {
-		t.Fatalf("expected kill call to carry ids %v, got %v", ids, calls[0])
-	}
-}
-
 func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),

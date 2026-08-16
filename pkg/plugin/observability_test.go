@@ -409,9 +409,6 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 		if !strings.HasPrefix(s.ua, wantPrefix) {
 			t.Errorf("QueryData UA = %q, want prefix %q (did the entry point skip contextWithPluginRequestIdentity?)", s.ua, wantPrefix)
 		}
-		if got := ds.killIdentity().PluginVersion; got != pluginVersion {
-			t.Errorf("killIdentity().PluginVersion = %q, want %q", got, pluginVersion)
-		}
 	})
 
 	t.Run("CallResource", func(t *testing.T) {
@@ -510,8 +507,10 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 	}
 	defer ds.Dispose()
 
-	ds.rememberKillIdentity(backend.PluginContext{PluginVersion: "9.9.9-test"})
-	ds.killCoalescer().enqueue(uuid.NewUUID(), bearertoken.Token("t"))
+	ds.killCoalescer().enqueue(uuid.NewUUID(), killTarget{
+		token: bearertoken.Token("t"),
+		ua:    userAgentComponentsFromPluginContext(backend.PluginContext{PluginVersion: "9.9.9-test"}),
+	})
 
 	waitForCondition(t, 2*time.Second, func() bool {
 		mu.Lock()

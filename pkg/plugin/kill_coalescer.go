@@ -20,12 +20,18 @@ const (
 	killFlushTimeout = 5 * time.Second
 )
 
-// killFlushFunc performs one best-effort BatchKillRequests call without plugin-level retries.
-type killFlushFunc func(ctx context.Context, token bearertoken.Token, ids []uuid.UUID)
+// killTarget identifies a detached batch-kill request.
+type killTarget struct {
+	token bearertoken.Token
+	ua    userAgentComponents
+}
+
+// killFlushFunc performs one best-effort BatchKillRequests call.
+type killFlushFunc func(ctx context.Context, target killTarget, ids []uuid.UUID)
 
 type killEntry struct {
-	id    uuid.UUID
-	token bearertoken.Token
+	id     uuid.UUID
+	target killTarget
 }
 
 type killCoalescer struct {
@@ -51,14 +57,14 @@ func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalesce
 	return kc
 }
 
-func (kc *killCoalescer) enqueue(id uuid.UUID, token bearertoken.Token) {
+func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 	kc.mu.Lock()
 	defer kc.mu.Unlock()
 	if kc.closed || len(kc.buf) >= killBufferLimit {
 		log.DefaultLogger.Debug("Dropping compute kill enqueue", "closed", kc.closed, "buffered", len(kc.buf))
 		return
 	}
-	kc.buf = append(kc.buf, killEntry{id: id, token: token})
+	kc.buf = append(kc.buf, killEntry{id: id, target: target})
 }
 
 func (kc *killCoalescer) run() {
@@ -89,19 +95,19 @@ func (kc *killCoalescer) flushBuffered() {
 	ctx, cancel := context.WithTimeout(context.Background(), killFlushTimeout)
 	defer cancel()
 
-	byToken := make(map[bearertoken.Token][]uuid.UUID)
+	byTarget := make(map[killTarget][]uuid.UUID)
 	for _, e := range entries {
-		byToken[e.token] = append(byToken[e.token], e.id)
+		byTarget[e.target] = append(byTarget[e.target], e.id)
 	}
-	for token, ids := range byToken {
+	for target, ids := range byTarget {
 		for start := 0; start < len(ids); start += killChunkSize {
 			end := min(start+killChunkSize, len(ids))
-			kc.flushFn(ctx, token, ids[start:end])
+			kc.flushFn(ctx, target, ids[start:end])
 		}
 	}
 }
 
-// dispose stops the coalescer after flushing buffered IDs. It is idempotent.
+// dispose schedules a final flush without waiting for it. It is idempotent.
 func (kc *killCoalescer) dispose() {
 	kc.mu.Lock()
 	alreadyClosed := kc.closed
@@ -110,5 +116,4 @@ func (kc *killCoalescer) dispose() {
 	if !alreadyClosed {
 		close(kc.stop)
 	}
-	<-kc.done
 }
