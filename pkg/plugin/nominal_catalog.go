@@ -181,55 +181,90 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 // Results are cached for assetCacheTTL. The returned value is a copy, so callers
 // may mutate it without affecting the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	c.assetCacheMu.Lock()
-	if c.assetCache == nil {
-		c.assetCache = make(map[string]assetCacheEntry)
+	if asset, hit := c.lookupAsset(assetRid); hit {
+		return asset.clone(), nil
 	}
-	if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-		c.assetCacheMu.Unlock()
-		return entry.asset.clone(), nil
+
+	asset, err := coalesceLookup(ctx, &c.assetGroup, assetRid, "asset",
+		func() (*SingleAssetResponse, bool) { return c.lookupAsset(assetRid) },
+		func(fetchCtx context.Context) (*SingleAssetResponse, error) {
+			asset, err := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
+			if err != nil {
+				return nil, err
+			}
+			c.storeAsset(assetRid, asset)
+			return asset, nil
+		})
+	if err != nil {
+		return nil, err
 	}
-	c.assetCacheMu.Unlock()
+	return asset.clone(), nil
+}
+
+// coalesceLookup shares one backend lookup across every concurrent caller of the
+// same key. The work is detached from the initiating caller so that caller's
+// cancellation cannot fail the others, and bounded by detachedLookupTimeout.
+// cached re-reads the cache inside the flight, closing the race between a
+// caller's own miss and entering the group.
+func coalesceLookup[V any](
+	ctx context.Context,
+	group *singleflight.Group,
+	key string,
+	label string,
+	cached func() (V, bool),
+	load func(context.Context) (V, error),
+) (V, error) {
+	var zero V
 
 	// Avoid starting detached work for an already-canceled caller.
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return zero, err
 	}
 
-	ch := c.assetGroup.DoChan(assetRid, func() (any, error) {
-		// Close the cache-miss race before starting backend work.
-		c.assetCacheMu.Lock()
-		if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
-			c.assetCacheMu.Unlock()
-			return entry.asset, nil
+	ch := group.DoChan(key, func() (any, error) {
+		if v, hit := cached(); hit {
+			return v, nil
 		}
-		c.assetCacheMu.Unlock()
-
-		fetchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
-		asset, fetchErr := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
-		if fetchErr != nil {
-			return nil, fetchErr
+		v, err := load(workCtx)
+		if err != nil {
+			return nil, err
 		}
-		c.assetCacheMu.Lock()
-		c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-		sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
-		c.assetCacheMu.Unlock()
-		return asset, nil
+		return v, nil
 	})
 
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return zero, ctx.Err()
 	case res := <-ch:
 		if res.Err != nil {
-			return nil, res.Err
+			return zero, res.Err
 		}
 		if res.Shared {
-			log.DefaultLogger.Debug("asset lookup coalesced")
+			log.DefaultLogger.Debug(label + " lookup coalesced")
 		}
-		return res.Val.(*SingleAssetResponse).clone(), nil
+		return res.Val.(V), nil
 	}
+}
+
+// lookupAsset returns a cached asset if present and not yet expired. A cached
+// not-found asset is a hit with a nil value.
+func (c *NominalCatalog) lookupAsset(assetRid string) (*SingleAssetResponse, bool) {
+	c.assetCacheMu.Lock()
+	defer c.assetCacheMu.Unlock()
+	entry, ok := c.assetCache[assetRid]
+	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
+		return nil, false
+	}
+	return entry.asset, true
+}
+
+func (c *NominalCatalog) storeAsset(assetRid string, asset *SingleAssetResponse) {
+	c.assetCacheMu.Lock()
+	defer c.assetCacheMu.Unlock()
+	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
 }
 
 // sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
@@ -380,36 +415,19 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 		applyChannelMetadata(qm, entry)
 		return
 	}
-	if ctx.Err() != nil {
-		return
-	}
-
 	assetRid := qm.AssetRid
 	dataScopeName := qm.DataScopeName
 	channel := qm.Channel
-	ch := c.channelGroup.DoChan(cacheKey, func() (any, error) {
-		// Close the cache-miss race before starting backend work.
-		if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
-			return entry, nil
-		}
-		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
-		defer cancel()
-		return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
-	})
-
-	select {
-	case <-ctx.Done():
+	entry, err := coalesceLookup(ctx, &c.channelGroup, cacheKey, "channel metadata",
+		func() (channelMetadataCacheEntry, bool) { return c.lookupChannelMetadata(cacheKey) },
+		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
+			return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
+		})
+	if err != nil {
+		// Metadata enrichment is best-effort.
 		return
-	case res := <-ch:
-		if res.Err != nil {
-			// Metadata enrichment is best-effort.
-			return
-		}
-		if res.Shared {
-			log.DefaultLogger.Debug("channel metadata lookup coalesced")
-		}
-		applyChannelMetadata(qm, res.Val.(channelMetadataCacheEntry))
 	}
+	applyChannelMetadata(qm, entry)
 }
 
 // computeChannelMetadata performs an uncached lookup and stores cacheable results.
@@ -516,9 +534,6 @@ func channelMetadataCacheKey(assetRid, dataScopeName, channel string) string {
 func (c *NominalCatalog) lookupChannelMetadata(cacheKey string) (channelMetadataCacheEntry, bool) {
 	c.channelMetadataCacheMu.Lock()
 	defer c.channelMetadataCacheMu.Unlock()
-	if c.channelMetadataCache == nil {
-		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
-	}
 	entry, ok := c.channelMetadataCache[cacheKey]
 	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
 		return channelMetadataCacheEntry{}, false
@@ -529,9 +544,6 @@ func (c *NominalCatalog) lookupChannelMetadata(cacheKey string) (channelMetadata
 func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMetadataCacheEntry) {
 	c.channelMetadataCacheMu.Lock()
 	defer c.channelMetadataCacheMu.Unlock()
-	if c.channelMetadataCache == nil {
-		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
-	}
 	c.channelMetadataCache[cacheKey] = entry
 	sweepExpiredLocked(c.channelMetadataCache, &c.channelMetadataCacheLastSweep, channelMetadataCacheEntry.fetchTime, "channel metadata")
 }
