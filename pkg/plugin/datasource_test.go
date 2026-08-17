@@ -232,10 +232,10 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 			},
 		},
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
@@ -451,7 +451,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			mockDS := &mockDatasourceService{
 				searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: tt.searchChannels},
 			}
-			ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+			ds := withCatalog(&Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()})
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
 				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
@@ -1062,11 +1062,11 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1183,11 +1183,11 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2625,11 +2625,11 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2700,10 +2700,11 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2722,8 +2723,6 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 			},
 		}
 	}
-
-	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached asset.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
@@ -2773,10 +2772,11 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2795,8 +2795,6 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 			},
 		}
 	}
-
-	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached channel type.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
