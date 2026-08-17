@@ -317,12 +317,9 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	return allResults, nil
 }
 
-// catalog lazily builds the NominalCatalog, snapshotting resourceHTTPClient and
-// datasourceService on first use. Mutate either field before the first call.
+// catalog returns the NominalCatalog built during construction. Every query
+// shares this one instance, so its caches are shared too.
 func (d *Datasource) catalog() *NominalCatalog {
-	if d.nominalCatalog == nil {
-		d.nominalCatalog = newNominalCatalog(d.resourceHTTPClient, d.datasourceService)
-	}
 	return d.nominalCatalog
 }
 
