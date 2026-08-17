@@ -207,8 +207,7 @@ func TestNominalCatalogHasSupportedDataSource(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.cached"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Cached Asset",
@@ -216,7 +215,7 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -242,16 +241,15 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	if first.Title != "Cached Asset" || second.Title != "Cached Asset" {
 		t.Fatalf("cached titles = %q/%q, want Cached Asset", first.Title, second.Title)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
 }
 
 func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	assetRid := "ri.scout.main.asset.copied"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Copied Asset",
@@ -259,7 +257,7 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -299,8 +297,8 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	if got := *second.DataScopes[0].DataSource.Dataset; got != dataSourceRid {
 		t.Fatalf("cached dataset RID = %q, want %q (mutation leaked into cache)", got, dataSourceRid)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", int(assetFetches.Load()))
 	}
 }
 
@@ -326,8 +324,7 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	assetRid := "ri.scout.main.asset.requires-client"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Unexpected Asset",
@@ -335,7 +332,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -349,8 +346,8 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err == nil || !strings.Contains(err.Error(), "resource HTTP client is not configured") {
 		t.Fatalf("FetchAssetByRid error = %v, want missing resource HTTP client error", err)
 	}
-	if fetchCount != 0 {
-		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
+	if int(assetFetches.Load()) != 0 {
+		t.Fatalf("asset fetch count = %d, want 0", int(assetFetches.Load()))
 	}
 }
 
@@ -457,8 +454,7 @@ func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Metadata Asset",
@@ -466,7 +462,7 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -500,8 +496,8 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if second.ChannelDataType != ChannelDataTypeString {
 		t.Fatalf("second ChannelDataType = %q, want %q", second.ChannelDataType, ChannelDataTypeString)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
