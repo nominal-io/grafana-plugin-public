@@ -542,12 +542,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		},
 		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
 		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
-		// arrowNumericFunc - Not reachable from SummarizeSeries with Buckets.
-		// Returns a clear error rather than speculative parsing of an unverified schema.
-		func(arrowNumeric computeapi.ArrowNumericPlot) error {
-			return fmt.Errorf("received ArrowNumericPlot unexpectedly; " +
-				"this response type is not supported by the plugin")
-		},
+		unsupportedComputeResponse[computeapi.ArrowNumericPlot]("arrowNumeric"),
 		// arrowBucketedNumericFunc - Arrow format bucketed numeric response.
 		// Extracts one AggregationSeries per requested aggregation field.
 		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {

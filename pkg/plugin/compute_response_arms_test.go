@@ -20,6 +20,7 @@ func TestUnsupportedComputeResponseArmsReturnErrors(t *testing.T) {
 		"rangeValue":                arm(computeapi.NewComputeNodeResponseFromRangeValue),
 		"numericPoint":              arm(computeapi.NewComputeNodeResponseFromNumericPoint),
 		"singlePoint":               arm(computeapi.NewComputeNodeResponseFromSinglePoint),
+		"arrowNumeric":              arm(computeapi.NewComputeNodeResponseFromArrowNumeric),
 		"arrowEnum":                 arm(computeapi.NewComputeNodeResponseFromArrowEnum),
 		"arrowBucketedEnum":         arm(computeapi.NewComputeNodeResponseFromArrowBucketedEnum),
 		"cartesian":                 arm(computeapi.NewComputeNodeResponseFromCartesian),
