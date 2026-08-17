@@ -344,11 +344,11 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -456,11 +456,11 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),

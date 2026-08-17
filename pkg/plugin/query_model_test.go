@@ -210,10 +210,10 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 			},
 		},
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
@@ -353,7 +353,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			mockDS := &mockDatasourceService{
 				searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: tt.searchChannels},
 			}
-			ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+			ds := withCatalog(&Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()})
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
 				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
