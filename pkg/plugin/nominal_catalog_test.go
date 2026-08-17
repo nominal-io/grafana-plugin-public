@@ -307,6 +307,57 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	}
 }
 
+// The channel-metadata search must carry the channel name as the similarity score
+// input, not just as the match filter. Without it the server scores every matching
+// channel alike and orders by an unrelated key, so on a data source with more
+// matches than one page the wanted channel can be paged out and inference then
+// silently yields nothing.
+func TestNominalCatalogInferChannelMetadataScoresAgainstChannelName(t *testing.T) {
+	const (
+		assetRid = "ri.scout.main.asset.scored"
+		channel  = "temp"
+	)
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid: assetRid,
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: []datasourceapi.ChannelMetadata{{
+			Name:       api.Channel(channel),
+			DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "dataset1")),
+			DataType:   &stringType,
+		}}},
+	}
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: channel}
+	catalog.InferChannelMetadata(context.Background(), config, &qm)
+
+	if qm.ChannelDataType != ChannelDataTypeString {
+		t.Fatalf("ChannelDataType = %q, want %q", qm.ChannelDataType, ChannelDataTypeString)
+	}
+	request := mockDS.searchChannelsRequestSnapshot()
+	if request.FuzzySearchText != channel {
+		t.Fatalf("FuzzySearchText = %q, want %q so the exact match outranks other substring matches", request.FuzzySearchText, channel)
+	}
+	if len(request.ExactMatch) != 1 || request.ExactMatch[0] != channel {
+		t.Fatalf("ExactMatch = %v, want [%s]", request.ExactMatch, channel)
+	}
+}
+
 // A dashboard saved against a since-deleted asset is the normal not-found case:
 // the batch endpoint omits the RID, so the lookup yields a nil asset and no
 // error. That nil now round-trips through singleflight's any value, which the

@@ -466,8 +466,13 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{channel},
-		DataSources: dataSourceRids,
+		// ExactMatch only gates which channels match (case-insensitive contains).
+		// Ordering comes from the similarity score against FuzzySearchText, and an
+		// empty one scores every row alike, so the wanted channel can fall outside
+		// the first page. Scoring it against the channel name ranks it first.
+		FuzzySearchText: channel,
+		ExactMatch:      []string{channel},
+		DataSources:     dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
@@ -481,6 +486,10 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return entry, nil
 	}
 
+	// Absent from the results, so nothing to infer. A result count at the server's
+	// page limit means the channel may exist but was paged out.
+	log.DefaultLogger.Warn("No exact channel match for channel metadata inference",
+		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	entry := channelMetadataCacheEntry{fetchedAt: time.Now()}
 	c.storeChannelMetadata(cacheKey, entry)
 	return entry, nil
