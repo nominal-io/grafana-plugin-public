@@ -307,6 +307,40 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	}
 }
 
+// A dashboard saved against a since-deleted asset is the normal not-found case:
+// the batch endpoint omits the RID, so the lookup yields a nil asset and no
+// error. That nil now round-trips through singleflight's any value, which the
+// compiler cannot check.
+func TestNominalCatalogFetchAssetByRidCachesNotFound(t *testing.T) {
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{}, nil)
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	first, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing")
+	if err != nil {
+		t.Fatalf("first FetchAssetByRid returned error: %v", err)
+	}
+	if first != nil {
+		t.Fatalf("first FetchAssetByRid = %+v, want nil for a missing asset", first)
+	}
+
+	second, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing")
+	if err != nil {
+		t.Fatalf("second FetchAssetByRid returned error: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("second FetchAssetByRid = %+v, want nil for a missing asset", second)
+	}
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (the not-found result should be cached)", int(assetFetches.Load()))
+	}
+}
+
 func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"bad path %s"}`, r.URL.Path), http.StatusTeapot)
