@@ -35,12 +35,16 @@ type assetCacheEntry struct {
 	fetchedAt time.Time
 }
 
+func (e assetCacheEntry) fetchTime() time.Time { return e.fetchedAt }
+
 // channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
 type channelMetadataCacheEntry struct {
 	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
 	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
 	fetchedAt       time.Time
 }
+
+func (e channelMetadataCacheEntry) fetchTime() time.Time { return e.fetchedAt }
 
 type NominalCatalog struct {
 	resourceHTTPClient *http.Client
@@ -181,47 +185,29 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 
 	c.assetCacheMu.Lock()
 	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-	c.maybeSweepAssetCacheLocked()
+	sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
 	c.assetCacheMu.Unlock()
 
 	return asset.clone(), nil
 }
 
-// Caller must hold c.assetCacheMu.
-func (c *NominalCatalog) maybeSweepAssetCacheLocked() {
+// sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
+// sweepInterval. Caller must hold the mutex guarding entries and lastSweep.
+func sweepExpiredLocked[V any](entries map[string]V, lastSweep *time.Time, fetchedAt func(V) time.Time, label string) {
 	now := time.Now()
-	if now.Sub(c.assetCacheLastSweep) < sweepInterval {
+	if now.Sub(*lastSweep) < sweepInterval {
 		return
 	}
 	removed := 0
-	for k, entry := range c.assetCache {
-		if now.Sub(entry.fetchedAt) >= assetCacheTTL {
-			delete(c.assetCache, k)
+	for k, entry := range entries {
+		if now.Sub(fetchedAt(entry)) >= assetCacheTTL {
+			delete(entries, k)
 			removed++
 		}
 	}
-	c.assetCacheLastSweep = now
+	*lastSweep = now
 	if removed > 0 {
-		log.DefaultLogger.Debug("asset metadata cache swept", "removed", removed, "remaining", len(c.assetCache))
-	}
-}
-
-// Caller must hold c.channelMetadataCacheMu.
-func (c *NominalCatalog) maybeSweepChannelCacheLocked() {
-	now := time.Now()
-	if now.Sub(c.channelMetadataCacheLastSweep) < sweepInterval {
-		return
-	}
-	removed := 0
-	for k, entry := range c.channelMetadataCache {
-		if now.Sub(entry.fetchedAt) >= assetCacheTTL {
-			delete(c.channelMetadataCache, k)
-			removed++
-		}
-	}
-	c.channelMetadataCacheLastSweep = now
-	if removed > 0 {
-		log.DefaultLogger.Debug("channel metadata cache swept", "removed", removed, "remaining", len(c.channelMetadataCache))
+		log.DefaultLogger.Debug(label+" cache swept", "removed", removed, "remaining", len(entries))
 	}
 }
 
@@ -470,7 +456,7 @@ func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMeta
 		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	c.channelMetadataCache[cacheKey] = entry
-	c.maybeSweepChannelCacheLocked()
+	sweepExpiredLocked(c.channelMetadataCache, &c.channelMetadataCacheLastSweep, channelMetadataCacheEntry.fetchTime, "channel metadata")
 }
 
 // getChannelMetadataDescription extracts description from channel metadata
