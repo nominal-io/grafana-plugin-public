@@ -28,8 +28,15 @@ const assetCacheTTL = 5 * time.Minute
 // sweepInterval limits lazy cache cleanup triggered by writes.
 const sweepInterval = 30 * time.Minute
 
-// WithoutCancel removes caller deadlines, so detached lookups need their own bound.
-const detachedLookupTimeout = 30 * time.Second
+// Every cache-miss lookup is detached from its caller, not just a shared one:
+// whether a lookup ends up shared is only known after it completes. So a caller
+// canceling no longer cancels the backend request, and WithoutCancel drops the
+// caller's deadline, which leaves this bound as the only limit on that work.
+// The channel path spends one budget on an asset fetch and then a channel search
+// the client may attempt twice with backoff between attempts, so it needs more
+// room than a single call. Nominal treats 15s as too long for a heavier compute
+// query, which makes it the ceiling here.
+const detachedLookupTimeout = 15 * time.Second
 
 const maxChannelVariables = 5000
 
