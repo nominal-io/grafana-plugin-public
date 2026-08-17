@@ -34,14 +34,16 @@ type killEntry struct {
 	target killTarget
 }
 
+// killCoalescer batches kill ids for one datasource instance. Its owner
+// serializes enqueue against dispose, so it carries no disposal state itself.
 type killCoalescer struct {
 	flushFn  killFlushFunc
 	interval time.Duration
 
-	mu     sync.Mutex
-	buf    []killEntry
-	closed bool
+	mu  sync.Mutex
+	buf []killEntry
 
+	wake chan struct{}
 	stop chan struct{}
 	done chan struct{}
 }
@@ -50,6 +52,7 @@ func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalesce
 	kc := &killCoalescer{
 		flushFn:  flush,
 		interval: interval,
+		wake:     make(chan struct{}, 1),
 		stop:     make(chan struct{}),
 		done:     make(chan struct{}),
 	}
@@ -59,24 +62,36 @@ func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalesce
 
 func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 	kc.mu.Lock()
-	defer kc.mu.Unlock()
-	if kc.closed || len(kc.buf) >= killBufferLimit {
-		log.DefaultLogger.Debug("Dropping compute kill enqueue", "closed", kc.closed, "buffered", len(kc.buf))
+	if len(kc.buf) >= killBufferLimit {
+		kc.mu.Unlock()
+		log.DefaultLogger.Debug("Dropping compute kill enqueue", "buffered", killBufferLimit)
 		return
 	}
 	kc.buf = append(kc.buf, killEntry{id: id, target: target})
+	kc.mu.Unlock()
+
+	select {
+	case kc.wake <- struct{}{}:
+	default:
+	}
 }
 
+// run flushes one interval after the buffer becomes non-empty. Waiting on wake
+// rather than a ticker keeps an instance the SDK never disposes from waking for
+// the life of the process.
 func (kc *killCoalescer) run() {
 	defer close(kc.done)
-	ticker := time.NewTicker(kc.interval)
-	defer ticker.Stop()
 	for {
 		select {
-		case <-ticker.C:
-			kc.flushBuffered()
+		case <-kc.wake:
+			select {
+			case <-time.After(kc.interval):
+				kc.flushBuffered()
+			case <-kc.stop:
+				kc.flushBuffered()
+				return
+			}
 		case <-kc.stop:
-			// closed is set before stop closes, so this is the final buffer.
 			kc.flushBuffered()
 			return
 		}
@@ -107,13 +122,8 @@ func (kc *killCoalescer) flushBuffered() {
 	}
 }
 
-// dispose schedules a final flush without waiting for it. It is idempotent.
+// dispose schedules a final flush without waiting for it. The owner calls it
+// once; a second call panics.
 func (kc *killCoalescer) dispose() {
-	kc.mu.Lock()
-	alreadyClosed := kc.closed
-	kc.closed = true
-	kc.mu.Unlock()
-	if !alreadyClosed {
-		close(kc.stop)
-	}
+	close(kc.stop)
 }

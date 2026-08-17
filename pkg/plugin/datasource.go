@@ -117,14 +117,20 @@ func (d *Datasource) getResourceHTTPClient() *http.Client {
 	return d.resourceHTTPClient
 }
 
-// killCoalescer returns the per-instance coalescer, or nil after disposal.
-func (d *Datasource) killCoalescer() *killCoalescer {
+// enqueueKill schedules a best-effort kill for one request id. killMu is held
+// across the enqueue so Dispose cannot interleave, which is what lets the
+// coalescer carry no disposal state of its own.
+func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
 	d.killMu.Lock()
 	defer d.killMu.Unlock()
-	if d.coalescer == nil && !d.coalescerDisposed {
+	if d.coalescerDisposed {
+		log.DefaultLogger.Debug("Dropping compute kill enqueue after disposal")
+		return
+	}
+	if d.coalescer == nil {
 		d.coalescer = newKillCoalescer(d.sendBatchKill, killFlushInterval)
 	}
-	return d.coalescer
+	d.coalescer.enqueue(id, target)
 }
 
 // sendBatchKill sends one best-effort batch without logging sensitive values.

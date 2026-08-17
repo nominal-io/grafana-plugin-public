@@ -787,8 +787,15 @@ type mockComputeService struct {
 	// Useful for tests with nondeterministic call ordering (e.g. parallel batches).
 	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
 
-	killCalls [][]uuid.UUID
+	killCalls []killCall
 	killError error
+}
+
+// killCall records what one BatchKillRequests carried, including the identity
+// on its context.
+type killCall struct {
+	ids []uuid.UUID
+	ua  userAgentComponents
 }
 
 func (m *mockComputeService) Compute(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.ComputeNodeRequest) (computeapi.ComputeNodeResponse, error) {
@@ -841,14 +848,18 @@ func (m *mockComputeService) ComputeWithUnits(ctx context.Context, authHeader be
 func (m *mockComputeService) BatchKillRequests(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi.BatchKillRequestsRequest) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.killCalls = append(m.killCalls, append([]uuid.UUID(nil), requestArg.RequestIds...))
+	ua, _ := userAgentComponentsFromContext(ctx)
+	m.killCalls = append(m.killCalls, killCall{
+		ids: append([]uuid.UUID(nil), requestArg.RequestIds...),
+		ua:  ua,
+	})
 	return m.killError
 }
 
-func (m *mockComputeService) killCallsSnapshot() [][]uuid.UUID {
+func (m *mockComputeService) killCallsSnapshot() []killCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([][]uuid.UUID(nil), m.killCalls...)
+	return append([]killCall(nil), m.killCalls...)
 }
 
 func TestBatchQueryExecution(t *testing.T) {
@@ -3929,26 +3940,29 @@ func TestFieldConfigForEnum(t *testing.T) {
 	}
 }
 
-func TestDisposeStopsKillCoalescer(t *testing.T) {
+func TestDisposeStopsKillEnqueue(t *testing.T) {
 	// Dispose also runs for instances that never queried, so it must not panic.
 	(&Datasource{}).Dispose()
 
-	ds := &Datasource{computeService: &mockComputeService{}}
-	kc := ds.killCoalescer()
-	if kc == nil {
-		t.Fatal("expected lazy-initialized kill coalescer")
-	}
-	// A second instance would leak a goroutine and strand the first buffer.
-	if ds.killCoalescer() != kc {
-		t.Fatal("expected killCoalescer() to return the same instance")
-	}
+	mockService := &mockComputeService{}
+	ds := &Datasource{computeService: mockService}
+	target := testKillTarget(bearertoken.Token("t1"))
 
+	ds.enqueueKill(uuid.NewUUID(), target)
 	ds.Dispose()
+	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) == 1 })
 
-	if ds.killCoalescer() != nil {
-		t.Fatal("killCoalescer() must refuse lazy creation after Dispose")
+	// A post-dispose enqueue must not build a second coalescer, which nothing
+	// would ever dispose; one would flush a killFlushInterval later.
+	ds.enqueueKill(uuid.NewUUID(), target)
+	time.Sleep(3 * killFlushInterval)
+	if got := len(mockService.killCallsSnapshot()); got != 1 {
+		t.Fatalf("expected post-dispose enqueue to be dropped, got %d kill calls", got)
 	}
 }
+
+// Distinguishable from the "unknown" fallback a missing identity would produce.
+const batchRequestPluginVersion = "9.9.9-test"
 
 func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	timeRange := backend.TimeRange{
@@ -3957,6 +3971,7 @@ func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	}
 	return &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
+			PluginVersion: batchRequestPluginVersion,
 			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
 				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
 				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
@@ -4056,8 +4071,13 @@ func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
 			if stamped == nil {
 				t.Fatal("expected RequestId to be stamped on the batch")
 			}
-			if len(kills) != 1 || !slices.Equal(kills[0], []uuid.UUID{*stamped}) {
+			if len(kills) != 1 || !slices.Equal(kills[0].ids, []uuid.UUID{*stamped}) {
 				t.Fatalf("expected one kill for stamped RequestId %v, got %v", *stamped, kills)
+			}
+			// The kill is dispatched off the request goroutine, so identity has to
+			// ride the enqueue rather than be read from the ambient context later.
+			if got := kills[0].ua.PluginVersion; got != batchRequestPluginVersion {
+				t.Errorf("kill carried PluginVersion %q, want %q", got, batchRequestPluginVersion)
 			}
 		})
 	}

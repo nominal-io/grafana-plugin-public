@@ -507,7 +507,7 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 	}
 	defer ds.Dispose()
 
-	ds.killCoalescer().enqueue(uuid.NewUUID(), killTarget{
+	ds.enqueueKill(uuid.NewUUID(), killTarget{
 		token: bearertoken.Token("t"),
 		ua:    userAgentComponentsFromPluginContext(backend.PluginContext{PluginVersion: "9.9.9-test"}),
 	})

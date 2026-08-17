@@ -50,9 +50,9 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("condition not met before deadline")
 }
 
-// flushOnDispose enqueues against a coalescer whose ticker never fires, so the
-// dispose flush is the only flush.
-func flushOnDispose(enqueue func(kc *killCoalescer)) (*killCoalescer, *killRecorder) {
+// flushOnDispose enqueues against a coalescer whose interval never elapses, so
+// the dispose flush is the only flush.
+func flushOnDispose(enqueue func(kc *killCoalescer)) *killRecorder {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, time.Hour)
 	enqueue(kc)
@@ -62,9 +62,12 @@ func flushOnDispose(enqueue func(kc *killCoalescer)) (*killCoalescer, *killRecor
 	case <-time.After(2 * time.Second):
 		panic("kill coalescer did not finish its final flush")
 	}
-	return kc, rec
+	return rec
 }
 
+// The interval alone flushes, with no dispose to force it. One id keeps the
+// assertion independent of how enqueues interleave with the interval;
+// multi-id coalescing is covered by the dispose-driven tests below.
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
@@ -73,18 +76,13 @@ func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 		<-kc.done
 	})
 
-	id1, id2 := uuid.NewUUID(), uuid.NewUUID()
-	tok := bearertoken.Token("t1")
-	kc.enqueue(id1, testKillTarget(tok))
-	kc.enqueue(id2, testKillTarget(tok))
+	id := uuid.NewUUID()
+	kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
 
-	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) >= 1 })
+	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 1 })
 
 	batches := rec.snapshot()
-	if len(batches) != 1 {
-		t.Fatalf("expected 1 coalesced flush call, got %d", len(batches))
-	}
-	if want := []uuid.UUID{id1, id2}; !slices.Equal(batches[0].ids, want) {
+	if want := []uuid.UUID{id}; !slices.Equal(batches[0].ids, want) {
 		t.Fatalf("expected ids %v, got %v", want, batches[0].ids)
 	}
 }
@@ -95,7 +93,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 		ids[i] = uuid.NewUUID()
 	}
 
-	_, rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushOnDispose(func(kc *killCoalescer) {
 		for _, id := range ids {
 			kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
 		}
@@ -114,7 +112,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 }
 
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
-	_, rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushOnDispose(func(kc *killCoalescer) {
 		for i := 0; i < killBufferLimit+10; i++ {
 			kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t1")))
 		}
@@ -134,7 +132,7 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	target1 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "1.0.0"}}
 	target2 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "2.0.0"}}
 
-	_, rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushOnDispose(func(kc *killCoalescer) {
 		kc.enqueue(id1, target1)
 		kc.enqueue(id2, target2)
 	})
@@ -155,23 +153,6 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	if want := []uuid.UUID{id2}; !slices.Equal(byTarget[target2], want) {
 		t.Fatalf("expected target %#v to carry ids %v, got %v", target2, want, byTarget[target2])
 	}
-}
-
-func TestKillCoalescerDisposeFlushesFinalBufferAndRejectsEnqueues(t *testing.T) {
-	tok := bearertoken.Token("t1")
-	kc, rec := flushOnDispose(func(kc *killCoalescer) { kc.enqueue(uuid.NewUUID(), testKillTarget(tok)) })
-
-	if len(rec.snapshot()) != 1 {
-		t.Fatalf("expected final flush of 1 call, got %d", len(rec.snapshot()))
-	}
-
-	kc.enqueue(uuid.NewUUID(), testKillTarget(tok))
-	if total := len(rec.snapshot()); total != 1 {
-		t.Fatalf("enqueue after dispose must be dropped, got %d calls", total)
-	}
-
-	// dispose is idempotent: a second close(kc.stop) would panic.
-	kc.dispose()
 }
 
 func TestKillCoalescerDisposeDoesNotWaitForFlush(t *testing.T) {
