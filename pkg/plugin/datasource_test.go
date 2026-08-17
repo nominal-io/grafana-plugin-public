@@ -2592,8 +2592,7 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	assetRid := "ri.scout.main.asset.dedup1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2601,7 +2600,7 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -2658,8 +2657,8 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch call (cached), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch call (cached), got %d", int(assetFetches.Load()))
 	}
 	if mockDS.searchChannelsCalls != 1 {
 		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
@@ -2670,8 +2669,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2679,7 +2677,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -2735,8 +2733,8 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", int(assetFetches.Load()))
 	}
 }
 
@@ -2744,8 +2742,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl2"
 	dataSourceRid := "ri.scout.main.data-source.ds2"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2753,7 +2750,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)

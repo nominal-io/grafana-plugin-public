@@ -3,12 +3,16 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-io/nominal-api-go/api/rids"
+	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
@@ -79,28 +83,64 @@ func (m *mockDatasourceService) GetMatchingChannelsWithTags(ctx context.Context,
 
 var _ datasourceservice.DataSourceServiceClient = (*mockDatasourceService)(nil)
 
-func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
+// newTestAssetServer creates an httptest server that handles asset-related API endpoints.
+// It returns the server (caller must defer Close) and configures:
+//   - POST /scout/v1/asset/multiple — batch asset lookup by RID
+//   - POST /scout/v1/search-assets — paginated asset search
+func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path != "/scout/v1/asset/multiple" {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
-		}
+	server, _ := newCountingAssetServer(t, assets, searchResults)
+	return server
+}
 
-		(*fetchCount)++
-		var assetRids []string
-		body, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(body, &assetRids); err != nil {
-			http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-			return
-		}
-		result := make(map[string]SingleAssetResponse)
-		for _, assetRid := range assetRids {
-			if asset, ok := assets[assetRid]; ok {
-				result[assetRid] = asset
+// newCountingAssetServer is newTestAssetServer plus a count of batch asset lookups,
+// for tests that assert how many times the backend was actually reached.
+func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var assetFetches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/scout/v1/asset/multiple":
+			assetFetches.Add(1)
+			var assetRids []string
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &assetRids); err != nil {
+				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+				return
 			}
+			result := make(map[string]SingleAssetResponse)
+			for _, assetRid := range assetRids {
+				if asset, ok := assets[assetRid]; ok {
+					result[assetRid] = asset
+				}
+			}
+			_ = json.NewEncoder(w).Encode(result)
+
+		case "/scout/v1/search-assets":
+			if len(searchResults) > 0 {
+				_ = json.NewEncoder(w).Encode(searchResults[0])
+			} else {
+				_ = json.NewEncoder(w).Encode(AssetResponse{})
+			}
+
+		default:
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		}
-		_ = json.NewEncoder(w).Encode(result)
 	}))
+	return server, &assetFetches
+}
+
+// newTestDatasource creates a Datasource for testing CallResource handlers.
+func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
+	return &Datasource{
+		settings: backend.DataSourceInstanceSettings{
+			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
+			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
+		},
+		authService:        authSvc,
+		datasourceService:  dsSvc,
+		resourceHTTPClient: &http.Client{},
+	}
 }

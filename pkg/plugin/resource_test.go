@@ -2,16 +2,10 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
-	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/palantir/pkg/bearertoken"
 )
 
@@ -104,55 +98,4 @@ func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResou
 		t.Fatal("CallResource did not send a response")
 	}
 	return captured
-}
-
-// newTestAssetServer creates an httptest server that handles asset-related API endpoints.
-// It returns the server (caller must defer Close) and configures:
-//   - POST /scout/v1/asset/multiple — batch asset lookup by RID
-//   - POST /scout/v1/search-assets — paginated asset search
-func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Path {
-		case "/scout/v1/asset/multiple":
-			var rids []string
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &rids); err != nil {
-				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-				return
-			}
-			result := make(map[string]SingleAssetResponse)
-			for _, rid := range rids {
-				if asset, ok := assets[rid]; ok {
-					result[rid] = asset
-				}
-			}
-			json.NewEncoder(w).Encode(result)
-
-		case "/scout/v1/search-assets":
-			if len(searchResults) > 0 {
-				json.NewEncoder(w).Encode(searchResults[0])
-			} else {
-				json.NewEncoder(w).Encode(AssetResponse{})
-			}
-
-		default:
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}
-	}))
-}
-
-// newTestDatasource creates a Datasource for testing CallResource handlers.
-func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
-	return &Datasource{
-		settings: backend.DataSourceInstanceSettings{
-			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
-			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
-		},
-		authService:        authSvc,
-		datasourceService:  dsSvc,
-		resourceHTTPClient: &http.Client{},
-	}
 }
