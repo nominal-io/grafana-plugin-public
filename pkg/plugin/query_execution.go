@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -129,6 +130,16 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 	}
 
 	for chunkStart := 0; chunkStart < len(batch.queries); chunkStart += maxBatchComputeSubrequests {
+		if ctx.Err() != nil {
+			// The caller is gone; stop minting requestIDs for work that would
+			// only fail client-side and enqueue kills the server never saw.
+			errMsg := fmt.Sprintf("Batch compute cancelled: %v", ctx.Err())
+			for _, q := range batch.queries[chunkStart:] {
+				results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal, errMsg)
+			}
+			break
+		}
+
 		chunkEnd := chunkStart + maxBatchComputeSubrequests
 		if chunkEnd > len(batch.queries) {
 			chunkEnd = len(batch.queries)

@@ -4089,3 +4089,44 @@ func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
 		})
 	}
 }
+
+func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mockService := &mockComputeService{}
+	mockService.batchComputeFunc = func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+		cancel() // cancelled mid-flight during the first chunk
+		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
+	}
+	ds := withKillCoalescer(&Datasource{computeService: mockService})
+
+	resp, err := ds.QueryData(ctx, newBatchQueryRequest(maxBatchComputeSubrequests+1))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := mockService.batchComputeCalls; got != 1 {
+		t.Fatalf("expected chunking to stop after cancellation, got %d batch calls", got)
+	}
+
+	// The skipped chunk's queries still answer, with a cancellation error.
+	cancelled := 0
+	for _, r := range resp.Responses {
+		if r.Error != nil && strings.Contains(r.Error.Error(), "cancelled") {
+			cancelled++
+		}
+	}
+	if cancelled != 1 {
+		t.Fatalf("expected 1 cancelled response for the never-sent chunk, got %d", cancelled)
+	}
+
+	// Only the in-flight chunk's requestID gets a kill; the never-sent chunk
+	// must not enqueue phantom ids.
+	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
+	total := 0
+	for _, kc := range mockService.killCallsSnapshot() {
+		total += len(kc.ids)
+	}
+	if total != 1 {
+		t.Fatalf("expected exactly 1 killed requestID, got %d", total)
+	}
+}
