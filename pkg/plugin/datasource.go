@@ -138,7 +138,7 @@ func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids [
 	ctx = contextWithUserAgentComponents(ctx, target.ua)
 	err := d.computeService.BatchKillRequests(ctx, target.token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
 	if err != nil {
-		log.DefaultLogger.Debug("BatchKillRequests failed", "count", len(ids))
+		logErrorWithConjureFields("BatchKillRequests failed", err, "count", len(ids))
 		return
 	}
 	log.DefaultLogger.Debug("BatchKillRequests flushed", "count", len(ids))
