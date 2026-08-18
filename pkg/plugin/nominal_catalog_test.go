@@ -583,6 +583,38 @@ type assetLookupResult struct {
 	err   error
 }
 
+// runSurvivingCallerScenario drives the shared-flight choreography: a first
+// caller blocks on the backend, a second joins the same flight, the first is
+// canceled while the backend is still blocked (proving cancellation returned
+// without failing the flight), then the backend is released for the survivor.
+// Callers assert on results the two call closures recorded after this returns.
+func runSurvivingCallerScenario(t *testing.T, blocker *blockingLookup, canceledCall, survivorCall func(ctx context.Context)) {
+	t.Helper()
+	cancelBase, cancel := context.WithCancel(context.Background())
+	cancelCtx, cancelWaiting := newFlightWaitContext(cancelBase)
+	survivorCtx, survivorWaiting := newFlightWaitContext(context.Background())
+	canceledDone := make(chan struct{})
+	survivorDone := make(chan struct{})
+
+	go func() {
+		canceledCall(cancelCtx)
+		close(canceledDone)
+	}()
+	waitForTestSignal(t, blocker.arrived, "the blocked backend request")
+	waitForTestSignal(t, cancelWaiting, "the initiating caller to wait on the flight")
+
+	go func() {
+		survivorCall(survivorCtx)
+		close(survivorDone)
+	}()
+	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
+
+	cancel()
+	waitForTestSignal(t, canceledDone, "the canceled caller to return while the backend is blocked")
+	blocker.unblock()
+	waitForTestSignal(t, survivorDone, "the surviving caller to receive the shared result")
+}
+
 func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing.T) {
 	const assetRid = "ri.scout.main.asset.detach"
 	blocker := newBlockingLookup()
@@ -600,70 +632,24 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 
 	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
-	cancelBase, cancel := context.WithCancel(context.Background())
-	cancelCtx, cancelWaiting := newFlightWaitContext(cancelBase)
-	survivorCtx, survivorWaiting := newFlightWaitContext(context.Background())
-	canceledDone := make(chan assetLookupResult, 1)
-	survivorDone := make(chan assetLookupResult, 1)
+	var canceled, survivor assetLookupResult
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) {
+			canceled.asset, canceled.err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		},
+		func(ctx context.Context) {
+			survivor.asset, survivor.err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		},
+	)
 
-	go func() {
-		asset, err := catalog.FetchAssetByRid(cancelCtx, config, assetRid)
-		canceledDone <- assetLookupResult{asset: asset, err: err}
-	}()
-	waitForTestSignal(t, blocker.arrived, "the asset backend request")
-	waitForTestSignal(t, cancelWaiting, "the initiating caller to wait on the flight")
-
-	go func() {
-		asset, err := catalog.FetchAssetByRid(survivorCtx, config, assetRid)
-		survivorDone <- assetLookupResult{asset: asset, err: err}
-	}()
-	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
-
-	cancel()
-	select {
-	case got := <-canceledDone:
-		if !errors.Is(got.err, context.Canceled) || got.asset != nil {
-			t.Fatalf("canceled lookup = (%+v, %v), want (nil, context.Canceled)", got.asset, got.err)
-		}
-	case <-time.After(catalogTestTimeout):
-		t.Fatal("canceled caller did not return while the shared fetch was blocked")
+	if !errors.Is(canceled.err, context.Canceled) || canceled.asset != nil {
+		t.Fatalf("canceled lookup = (%+v, %v), want (nil, context.Canceled)", canceled.asset, canceled.err)
 	}
-	blocker.unblock()
-	select {
-	case got := <-survivorDone:
-		if got.err != nil || got.asset == nil || got.asset.Title != "Detached" {
-			t.Fatalf("surviving lookup = (%+v, %v), want Detached asset", got.asset, got.err)
-		}
-	case <-time.After(catalogTestTimeout):
-		t.Fatal("surviving caller did not receive the shared result")
+	if survivor.err != nil || survivor.asset == nil || survivor.asset.Title != "Detached" {
+		t.Fatalf("surviving lookup = (%+v, %v), want Detached asset", survivor.asset, survivor.err)
 	}
 	if got := blocker.calls.Load(); got != 1 {
 		t.Fatalf("asset backend calls = %d, want 1", got)
-	}
-}
-
-func TestNominalCatalogFetchAssetByRidDoesNotDispatchPreCanceledMiss(t *testing.T) {
-	blocker := newBlockingLookup()
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		blocker.block()
-	}))
-	t.Cleanup(func() {
-		blocker.unblock()
-		server.Close()
-	})
-	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	asset, err := catalog.FetchAssetByRid(ctx, config, "ri.scout.main.asset.canceled")
-	if !errors.Is(err, context.Canceled) || asset != nil {
-		t.Fatalf("pre-canceled lookup = (%+v, %v), want (nil, context.Canceled)", asset, err)
-	}
-	select {
-	case <-blocker.arrived:
-		t.Fatal("pre-canceled cache miss dispatched an asset backend request")
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -697,32 +683,14 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 	catalog := newNominalCatalog(server.Client(), mockDS)
 	canceledModel := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
 	survivorModel := canceledModel
-	cancelBase, cancel := context.WithCancel(context.Background())
-	cancelCtx, cancelWaiting := newFlightWaitContext(cancelBase)
-	survivorCtx, survivorWaiting := newFlightWaitContext(context.Background())
-	canceledDone := make(chan struct{})
-	survivorDone := make(chan struct{})
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) { catalog.InferChannelMetadata(ctx, config, &canceledModel) },
+		func(ctx context.Context) { catalog.InferChannelMetadata(ctx, config, &survivorModel) },
+	)
 
-	go func() {
-		catalog.InferChannelMetadata(cancelCtx, config, &canceledModel)
-		close(canceledDone)
-	}()
-	waitForTestSignal(t, blocker.arrived, "the channel backend request")
-	waitForTestSignal(t, cancelWaiting, "the initiating caller to wait on the flight")
-
-	go func() {
-		catalog.InferChannelMetadata(survivorCtx, config, &survivorModel)
-		close(survivorDone)
-	}()
-	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
-
-	cancel()
-	waitForTestSignal(t, canceledDone, "the canceled channel caller to return")
 	if canceledModel.ChannelDataType != ChannelDataTypeNumeric {
 		t.Fatalf("canceled caller ChannelDataType = %q, want %q", canceledModel.ChannelDataType, ChannelDataTypeNumeric)
 	}
-	blocker.unblock()
-	waitForTestSignal(t, survivorDone, "the surviving channel caller to receive the shared result")
 	if survivorModel.ChannelDataType != ChannelDataTypeString {
 		t.Fatalf("surviving caller ChannelDataType = %q, want %q", survivorModel.ChannelDataType, ChannelDataTypeString)
 	}
@@ -734,35 +702,63 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 	}
 }
 
-func TestNominalCatalogInferChannelMetadataDoesNotDispatchPreCanceledMiss(t *testing.T) {
-	blocker := newBlockingLookup()
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		blocker.block()
-	}))
-	t.Cleanup(func() {
-		blocker.unblock()
-		server.Close()
-	})
-	mockDS := &mockDatasourceService{}
-	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-	catalog := newNominalCatalog(server.Client(), mockDS)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	qm := NominalQueryModel{
-		AssetRid:        "ri.scout.main.asset.canceled-inference",
-		DataScopeName:   "scope-a",
-		Channel:         "state",
-		ChannelDataType: ChannelDataTypeNumeric,
+func TestNominalCatalogDoesNotDispatchPreCanceledMiss(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings)
+	}{
+		{
+			name: "asset fetch",
+			call: func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings) {
+				asset, err := catalog.FetchAssetByRid(ctx, config, "ri.scout.main.asset.canceled")
+				if !errors.Is(err, context.Canceled) || asset != nil {
+					t.Fatalf("pre-canceled lookup = (%+v, %v), want (nil, context.Canceled)", asset, err)
+				}
+			},
+		},
+		{
+			name: "channel metadata inference",
+			call: func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings) {
+				qm := NominalQueryModel{
+					AssetRid:        "ri.scout.main.asset.canceled",
+					DataScopeName:   "scope-a",
+					Channel:         "state",
+					ChannelDataType: ChannelDataTypeNumeric,
+				}
+				catalog.InferChannelMetadata(ctx, config, &qm)
+				if qm.ChannelDataType != ChannelDataTypeNumeric {
+					t.Fatalf("pre-canceled inference mutated ChannelDataType to %q", qm.ChannelDataType)
+				}
+			},
+		},
 	}
-	catalog.InferChannelMetadata(ctx, config, &qm)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocker := newBlockingLookup()
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				blocker.block()
+			}))
+			t.Cleanup(func() {
+				blocker.unblock()
+				server.Close()
+			})
+			mockDS := &mockDatasourceService{}
+			config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+			catalog := newNominalCatalog(server.Client(), mockDS)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
 
-	select {
-	case <-blocker.arrived:
-		t.Fatal("pre-canceled cache miss dispatched a channel metadata lookup")
-	case <-time.After(100 * time.Millisecond):
-	}
-	if got := mockDS.searchChannelsCallCount(); got != 0 {
-		t.Fatalf("SearchChannels calls = %d, want 0", got)
+			tt.call(t, ctx, catalog, config)
+
+			select {
+			case <-blocker.arrived:
+				t.Fatal("pre-canceled cache miss dispatched a backend request")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if got := mockDS.searchChannelsCallCount(); got != 0 {
+				t.Fatalf("SearchChannels calls = %d, want 0", got)
+			}
+		})
 	}
 }
 
