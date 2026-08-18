@@ -502,12 +502,12 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ds := &Datasource{
+	ds := withKillCoalescer(&Datasource{
 		computeService: computeapi1.NewComputeServiceClient(conjureClient),
-	}
+	})
 	defer ds.Dispose()
 
-	ds.enqueueKill(uuid.NewUUID(), killTarget{
+	ds.kill.enqueue(uuid.NewUUID(), killTarget{
 		token: bearertoken.Token("t"),
 		ua:    userAgentComponentsFromPluginContext(backend.PluginContext{PluginVersion: "9.9.9-test"}),
 	})

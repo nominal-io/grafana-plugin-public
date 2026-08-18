@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -91,6 +90,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
+	ds.kill = newKillCoalescer(ds.sendBatchKill, killFlushInterval)
 
 	return ds, nil
 }
@@ -107,30 +107,11 @@ type Datasource struct {
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
 
-	// Protect lazy initialization and prevent recreation after disposal.
-	killMu            sync.Mutex
-	coalescer         *killCoalescer
-	coalescerDisposed bool
+	kill *killCoalescer
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
 	return d.resourceHTTPClient
-}
-
-// enqueueKill schedules a best-effort kill for one request id. killMu is held
-// across the enqueue so Dispose cannot interleave, which is what lets the
-// coalescer carry no disposal state of its own.
-func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
-	d.killMu.Lock()
-	defer d.killMu.Unlock()
-	if d.coalescerDisposed {
-		log.DefaultLogger.Debug("Dropping compute kill enqueue after disposal")
-		return
-	}
-	if d.coalescer == nil {
-		d.coalescer = newKillCoalescer(d.sendBatchKill, killFlushInterval)
-	}
-	d.coalescer.enqueue(id, target)
 }
 
 // sendBatchKill sends one best-effort batch without logging sensitive values.
@@ -148,13 +129,8 @@ func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids [
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewSampleDatasource factory function.
 func (d *Datasource) Dispose() {
-	d.killMu.Lock()
-	d.coalescerDisposed = true
-	coalescer := d.coalescer
-	d.coalescer = nil
-	d.killMu.Unlock()
-	if coalescer != nil {
-		coalescer.dispose()
+	if d.kill != nil {
+		d.kill.flushAsync()
 	}
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()

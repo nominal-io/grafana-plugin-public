@@ -50,18 +50,13 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("condition not met before deadline")
 }
 
-// flushOnDispose enqueues against a coalescer whose interval never elapses, so
-// the dispose flush is the only flush.
-func flushOnDispose(enqueue func(kc *killCoalescer)) *killRecorder {
+// flushNow enqueues against a coalescer whose interval never elapses, then
+// flushes synchronously, so assertions see exactly one deterministic flush.
+func flushNow(enqueue func(kc *killCoalescer)) *killRecorder {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, time.Hour)
 	enqueue(kc)
-	kc.dispose()
-	select {
-	case <-kc.done:
-	case <-time.After(2 * time.Second):
-		panic("kill coalescer did not finish its final flush")
-	}
+	kc.flush()
 	return rec
 }
 
@@ -71,10 +66,6 @@ func flushOnDispose(enqueue func(kc *killCoalescer)) *killRecorder {
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
-	t.Cleanup(func() {
-		kc.dispose()
-		<-kc.done
-	})
 
 	id := uuid.NewUUID()
 	kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
@@ -93,7 +84,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 		ids[i] = uuid.NewUUID()
 	}
 
-	rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushNow(func(kc *killCoalescer) {
 		for _, id := range ids {
 			kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
 		}
@@ -112,7 +103,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 }
 
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
-	rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushNow(func(kc *killCoalescer) {
 		for i := 0; i < killBufferLimit+10; i++ {
 			kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t1")))
 		}
@@ -132,7 +123,7 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	target1 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "1.0.0"}}
 	target2 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "2.0.0"}}
 
-	rec := flushOnDispose(func(kc *killCoalescer) {
+	rec := flushNow(func(kc *killCoalescer) {
 		kc.enqueue(id1, target1)
 		kc.enqueue(id2, target2)
 	})
@@ -155,36 +146,66 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	}
 }
 
-func TestKillCoalescerDisposeDoesNotWaitForFlush(t *testing.T) {
+func TestKillCoalescerFlushAsyncDoesNotWaitForFlush(t *testing.T) {
 	flushStarted := make(chan struct{})
 	unblockFlush := make(chan struct{})
+	flushDone := make(chan struct{})
 	kc := newKillCoalescer(func(_ context.Context, _ killTarget, _ []uuid.UUID) {
 		close(flushStarted)
 		<-unblockFlush
+		close(flushDone)
 	}, time.Hour)
 	kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t")))
-	disposed := make(chan struct{})
+
+	returned := make(chan struct{})
 	go func() {
-		kc.dispose()
-		close(disposed)
+		kc.flushAsync()
+		close(returned)
 	}()
 
 	select {
-	case <-disposed:
+	case <-returned:
 	case <-time.After(2 * time.Second):
 		close(unblockFlush)
-		t.Fatal("dispose waited for the final flush")
+		t.Fatal("flushAsync waited for the flush")
 	}
 	select {
 	case <-flushStarted:
 	case <-time.After(2 * time.Second):
 		close(unblockFlush)
-		t.Fatal("expected final flush")
+		t.Fatal("expected the async flush to start")
 	}
 	close(unblockFlush)
 	select {
-	case <-kc.done:
+	case <-flushDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("coalescer did not finish after its flush was unblocked")
+		t.Fatal("flush did not finish after being unblocked")
+	}
+}
+
+func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
+	var mu sync.Mutex
+	var deadlines []time.Time
+	kc := newKillCoalescer(func(ctx context.Context, _ killTarget, _ []uuid.UUID) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("flush ctx has no deadline")
+		}
+		mu.Lock()
+		deadlines = append(deadlines, d)
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}, time.Hour)
+
+	for i := 0; i < killChunkSize+1; i++ {
+		kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t1")))
+	}
+	kc.flush()
+
+	if len(deadlines) != 2 {
+		t.Fatalf("expected 2 chunked calls, got %d", len(deadlines))
+	}
+	if !deadlines[1].After(deadlines[0]) {
+		t.Fatalf("expected a fresh deadline per call, got %v then %v", deadlines[0], deadlines[1])
 	}
 }

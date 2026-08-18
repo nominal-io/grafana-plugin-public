@@ -861,6 +861,13 @@ func (m *mockComputeService) killCallsSnapshot() []killCall {
 	return append([]killCall(nil), m.killCalls...)
 }
 
+// withKillCoalescer wires the coalescer the way NewDatasource does, which the
+// kill path requires.
+func withKillCoalescer(ds *Datasource) *Datasource {
+	ds.kill = newKillCoalescer(ds.sendBatchKill, killFlushInterval)
+	return ds
+}
+
 func TestBatchQueryExecution(t *testing.T) {
 	// Create mock compute service
 	mockService := &mockComputeService{}
@@ -1271,12 +1278,12 @@ func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withKillCoalescer(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1411,12 +1418,12 @@ func TestBatchQueryError(t *testing.T) {
 		batchComputeError: fmt.Errorf("API error: service unavailable"),
 	}
 
-	ds := &Datasource{
+	ds := withKillCoalescer(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -3939,25 +3946,23 @@ func TestFieldConfigForEnum(t *testing.T) {
 	}
 }
 
-func TestDisposeStopsKillEnqueue(t *testing.T) {
+func TestDisposeFlushesPendingKills(t *testing.T) {
 	// Dispose also runs for instances that never queried, so it must not panic.
 	(&Datasource{}).Dispose()
 
 	mockService := &mockComputeService{}
-	ds := &Datasource{computeService: mockService}
+	ds := withKillCoalescer(&Datasource{computeService: mockService})
 	target := testKillTarget(bearertoken.Token("t1"))
 
-	ds.enqueueKill(uuid.NewUUID(), target)
+	ds.kill.enqueue(uuid.NewUUID(), target)
 	ds.Dispose()
 	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) == 1 })
 
-	// A post-dispose enqueue must not build a second coalescer, which nothing
-	// would ever dispose; one would flush a killFlushInterval later.
-	ds.enqueueKill(uuid.NewUUID(), target)
-	time.Sleep(3 * killFlushInterval)
-	if got := len(mockService.killCallsSnapshot()); got != 1 {
-		t.Fatalf("expected post-dispose enqueue to be dropped, got %d kill calls", got)
-	}
+	// An enqueue that lands after Dispose still flushes on the normal interval:
+	// the SDK disposes a replaced instance without draining its in-flight
+	// requests, and those are exactly the kills this exists to deliver.
+	ds.kill.enqueue(uuid.NewUUID(), target)
+	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) == 2 })
 }
 
 // Distinguishable from the "unknown" fallback a missing identity would produce.
@@ -4047,7 +4052,7 @@ func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, mockService := tt.setup()
-			ds := &Datasource{computeService: mockService}
+			ds := withKillCoalescer(&Datasource{computeService: mockService})
 
 			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
 				t.Fatalf("unexpected error: %v", err)

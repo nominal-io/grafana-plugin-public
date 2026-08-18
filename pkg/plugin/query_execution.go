@@ -162,7 +162,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		if err != nil || ctx.Err() != nil {
 			// Kill unconfirmed work; unknown and finished IDs are harmless.
 			ua, _ := userAgentComponentsFromContext(ctx)
-			e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
+			e.datasource.kill.enqueue(requestID, killTarget{token: bearerToken, ua: ua})
 		}
 		if err != nil {
 			logErrorWithConjureFields("Batch compute API call failed", err,

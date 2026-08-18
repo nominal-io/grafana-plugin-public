@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -34,30 +35,19 @@ type killEntry struct {
 	target killTarget
 }
 
-// killCoalescer batches kill ids for one datasource instance. Its owner
-// serializes enqueue against dispose, so it carries no disposal state itself.
+// killCoalescer batches kill ids for one datasource instance. A non-empty buffer
+// always has a flush pending and a flush with nothing to send does nothing, so
+// the buffer is the only state, and an idle coalescer costs nothing.
 type killCoalescer struct {
 	flushFn  killFlushFunc
 	interval time.Duration
 
 	mu  sync.Mutex
 	buf []killEntry
-
-	wake chan struct{}
-	stop chan struct{}
-	done chan struct{}
 }
 
 func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalescer {
-	kc := &killCoalescer{
-		flushFn:  flush,
-		interval: interval,
-		wake:     make(chan struct{}, 1),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
-	}
-	go kc.run()
-	return kc
+	return &killCoalescer{flushFn: flush, interval: interval}
 }
 
 func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
@@ -68,37 +58,17 @@ func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 		return
 	}
 	kc.buf = append(kc.buf, killEntry{id: id, target: target})
+	if len(kc.buf) == 1 {
+		// AfterFunc runs flush on its own goroutine, so arming under mu is safe.
+		time.AfterFunc(kc.interval, kc.flush)
+	}
 	kc.mu.Unlock()
-
-	select {
-	case kc.wake <- struct{}{}:
-	default:
-	}
 }
 
-// run flushes one interval after the buffer becomes non-empty. Waiting on wake
-// rather than a ticker keeps an instance the SDK never disposes from waking for
-// the life of the process.
-func (kc *killCoalescer) run() {
-	defer close(kc.done)
-	for {
-		select {
-		case <-kc.wake:
-			select {
-			case <-time.After(kc.interval):
-				kc.flushBuffered()
-			case <-kc.stop:
-				kc.flushBuffered()
-				return
-			}
-		case <-kc.stop:
-			kc.flushBuffered()
-			return
-		}
-	}
-}
-
-func (kc *killCoalescer) flushBuffered() {
+// flush sends every buffered id and leaves the buffer idle again. Flushing more
+// often than the buffer fills is harmless: whichever flush takes the entries
+// sends them, and the rest find nothing.
+func (kc *killCoalescer) flush() {
 	kc.mu.Lock()
 	entries := kc.buf
 	kc.buf = nil
@@ -107,23 +77,23 @@ func (kc *killCoalescer) flushBuffered() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), killFlushTimeout)
-	defer cancel()
-
 	byTarget := make(map[killTarget][]uuid.UUID)
 	for _, e := range entries {
 		byTarget[e.target] = append(byTarget[e.target], e.id)
 	}
 	for target, ids := range byTarget {
-		for start := 0; start < len(ids); start += killChunkSize {
-			end := min(start+killChunkSize, len(ids))
-			kc.flushFn(ctx, target, ids[start:end])
+		for chunk := range slices.Chunk(ids, killChunkSize) {
+			// A fresh deadline per call keeps one slow kill from starving the rest.
+			ctx, cancel := context.WithTimeout(context.Background(), killFlushTimeout)
+			kc.flushFn(ctx, target, chunk)
+			cancel()
 		}
 	}
 }
 
-// dispose schedules a final flush without waiting for it. The owner calls it
-// once; a second call panics.
-func (kc *killCoalescer) dispose() {
-	close(kc.stop)
+// flushAsync sends what is buffered without waiting for the network. Enqueues
+// that arrive afterwards still flush on the normal interval, which matters
+// because the SDK replaces an instance without draining its in-flight requests.
+func (kc *killCoalescer) flushAsync() {
+	go kc.flush()
 }
