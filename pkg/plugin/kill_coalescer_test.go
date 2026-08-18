@@ -195,3 +195,122 @@ func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
 		t.Fatalf("expected a fresh deadline per call, got %v then %v", deadlines[0], deadlines[1])
 	}
 }
+
+// A flush that empties the buffer must leave the next enqueue able to arm a
+// flush of its own. The first interval elapses before the second enqueue, so
+// only a fresh arming can deliver it.
+func TestKillCoalescerRearmsAfterDrain(t *testing.T) {
+	rec := &killRecorder{}
+	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
+	target := killTarget{token: bearertoken.Token("t1")}
+
+	kc.enqueue(uuid.NewUUID(), target)
+	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 1 })
+
+	second := uuid.NewUUID()
+	kc.enqueue(second, target)
+	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 2 })
+
+	batches := rec.snapshot()
+	if want := []uuid.UUID{second}; !slices.Equal(batches[1].ids, want) {
+		t.Fatalf("expected the second flush to carry ids %v, got %v", want, batches[1].ids)
+	}
+}
+
+// Every enqueued id reaches flushFn exactly once, however enqueues, interval
+// flushes, and explicit flushes interleave. The total stays under
+// killBufferLimit so no enqueue can be dropped and the expected set is exact.
+// Nothing here depends on how ids were batched or on which flush carried them,
+// only on which came out.
+func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
+	const (
+		writers   = 8
+		perWriter = 100
+		total     = writers * perWriter
+	)
+
+	for _, tc := range []struct {
+		name    string
+		disrupt bool
+	}{
+		// Delivery rests on the interval alone, so a coalescer that stops arming
+		// after an earlier flush strands everything enqueued after it.
+		{name: "interval only"},
+		// Forced flushes race the interval, so taking the buffer has to stay
+		// atomic with appending to it.
+		{name: "racing flushes", disrupt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &killRecorder{}
+			kc := newKillCoalescer(rec.flush, time.Millisecond)
+
+			// Two targets so grouping runs on every flush without changing the id set.
+			targets := []killTarget{
+				{token: bearertoken.Token("t1")},
+				{token: bearertoken.Token("t2")},
+			}
+			ids := make([][]uuid.UUID, writers)
+			for w := range ids {
+				ids[w] = make([]uuid.UUID, perWriter)
+				for i := range ids[w] {
+					ids[w][i] = uuid.NewUUID()
+				}
+			}
+
+			var wg sync.WaitGroup
+			for w := range writers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					target := targets[w%len(targets)]
+					for i, id := range ids[w] {
+						kc.enqueue(id, target)
+						if !tc.disrupt {
+							continue
+						}
+						// Coprime strides keep the forced flushes from settling into
+						// lockstep with each other or with the interval.
+						if w%2 == 0 && i%7 == 0 {
+							kc.flushAsync()
+						} else if i%11 == 0 {
+							kc.flush()
+						}
+					}
+				}()
+			}
+			wg.Wait()
+
+			delivered := func() []uuid.UUID {
+				var out []uuid.UUID
+				for _, b := range rec.snapshot() {
+					out = append(out, b.ids...)
+				}
+				return out
+			}
+			waitForCondition(t, 2*time.Second, func() bool { return len(delivered()) >= total })
+			// Anything still buffered comes out here, so a shortfall cannot hide
+			// behind a duplicate that padded the count.
+			kc.flush()
+
+			counts := make(map[uuid.UUID]int, total)
+			for _, id := range delivered() {
+				counts[id]++
+			}
+			for _, batch := range ids {
+				for _, id := range batch {
+					switch n := counts[id]; n {
+					case 1:
+						delete(counts, id)
+					case 0:
+						t.Fatalf("id %v was enqueued but never flushed", id)
+					default:
+						t.Fatalf("id %v was flushed %d times", id, n)
+					}
+				}
+			}
+			if len(counts) != 0 {
+				t.Fatalf("flush sent %d ids that were never enqueued", len(counts))
+			}
+		})
+	}
+}
