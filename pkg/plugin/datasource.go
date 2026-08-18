@@ -127,7 +127,7 @@ func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids [
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
-// be disposed and a new one will be created using NewSampleDatasource factory function.
+// be disposed and a new one will be created using the NewDatasource factory function.
 func (d *Datasource) Dispose() {
 	if d.kill != nil {
 		d.kill.flushAsync()

@@ -56,9 +56,9 @@ func flushNow(enqueue func(kc *killCoalescer)) *killRecorder {
 	return rec
 }
 
-// The interval alone flushes, with no dispose to force it. One id keeps the
+// The interval alone flushes, with nothing forcing it. One id keeps the
 // assertion independent of how enqueues interleave with the interval;
-// multi-id coalescing is covered by the dispose-driven tests below.
+// multi-id coalescing is covered by the synchronous flushNow tests below.
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
 	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
@@ -153,18 +153,10 @@ func TestKillCoalescerFlushAsyncDoesNotWaitForFlush(t *testing.T) {
 	}, time.Hour)
 	kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t")})
 
-	returned := make(chan struct{})
-	go func() {
-		kc.flushAsync()
-		close(returned)
-	}()
+	// flushAsync returning while the flush is still blocked below is the
+	// assertion; a synchronous flushAsync would never reach the first select.
+	kc.flushAsync()
 
-	select {
-	case <-returned:
-	case <-time.After(2 * time.Second):
-		close(unblockFlush)
-		t.Fatal("flushAsync waited for the flush")
-	}
 	select {
 	case <-flushStarted:
 	case <-time.After(2 * time.Second):
@@ -180,16 +172,14 @@ func TestKillCoalescerFlushAsyncDoesNotWaitForFlush(t *testing.T) {
 }
 
 func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
-	var mu sync.Mutex
+	// flush runs synchronously on the test goroutine, so no locking is needed.
 	var deadlines []time.Time
 	kc := newKillCoalescer(func(ctx context.Context, _ killTarget, _ []uuid.UUID) {
 		d, ok := ctx.Deadline()
 		if !ok {
 			t.Error("flush ctx has no deadline")
 		}
-		mu.Lock()
 		deadlines = append(deadlines, d)
-		mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}, time.Hour)
 
