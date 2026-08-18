@@ -63,11 +63,6 @@ type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
 
-	// shutdown is canceled when the owning Datasource is disposed, so detached
-	// lookups do not outlive it holding a closed client and a stale API key.
-	shutdown       context.Context
-	shutdownCancel context.CancelFunc
-
 	assetCacheMu        sync.Mutex
 	assetCache          map[string]assetCacheEntry
 	assetCacheLastSweep time.Time // guarded by assetCacheMu
@@ -80,21 +75,11 @@ type NominalCatalog struct {
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
-	shutdown, cancel := context.WithCancel(context.Background())
 	return &NominalCatalog{
 		resourceHTTPClient:   resourceHTTPClient,
 		datasourceService:    datasourceService,
-		shutdown:             shutdown,
-		shutdownCancel:       cancel,
 		assetCache:           make(map[string]assetCacheEntry),
 		channelMetadataCache: make(map[string]channelMetadataCacheEntry),
-	}
-}
-
-// close cancels any detached lookups still running for this catalog.
-func (c *NominalCatalog) close() {
-	if c != nil && c.shutdownCancel != nil {
-		c.shutdownCancel()
 	}
 }
 
@@ -202,7 +187,7 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 		return asset.clone(), nil
 	}
 
-	asset, err := coalesceLookup(ctx, c.shutdown, &c.assetGroup, assetRid, "asset",
+	asset, err := coalesceLookup(ctx, &c.assetGroup, assetRid, "asset",
 		func() (*SingleAssetResponse, bool) { return c.lookupAsset(assetRid) },
 		func(fetchCtx context.Context) (*SingleAssetResponse, error) {
 			asset, err := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
@@ -225,7 +210,6 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 // caller's own miss and entering the group.
 func coalesceLookup[V any](
 	ctx context.Context,
-	shutdown context.Context,
 	group *singleflight.Group,
 	key string,
 	label string,
@@ -245,8 +229,6 @@ func coalesceLookup[V any](
 		}
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
-		stopShutdownWatch := context.AfterFunc(shutdown, cancel)
-		defer stopShutdownWatch()
 		v, err := load(workCtx)
 		if err != nil {
 			return nil, err
@@ -438,7 +420,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	assetRid := qm.AssetRid
 	dataScopeName := qm.DataScopeName
 	channel := qm.Channel
-	entry, err := coalesceLookup(ctx, c.shutdown, &c.channelGroup, cacheKey, "channel metadata",
+	entry, err := coalesceLookup(ctx, &c.channelGroup, cacheKey, "channel metadata",
 		func() (channelMetadataCacheEntry, bool) { return c.lookupChannelMetadata(cacheKey) },
 		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
 			return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
