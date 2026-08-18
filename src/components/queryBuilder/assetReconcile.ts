@@ -4,7 +4,7 @@ import type { TemplateValueResolution } from './templateResolution';
 // (failed by-RID fetch): "RID known, name unresolvable".
 export const ASSET_RID_FALLBACK_LABEL = 'Asset (RID)';
 
-export function templateAssetFallbackLabel(rawAssetRid: string): string {
+function templateAssetFallbackLabel(rawAssetRid: string): string {
   return `Asset (${rawAssetRid})`;
 }
 

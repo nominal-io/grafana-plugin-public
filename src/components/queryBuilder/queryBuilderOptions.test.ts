@@ -162,17 +162,51 @@ describe('queryBuilderOptions', () => {
   });
 
   it('shows the resolved RID when template asset metadata cannot be loaded', () => {
-    const fallbackAsset = createBasicAsset(assetA.rid, 'Asset ($asset)');
+    const assetRid = resolveTemplateValue('$asset', () => assetA.rid);
+    const placeholders = [
+      createBasicAsset(assetA.rid, 'Asset ($asset)'),
+      // placeholder baked from a previous variable name
+      createBasicAsset(assetA.rid, 'Asset ($other)'),
+      // placeholder from a failed concrete by-RID fetch
+      createBasicAsset(assetA.rid, 'Asset (RID)'),
+    ];
+
+    for (const placeholder of placeholders) {
+      expect(getAssetSelectValue({ assetRid, selectedAsset: placeholder })).toEqual({
+        value: '$asset',
+        label: `$asset → ${assetA.rid}`,
+      });
+    }
+  });
+
+  it('does not mistake a real asset titled like a fallback placeholder for one', () => {
+    const trickyTitledAsset = { ...assetA, title: 'Asset ($asset)' };
 
     expect(
       getAssetSelectValue({
-        assetRid: resolveTemplateValue('$asset', () => assetA.rid),
-        selectedAsset: fallbackAsset,
+        assetRid: resolveTemplateValue('$asset', () => trickyTitledAsset.rid),
+        selectedAsset: trickyTitledAsset,
       })
     ).toEqual({
       value: '$asset',
-      label: `$asset → ${assetA.rid}`,
+      label: '$asset → Asset ($asset)',
     });
+  });
+
+  it('omits placeholder selected assets from the options list', () => {
+    const options = buildAssetOptions({
+      assets: [],
+      selectedAsset: createBasicAsset(assetA.rid, 'Asset ($asset)'),
+      assetRid: resolveTemplateValue('$asset', () => assetA.rid),
+    });
+
+    expect(options).toEqual([
+      {
+        label: '$asset',
+        value: '$asset',
+        description: 'Template variable',
+      },
+    ]);
   });
 
   it('adds data scope template-variable labels only when the resolved scope is valid', () => {

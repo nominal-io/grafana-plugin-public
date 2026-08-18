@@ -1,6 +1,5 @@
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
-import { templateAssetFallbackLabel } from './assetReconcile';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
@@ -22,19 +21,16 @@ function assetToOption(asset: Asset): AssetOption {
   };
 }
 
-function getAssetTemplateLabel(
-  assetRid: TemplateValueResolution,
-  selectedAsset: Asset | null,
-  fallbackLabel: string
-): string {
-  const resolvedTitle =
-    selectedAsset?.rid === assetRid.resolved &&
-    selectedAsset.title &&
-    selectedAsset.title !== templateAssetFallbackLabel(assetRid.raw)
-      ? selectedAsset.title
-      : undefined;
+// Fallback placeholders built by createBasicAsset carry no data scopes; real assets
+// from search or the by-RID fetch always have at least one.
+function isPlaceholderAsset(asset: Asset): boolean {
+  return asset.dataScopes.length === 0;
+}
 
-  return resolvedTitle ? `${assetRid.raw} \u2192 ${resolvedTitle}` : fallbackLabel;
+function resolvedAssetTitle(assetRid: TemplateValueResolution, selectedAsset: Asset | null): string | undefined {
+  return selectedAsset && selectedAsset.rid === assetRid.resolved && !isPlaceholderAsset(selectedAsset)
+    ? selectedAsset.title
+    : undefined;
 }
 
 export function buildAssetOptions({
@@ -48,13 +44,16 @@ export function buildAssetOptions({
 }): AssetOption[] {
   const options = assets.map(assetToOption);
 
-  if (selectedAsset && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
+  if (selectedAsset && !isPlaceholderAsset(selectedAsset) && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
     options.unshift(assetToOption(selectedAsset));
   }
 
   if (assetRid.hasTemplate && !options.some((option) => option.value === assetRid.raw)) {
+    // The dropdown row stays plain until the asset title is known; the RID-only
+    // resolution is shown in the combobox input, not here.
+    const resolvedTitle = resolvedAssetTitle(assetRid, selectedAsset);
     options.unshift({
-      label: getAssetTemplateLabel(assetRid, selectedAsset, assetRid.raw),
+      label: resolvedTitle ? templateDisplayLabel(assetRid, resolvedTitle) : assetRid.raw,
       value: assetRid.raw,
       description: 'Template variable',
     });
@@ -78,7 +77,7 @@ export function getAssetSelectValue({
     // resolved asset is loaded, show its human-readable title instead of its RID.
     return {
       value: assetRid.raw,
-      label: getAssetTemplateLabel(assetRid, selectedAsset, templateDisplayLabel(assetRid)),
+      label: templateDisplayLabel(assetRid, resolvedAssetTitle(assetRid, selectedAsset)),
     };
   }
   const resolved = assetRid.resolved || assetRid.raw;
