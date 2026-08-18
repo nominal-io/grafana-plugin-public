@@ -22,8 +22,8 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// assetCacheTTL controls how long fetched asset metadata is cached.
-const assetCacheTTL = 5 * time.Minute
+// catalogCacheTTL controls how long fetched assets and channel metadata are cached.
+const catalogCacheTTL = 5 * time.Minute
 
 // sweepInterval limits lazy cache cleanup triggered by writes.
 const sweepInterval = 30 * time.Minute
@@ -42,44 +42,135 @@ const detachedLookupTimeout = 30 * time.Second
 
 const maxChannelVariables = 5000
 
-// assetCacheEntry holds a cached asset response with its fetch time.
-type assetCacheEntry struct {
-	asset     *SingleAssetResponse
-	fetchedAt time.Time
-}
-
-func (e assetCacheEntry) fetchTime() time.Time { return e.fetchedAt }
-
-// channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
+// channelMetadataCacheEntry holds a cached channel metadata inference result.
 type channelMetadataCacheEntry struct {
 	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
 	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
-	fetchedAt       time.Time
 }
 
-func (e channelMetadataCacheEntry) fetchTime() time.Time { return e.fetchedAt }
+// ttlCacheEntry pairs a cached value with the time it was stored.
+type ttlCacheEntry[V any] struct {
+	value     V
+	fetchedAt time.Time
+}
+
+// ttlCache is a mutex-guarded cache whose entries expire ttl after they are
+// stored. Writes lazily sweep expired entries, and concurrent cache misses for
+// the same key coalesce into one detached backend load.
+type ttlCache[V any] struct {
+	ttl   time.Duration
+	label string
+	now   func() time.Time // injectable for tests
+
+	mu        sync.Mutex
+	entries   map[string]ttlCacheEntry[V] // guarded by mu, as is lastSweep
+	lastSweep time.Time
+	group     singleflight.Group
+}
+
+func newTTLCache[V any](ttl time.Duration, label string) *ttlCache[V] {
+	return &ttlCache[V]{
+		ttl:     ttl,
+		label:   label,
+		now:     time.Now,
+		entries: make(map[string]ttlCacheEntry[V]),
+	}
+}
+
+// lookup returns the cached value for key if present and not yet expired.
+func (c *ttlCache[V]) lookup(key string) (V, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || c.now().Sub(entry.fetchedAt) >= c.ttl {
+		var zero V
+		return zero, false
+	}
+	return entry.value, true
+}
+
+// store caches value for key and lazily sweeps expired entries.
+func (c *ttlCache[V]) store(key string, value V) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = ttlCacheEntry[V]{value: value, fetchedAt: c.now()}
+	c.sweepLocked()
+}
+
+// sweepLocked deletes expired entries, at most once per sweepInterval.
+func (c *ttlCache[V]) sweepLocked() {
+	now := c.now()
+	if now.Sub(c.lastSweep) < sweepInterval {
+		return
+	}
+	removed := 0
+	for k, entry := range c.entries {
+		if now.Sub(entry.fetchedAt) >= c.ttl {
+			delete(c.entries, k)
+			removed++
+		}
+	}
+	c.lastSweep = now
+	if removed > 0 {
+		log.DefaultLogger.Debug(c.label+" cache swept", "removed", removed, "remaining", len(c.entries))
+	}
+}
+
+// get returns the cached value for key, or shares one backend load across every
+// concurrent caller of the same key. The load is detached from the initiating
+// caller so that caller's cancellation cannot fail the others, and bounded by
+// detachedLookupTimeout. The cache is re-read inside the flight, closing the
+// race between a caller's own miss and entering the group. load decides what
+// to store, so a load that returns nothing cacheable is retried on the next
+// miss.
+func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
+	var zero V
+	if v, hit := c.lookup(key); hit {
+		return v, nil
+	}
+
+	// Avoid starting detached work for an already-canceled caller.
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+
+	ch := c.group.DoChan(key, func() (any, error) {
+		if v, hit := c.lookup(key); hit {
+			return v, nil
+		}
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		return load(workCtx)
+	})
+
+	select {
+	case <-ctx.Done():
+		return zero, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return zero, res.Err
+		}
+		if res.Shared {
+			log.DefaultLogger.Debug(c.label + " lookup coalesced")
+		}
+		return res.Val.(V), nil
+	}
+}
 
 type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
 
-	assetCacheMu        sync.Mutex
-	assetCache          map[string]assetCacheEntry
-	assetCacheLastSweep time.Time // guarded by assetCacheMu
-	assetGroup          singleflight.Group
-
-	channelMetadataCacheMu        sync.Mutex
-	channelMetadataCache          map[string]channelMetadataCacheEntry
-	channelMetadataCacheLastSweep time.Time // guarded by channelMetadataCacheMu
-	channelGroup                  singleflight.Group
+	assetCache           *ttlCache[*SingleAssetResponse]
+	channelMetadataCache *ttlCache[channelMetadataCacheEntry]
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
 	return &NominalCatalog{
 		resourceHTTPClient:   resourceHTTPClient,
 		datasourceService:    datasourceService,
-		assetCache:           make(map[string]assetCacheEntry),
-		channelMetadataCache: make(map[string]channelMetadataCacheEntry),
+		assetCache:           newTTLCache[*SingleAssetResponse](catalogCacheTTL, "asset"),
+		channelMetadataCache: newTTLCache[channelMetadataCacheEntry](catalogCacheTTL, "channel metadata"),
 	}
 }
 
@@ -180,116 +271,25 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 }
 
 // FetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint.
-// Results are cached for assetCacheTTL. The returned value is a copy, so callers
-// may mutate it without affecting the cache or other callers.
+// Results are cached for catalogCacheTTL; a not-found asset is cached and returned
+// as nil. The returned value is a copy, so callers may mutate it without affecting
+// the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	if c == nil {
 		return nil, fmt.Errorf("nominal catalog is not configured")
 	}
-	if asset, hit := c.lookupAsset(assetRid); hit {
-		return asset.clone(), nil
-	}
-
-	asset, err := coalesceLookup(ctx, &c.assetGroup, assetRid, "asset",
-		func() (*SingleAssetResponse, bool) { return c.lookupAsset(assetRid) },
-		func(fetchCtx context.Context) (*SingleAssetResponse, error) {
-			asset, err := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
-			if err != nil {
-				return nil, err
-			}
-			c.storeAsset(assetRid, asset)
-			return asset, nil
-		})
+	asset, err := c.assetCache.get(ctx, assetRid, func(fetchCtx context.Context) (*SingleAssetResponse, error) {
+		asset, err := c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
+		if err != nil {
+			return nil, err
+		}
+		c.assetCache.store(assetRid, asset)
+		return asset, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 	return asset.clone(), nil
-}
-
-// coalesceLookup shares one backend lookup across every concurrent caller of the
-// same key. The work is detached from the initiating caller so that caller's
-// cancellation cannot fail the others, and bounded by detachedLookupTimeout.
-// cached re-reads the cache inside the flight, closing the race between a
-// caller's own miss and entering the group.
-func coalesceLookup[V any](
-	ctx context.Context,
-	group *singleflight.Group,
-	key string,
-	label string,
-	cached func() (V, bool),
-	load func(context.Context) (V, error),
-) (V, error) {
-	var zero V
-
-	// Avoid starting detached work for an already-canceled caller.
-	if err := ctx.Err(); err != nil {
-		return zero, err
-	}
-
-	ch := group.DoChan(key, func() (any, error) {
-		if v, hit := cached(); hit {
-			return v, nil
-		}
-		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
-		defer cancel()
-		v, err := load(workCtx)
-		if err != nil {
-			return nil, err
-		}
-		return v, nil
-	})
-
-	select {
-	case <-ctx.Done():
-		return zero, ctx.Err()
-	case res := <-ch:
-		if res.Err != nil {
-			return zero, res.Err
-		}
-		if res.Shared {
-			log.DefaultLogger.Debug(label + " lookup coalesced")
-		}
-		return res.Val.(V), nil
-	}
-}
-
-// lookupAsset returns a cached asset if present and not yet expired. A cached
-// not-found asset is a hit with a nil value.
-func (c *NominalCatalog) lookupAsset(assetRid string) (*SingleAssetResponse, bool) {
-	c.assetCacheMu.Lock()
-	defer c.assetCacheMu.Unlock()
-	entry, ok := c.assetCache[assetRid]
-	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
-		return nil, false
-	}
-	return entry.asset, true
-}
-
-func (c *NominalCatalog) storeAsset(assetRid string, asset *SingleAssetResponse) {
-	c.assetCacheMu.Lock()
-	defer c.assetCacheMu.Unlock()
-	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
-	sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
-}
-
-// sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
-// sweepInterval. Caller must hold the mutex guarding entries and lastSweep.
-func sweepExpiredLocked[V any](entries map[string]V, lastSweep *time.Time, fetchedAt func(V) time.Time, label string) {
-	now := time.Now()
-	if now.Sub(*lastSweep) < sweepInterval {
-		return
-	}
-	removed := 0
-	for k, entry := range entries {
-		if now.Sub(fetchedAt(entry)) >= assetCacheTTL {
-			delete(entries, k)
-			removed++
-		}
-	}
-	*lastSweep = now
-	if removed > 0 {
-		log.DefaultLogger.Debug(label+" cache swept", "removed", removed, "remaining", len(entries))
-	}
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
@@ -416,15 +416,10 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 
 	cacheKey := channelMetadataCacheKey(qm.AssetRid, qm.DataScopeName, qm.Channel)
 
-	if entry, hit := c.lookupChannelMetadata(cacheKey); hit {
-		applyChannelMetadata(qm, entry)
-		return
-	}
 	assetRid := qm.AssetRid
 	dataScopeName := qm.DataScopeName
 	channel := qm.Channel
-	entry, err := coalesceLookup(ctx, &c.channelGroup, cacheKey, "channel metadata",
-		func() (channelMetadataCacheEntry, bool) { return c.lookupChannelMetadata(cacheKey) },
+	entry, err := c.channelMetadataCache.get(ctx, cacheKey,
 		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
 			return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
 		})
@@ -468,8 +463,7 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	}
 
 	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, channel); ok {
-		entry.fetchedAt = time.Now()
-		c.storeChannelMetadata(cacheKey, entry)
+		c.channelMetadataCache.store(cacheKey, entry)
 		return entry, nil
 	}
 
@@ -478,8 +472,8 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	// page limit).
 	log.DefaultLogger.Debug("No usable channel metadata for inference",
 		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
-	entry := channelMetadataCacheEntry{fetchedAt: time.Now()}
-	c.storeChannelMetadata(cacheKey, entry)
+	entry := channelMetadataCacheEntry{}
+	c.channelMetadataCache.store(cacheKey, entry)
 	return entry, nil
 }
 
@@ -542,25 +536,6 @@ func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata,
 // Quoted components prevent separator collisions in cache keys.
 func channelMetadataCacheKey(assetRid, dataScopeName, channel string) string {
 	return fmt.Sprintf("%q|%q|%q", assetRid, dataScopeName, channel)
-}
-
-// lookupChannelMetadata returns a cached channel metadata entry if present and
-// not yet expired. Caller must apply the entry to its query model on hit.
-func (c *NominalCatalog) lookupChannelMetadata(cacheKey string) (channelMetadataCacheEntry, bool) {
-	c.channelMetadataCacheMu.Lock()
-	defer c.channelMetadataCacheMu.Unlock()
-	entry, ok := c.channelMetadataCache[cacheKey]
-	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
-		return channelMetadataCacheEntry{}, false
-	}
-	return entry, true
-}
-
-func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMetadataCacheEntry) {
-	c.channelMetadataCacheMu.Lock()
-	defer c.channelMetadataCacheMu.Unlock()
-	c.channelMetadataCache[cacheKey] = entry
-	sweepExpiredLocked(c.channelMetadataCache, &c.channelMetadataCacheLastSweep, channelMetadataCacheEntry.fetchTime, "channel metadata")
 }
 
 // getChannelMetadataDescription extracts description from channel metadata
