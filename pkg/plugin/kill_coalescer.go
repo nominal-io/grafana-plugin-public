@@ -37,13 +37,15 @@ type killEntry struct {
 
 // killCoalescer batches kill ids for one datasource instance. A non-empty buffer
 // always has a flush pending and a flush with nothing to send does nothing, so
-// the buffer is the only state, and an idle coalescer costs nothing.
+// the buffer is the only state, and an idle coalescer costs nothing. At most one
+// flush sends at a time, so a slow kill endpoint cannot be fanned out to.
 type killCoalescer struct {
 	flushFn  killFlushFunc
 	interval time.Duration
 
-	mu  sync.Mutex
-	buf []killEntry
+	mu       sync.Mutex
+	buf      []killEntry
+	flushing bool
 }
 
 func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalescer {
@@ -67,16 +69,36 @@ func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 
 // flush sends every buffered id and leaves the buffer idle again. Flushing more
 // often than the buffer fills is harmless: whichever flush takes the entries
-// sends them, and the rest find nothing.
+// sends them, and the rest find nothing. A flush that arrives while another is
+// sending returns at once and leaves its entries to that one, which re-drains
+// until the buffer is empty, so kills queue behind a slow endpoint instead of
+// piling onto it.
 func (kc *killCoalescer) flush() {
 	kc.mu.Lock()
-	entries := kc.buf
-	kc.buf = nil
-	kc.mu.Unlock()
-	if len(entries) == 0 {
+	if kc.flushing {
+		kc.mu.Unlock()
 		return
 	}
+	kc.flushing = true
+	for {
+		entries := kc.buf
+		kc.buf = nil
+		if len(entries) == 0 {
+			// Clearing the flag in the same critical section that finds the buffer
+			// empty is what stops an entry from being stranded: any later enqueue
+			// sees an empty buffer and arms its own timer.
+			kc.flushing = false
+			kc.mu.Unlock()
+			return
+		}
+		kc.mu.Unlock()
+		kc.send(entries)
+		kc.mu.Lock()
+	}
+}
 
+// send delivers one drained batch, one call per target per chunk.
+func (kc *killCoalescer) send(entries []killEntry) {
 	byTarget := make(map[killTarget][]uuid.UUID)
 	for _, e := range entries {
 		byTarget[e.target] = append(byTarget[e.target], e.id)
