@@ -3966,7 +3966,7 @@ func TestDisposeFlushesPendingKills(t *testing.T) {
 
 	mockService := &mockComputeService{}
 	ds := withKillCoalescer(&Datasource{computeService: mockService})
-	target := testKillTarget(bearertoken.Token("t1"))
+	target := killTarget{token: bearertoken.Token("t1")}
 
 	ds.kill.enqueue(uuid.NewUUID(), target)
 	ds.Dispose()

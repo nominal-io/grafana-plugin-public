@@ -28,10 +28,6 @@ func (r *killRecorder) flush(_ context.Context, target killTarget, ids []uuid.UU
 	r.batches = append(r.batches, killBatch{target: target, ids: append([]uuid.UUID(nil), ids...)})
 }
 
-func testKillTarget(token bearertoken.Token) killTarget {
-	return killTarget{token: token}
-}
-
 func (r *killRecorder) snapshot() []killBatch {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -68,7 +64,7 @@ func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
 
 	id := uuid.NewUUID()
-	kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
+	kc.enqueue(id, killTarget{token: bearertoken.Token("t1")})
 
 	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 1 })
 
@@ -86,7 +82,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 
 	rec := flushNow(func(kc *killCoalescer) {
 		for _, id := range ids {
-			kc.enqueue(id, testKillTarget(bearertoken.Token("t1")))
+			kc.enqueue(id, killTarget{token: bearertoken.Token("t1")})
 		}
 	})
 
@@ -105,7 +101,7 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
 	rec := flushNow(func(kc *killCoalescer) {
 		for i := 0; i < killBufferLimit+10; i++ {
-			kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t1")))
+			kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
 		}
 	})
 
@@ -155,7 +151,7 @@ func TestKillCoalescerFlushAsyncDoesNotWaitForFlush(t *testing.T) {
 		<-unblockFlush
 		close(flushDone)
 	}, time.Hour)
-	kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t")))
+	kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t")})
 
 	returned := make(chan struct{})
 	go func() {
@@ -198,7 +194,7 @@ func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
 	}, time.Hour)
 
 	for i := 0; i < killChunkSize+1; i++ {
-		kc.enqueue(uuid.NewUUID(), testKillTarget(bearertoken.Token("t1")))
+		kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
 	}
 	kc.flush()
 
