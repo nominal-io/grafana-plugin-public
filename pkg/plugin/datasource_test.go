@@ -788,7 +788,6 @@ type mockComputeService struct {
 	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
 
 	killCalls []killCall
-	killError error
 }
 
 // killCall records what one BatchKillRequests carried, including the identity
@@ -853,7 +852,7 @@ func (m *mockComputeService) BatchKillRequests(ctx context.Context, authHeader b
 		ids: append([]uuid.UUID(nil), requestArg.RequestIds...),
 		ua:  ua,
 	})
-	return m.killError
+	return nil
 }
 
 func (m *mockComputeService) killCallsSnapshot() []killCall {
@@ -4057,16 +4056,19 @@ func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
 			if tt.wantKill {
 				waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) >= 1 })
 			}
-			// Dispose flushes what is still buffered, so no-kill cannot pass by outrunning the ticker.
 			ds.Dispose()
 
-			kills := mockService.killCallsSnapshot()
 			if !tt.wantKill {
-				if len(kills) != 0 {
+				// The final flush is async, so a spurious kill needs time to
+				// land before a no-kill assertion means anything.
+				time.Sleep(3 * killFlushInterval)
+				if kills := mockService.killCallsSnapshot(); len(kills) != 0 {
 					t.Fatalf("expected no kill, got %v", kills)
 				}
 				return
 			}
+
+			kills := mockService.killCallsSnapshot()
 			stamped := mockService.lastBatchRequest.Requests[0].RequestId
 			if stamped == nil {
 				t.Fatal("expected RequestId to be stamped on the batch")
