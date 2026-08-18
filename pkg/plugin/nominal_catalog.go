@@ -488,9 +488,10 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return entry, nil
 	}
 
-	// Absent from the results, so nothing to infer. A result count at the server's
-	// page limit means the channel may exist but was paged out.
-	log.DefaultLogger.Warn("No exact channel match for channel metadata inference",
+	// Nothing usable to infer: the channel is absent from the results, present
+	// without a data type or unit, or paged out (a result count at the server's
+	// page limit).
+	log.DefaultLogger.Debug("No usable channel metadata for inference",
 		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	entry := channelMetadataCacheEntry{fetchedAt: time.Now()}
 	c.storeChannelMetadata(cacheKey, entry)
