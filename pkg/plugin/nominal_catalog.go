@@ -183,6 +183,9 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 // Results are cached for assetCacheTTL. The returned value is a copy, so callers
 // may mutate it without affecting the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	if c == nil {
+		return nil, fmt.Errorf("nominal catalog is not configured")
+	}
 	if asset, hit := c.lookupAsset(assetRid); hit {
 		return asset.clone(), nil
 	}
