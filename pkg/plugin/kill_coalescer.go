@@ -112,10 +112,3 @@ func (kc *killCoalescer) send(entries []killEntry) {
 		}
 	}
 }
-
-// flushAsync sends what is buffered without waiting for the network. Enqueues
-// that arrive afterwards still flush on the normal interval, which matters
-// because the SDK replaces an instance without draining its in-flight requests.
-func (kc *killCoalescer) flushAsync() {
-	go kc.flush()
-}

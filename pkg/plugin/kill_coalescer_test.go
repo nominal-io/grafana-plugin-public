@@ -142,35 +142,6 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	}
 }
 
-func TestKillCoalescerFlushAsyncDoesNotWaitForFlush(t *testing.T) {
-	flushStarted := make(chan struct{})
-	unblockFlush := make(chan struct{})
-	flushDone := make(chan struct{})
-	kc := newKillCoalescer(func(_ context.Context, _ killTarget, _ []uuid.UUID) {
-		close(flushStarted)
-		<-unblockFlush
-		close(flushDone)
-	}, time.Hour)
-	kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t")})
-
-	// flushAsync returning while the flush is still blocked below is the
-	// assertion; a synchronous flushAsync would never reach the first select.
-	kc.flushAsync()
-
-	select {
-	case <-flushStarted:
-	case <-time.After(2 * time.Second):
-		close(unblockFlush)
-		t.Fatal("expected the async flush to start")
-	}
-	close(unblockFlush)
-	select {
-	case <-flushDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("flush did not finish after being unblocked")
-	}
-}
-
 func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
 	// flush runs synchronously on the test goroutine, so no locking is needed.
 	var deadlines []time.Time
@@ -271,7 +242,7 @@ func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 						// Coprime strides keep the forced flushes from settling into
 						// lockstep with each other or with the interval.
 						if w%2 == 0 && i%7 == 0 {
-							kc.flushAsync()
+							go kc.flush()
 						} else if i%11 == 0 {
 							kc.flush()
 						}
