@@ -814,26 +814,40 @@ func (m *mockComputeService) ComputeUnits(ctx context.Context, authHeader bearer
 
 func (m *mockComputeService) BatchComputeWithUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.batchComputeCalls++
 	m.lastBatchRequest = requestArg
 	m.batchRequests = append(m.batchRequests, requestArg)
-
-	if m.batchComputeFunc != nil {
-		return m.batchComputeFunc(requestArg)
-	}
-
+	callback := m.batchComputeFunc
 	callIndex := m.batchComputeCalls - 1
-	if callIndex < len(m.batchComputeErrors) && m.batchComputeErrors[callIndex] != nil {
-		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeErrors[callIndex]
+	var indexedErr error
+	if callIndex < len(m.batchComputeErrors) {
+		indexedErr = m.batchComputeErrors[callIndex]
 	}
+	var indexedResp *computeapi.BatchComputeWithUnitsResponse
 	if callIndex < len(m.batchComputeResponses) {
-		return m.batchComputeResponses[callIndex], nil
+		indexedResp = &m.batchComputeResponses[callIndex]
 	}
-	if m.batchComputeError != nil {
-		return computeapi.BatchComputeWithUnitsResponse{}, m.batchComputeError
+	fallbackErr := m.batchComputeError
+	fallbackResp := m.batchComputeResponse
+	m.mu.Unlock()
+
+	// A blocking callback must not hold the mock mutex: BatchKillRequests and
+	// the snapshot helpers take it, so a callback that waits on a kill landing
+	// would deadlock.
+	if callback != nil {
+		return callback(requestArg)
 	}
-	return m.batchComputeResponse, nil
+
+	if indexedErr != nil {
+		return computeapi.BatchComputeWithUnitsResponse{}, indexedErr
+	}
+	if indexedResp != nil {
+		return *indexedResp, nil
+	}
+	if fallbackErr != nil {
+		return computeapi.BatchComputeWithUnitsResponse{}, fallbackErr
+	}
+	return fallbackResp, nil
 }
 
 func (m *mockComputeService) BatchComputeUnits(ctx context.Context, authHeader bearertoken.Token, requestArg computeapi1.BatchComputeUnitsRequest) (computeapi.BatchComputeUnitResult, error) {
