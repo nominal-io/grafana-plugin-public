@@ -90,7 +90,6 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
-	ds.kill = newKillCoalescer(ds.sendBatchKill, killFlushInterval)
 
 	return ds, nil
 }
@@ -107,7 +106,7 @@ type Datasource struct {
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
 
-	kill *killCoalescer
+	kill killCoalescer
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
@@ -123,6 +122,13 @@ func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids [
 		return
 	}
 	log.DefaultLogger.Debug("BatchKillRequests flushed", "count", len(ids))
+}
+
+// enqueueKill queues a kill for this datasource's own sender. The coalescer
+// takes the sender per call, so binding it here is what keeps a bare
+// Datasource literal safe: there is no wiring to forget.
+func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
+	d.kill.enqueue(d.sendBatchKill, id, target)
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance

@@ -39,8 +39,12 @@ type killEntry struct {
 // always has a flush pending and a flush with nothing to send does nothing, so
 // the buffer is the only state, and an idle coalescer costs nothing. At most one
 // flush sends at a time, so a slow kill endpoint cannot be fanned out to.
+//
+// The zero value is ready to use. Callers pass the sender to every enqueue and
+// flush, and an armed timer uses the sender from the enqueue that armed it, so
+// every caller of one coalescer must pass the same sender. A zero interval means
+// killFlushInterval.
 type killCoalescer struct {
-	flushFn  killFlushFunc
 	interval time.Duration
 
 	mu       sync.Mutex
@@ -48,11 +52,16 @@ type killCoalescer struct {
 	flushing bool
 }
 
-func newKillCoalescer(flush killFlushFunc, interval time.Duration) *killCoalescer {
-	return &killCoalescer{flushFn: flush, interval: interval}
+// armInterval resolves the flush delay so a zero-value coalescer arms on the
+// production window.
+func (kc *killCoalescer) armInterval() time.Duration {
+	if kc.interval == 0 {
+		return killFlushInterval
+	}
+	return kc.interval
 }
 
-func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
+func (kc *killCoalescer) enqueue(flush killFlushFunc, id uuid.UUID, target killTarget) {
 	kc.mu.Lock()
 	if len(kc.buf) >= killBufferLimit {
 		kc.mu.Unlock()
@@ -62,7 +71,7 @@ func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 	kc.buf = append(kc.buf, killEntry{id: id, target: target})
 	if len(kc.buf) == 1 {
 		// AfterFunc runs flush on its own goroutine, so arming under mu is safe.
-		time.AfterFunc(kc.interval, kc.flush)
+		time.AfterFunc(kc.armInterval(), func() { kc.flush(flush) })
 	}
 	kc.mu.Unlock()
 }
@@ -73,7 +82,7 @@ func (kc *killCoalescer) enqueue(id uuid.UUID, target killTarget) {
 // sending returns at once and leaves its entries to that one, which re-drains
 // until the buffer is empty, so kills queue behind a slow endpoint instead of
 // piling onto it.
-func (kc *killCoalescer) flush() {
+func (kc *killCoalescer) flush(flush killFlushFunc) {
 	kc.mu.Lock()
 	if kc.flushing {
 		kc.mu.Unlock()
@@ -92,13 +101,13 @@ func (kc *killCoalescer) flush() {
 			return
 		}
 		kc.mu.Unlock()
-		kc.send(entries)
+		kc.send(flush, entries)
 		kc.mu.Lock()
 	}
 }
 
 // send delivers one drained batch, one call per target per chunk.
-func (kc *killCoalescer) send(entries []killEntry) {
+func (kc *killCoalescer) send(flush killFlushFunc, entries []killEntry) {
 	byTarget := make(map[killTarget][]uuid.UUID)
 	for _, e := range entries {
 		byTarget[e.target] = append(byTarget[e.target], e.id)
@@ -107,7 +116,7 @@ func (kc *killCoalescer) send(entries []killEntry) {
 		for chunk := range slices.Chunk(ids, killChunkSize) {
 			// A fresh deadline per call keeps one slow kill from starving the rest.
 			ctx, cancel := context.WithTimeout(context.Background(), killFlushTimeout)
-			kc.flushFn(ctx, target, chunk)
+			flush(ctx, target, chunk)
 			cancel()
 		}
 	}

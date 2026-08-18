@@ -48,11 +48,11 @@ func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
 
 // flushNow enqueues against a coalescer whose interval never elapses, then
 // flushes synchronously, so assertions see exactly one deterministic flush.
-func flushNow(enqueue func(kc *killCoalescer)) *killRecorder {
+func flushNow(enqueue func(kc *killCoalescer, flush killFlushFunc)) *killRecorder {
 	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, time.Hour)
-	enqueue(kc)
-	kc.flush()
+	kc := &killCoalescer{interval: time.Hour}
+	enqueue(kc, rec.flush)
+	kc.flush(rec.flush)
 	return rec
 }
 
@@ -61,10 +61,10 @@ func flushNow(enqueue func(kc *killCoalescer)) *killRecorder {
 // multi-id coalescing is covered by the synchronous flushNow tests below.
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
+	kc := &killCoalescer{interval: 5 * time.Millisecond}
 
 	id := uuid.NewUUID()
-	kc.enqueue(id, killTarget{token: bearertoken.Token("t1")})
+	kc.enqueue(rec.flush, id, killTarget{token: bearertoken.Token("t1")})
 
 	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 1 })
 
@@ -80,9 +80,9 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 		ids[i] = uuid.NewUUID()
 	}
 
-	rec := flushNow(func(kc *killCoalescer) {
+	rec := flushNow(func(kc *killCoalescer, flush killFlushFunc) {
 		for _, id := range ids {
-			kc.enqueue(id, killTarget{token: bearertoken.Token("t1")})
+			kc.enqueue(flush, id, killTarget{token: bearertoken.Token("t1")})
 		}
 	})
 
@@ -99,9 +99,9 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 }
 
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
-	rec := flushNow(func(kc *killCoalescer) {
+	rec := flushNow(func(kc *killCoalescer, flush killFlushFunc) {
 		for i := 0; i < killBufferLimit+10; i++ {
-			kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
+			kc.enqueue(flush, uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
 		}
 	})
 
@@ -119,9 +119,9 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	target1 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "1.0.0"}}
 	target2 := killTarget{token: bearertoken.Token("t"), ua: userAgentComponents{PluginVersion: "2.0.0"}}
 
-	rec := flushNow(func(kc *killCoalescer) {
-		kc.enqueue(id1, target1)
-		kc.enqueue(id2, target2)
+	rec := flushNow(func(kc *killCoalescer, flush killFlushFunc) {
+		kc.enqueue(flush, id1, target1)
+		kc.enqueue(flush, id2, target2)
 	})
 
 	batches := rec.snapshot()
@@ -145,19 +145,20 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
 	// flush runs synchronously on the test goroutine, so no locking is needed.
 	var deadlines []time.Time
-	kc := newKillCoalescer(func(ctx context.Context, _ killTarget, _ []uuid.UUID) {
+	flush := func(ctx context.Context, _ killTarget, _ []uuid.UUID) {
 		d, ok := ctx.Deadline()
 		if !ok {
 			t.Error("flush ctx has no deadline")
 		}
 		deadlines = append(deadlines, d)
 		time.Sleep(20 * time.Millisecond)
-	}, time.Hour)
+	}
+	kc := &killCoalescer{interval: time.Hour}
 
 	for i := 0; i < killChunkSize+1; i++ {
-		kc.enqueue(uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
+		kc.enqueue(flush, uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
 	}
-	kc.flush()
+	kc.flush(flush)
 
 	if len(deadlines) != 2 {
 		t.Fatalf("expected 2 chunked calls, got %d", len(deadlines))
@@ -172,14 +173,14 @@ func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
 // only a fresh arming can deliver it.
 func TestKillCoalescerRearmsAfterDrain(t *testing.T) {
 	rec := &killRecorder{}
-	kc := newKillCoalescer(rec.flush, 5*time.Millisecond)
+	kc := &killCoalescer{interval: 5 * time.Millisecond}
 	target := killTarget{token: bearertoken.Token("t1")}
 
-	kc.enqueue(uuid.NewUUID(), target)
+	kc.enqueue(rec.flush, uuid.NewUUID(), target)
 	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 1 })
 
 	second := uuid.NewUUID()
-	kc.enqueue(second, target)
+	kc.enqueue(rec.flush, second, target)
 	waitForCondition(t, 2*time.Second, func() bool { return len(rec.snapshot()) == 2 })
 
 	batches := rec.snapshot()
@@ -188,7 +189,7 @@ func TestKillCoalescerRearmsAfterDrain(t *testing.T) {
 	}
 }
 
-// Every enqueued id reaches flushFn exactly once, however enqueues, interval
+// Every enqueued id reaches the sender exactly once, however enqueues, interval
 // flushes, and explicit flushes interleave. The total stays under
 // killBufferLimit so no enqueue can be dropped and the expected set is exact.
 // Nothing here depends on how ids were batched or on which flush carried them,
@@ -213,7 +214,7 @@ func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &killRecorder{}
-			kc := newKillCoalescer(rec.flush, time.Millisecond)
+			kc := &killCoalescer{interval: time.Millisecond}
 
 			// Two targets so grouping runs on every flush without changing the id set.
 			targets := []killTarget{
@@ -235,16 +236,16 @@ func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 					defer wg.Done()
 					target := targets[w%len(targets)]
 					for i, id := range ids[w] {
-						kc.enqueue(id, target)
+						kc.enqueue(rec.flush, id, target)
 						if !tc.disrupt {
 							continue
 						}
 						// Coprime strides keep the forced flushes from settling into
 						// lockstep with each other or with the interval.
 						if w%2 == 0 && i%7 == 0 {
-							go kc.flush()
+							go kc.flush(rec.flush)
 						} else if i%11 == 0 {
-							kc.flush()
+							kc.flush(rec.flush)
 						}
 					}
 				}()
@@ -261,7 +262,7 @@ func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 			waitForCondition(t, 2*time.Second, func() bool { return len(delivered()) >= total })
 			// Anything still buffered comes out here, so a shortfall cannot hide
 			// behind a duplicate that padded the count.
-			kc.flush()
+			kc.flush(rec.flush)
 
 			counts := make(map[uuid.UUID]int, total)
 			for _, id := range delivered() {
