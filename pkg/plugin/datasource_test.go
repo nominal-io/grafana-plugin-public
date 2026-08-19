@@ -3953,7 +3953,7 @@ func TestFieldConfigForEnum(t *testing.T) {
 	}
 }
 
-func TestDisposeFlushesPendingKills(t *testing.T) {
+func TestKillDeliverySurvivesDispose(t *testing.T) {
 	// Dispose also runs for instances that never queried, so it must not panic.
 	(&Datasource{}).Dispose()
 

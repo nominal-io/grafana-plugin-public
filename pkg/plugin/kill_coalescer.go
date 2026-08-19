@@ -101,13 +101,13 @@ func (kc *killCoalescer) flush(flush killFlushFunc) {
 			return
 		}
 		kc.mu.Unlock()
-		kc.send(flush, entries)
+		sendKills(flush, entries)
 		kc.mu.Lock()
 	}
 }
 
-// send delivers one drained batch, one call per target per chunk.
-func (kc *killCoalescer) send(flush killFlushFunc, entries []killEntry) {
+// sendKills delivers one drained batch, one call per target per chunk.
+func sendKills(flush killFlushFunc, entries []killEntry) {
 	byTarget := make(map[killTarget][]uuid.UUID)
 	for _, e := range entries {
 		byTarget[e.target] = append(byTarget[e.target], e.id)
