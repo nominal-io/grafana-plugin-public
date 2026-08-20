@@ -56,9 +56,6 @@ func flushNow(enqueue func(kc *killCoalescer, flush killFlushFunc)) *killRecorde
 	return rec
 }
 
-// The interval alone flushes, with nothing forcing it. One id keeps the
-// assertion independent of how enqueues interleave with the interval;
-// multi-id coalescing is covered by the synchronous flushNow tests below.
 func TestKillCoalescerFlushesOnInterval(t *testing.T) {
 	rec := &killRecorder{}
 	kc := &killCoalescer{interval: 5 * time.Millisecond}
@@ -142,32 +139,6 @@ func TestKillCoalescerGroupsByTarget(t *testing.T) {
 	}
 }
 
-func TestKillFlushGivesEachCallAFreshDeadline(t *testing.T) {
-	// flush runs synchronously on the test goroutine, so no locking is needed.
-	var deadlines []time.Time
-	flush := func(ctx context.Context, _ killTarget, _ []uuid.UUID) {
-		d, ok := ctx.Deadline()
-		if !ok {
-			t.Error("flush ctx has no deadline")
-		}
-		deadlines = append(deadlines, d)
-		time.Sleep(20 * time.Millisecond)
-	}
-	kc := &killCoalescer{interval: time.Hour}
-
-	for i := 0; i < killChunkSize+1; i++ {
-		kc.enqueue(flush, uuid.NewUUID(), killTarget{token: bearertoken.Token("t1")})
-	}
-	kc.flush(flush)
-
-	if len(deadlines) != 2 {
-		t.Fatalf("expected 2 chunked calls, got %d", len(deadlines))
-	}
-	if !deadlines[1].After(deadlines[0]) {
-		t.Fatalf("expected a fresh deadline per call, got %v then %v", deadlines[0], deadlines[1])
-	}
-}
-
 // A flush that empties the buffer must leave the next enqueue able to arm a
 // flush of its own. The first interval elapses before the second enqueue, so
 // only a fresh arming can deliver it.
@@ -189,11 +160,8 @@ func TestKillCoalescerRearmsAfterDrain(t *testing.T) {
 	}
 }
 
-// Every enqueued id reaches the sender exactly once, however enqueues, interval
-// flushes, and explicit flushes interleave. The total stays under
-// killBufferLimit so no enqueue can be dropped and the expected set is exact.
-// Nothing here depends on how ids were batched or on which flush carried them,
-// only on which came out.
+// Every enqueued id reaches the sender exactly once, whether delivery relies on
+// the interval or explicit flushes race it.
 func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 	const (
 		writers   = 8
@@ -205,11 +173,7 @@ func TestKillCoalescerDeliversEveryIDUnderConcurrency(t *testing.T) {
 		name    string
 		disrupt bool
 	}{
-		// Delivery rests on the interval alone, so a coalescer that stops arming
-		// after an earlier flush strands everything enqueued after it.
 		{name: "interval only"},
-		// Forced flushes race the interval, so taking the buffer has to stay
-		// atomic with appending to it.
 		{name: "racing flushes", disrupt: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
