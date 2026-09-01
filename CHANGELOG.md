@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.14.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.13.0...nominal-grafana-plugin@0.14.0) (2026-09-01)
+
+
+### Features
+
+* asset search via single combobox ([#101](https://github.com/nominal-io/grafana-plugin-public/issues/101)) ([af778d8](https://github.com/nominal-io/grafana-plugin-public/commit/af778d8af3ee300c7845cfed722e57b88a503233))
+* consolidate to single asset selection flow ([#103](https://github.com/nominal-io/grafana-plugin-public/issues/103)) ([a4c417f](https://github.com/nominal-io/grafana-plugin-public/commit/a4c417f588d079036b6ead6ac60929ae3c08d3cb))
+* propagate compute request cancellation ([#115](https://github.com/nominal-io/grafana-plugin-public/issues/115)) ([6cb2804](https://github.com/nominal-io/grafana-plugin-public/commit/6cb2804fc2454cb6f0827b701861978f8d0b1f7b))
+
+
+### Bug Fixes
+
+* improved channel search sorting ([#113](https://github.com/nominal-io/grafana-plugin-public/issues/113)) ([051ef6f](https://github.com/nominal-io/grafana-plugin-public/commit/051ef6fd17a7a1a318765917fe96411f2241bc4a))
+* preserve sub-second time range precision in compute requests ([#106](https://github.com/nominal-io/grafana-plugin-public/issues/106)) ([301c18e](https://github.com/nominal-io/grafana-plugin-public/commit/301c18e83505d6ed5babd4a9c5e4f149c609333c))
+* show asset names for resolved template variables ([#118](https://github.com/nominal-io/grafana-plugin-public/issues/118)) ([d559d64](https://github.com/nominal-io/grafana-plugin-public/commit/d559d646a7ceadd5dea0120b4c5e1003ef0e6e32))
+
+
+### Chores
+
+* bump nominal-api-go to 2026-05-20 pin for requestId + batchKillRequests ([#109](https://github.com/nominal-io/grafana-plugin-public/issues/109)) ([001b674](https://github.com/nominal-io/grafana-plugin-public/commit/001b67477a99f6961fb7161f9700c5c3e66946a5))
+* re-pin stale dep overrides, prevent validator scan of node_modules ([#114](https://github.com/nominal-io/grafana-plugin-public/issues/114)) ([f2fa60d](https://github.com/nominal-io/grafana-plugin-public/commit/f2fa60d5bf7c0e96a0514c8bb903cc6aeb67e069))
+* remediate dependency vulnerabilities ([#112](https://github.com/nominal-io/grafana-plugin-public/issues/112)) ([09c22cd](https://github.com/nominal-io/grafana-plugin-public/commit/09c22cd229b95679e6ad5f0965179a38306d0025))
+* remediate high and critical dependency vulnerabilities ([#105](https://github.com/nominal-io/grafana-plugin-public/issues/105)) ([90afe62](https://github.com/nominal-io/grafana-plugin-public/commit/90afe62502ef74b0063f15940830b571b1c72e74))
+* update Go toolchain to 1.26.5 ([#104](https://github.com/nominal-io/grafana-plugin-public/issues/104)) ([86a6e96](https://github.com/nominal-io/grafana-plugin-public/commit/86a6e96a0f9949916ecfc46485c41e6cbfd5837b))
+* upgrade Grafana Plugin Go SDK to v0.296.4 and bump dep vulns ([#120](https://github.com/nominal-io/grafana-plugin-public/issues/120)) ([b9b5919](https://github.com/nominal-io/grafana-plugin-public/commit/b9b5919f65d3d3693f4dafae1883896ed30be7f8))
+
 ## [0.13.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.12.2...nominal-grafana-plugin@0.13.0) (2026-07-07)
 
 
