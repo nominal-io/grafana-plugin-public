@@ -35,3 +35,16 @@ analyzers:
         severity: warning # same
     llmreview:
         enabled: false # non-deterministic; treat as advisory only
+
+    # Pull requests only: the release job does not read this file. Grafana's
+    # review treats a govulncheck finding as a warning, so a tagged release
+    # keeps that gate. The binary scan reports every advisory in the shipped
+    # binary, reachable or not, which matches what Grafana's review reports.
+    govulncheck:
+        rules:
+            govulncheck-issue-found:
+                severity: error
+            # A validator image without the govulncheck binary would otherwise
+            # pass the build with a warning, so the gate would stop gating.
+            govulncheck-not-installed:
+                severity: error
