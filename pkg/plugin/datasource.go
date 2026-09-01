@@ -22,6 +22,7 @@ import (
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/pkg/uuid"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
@@ -104,15 +105,35 @@ type Datasource struct {
 
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
+
+	kill killCoalescer
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
 	return d.resourceHTTPClient
 }
 
+// sendBatchKill sends one best-effort batch without logging sensitive values.
+func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids []uuid.UUID) {
+	ctx = contextWithUserAgentComponents(ctx, target.ua)
+	err := d.computeService.BatchKillRequests(ctx, target.token, computeapi.BatchKillRequestsRequest{RequestIds: ids})
+	if err != nil {
+		logErrorWithConjureFields("BatchKillRequests failed", err, "count", len(ids))
+		return
+	}
+	log.DefaultLogger.Debug("BatchKillRequests flushed", "count", len(ids))
+}
+
+// enqueueKill queues a kill for this datasource's own sender. The coalescer
+// takes the sender per call, so binding it here is what keeps a bare
+// Datasource literal safe: there is no wiring to forget.
+func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
+	d.kill.enqueue(d.sendBatchKill, id, target)
+}
+
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
-// be disposed and a new one will be created using NewSampleDatasource factory function.
+// be disposed and a new one will be created using the NewDatasource factory function.
 func (d *Datasource) Dispose() {
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()

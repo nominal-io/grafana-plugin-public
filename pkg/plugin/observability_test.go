@@ -6,13 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
+	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/uuid"
 )
 
 const uaWant = "nominal-grafana/0.11.3 (linux-amd64) go/1.25.7 grafana/12.1.0"
@@ -475,5 +479,48 @@ func TestCheckHealth_SurfacesInstanceID(t *testing.T) {
 	wantLabel := "errorInstanceId: " + failingInstanceID
 	if !strings.Contains(result.Message, wantLabel) {
 		t.Errorf("Message = %q, missing labeled instance id %q", result.Message, wantLabel)
+	}
+}
+
+func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
+	var mu sync.Mutex
+	var seenUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seenUA = r.Header.Get("User-Agent")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(conjureErrorBody("00000000-0000-0000-0000-000000000000")))
+	}))
+	defer srv.Close()
+
+	conjureClient, err := conjurehttpclient.NewClient(
+		conjurehttpclient.WithBaseURLs([]string{srv.URL}),
+		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ds := &Datasource{
+		computeService: computeapi1.NewComputeServiceClient(conjureClient),
+	}
+	defer ds.Dispose()
+
+	ds.enqueueKill(uuid.NewUUID(), killTarget{
+		token: bearertoken.Token("t"),
+		ua:    userAgentComponentsFromPluginContext(backend.PluginContext{PluginVersion: "9.9.9-test"}),
+	})
+
+	waitForCondition(t, 2*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seenUA != ""
+	})
+	mu.Lock()
+	got := seenUA
+	mu.Unlock()
+	if !strings.HasPrefix(got, "nominal-grafana/9.9.9-test") {
+		t.Errorf("kill flush UA = %q, want prefix %q", got, "nominal-grafana/9.9.9-test")
 	}
 }

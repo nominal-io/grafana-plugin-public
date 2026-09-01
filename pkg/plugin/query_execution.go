@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -9,6 +10,7 @@ import (
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/uuid"
 )
 
 type NominalQueryExecution struct {
@@ -128,6 +130,16 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 	}
 
 	for chunkStart := 0; chunkStart < len(batch.queries); chunkStart += maxBatchComputeSubrequests {
+		if ctx.Err() != nil {
+			// The caller is gone; stop minting requestIDs for work that would
+			// only fail client-side and enqueue kills the server never saw.
+			errMsg := fmt.Sprintf("Batch compute cancelled: %v", ctx.Err())
+			for _, q := range batch.queries[chunkStart:] {
+				results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal, errMsg)
+			}
+			break
+		}
+
 		chunkEnd := chunkStart + maxBatchComputeSubrequests
 		if chunkEnd > len(batch.queries) {
 			chunkEnd = len(batch.queries)
@@ -138,6 +150,12 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
 			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
+		}
+
+		// A shared request ID lets one kill cancel the entire batch.
+		requestID := uuid.NewUUID()
+		for i := range computeRequests {
+			computeRequests[i].RequestId = &requestID
 		}
 
 		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
@@ -152,6 +170,11 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		)
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+		if err != nil || ctx.Err() != nil {
+			// Kill unconfirmed work; unknown and finished IDs are harmless.
+			ua, _ := userAgentComponentsFromContext(ctx)
+			e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
+		}
 		if err != nil {
 			logErrorWithConjureFields("Batch compute API call failed", err,
 				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
