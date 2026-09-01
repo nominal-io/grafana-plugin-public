@@ -107,6 +107,7 @@ export function useChannelOptions({
         return buildChannelOptions({
           channelResults: channelsToOptions(channels),
           channel: channelResolutionSnapshot,
+          searchText,
         });
       } catch {
         // Only the latest loader request may emit alerts; stale failures can belong to an old asset/scope/search.
