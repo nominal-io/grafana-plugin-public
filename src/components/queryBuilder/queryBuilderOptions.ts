@@ -21,6 +21,18 @@ function assetToOption(asset: Asset): AssetOption {
   };
 }
 
+// Fallback placeholders built by createBasicAsset carry no data scopes; real assets
+// from search or the by-RID fetch always have at least one.
+function isPlaceholderAsset(asset: Asset): boolean {
+  return asset.dataScopes.length === 0;
+}
+
+function resolvedAssetTitle(assetRid: TemplateValueResolution, selectedAsset: Asset | null): string | undefined {
+  return selectedAsset && selectedAsset.rid === assetRid.resolved && !isPlaceholderAsset(selectedAsset)
+    ? selectedAsset.title
+    : undefined;
+}
+
 export function buildAssetOptions({
   assets,
   selectedAsset,
@@ -32,15 +44,16 @@ export function buildAssetOptions({
 }): AssetOption[] {
   const options = assets.map(assetToOption);
 
-  if (selectedAsset && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
+  if (selectedAsset && !isPlaceholderAsset(selectedAsset) && !assets.some((asset) => asset.rid === selectedAsset.rid)) {
     options.unshift(assetToOption(selectedAsset));
   }
 
   if (assetRid.hasTemplate && !options.some((option) => option.value === assetRid.raw)) {
-    const resolvedTitle = selectedAsset?.title;
-    const label = resolvedTitle && !resolvedTitle.includes('$') ? `${assetRid.raw} \u2192 ${resolvedTitle}` : assetRid.raw;
+    // The dropdown row stays plain until the asset title is known; the RID-only
+    // resolution is shown in the combobox input, not here.
+    const resolvedTitle = resolvedAssetTitle(assetRid, selectedAsset);
     options.unshift({
-      label,
+      label: resolvedTitle ? templateDisplayLabel(assetRid, resolvedTitle) : assetRid.raw,
       value: assetRid.raw,
       description: 'Template variable',
     });
@@ -60,9 +73,12 @@ export function getAssetSelectValue({
     return null;
   }
   if (assetRid.hasTemplate) {
-    // For an async Combobox the label is taken from the value prop directly, so render
-    // the template-aware display label ("$asset → resolved") rather than the raw RID.
-    return { value: assetRid.raw, label: templateDisplayLabel(assetRid) };
+    // For an async Combobox the label is taken from the value prop directly. Once the
+    // resolved asset is loaded, show its human-readable title instead of its RID.
+    return {
+      value: assetRid.raw,
+      label: templateDisplayLabel(assetRid, resolvedAssetTitle(assetRid, selectedAsset)),
+    };
   }
   const resolved = assetRid.resolved || assetRid.raw;
   // Show the resolved title once the by-RID fetch has populated the matching asset;

@@ -57,9 +57,9 @@ export function resolveQueryTemplateValues({
   };
 }
 
-export function templateDisplayLabel(value: TemplateValueResolution): string {
+export function templateDisplayLabel(value: TemplateValueResolution, displayName?: string): string {
   if (value.hasTemplate && value.isResolved && value.resolved && value.resolved !== value.raw) {
-    return `${value.raw} \u2192 ${value.resolved}`;
+    return `${value.raw} \u2192 ${displayName || value.resolved}`;
   }
   return value.raw;
 }

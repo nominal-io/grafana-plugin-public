@@ -1,5 +1,5 @@
 import { DEFAULT_AGGREGATIONS, AggregationType } from '../../types';
-import type { Asset } from '../../utils/api';
+import { createBasicAsset, type Asset } from '../../utils/api';
 import { resolveTemplateValue } from './templateResolution';
 import {
   buildAssetOptions,
@@ -93,6 +93,27 @@ describe('queryBuilderOptions', () => {
     });
   });
 
+  it('preserves dollar signs in resolved asset titles', () => {
+    const assetWithDollarTitle = { ...assetA, title: 'Flight $5 Sensor' };
+    const assetRid = resolveTemplateValue('$asset', () => assetWithDollarTitle.rid);
+
+    expect(
+      buildAssetOptions({
+        assets: [],
+        selectedAsset: assetWithDollarTitle,
+        assetRid,
+      })[0]
+    ).toEqual({
+      label: '$asset \u2192 Flight $5 Sensor',
+      value: '$asset',
+      description: 'Template variable',
+    });
+    expect(getAssetSelectValue({ assetRid, selectedAsset: assetWithDollarTitle })).toEqual({
+      value: '$asset',
+      label: '$asset \u2192 Flight $5 Sensor',
+    });
+  });
+
   it('builds asset combobox values for empty, concrete pre-fetch, concrete resolved, and template RIDs', () => {
     // empty -> null (matches getChannelSelectValue's empty behavior)
     expect(getAssetSelectValue({ assetRid: resolveTemplateValue('', (v) => v), selectedAsset: null })).toBeNull();
@@ -115,10 +136,22 @@ describe('queryBuilderOptions', () => {
       label: assetB.rid,
     });
 
-    // resolved template -> "$asset → resolved"
+    // resolved template before the asset lookup completes -> "$asset → resolved RID"
     expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), selectedAsset: null })).toEqual({
       value: '$asset',
       label: `$asset → ${assetA.rid}`,
+    });
+
+    // resolved template after the matching asset lookup completes -> "$asset → asset title"
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetA.rid), selectedAsset: assetA })).toEqual({
+      value: '$asset',
+      label: '$asset → Asset A',
+    });
+
+    // a stale/mismatched selected asset does not leak its title onto the resolved template
+    expect(getAssetSelectValue({ assetRid: resolveTemplateValue('$asset', () => assetB.rid), selectedAsset: assetA })).toEqual({
+      value: '$asset',
+      label: `$asset → ${assetB.rid}`,
     });
 
     // unresolved template -> raw
@@ -126,6 +159,54 @@ describe('queryBuilderOptions', () => {
       value: '$asset',
       label: '$asset',
     });
+  });
+
+  it('shows the resolved RID when template asset metadata cannot be loaded', () => {
+    const assetRid = resolveTemplateValue('$asset', () => assetA.rid);
+    const placeholders = [
+      createBasicAsset(assetA.rid, 'Asset ($asset)'),
+      // placeholder baked from a previous variable name
+      createBasicAsset(assetA.rid, 'Asset ($other)'),
+      // placeholder from a failed concrete by-RID fetch
+      createBasicAsset(assetA.rid, 'Asset (RID)'),
+    ];
+
+    for (const placeholder of placeholders) {
+      expect(getAssetSelectValue({ assetRid, selectedAsset: placeholder })).toEqual({
+        value: '$asset',
+        label: `$asset → ${assetA.rid}`,
+      });
+    }
+  });
+
+  it('does not mistake a real asset titled like a fallback placeholder for one', () => {
+    const trickyTitledAsset = { ...assetA, title: 'Asset ($asset)' };
+
+    expect(
+      getAssetSelectValue({
+        assetRid: resolveTemplateValue('$asset', () => trickyTitledAsset.rid),
+        selectedAsset: trickyTitledAsset,
+      })
+    ).toEqual({
+      value: '$asset',
+      label: '$asset → Asset ($asset)',
+    });
+  });
+
+  it('omits placeholder selected assets from the options list', () => {
+    const options = buildAssetOptions({
+      assets: [],
+      selectedAsset: createBasicAsset(assetA.rid, 'Asset ($asset)'),
+      assetRid: resolveTemplateValue('$asset', () => assetA.rid),
+    });
+
+    expect(options).toEqual([
+      {
+        label: '$asset',
+        value: '$asset',
+        description: 'Template variable',
+      },
+    ]);
   });
 
   it('adds data scope template-variable labels only when the resolved scope is valid', () => {

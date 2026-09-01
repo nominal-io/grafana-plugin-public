@@ -184,7 +184,7 @@ describe('channel data type inference effect', () => {
     );
 
     const assetInput = await screen.findByTestId('asset-combobox');
-    expect(assetInput).toHaveValue(`$asset → ${ASSET_RID}`);
+    await waitFor(() => expect(assetInput).toHaveValue('$asset → Test Asset'));
     expect(screen.queryByText('Asset Search')).not.toBeInTheDocument();
     expect(screen.queryByText('Asset RID')).not.toBeInTheDocument();
 

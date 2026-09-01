@@ -4,6 +4,10 @@ import type { TemplateValueResolution } from './templateResolution';
 // (failed by-RID fetch): "RID known, name unresolvable".
 export const ASSET_RID_FALLBACK_LABEL = 'Asset (RID)';
 
+function templateAssetFallbackLabel(rawAssetRid: string): string {
+  return `Asset (${rawAssetRid})`;
+}
+
 export type AssetReconcileAction =
   | { kind: 'fetchByRid'; rid: string; label: string }
   | { kind: 'clearIdentity' };
@@ -42,7 +46,9 @@ export function decideAssetReconcile({
     return null;
   }
 
-  const label = assetRidResolution.hasTemplate ? `Asset (${assetRidResolution.raw})` : ASSET_RID_FALLBACK_LABEL;
+  const label = assetRidResolution.hasTemplate
+    ? templateAssetFallbackLabel(assetRidResolution.raw)
+    : ASSET_RID_FALLBACK_LABEL;
 
   return { kind: 'fetchByRid', rid: assetRidResolution.resolved, label };
 }
