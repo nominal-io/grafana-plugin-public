@@ -72,6 +72,18 @@ jobs:
                   mv dist "${PLUGIN_ID}"
                   zip -r "${PLUGIN_ARCHIVE}" "${PLUGIN_ID}"
 
+            - name: Stage tracked source for validator
+              # The validator scans -sourceCodeUri recursively. Mounting $PWD
+              # exposes node_modules, because this step runs after the install,
+              # and the scan then reports devDependency files. Grafana's review
+              # service points at a git URL, which holds tracked files only, so
+              # git archive reproduces what the real review sees. go.mod and
+              # pnpm-lock.yaml stay in the tree, so osv-scanner is unaffected.
+              run: |
+                  rm -rf /tmp/validator-src
+                  mkdir -p /tmp/validator-src
+                  git archive --format=tar HEAD | tar -x -C /tmp/validator-src
+
             - name: Validate plugin (PR)
               # Relaxed config — release-only analyzers (signature, manifest,
               # provenance, checksum, version) are disabled here and run in
@@ -84,7 +96,7 @@ jobs:
                   docker run --pull=always --rm \
                     -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
                     -v "$PWD/.github/plugin-validator-pr.yaml:/config.yaml:ro" \
-                    -v "$PWD:/src:ro" \
+                    -v "/tmp/validator-src:/src:ro" \
                     grafana/plugin-validator-cli \
                     -config /config.yaml \
                     -sourceCodeUri file:///src \
@@ -193,6 +205,13 @@ jobs:
               with:
                   subject-path: ${{ steps.package-plugin.outputs.archive }}
 
+            - name: Stage tracked source for validator
+              # Same reason as the PR job: keep node_modules out of the scan.
+              run: |
+                  rm -rf /tmp/validator-src
+                  mkdir -p /tmp/validator-src
+                  git archive --format=tar HEAD | tar -x -C /tmp/validator-src
+
             - name: Validate plugin (release)
               # No -config: runs the full analyzer suite, including the
               # signature/manifest/provenance/checksum/version checks that the
@@ -202,7 +221,7 @@ jobs:
               run: |
                   docker run --pull=always --rm \
                     -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
-                    -v "$PWD:/src:ro" \
+                    -v "/tmp/validator-src:/src:ro" \
                     grafana/plugin-validator-cli \
                     -sourceCodeUri file:///src \
                     /archive.zip
