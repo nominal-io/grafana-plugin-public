@@ -60,6 +60,37 @@ jobs:
                   args: buildAll
                   workdir: .
 
+            - name: Scan backend binaries for known vulnerabilities
+              # Reports, never blocks. Binary mode reads the Go version stamped
+              # into each binary, so it catches standard library issues that a
+              # source scan run by a different toolchain misses.
+              continue-on-error: true
+              run: |
+                  go install golang.org/x/vuln/cmd/govulncheck@latest
+                  status=0
+                  for bin in dist/gpx_nominal_ds_*; do
+                      name="$(basename "$bin")"
+                      out="$(govulncheck -mode=binary "$bin" 2>&1)" && rc=0 || rc=$?
+                      echo "$out"
+                      printf '### %s\n' "$name" >> "$GITHUB_STEP_SUMMARY"
+                      case "$rc" in
+                          0)
+                              printf 'No known vulnerabilities.\n' >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                          3) # govulncheck exits 3 when it finds vulnerabilities
+                              status=1
+                              echo "::error title=Vulnerable binary::${name} has known vulnerabilities. See the job summary."
+                              printf '```\n%s\n```\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                          *)
+                              status=1
+                              echo "::error title=Vulnerability scan failed::govulncheck could not scan ${name}. See the job summary."
+                              printf '```\n%s\n```\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                      esac
+                  done
+                  exit $status
+
             - name: Package plugin
               id: package-plugin
               run: |
@@ -176,6 +207,37 @@ jobs:
                   version: latest
                   args: buildAll
                   workdir: .
+
+            - name: Scan backend binaries for known vulnerabilities
+              # Reports, never blocks. Binary mode reads the Go version stamped
+              # into each binary, so it catches standard library issues that a
+              # source scan run by a different toolchain misses.
+              continue-on-error: true
+              run: |
+                  go install golang.org/x/vuln/cmd/govulncheck@latest
+                  status=0
+                  for bin in dist/gpx_nominal_ds_*; do
+                      name="$(basename "$bin")"
+                      out="$(govulncheck -mode=binary "$bin" 2>&1)" && rc=0 || rc=$?
+                      echo "$out"
+                      printf '### %s\n' "$name" >> "$GITHUB_STEP_SUMMARY"
+                      case "$rc" in
+                          0)
+                              printf 'No known vulnerabilities.\n' >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                          3) # govulncheck exits 3 when it finds vulnerabilities
+                              status=1
+                              echo "::error title=Vulnerable binary::${name} has known vulnerabilities. See the job summary."
+                              printf '```\n%s\n```\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                          *)
+                              status=1
+                              echo "::error title=Vulnerability scan failed::govulncheck could not scan ${name}. See the job summary."
+                              printf '```\n%s\n```\n' "$out" >> "$GITHUB_STEP_SUMMARY"
+                              ;;
+                      esac
+                  done
+                  exit $status
 
             - name: Sign plugin
               env:
