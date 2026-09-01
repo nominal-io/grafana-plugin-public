@@ -102,6 +102,22 @@ jobs:
                     -sourceCodeUri file:///src \
                     /archive.zip
 
+            - name: Check Go vulnerabilities
+              # Reruns one analyzer to turn its warning into a failed check.
+              # -analyzerSeverity works only with -analyzer, which runs that
+              # analyzer alone, so it cannot fold into the run above. Runs even
+              # when that run failed, so one result does not hide the other.
+              if: ${{ !cancelled() }}
+              env:
+                  PLUGIN_ARCHIVE: ${{ steps.package-plugin.outputs.archive }}
+              run: |
+                  docker run --rm \
+                    -v "$PWD/$PLUGIN_ARCHIVE:/archive.zip:ro" \
+                    grafana/plugin-validator-cli \
+                    -analyzer=govulncheck \
+                    -analyzerSeverity=error \
+                    /archive.zip
+
             - name: Build summary
               run: |
                   echo "## Plugin Build Summary" >> $GITHUB_STEP_SUMMARY
