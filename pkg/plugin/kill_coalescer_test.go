@@ -95,6 +95,26 @@ func TestKillCoalescerChunksAtLimit(t *testing.T) {
 	}
 }
 
+func TestKillCoalescerContainsSenderPanicAndContinues(t *testing.T) {
+	entries := make([]killEntry, killChunkSize+1)
+	target := killTarget{token: bearertoken.Token("t1")}
+	for i := range entries {
+		entries[i] = killEntry{id: uuid.NewUUID(), target: target}
+	}
+
+	calls := 0
+	sendKills(func(context.Context, killTarget, []uuid.UUID) {
+		calls++
+		if calls == 1 {
+			panic("sentinel kill sender panic")
+		}
+	}, entries)
+
+	if calls != 2 {
+		t.Fatalf("expected the sender panic to be contained and the next chunk attempted, got %d calls", calls)
+	}
+}
+
 func TestKillCoalescerDropsOnOverflow(t *testing.T) {
 	rec := flushNow(func(kc *killCoalescer, flush killFlushFunc) {
 		for i := 0; i < killBufferLimit+10; i++ {

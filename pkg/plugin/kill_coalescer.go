@@ -2,6 +2,8 @@ package plugin
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -116,8 +118,24 @@ func sendKills(flush killFlushFunc, entries []killEntry) {
 		for chunk := range slices.Chunk(ids, killChunkSize) {
 			// A fresh deadline per call keeps one slow kill from starving the rest.
 			ctx, cancel := context.WithTimeout(context.Background(), killFlushTimeout)
-			flush(ctx, target, chunk)
+			invokeKillFlush(flush, ctx, target, chunk)
 			cancel()
 		}
 	}
+}
+
+// invokeKillFlush prevents a faulty best-effort sender from taking down the
+// timer goroutine or stranding the coalescer in its flushing state.
+func invokeKillFlush(flush killFlushFunc, ctx context.Context, target killTarget, ids []uuid.UUID) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Error("Recovered panic while flushing compute kills",
+				"count", len(ids),
+				"panic", fmt.Sprintf("%v", r),
+				"panicType", fmt.Sprintf("%T", r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+	flush(ctx, target, ids)
 }

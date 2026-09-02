@@ -42,26 +42,59 @@ var unsupportedComputeResponseArms = map[string]func() computeapi.ComputeNodeRes
 	"multivariate":              arm(computeapi.NewComputeNodeResponseFromMultivariate),
 }
 
-// supportedComputeResponseArms names the arms with real renderers in
-// transformNominalResponseFromClient.
-var supportedComputeResponseArms = []string{
-	"numeric", "bucketedNumeric", "arrowBucketedNumeric",
-	"enum", "enumPoint", "bucketedEnum", "pagedLog", "logPoint",
+// supportedComputeResponseArms maps every arm with a renderer to a builder so
+// the test executes the handler instead of trusting a parallel count.
+var supportedComputeResponseArms = map[string]func() computeapi.ComputeNodeResponse{
+	"numeric":              arm(computeapi.NewComputeNodeResponseFromNumeric),
+	"bucketedNumeric":      arm(computeapi.NewComputeNodeResponseFromBucketedNumeric),
+	"arrowBucketedNumeric": arm(computeapi.NewComputeNodeResponseFromArrowBucketedNumeric),
+	"enum":                 arm(computeapi.NewComputeNodeResponseFromEnum),
+	"enumPoint":            arm(computeapi.NewComputeNodeResponseFromEnumPoint),
+	"bucketedEnum":         arm(computeapi.NewComputeNodeResponseFromBucketedEnum),
+	"pagedLog":             arm(computeapi.NewComputeNodeResponseFromPagedLog),
+	"logPoint":             arm(computeapi.NewComputeNodeResponseFromLogPoint),
 }
 
-// A nominal-api-go bump that adds union arms must not ship with a nil handler:
-// AcceptFuncs invokes the selected arm without a nil check, so a nil handler
-// panics. The union struct has one field per arm plus the "typ" discriminator.
+// A nominal-api-go bump that adds union arms must classify every actual struct
+// field as supported or unsupported. Comparing names catches duplicate or
+// invented list entries that a count-only check would miss.
 func TestComputeResponseArmsAreExhaustive(t *testing.T) {
-	armCount := reflect.TypeOf(computeapi.ComputeNodeResponse{}).NumField() - 1
-	covered := len(unsupportedComputeResponseArms) + len(supportedComputeResponseArms)
-	if armCount != covered {
-		t.Fatalf(
-			"ComputeNodeResponse has %d arms but these tests cover %d. "+
-				"A nominal-api-go bump added new arms: add non-nil handlers in "+
-				"transformNominalResponseFromClient (never nil), then extend these lists.",
-			armCount, covered,
-		)
+	responseType := reflect.TypeOf(computeapi.ComputeNodeResponse{})
+	actual := make(map[string]bool, responseType.NumField()-1)
+	for i := 0; i < responseType.NumField(); i++ {
+		// Conjure suffixes Go keywords such as the "range" arm with an underscore.
+		name := strings.TrimSuffix(responseType.Field(i).Name, "_")
+		if name != "typ" {
+			actual[name] = true
+		}
+	}
+
+	for name := range supportedComputeResponseArms {
+		if !actual[name] {
+			t.Errorf("supported response arm %q is not a ComputeNodeResponse field", name)
+		}
+		delete(actual, name)
+	}
+	for name := range unsupportedComputeResponseArms {
+		if !actual[name] {
+			t.Errorf("unsupported response arm %q is duplicated or is not a ComputeNodeResponse field", name)
+		}
+		delete(actual, name)
+	}
+	if len(actual) != 0 {
+		t.Fatalf("ComputeNodeResponse arms are unclassified: %v", reflect.ValueOf(actual).MapKeys())
+	}
+}
+
+func TestSupportedComputeResponseArmsInvokeRenderers(t *testing.T) {
+	for name, build := range supportedComputeResponseArms {
+		t.Run(name, func(t *testing.T) {
+			e := newTestQueryExecution(&Datasource{}, nil)
+			_, err := e.transformNominalResponseFromClient(build(), NominalQueryModel{})
+			if err != nil && strings.Contains(err.Error(), "is not supported by the plugin") {
+				t.Fatalf("supported arm %q reached the unsupported handler: %v", name, err)
+			}
+		})
 	}
 }
 

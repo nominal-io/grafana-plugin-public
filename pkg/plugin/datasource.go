@@ -232,6 +232,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			log.DefaultLogger.Error("Recovered panic while transforming query result",
 				"channel", qm.Channel,
 				"panic", fmt.Sprintf("%v", r),
+				"panicType", fmt.Sprintf("%T", r),
 				"stack", string(debug.Stack()),
 			)
 			response = backend.ErrDataResponse(
