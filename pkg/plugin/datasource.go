@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -224,8 +225,22 @@ func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRang
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
 // Handles both success and error cases from the ComputeNodeResult union type.
-func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
-	var response backend.DataResponse
+func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) (response backend.DataResponse) {
+	// A malformed result must fail only its own query.
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Error("Recovered panic while transforming query result",
+				"channel", qm.Channel,
+				"panic", fmt.Sprintf("%v", r),
+				"panicType", fmt.Sprintf("%T", r),
+				"stack", string(debug.Stack()),
+			)
+			response = backend.ErrDataResponse(
+				backend.StatusInternal,
+				"Internal error while processing query result",
+			)
+		}
+	}()
 
 	// ComputeNodeResult is a union type - use AcceptFuncs to handle success/error
 	err := result.ComputeResult.AcceptFuncs(
@@ -497,6 +512,18 @@ func compareLogEntriesNewestFirst(a, b LogEntry) int {
 	return b.Time.Compare(a.Time)
 }
 
+// unsupportedComputeResponse builds an AcceptFuncs handler for a response arm
+// the plugin cannot render.
+func unsupportedComputeResponse[T any](typeName string) func(T) error {
+	return func(T) error {
+		return unsupportedComputeResponseError(typeName)
+	}
+}
+
+func unsupportedComputeResponseError(typeName string) error {
+	return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
+}
+
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
@@ -504,11 +531,11 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 
 	var result TransformResult
 
-	// Use the conjure union visitor pattern to handle different response types
+	// AcceptFuncs invokes a selected nil handler, so every arm needs one.
 	visitErr := response.AcceptFuncs(
-		nil, // rangeFunc
-		nil, // rangesSummaryFunc
-		nil, // rangeValueFunc
+		unsupportedComputeResponse[[]computeapi.Range]("range"),
+		unsupportedComputeResponse[computeapi.RangesSummary]("rangesSummary"),
+		unsupportedComputeResponse[*computeapi.Range]("rangeValue"),
 		func(numeric computeapi.NumericPlot) error {
 			timePoints, values, err := e.extractNumericDataFromConjure(numeric)
 			if err != nil {
@@ -529,14 +556,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = false
 			return nil
 		},
-		nil, // numericPointFunc
-		nil, // singlePointFunc
-		// arrowNumericFunc - Not reachable from SummarizeSeries with Buckets.
-		// Returns a clear error rather than speculative parsing of an unverified schema.
-		func(arrowNumeric computeapi.ArrowNumericPlot) error {
-			return fmt.Errorf("received ArrowNumericPlot unexpectedly; " +
-				"this response type is not supported by the plugin")
-		},
+		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
+		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
+		unsupportedComputeResponse[computeapi.ArrowNumericPlot]("arrowNumeric"),
 		// arrowBucketedNumericFunc - Arrow format bucketed numeric response.
 		// Extracts one AggregationSeries per requested aggregation field.
 		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {
@@ -590,8 +612,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = true
 			return nil
 		},
-		nil, // arrowEnumFunc
-		nil, // arrowBucketedEnumFunc
+		unsupportedComputeResponse[computeapi.ArrowEnumPlot]("arrowEnum"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedEnumPlot]("arrowBucketedEnum"),
 		// pagedLogFunc — paginated log response
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
@@ -632,25 +654,23 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsLog = true
 			return nil
 		},
-		nil, // cartesianFunc
-		nil, // bucketedCartesianFunc
-		nil, // bucketedCartesian3dFunc
-		nil, // frequencyDomainFunc
-		nil, // frequencyDomainV2Func
-		nil, // bucketedFrequencyDomainFunc
-		nil, // numericHistogramFunc
-		nil, // enumHistogramFunc
-		nil, // curveFitFunc
-		nil, // groupedFunc
-		nil, // arrowArrayFunc
-		nil, // arrowBucketedStructFunc
-		nil, // arrowFullResolutionFunc
-		nil, // arrowBucketedMultivariateFunc
-		nil, // multivariateFunc
-		func(typeName string) error {
-			log.DefaultLogger.Debug("Unhandled response type", "type", typeName)
-			return nil
-		},
+		unsupportedComputeResponse[computeapi.CartesianPlot]("cartesian"),
+		unsupportedComputeResponse[computeapi.BucketedCartesianPlot]("bucketedCartesian"),
+		unsupportedComputeResponse[computeapi.BucketedCartesian3dPlot]("bucketedCartesian3d"),
+		unsupportedComputeResponse[computeapi.FrequencyDomainPlot]("frequencyDomain"),
+		unsupportedComputeResponse[computeapi.FrequencyDomainPlotV2]("frequencyDomainV2"),
+		unsupportedComputeResponse[computeapi.BucketedFrequencyDomainPlot]("bucketedFrequencyDomain"),
+		unsupportedComputeResponse[computeapi.NumericHistogramPlot]("numericHistogram"),
+		unsupportedComputeResponse[computeapi.EnumHistogramPlot]("enumHistogram"),
+		unsupportedComputeResponse[computeapi.CurveFitResult]("curveFit"),
+		// grouped is an ordinary multi-series response; unsupported until a real renderer lands.
+		unsupportedComputeResponse[computeapi.GroupedComputeNodeResponses]("grouped"),
+		unsupportedComputeResponse[computeapi.ArrowArrayPlot]("array"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedStructPlot]("bucketedStruct"),
+		unsupportedComputeResponse[computeapi.ArrowFullResolutionPlot]("fullResolution"),
+		unsupportedComputeResponse[computeapi.ArrowBucketedMultivariatePlot]("arrowBucketedMultivariate"),
+		unsupportedComputeResponse[computeapi.BucketedMultivariatePlot]("multivariate"),
+		unsupportedComputeResponseError,
 	)
 
 	if visitErr != nil {
