@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.14.0...nominal-grafana-plugin@0.14.1) (2026-09-02)
+
+
+### Chores
+
+* **deps:** bump google.golang.org/grpc from 1.83.0 to 1.83.1 ([#125](https://github.com/nominal-io/grafana-plugin-public/issues/125)) ([1ce9f09](https://github.com/nominal-io/grafana-plugin-public/commit/1ce9f0911ab674ea7381f62e147a8a59f8c6a350))
+
 ## [0.14.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.13.0...nominal-grafana-plugin@0.14.0) (2026-09-01)
 
 
