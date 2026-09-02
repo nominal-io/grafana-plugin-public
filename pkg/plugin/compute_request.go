@@ -122,8 +122,13 @@ func effectiveBucketCount(qm NominalQueryModel, maxDataPoints int64) int {
 	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
 		buckets = int(maxDataPoints)
 	}
+	if buckets <= 0 {
+		buckets = defaultBucketCount
+	}
 	return buckets
 }
+
+const defaultBucketCount = 1000
 
 func numericOutputFields(aggregations []string) []computeapi.NumericOutputField {
 	var outputFields []computeapi.NumericOutputField

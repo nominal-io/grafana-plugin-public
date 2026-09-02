@@ -191,7 +191,8 @@ func TestEffectiveBucketCount(t *testing.T) {
 		{"maxDataPoints used when buckets is negative", -10, 300, 300},
 		{"zero maxDataPoints uses saved buckets", 1000, 0, 1000},
 		{"negative maxDataPoints uses saved buckets", 1000, -1, 1000},
-		{"zero buckets and zero maxDataPoints stays zero", 0, 0, 0},
+		{"zero buckets and zero maxDataPoints falls back to default", 0, 0, defaultBucketCount},
+		{"negative buckets and zero maxDataPoints falls back to default", -10, 0, defaultBucketCount},
 	}
 
 	for _, tt := range tests {

@@ -74,12 +74,12 @@ func (e *NominalQueryExecution) executePreparedBatches(ctx context.Context, prep
 	logBatch, otherBatch := partitionPreparedQueries(prepared)
 
 	runBatch := func(label string, batch queryBatch) (results map[string]backend.DataResponse) {
-		// An unrecovered panic on this goroutine would kill the whole plugin
-		// process. Convert it into per-query errors for this partition.
+		// Keep a process-wide recovery boundary for panics outside result conversion.
 		defer func() {
 			if r := recover(); r != nil {
 				log.DefaultLogger.Error("Recovered panic while executing query batch",
 					"partition", label,
+					"panic", fmt.Sprintf("%v", r),
 					"panicType", fmt.Sprintf("%T", r),
 					"stack", string(debug.Stack()),
 				)

@@ -52,6 +52,49 @@ func TestUnsupportedResponseAffectsOnlyItsQuery(t *testing.T) {
 	}
 }
 
+func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
+	corrupt := createTestArrowBucketedNumeric(
+		[]int64{1773975408000000000, 1773975414000000000},
+		[]float64{0.71, -0.40}, nil)
+	// This offset corrupts the Arrow body so conversion panics in arrow-go v18.
+	corrupt[415] ^= 0xFF
+
+	mock := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
+						computeapi.ArrowBucketedNumericPlot{ArrowBinary: corrupt}),
+				)},
+				createMockComputeResult(nil),
+			},
+		},
+	}
+	prepared := preparedNumericQueries("panics", "healthy")
+	prepared[0].Model.Aggregations = []string{AggMean}
+	e := newTestQueryExecution(&Datasource{computeService: mock}, nil)
+
+	results := e.executePreparedBatches(context.Background(), prepared)
+
+	panicResp, ok := results["panics"]
+	if !ok || panicResp.Error == nil {
+		t.Fatalf("expected an error response for the panicking query, got %+v", panicResp)
+	}
+	if got := panicResp.Error.Error(); got != "Internal error while processing query result" {
+		t.Fatalf("expected the per-result panic containment message, got: %q", got)
+	}
+	healthyResp, ok := results["healthy"]
+	if !ok {
+		t.Fatal("missing response for the healthy query")
+	}
+	if healthyResp.Error != nil {
+		t.Fatalf("healthy query must not be poisoned by its panicking sibling, got error: %v", healthyResp.Error)
+	}
+	if len(healthyResp.Frames) != 1 {
+		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
+	}
+}
+
 func TestExecutePreparedBatchesSurvivesPanicInBatch(t *testing.T) {
 	mock := &mockComputeService{
 		batchComputeFunc: func(computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {

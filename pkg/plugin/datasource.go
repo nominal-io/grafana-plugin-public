@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
@@ -224,8 +225,21 @@ func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRang
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
 // Handles both success and error cases from the ComputeNodeResult union type.
-func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) backend.DataResponse {
-	var response backend.DataResponse
+func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) (response backend.DataResponse) {
+	// A malformed result must fail only its own query.
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Error("Recovered panic while transforming query result",
+				"channel", qm.Channel,
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()),
+			)
+			response = backend.ErrDataResponse(
+				backend.StatusInternal,
+				"Internal error while processing query result",
+			)
+		}
+	}()
 
 	// ComputeNodeResult is a union type - use AcceptFuncs to handle success/error
 	err := result.ComputeResult.AcceptFuncs(
@@ -497,7 +511,8 @@ func compareLogEntriesNewestFirst(a, b LogEntry) int {
 	return b.Time.Compare(a.Time)
 }
 
-// AcceptFuncs invokes the selected handler without checking for nil.
+// unsupportedComputeResponse builds an AcceptFuncs handler for a response arm
+// the plugin cannot render.
 func unsupportedComputeResponse[T any](typeName string) func(T) error {
 	return func(T) error {
 		return unsupportedComputeResponseError(typeName)
@@ -515,7 +530,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 
 	var result TransformResult
 
-	// Use the conjure union visitor pattern to handle different response types
+	// AcceptFuncs invokes a selected nil handler, so every arm needs one.
 	visitErr := response.AcceptFuncs(
 		unsupportedComputeResponse[[]computeapi.Range]("range"),
 		unsupportedComputeResponse[computeapi.RangesSummary]("rangesSummary"),
