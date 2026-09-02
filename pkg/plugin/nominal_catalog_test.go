@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
@@ -206,8 +207,7 @@ func TestNominalCatalogHasSupportedDataSource(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.cached"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Cached Asset",
@@ -215,7 +215,7 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -241,16 +241,15 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	if first.Title != "Cached Asset" || second.Title != "Cached Asset" {
 		t.Fatalf("cached titles = %q/%q, want Cached Asset", first.Title, second.Title)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
 }
 
 func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	assetRid := "ri.scout.main.asset.copied"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Copied Asset",
@@ -258,7 +257,7 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -298,8 +297,8 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	if got := *second.DataScopes[0].DataSource.Dataset; got != dataSourceRid {
 		t.Fatalf("cached dataset RID = %q, want %q (mutation leaked into cache)", got, dataSourceRid)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", int(assetFetches.Load()))
 	}
 }
 
@@ -325,8 +324,7 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	assetRid := "ri.scout.main.asset.requires-client"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Unexpected Asset",
@@ -334,7 +332,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -348,16 +346,115 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err == nil || !strings.Contains(err.Error(), "resource HTTP client is not configured") {
 		t.Fatalf("FetchAssetByRid error = %v, want missing resource HTTP client error", err)
 	}
-	if fetchCount != 0 {
-		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
+	if int(assetFetches.Load()) != 0 {
+		t.Fatalf("asset fetch count = %d, want 0", int(assetFetches.Load()))
+	}
+}
+
+func TestNominalCatalogAssetCacheSweepOnStore(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.sweepwire"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {Rid: assetRid, Title: "Sweep Wire"},
+	}, nil)
+	t.Cleanup(server.Close)
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+			catalog.assetCache["expired"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "expired"},
+				fetchedAt: time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.assetCache["fresh"] = assetCacheEntry{
+				asset:     &SingleAssetResponse{Rid: "fresh"},
+				fetchedAt: time.Now(),
+			}
+			catalog.assetCacheLastSweep = tt.lastSweep
+
+			if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err != nil {
+				t.Fatalf("FetchAssetByRid error: %v", err)
+			}
+
+			catalog.assetCacheMu.Lock()
+			_, expiredPresent := catalog.assetCache["expired"]
+			_, freshPresent := catalog.assetCache["fresh"]
+			_, storedPresent := catalog.assetCache[assetRid]
+			catalog.assetCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("fetched asset was not stored")
+			}
+		})
+	}
+}
+
+func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
+	tests := []struct {
+		name               string
+		lastSweep          time.Time
+		wantExpiredPresent bool
+	}{
+		{name: "elapsed interval sweeps", lastSweep: time.Now().Add(-2 * sweepInterval)},
+		{name: "recent sweep gates eviction", lastSweep: time.Now(), wantExpiredPresent: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			catalog := newNominalCatalog(nil, nil)
+			catalog.channelMetadataCache["expired"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
+			}
+			catalog.channelMetadataCache["fresh"] = channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				fetchedAt:       time.Now(),
+			}
+			catalog.channelMetadataCacheLastSweep = tt.lastSweep
+
+			catalog.storeChannelMetadata("stored", channelMetadataCacheEntry{
+				channelDataType: "string",
+				fetchedAt:       time.Now(),
+			})
+
+			catalog.channelMetadataCacheMu.Lock()
+			_, expiredPresent := catalog.channelMetadataCache["expired"]
+			_, freshPresent := catalog.channelMetadataCache["fresh"]
+			_, storedPresent := catalog.channelMetadataCache["stored"]
+			catalog.channelMetadataCacheMu.Unlock()
+			if expiredPresent != tt.wantExpiredPresent {
+				t.Fatalf("expired entry present = %v, want %v", expiredPresent, tt.wantExpiredPresent)
+			}
+			if !freshPresent {
+				t.Fatal("fresh entry was swept")
+			}
+			if !storedPresent {
+				t.Fatal("new entry was not stored")
+			}
+		})
 	}
 }
 
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Metadata Asset",
@@ -365,7 +462,7 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -399,8 +496,8 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if second.ChannelDataType != ChannelDataTypeString {
 		t.Fatalf("second ChannelDataType = %q, want %q", second.ChannelDataType, ChannelDataTypeString)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)

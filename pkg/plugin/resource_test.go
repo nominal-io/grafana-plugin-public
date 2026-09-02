@@ -2,19 +2,10 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
-	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
-	"github.com/nominal-io/nominal-api-go/io/nominal/api"
-	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/palantir/pkg/bearertoken"
 )
 
@@ -88,73 +79,8 @@ func (m *mockAuthService) ResetMyCoachmarkDismissal(ctx context.Context, authHea
 	return nil
 }
 
-// mockDatasourceService implements datasourceservice.DataSourceServiceClient for testing
-type mockDatasourceService struct {
-	searchChannelsResponse datasourceapi.SearchChannelsResponse
-	searchChannelsError    error
-	searchChannelsRequest  datasourceapi.SearchChannelsRequest
-	searchChannelsCalls    int
-	// searchChannelsFunc, when non-nil, overrides searchChannelsResponse/searchChannelsError.
-	// This allows tests to return different responses on successive calls (e.g. pagination).
-	searchChannelsFunc func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error)
-}
-
-func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
-	m.searchChannelsCalls++
-	m.searchChannelsRequest = queryArg
-	if m.searchChannelsFunc != nil {
-		return m.searchChannelsFunc(ctx, authHeader, queryArg)
-	}
-	return m.searchChannelsResponse, m.searchChannelsError
-}
-
-func (m *mockDatasourceService) SearchFilteredChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchFilteredChannelsRequest) (datasourceapi.SearchFilteredChannelsResponse, error) {
-	return datasourceapi.SearchFilteredChannelsResponse{}, nil
-}
-
-func (m *mockDatasourceService) SearchHierarchicalChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchHierarchicalChannelsRequest) (datasourceapi.SearchHierarchicalChannelsResponse, error) {
-	return datasourceapi.SearchHierarchicalChannelsResponse{}, nil
-}
-
-func (m *mockDatasourceService) IndexChannelPrefixTree(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.IndexChannelPrefixTreeRequest) (datasourceapi.ChannelPrefixTree, error) {
-	return datasourceapi.ChannelPrefixTree{}, nil
-}
-
-func (m *mockDatasourceService) BatchGetChannelPrefixTrees(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetChannelPrefixTreeRequest) (datasourceapi.BatchGetChannelPrefixTreeResponse, error) {
-	return datasourceapi.BatchGetChannelPrefixTreeResponse{}, nil
-}
-
-func (m *mockDatasourceService) GetAvailableTagsForChannel(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.GetAvailableTagsForChannelRequest) (datasourceapi.GetAvailableTagsForChannelResponse, error) {
-	return datasourceapi.GetAvailableTagsForChannelResponse{}, nil
-}
-
-func (m *mockDatasourceService) GetDataScopeBounds(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetDataScopeBoundsRequest) (datasourceapi.BatchGetDataScopeBoundsResponse, error) {
-	return datasourceapi.BatchGetDataScopeBoundsResponse{}, nil
-}
-
-func (m *mockDatasourceService) GetTagValuesForDataSource(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetTagValuesForDataSourceRequest) (map[api.TagName][]api.TagValue, error) {
-	return nil, nil
-}
-
-func (m *mockDatasourceService) GetAvailableTagKeys(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetAvailableTagKeysRequest) (datasourceapi.GetAvailableTagKeysResponse, error) {
-	return datasourceapi.GetAvailableTagKeysResponse{}, nil
-}
-
-func (m *mockDatasourceService) GetAvailableTagValues(ctx context.Context, authHeader bearertoken.Token, dataSourceRidArg rids.DataSourceRid, requestArg datasourceapi.GetAvailableTagValuesRequest) (datasourceapi.GetAvailableTagValuesResponse, error) {
-	return datasourceapi.GetAvailableTagValuesResponse{}, nil
-}
-
-func (m *mockDatasourceService) BatchGetSeriesCount(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.BatchGetSeriesCountRequest) (datasourceapi.BatchGetSeriesCountResponse, error) {
-	return datasourceapi.BatchGetSeriesCountResponse{}, nil
-}
-
-func (m *mockDatasourceService) GetMatchingChannelsWithTags(ctx context.Context, authHeader bearertoken.Token, requestArg datasourceapi.GetMatchingChannelsWithTagsRequest) (datasourceapi.GetMatchingChannelsWithTagsResponse, error) {
-	return datasourceapi.GetMatchingChannelsWithTagsResponse{}, nil
-}
-
 // Verify mock types implement their interfaces at compile time
 var _ authapi.AuthenticationServiceV2Client = (*mockAuthService)(nil)
-var _ datasourceservice.DataSourceServiceClient = (*mockDatasourceService)(nil)
 
 // callResourceAndCapture is a test helper that calls CallResource and captures the response
 func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResourceRequest) *backend.CallResourceResponse {
@@ -172,55 +98,4 @@ func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResou
 		t.Fatal("CallResource did not send a response")
 	}
 	return captured
-}
-
-// newTestAssetServer creates an httptest server that handles asset-related API endpoints.
-// It returns the server (caller must defer Close) and configures:
-//   - POST /scout/v1/asset/multiple — batch asset lookup by RID
-//   - POST /scout/v1/search-assets — paginated asset search
-func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Path {
-		case "/scout/v1/asset/multiple":
-			var rids []string
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &rids); err != nil {
-				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-				return
-			}
-			result := make(map[string]SingleAssetResponse)
-			for _, rid := range rids {
-				if asset, ok := assets[rid]; ok {
-					result[rid] = asset
-				}
-			}
-			json.NewEncoder(w).Encode(result)
-
-		case "/scout/v1/search-assets":
-			if len(searchResults) > 0 {
-				json.NewEncoder(w).Encode(searchResults[0])
-			} else {
-				json.NewEncoder(w).Encode(AssetResponse{})
-			}
-
-		default:
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}
-	}))
-}
-
-// newTestDatasource creates a Datasource for testing CallResource handlers.
-func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
-	return &Datasource{
-		settings: backend.DataSourceInstanceSettings{
-			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
-			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
-		},
-		authService:        authSvc,
-		datasourceService:  dsSvc,
-		resourceHTTPClient: &http.Client{},
-	}
 }

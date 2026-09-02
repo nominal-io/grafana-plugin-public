@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
@@ -234,10 +232,10 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 			},
 		},
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
@@ -453,7 +451,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			mockDS := &mockDatasourceService{
 				searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: tt.searchChannels},
 			}
-			ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+			ds := withCatalog(&Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()})
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
 				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
@@ -1064,11 +1062,11 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1185,11 +1183,11 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2590,39 +2588,11 @@ func TestFieldConfigUnit(t *testing.T) {
 	})
 }
 
-// newCountingAssetServer is like newTestAssetServer but also counts requests
-// to the /scout/v1/asset/multiple endpoint.
-func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/scout/v1/asset/multiple" {
-			*fetchCount++
-			var rids []string
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &rids); err != nil {
-				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-				return
-			}
-			result := make(map[string]SingleAssetResponse)
-			for _, rid := range rids {
-				if asset, ok := assets[rid]; ok {
-					result[rid] = asset
-				}
-			}
-			json.NewEncoder(w).Encode(result)
-		} else {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}
-	}))
-}
-
 func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	assetRid := "ri.scout.main.asset.dedup1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2630,7 +2600,7 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -2655,11 +2625,11 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2687,8 +2657,8 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch call (cached), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch call (cached), got %d", int(assetFetches.Load()))
 	}
 	if mockDS.searchChannelsCalls != 1 {
 		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
@@ -2699,8 +2669,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2708,7 +2677,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -2731,10 +2700,11 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2754,8 +2724,6 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		}
 	}
 
-	ds.resourceHTTPClient = server.Client()
-
 	// Two separate QueryData calls should reuse the cached asset.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
 		t.Fatalf("first call: %v", err)
@@ -2764,8 +2732,8 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", int(assetFetches.Load()))
 	}
 }
 
@@ -2773,8 +2741,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl2"
 	dataSourceRid := "ri.scout.main.data-source.ds2"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -2782,7 +2749,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -2805,10 +2772,11 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -2827,8 +2795,6 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 			},
 		}
 	}
-
-	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached channel type.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {

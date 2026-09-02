@@ -24,6 +24,9 @@ import (
 // assetCacheTTL controls how long fetched asset metadata is cached.
 const assetCacheTTL = 5 * time.Minute
 
+// sweepInterval limits lazy cache cleanup triggered by writes.
+const sweepInterval = 30 * time.Minute
+
 const maxChannelVariables = 5000
 
 // assetCacheEntry holds a cached asset response with its fetch time.
@@ -32,6 +35,8 @@ type assetCacheEntry struct {
 	fetchedAt time.Time
 }
 
+func (e assetCacheEntry) fetchTime() time.Time { return e.fetchedAt }
+
 // channelMetadataCacheEntry holds a cached channel metadata inference result with its fetch time.
 type channelMetadataCacheEntry struct {
 	channelDataType string // "string", "log", "numeric", or "" for searched-but-not-found / DataType nil
@@ -39,15 +44,19 @@ type channelMetadataCacheEntry struct {
 	fetchedAt       time.Time
 }
 
+func (e channelMetadataCacheEntry) fetchTime() time.Time { return e.fetchedAt }
+
 type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
 
-	assetCacheMu sync.Mutex
-	assetCache   map[string]assetCacheEntry
+	assetCacheMu        sync.Mutex
+	assetCache          map[string]assetCacheEntry
+	assetCacheLastSweep time.Time // guarded by assetCacheMu
 
-	channelMetadataCacheMu sync.Mutex
-	channelMetadataCache   map[string]channelMetadataCacheEntry
+	channelMetadataCacheMu        sync.Mutex
+	channelMetadataCache          map[string]channelMetadataCacheEntry
+	channelMetadataCacheLastSweep time.Time // guarded by channelMetadataCacheMu
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
@@ -176,9 +185,30 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 
 	c.assetCacheMu.Lock()
 	c.assetCache[assetRid] = assetCacheEntry{asset: asset, fetchedAt: time.Now()}
+	sweepExpiredLocked(c.assetCache, &c.assetCacheLastSweep, assetCacheEntry.fetchTime, "asset metadata")
 	c.assetCacheMu.Unlock()
 
 	return asset.clone(), nil
+}
+
+// sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
+// sweepInterval. Caller must hold the mutex guarding entries and lastSweep.
+func sweepExpiredLocked[V any](entries map[string]V, lastSweep *time.Time, fetchedAt func(V) time.Time, label string) {
+	now := time.Now()
+	if now.Sub(*lastSweep) < sweepInterval {
+		return
+	}
+	removed := 0
+	for k, entry := range entries {
+		if now.Sub(fetchedAt(entry)) >= assetCacheTTL {
+			delete(entries, k)
+			removed++
+		}
+	}
+	*lastSweep = now
+	if removed > 0 {
+		log.DefaultLogger.Debug(label+" cache swept", "removed", removed, "remaining", len(entries))
+	}
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
@@ -287,12 +317,9 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	return allResults, nil
 }
 
-// catalog lazily builds the NominalCatalog, snapshotting resourceHTTPClient and
-// datasourceService on first use. Mutate either field before the first call.
+// catalog returns the NominalCatalog built during construction. Every query
+// shares this one instance, so its caches are shared too.
 func (d *Datasource) catalog() *NominalCatalog {
-	if d.nominalCatalog == nil {
-		d.nominalCatalog = newNominalCatalog(d.resourceHTTPClient, d.datasourceService)
-	}
 	return d.nominalCatalog
 }
 
@@ -426,6 +453,7 @@ func (c *NominalCatalog) storeChannelMetadata(cacheKey string, entry channelMeta
 		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	c.channelMetadataCache[cacheKey] = entry
+	sweepExpiredLocked(c.channelMetadataCache, &c.channelMetadataCacheLastSweep, channelMetadataCacheEntry.fetchTime, "channel metadata")
 }
 
 // getChannelMetadataDescription extracts description from channel metadata
