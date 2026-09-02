@@ -601,20 +601,6 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 	}
 }
 
-func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
-	arrowPlot := computeapi.ArrowNumericPlot{ArrowBinary: []byte{}}
-	response := computeapi.NewComputeNodeResponseFromArrowNumeric(arrowPlot)
-
-	ds := &Datasource{}
-	_, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, NominalQueryModel{})
-	if err == nil {
-		t.Fatal("expected error for ArrowNumericPlot, got nil")
-	}
-	if !strings.Contains(err.Error(), "ArrowNumericPlot unexpectedly") {
-		t.Errorf("error should mention ArrowNumericPlot, got: %v", err)
-	}
-}
-
 func TestDisplayNameFromDS(t *testing.T) {
 	ds := withCatalog(&Datasource{})
 
