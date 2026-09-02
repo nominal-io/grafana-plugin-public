@@ -1,5 +1,4 @@
 import { StrictMode } from 'react';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, searchAssets, type Asset } from '../../utils/api';
@@ -79,7 +78,6 @@ function deferByRidFetches() {
     return entry.promise;
   });
   const settle = async (asset: Asset) => {
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       const entry = pending.get(asset.rid)!;
       entry.resolve(asset);
@@ -95,7 +93,6 @@ type HookArgs = Parameters<typeof useAssetSelection>[0];
 type AssetSelectionResult = { current: Pick<ReturnType<typeof useAssetSelection>, 'selectAsset'> };
 
 function selectAsset(result: AssetSelectionResult, assetRid: string): void {
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
   act(() => {
     result.current.selectAsset(assetRid);
   });
@@ -273,14 +270,12 @@ describe('useAssetSelection', () => {
 
     // Establish a resolved selection via a displayed option (no by-RID fetch).
     await result.current.assetOptions('asset a');
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset(ASSET.rid);
     });
     expect(result.current.selectedAsset).toEqual(ASSET);
 
     // Selecting an unresolved template variable clears the visible selection...
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectAsset('$missing');
     });
@@ -347,7 +342,6 @@ describe('useAssetSelection', () => {
       expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       pendingFetch.resolve(ASSET_B);
       await Promise.resolve();
@@ -385,7 +379,6 @@ describe('useAssetSelection', () => {
       expect(mockFetchAssetByRid).toHaveBeenCalledTimes(2);
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       pendingFetch.resolve(ASSET_B_LOADING);
       await pendingFetch.promise;
@@ -477,7 +470,6 @@ describe('useAssetSelection', () => {
     expect(result.current.selectedAsset).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       pendingB.resolve(ASSET_B);
       await pendingB.promise;

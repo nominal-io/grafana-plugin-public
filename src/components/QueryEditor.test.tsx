@@ -1,5 +1,4 @@
 import React from 'react';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
@@ -120,7 +119,6 @@ function latestComboboxProps(testId: string): Record<string, any> | undefined {
 }
 
 async function settleEffects(): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-deprecated
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -590,7 +588,6 @@ describe('channel data type inference effect', () => {
     const props = latestComboboxProps('asset-combobox');
     expect(props).toBeDefined();
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       props!.onChange({ value: ASSET_RID_B, label: 'Asset B' });
     });
@@ -625,7 +622,6 @@ describe('channel data type inference effect', () => {
       return captured;
     }))!;
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       props.onChange({ value: 'secondary', label: 'Secondary scope' });
     });
@@ -649,7 +645,6 @@ describe('channel data type inference effect', () => {
     const props = latestComboboxProps('channel-combobox');
     expect(props).toBeDefined();
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       props!.onChange({ value: 'pressure', label: 'Pressure', dataType: 'numeric' });
     });

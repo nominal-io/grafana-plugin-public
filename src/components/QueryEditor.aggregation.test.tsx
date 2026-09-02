@@ -1,5 +1,4 @@
 import React from 'react';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery, AggregationType, DEFAULT_AGGREGATIONS } from '../types';
@@ -110,7 +109,6 @@ describe('Aggregation widget', () => {
 
     expect(onRunQuery).not.toHaveBeenCalled();
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
       await Promise.resolve();
@@ -139,7 +137,6 @@ describe('Aggregation widget', () => {
 
     expect(onRunQuery).toHaveBeenCalledTimes(1);
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
       await Promise.resolve();
@@ -228,7 +225,6 @@ describe('Aggregation widget', () => {
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
       await Promise.resolve();
@@ -262,7 +258,6 @@ describe('Aggregation widget', () => {
       />
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       jest.advanceTimersByTime(AGGREGATION_RUN_DELAY_MS);
       await Promise.resolve();

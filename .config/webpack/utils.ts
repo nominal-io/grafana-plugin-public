@@ -46,10 +46,7 @@ export function hasReadme() {
 // Support bundling nested plugins by finding all plugin.json files in src directory
 // then checking for a sibling module.[jt]sx? file.
 export async function getEntries() {
-  const pluginsJson = await glob('**/src/**/plugin.json', { 
-    absolute: true,
-    ignore: ['archive/**']
-  });
+  const pluginsJson = await glob('**/src/**/plugin.json', { absolute: true });
 
   const plugins = await Promise.all(
     pluginsJson.map((pluginJson) => {

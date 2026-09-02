@@ -1,4 +1,3 @@
-// eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
 import { searchChannels, type Asset, type Channel } from '../../utils/api';
@@ -123,7 +122,6 @@ describe('useChannelOptions', () => {
     const { result } = renderHook(() => useChannelOptions(args()));
 
     let options: ChannelOption[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       options = await result.current.channelOptions('temp');
     });
@@ -141,7 +139,6 @@ describe('useChannelOptions', () => {
     mockSearchChannels.mockResolvedValue([]);
     const { result } = renderHook(() => useChannelOptions(args()));
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await result.current.channelOptions('temp');
       await result.current.channelOptions('pressure');
@@ -160,7 +157,6 @@ describe('useChannelOptions', () => {
     const markInteracted = jest.fn();
     const { result } = renderHook(() => useChannelOptions(args({ onChange, markInteracted })));
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectChannel({ label: 'temp', value: 'temp', dataType: 'numeric' });
     });
@@ -169,7 +165,6 @@ describe('useChannelOptions', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ channel: 'temp', channelDataType: 'numeric' }));
 
     onChange.mockClear();
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     act(() => {
       result.current.selectChannel({ label: 'manual.channel', value: 'manual.channel' });
     });
@@ -181,7 +176,6 @@ describe('useChannelOptions', () => {
     const { result } = renderHook(() => useChannelOptions(args({ selectedAsset: null })));
 
     let options: ChannelOption[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       options = await result.current.channelOptions('temp');
     });
@@ -195,7 +189,6 @@ describe('useChannelOptions', () => {
     const { result } = renderHook(() => useChannelOptions(args()));
 
     let options: ChannelOption[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       options = await result.current.channelOptions('temp');
     });
@@ -224,13 +217,11 @@ describe('useChannelOptions', () => {
     const olderRequest = result.current.channelOptions('older');
     const newerRequest = result.current.channelOptions('newer');
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       calls[1].resolve([{ name: 'newer', dataSource: 'ds', description: '', dataType: 'numeric' }]);
       await newerRequest;
     });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       calls[0].reject(new Error('older failure'));
       await olderRequest;
@@ -261,7 +252,6 @@ describe('useChannelOptions', () => {
     const olderRequest = result.current.channelOptions('old-asset-search');
     rerender({ selectedAsset: nextAsset });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       calls[0].reject(new Error('old asset failure'));
       await olderRequest;
@@ -285,7 +275,6 @@ describe('useChannelOptions', () => {
       { initialProps: { dataScopeName: 'scope-a' } }
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await result.current.channelOptions('');
     });
@@ -299,7 +288,6 @@ describe('useChannelOptions', () => {
     mockSearchChannels.mockClear();
     rerender({ dataScopeName: 'scope-b' });
 
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await result.current.channelOptions('');
     });
@@ -347,7 +335,6 @@ describe('useChannelOptions', () => {
         },
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
       await act(async () => {
         await result.current.channelOptions('');
       });
@@ -367,7 +354,6 @@ describe('useChannelOptions', () => {
     const { result } = renderHook(() => useChannelOptions(args()));
 
     let options: ChannelOption[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       options = await result.current.channelOptions(exact);
     });
@@ -384,7 +370,6 @@ describe('useChannelOptions', () => {
     );
 
     let options: ChannelOption[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       options = await result.current.channelOptions(exact);
     });
