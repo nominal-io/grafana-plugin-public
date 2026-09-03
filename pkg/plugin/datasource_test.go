@@ -593,20 +593,12 @@ func TestQueryDataWithInvalidJSON(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
+	req := newQueryRequest([]backend.DataQuery{
+		{
+			RefID: "A",
+			JSON:  []byte(`{invalid json`),
 		},
-		Queries: []backend.DataQuery{
-			{
-				RefID: "A",
-				JSON:  []byte(`{invalid json`),
-			},
-		},
-	}
+	})
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -710,15 +702,7 @@ func TestQueryDataRoutesQueriesByType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &backend.QueryDataRequest{
-				PluginContext: backend.PluginContext{
-					DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-						JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-						DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-					},
-				},
-				Queries: tt.queries,
-			}
+			req := newQueryRequest(tt.queries)
 
 			resp, err := ds.QueryData(context.Background(), req)
 			if err != nil {
@@ -919,15 +903,7 @@ func TestBatchQueryExecution(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -985,21 +961,7 @@ func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
 		computeService: mockService,
 	}
 
-	timeRange := backend.TimeRange{
-		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-	}
-	queries := makeBatchableQueries(maxBatchComputeSubrequests+1, timeRange)
-
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1018,11 +980,11 @@ func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
 	if len(mockService.batchRequests[1].Requests) != 1 {
 		t.Fatalf("expected second chunk size 1, got %d", len(mockService.batchRequests[1].Requests))
 	}
-	if len(resp.Responses) != len(queries) {
-		t.Fatalf("expected %d responses, got %d", len(queries), len(resp.Responses))
+	if len(resp.Responses) != len(req.Queries) {
+		t.Fatalf("expected %d responses, got %d", len(req.Queries), len(resp.Responses))
 	}
 
-	for _, q := range queries {
+	for _, q := range req.Queries {
 		response := resp.Responses[q.RefID]
 		if response.Error != nil {
 			t.Fatalf("expected no error for %s, got %v", q.RefID, response.Error)
@@ -1074,26 +1036,18 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
+	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
+		{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid:      assetRid,
+				Channel:       "state",
+				DataScopeName: "default",
+				Buckets:       100,
+			}),
+			TimeRange: timeRange,
 		},
-		Queries: []backend.DataQuery{
-			{
-				RefID: "A",
-				JSON: mustMarshal(NominalQueryModel{
-					AssetRid:      assetRid,
-					Channel:       "state",
-					DataScopeName: "default",
-					Buckets:       100,
-				}),
-				TimeRange: timeRange,
-			},
-		},
-	}
+	})
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1199,40 +1153,32 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	// Two queries simulating template variable expansion: same asset, explicit
 	// aggregations, but one channel is numeric and the other is string.
 	// Both start with channelDataType "numeric" (inherited from the saved query).
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
+	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
+		{
+			RefID: "A",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid:        assetRid,
+				Channel:         "temperature",
+				DataScopeName:   "default",
+				ChannelDataType: "numeric",
+				Aggregations:    []string{"MEAN", "MIN"},
+				Buckets:         100,
+			}),
+			TimeRange: timeRange,
 		},
-		Queries: []backend.DataQuery{
-			{
-				RefID: "A",
-				JSON: mustMarshal(NominalQueryModel{
-					AssetRid:        assetRid,
-					Channel:         "temperature",
-					DataScopeName:   "default",
-					ChannelDataType: "numeric",
-					Aggregations:    []string{"MEAN", "MIN"},
-					Buckets:         100,
-				}),
-				TimeRange: timeRange,
-			},
-			{
-				RefID: "B",
-				JSON: mustMarshal(NominalQueryModel{
-					AssetRid:        assetRid,
-					Channel:         "state",
-					DataScopeName:   "default",
-					ChannelDataType: "numeric", // saved as numeric, but actually string
-					Aggregations:    []string{"MEAN", "MIN"},
-					Buckets:         100,
-				}),
-				TimeRange: timeRange,
-			},
+		{
+			RefID: "B",
+			JSON: mustMarshal(NominalQueryModel{
+				AssetRid:        assetRid,
+				Channel:         "state",
+				DataScopeName:   "default",
+				ChannelDataType: "numeric", // saved as numeric, but actually string
+				Aggregations:    []string{"MEAN", "MIN"},
+				Buckets:         100,
+			}),
+			TimeRange: timeRange,
 		},
-	}
+	})
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1292,21 +1238,7 @@ func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 		computeService: mockService,
 	}
 
-	timeRange := backend.TimeRange{
-		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-	}
-	queries := makeBatchableQueries(maxBatchComputeSubrequests+1, timeRange)
-
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1378,15 +1310,7 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1450,15 +1374,7 @@ func TestBatchQueryError(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1525,15 +1441,7 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1625,15 +1533,7 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -1713,15 +1613,7 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 		},
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: queries,
-	}
+	req := newQueryRequest(queries)
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -2668,19 +2560,11 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 
 	// 3 queries for the same asset+scope+channel — should only make 1 asset
 	// fetch and 1 SearchChannels call.
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: []backend.DataQuery{
-			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-			{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-			{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-		},
-	}
+	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
+		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+	})
 
 	_, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -2741,17 +2625,9 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 	makeReq := func() *backend.QueryDataRequest {
-		return &backend.QueryDataRequest{
-			PluginContext: backend.PluginContext{
-				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-					JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
-					DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-				},
-			},
-			Queries: []backend.DataQuery{
-				{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-			},
-		}
+		return newQueryRequestForURL(server.URL, []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		})
 	}
 
 	ds.resourceHTTPClient = server.Client()
@@ -2815,17 +2691,9 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 	makeReq := func() *backend.QueryDataRequest {
-		return &backend.QueryDataRequest{
-			PluginContext: backend.PluginContext{
-				DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-					JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
-					DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-				},
-			},
-			Queries: []backend.DataQuery{
-				{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-			},
-		}
+		return newQueryRequestForURL(server.URL, []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		})
 	}
 
 	ds.resourceHTTPClient = server.Client()
@@ -3726,26 +3594,18 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
+	req := newQueryRequest([]backend.DataQuery{
+		{
+			RefID:     "LOG",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: "log", Buckets: 100}),
+			TimeRange: timeRange,
 		},
-		Queries: []backend.DataQuery{
-			{
-				RefID:     "LOG",
-				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: "log", Buckets: 100}),
-				TimeRange: timeRange,
-			},
-			{
-				RefID:     "NUM",
-				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temperature", DataScopeName: "ds1", ChannelDataType: "numeric", Buckets: 100, Aggregations: []string{"MEAN"}}),
-				TimeRange: timeRange,
-			},
+		{
+			RefID:     "NUM",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temperature", DataScopeName: "ds1", ChannelDataType: "numeric", Buckets: 100, Aggregations: []string{"MEAN"}}),
+			TimeRange: timeRange,
 		},
-	}
+	})
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -3850,21 +3710,13 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 
 	// A log query with no aggregations should NOT get default ["MEAN"] injected,
 	// and should NOT be rejected for missing aggregations.
-	req := &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
+	req := newQueryRequest([]backend.DataQuery{
+		{
+			RefID:     "A",
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log", Buckets: 100}),
+			TimeRange: timeRange,
 		},
-		Queries: []backend.DataQuery{
-			{
-				RefID:     "A",
-				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log", Buckets: 100}),
-				TimeRange: timeRange,
-			},
-		},
-	}
+	})
 
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
@@ -3975,21 +3827,30 @@ func TestKillDeliverySurvivesDispose(t *testing.T) {
 // Distinguishable from the "unknown" fallback a missing identity would produce.
 const batchRequestPluginVersion = "9.9.9-test"
 
+func newQueryRequestForURL(baseURL string, queries []backend.DataQuery) *backend.QueryDataRequest {
+	return &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(fmt.Sprintf(`{"baseUrl":%q}`, baseURL)),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: queries,
+	}
+}
+
+func newQueryRequest(queries []backend.DataQuery) *backend.QueryDataRequest {
+	return newQueryRequestForURL("https://api.test.com", queries)
+}
+
 func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
-	return &backend.QueryDataRequest{
-		PluginContext: backend.PluginContext{
-			PluginVersion: batchRequestPluginVersion,
-			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
-				JSONData:                []byte(`{"baseUrl": "https://api.test.com"}`),
-				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
-			},
-		},
-		Queries: makeBatchableQueries(queryCount, timeRange),
-	}
+	req := newQueryRequest(makeBatchableQueries(queryCount, timeRange))
+	req.PluginContext.PluginVersion = batchRequestPluginVersion
+	return req
 }
 
 func TestBatchComputeStampsSharedRequestID(t *testing.T) {
