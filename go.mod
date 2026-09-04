@@ -6,7 +6,8 @@ require (
 	github.com/apache/arrow-go/v18 v18.7.0
 	github.com/grafana/grafana-plugin-sdk-go v0.296.4
 	github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf
-	github.com/palantir/conjure-go-runtime/v2 v2.99.0
+	github.com/palantir/conjure-go-runtime/v2 v2.97.0
+	github.com/palantir/conjure-go-runtime/v3 v3.25.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
@@ -61,19 +62,19 @@ require (
 	github.com/palantir/go-metrics v1.1.1 // indirect
 	github.com/palantir/pkg v1.1.0 // indirect
 	github.com/palantir/pkg/bytesbuffers v1.3.0 // indirect
-	github.com/palantir/pkg/datetime v1.3.0 // indirect
-	github.com/palantir/pkg/metrics v1.9.0 // indirect
+	github.com/palantir/pkg/datetime v1.4.0 // indirect
+	github.com/palantir/pkg/metrics v1.10.1 // indirect
 	github.com/palantir/pkg/refreshable v1.6.0 // indirect
-	github.com/palantir/pkg/refreshable/v2 v2.2.0 // indirect
+	github.com/palantir/pkg/refreshable/v2 v2.9.0 // indirect
 	github.com/palantir/pkg/retry v1.3.0 // indirect
 	github.com/palantir/pkg/safejson v1.2.0 // indirect
 	github.com/palantir/pkg/safeyaml v1.2.0 // indirect
-	github.com/palantir/pkg/tlsconfig v1.4.0 // indirect
+	github.com/palantir/pkg/tlsconfig v1.5.0 // indirect
 	github.com/palantir/pkg/transform v1.2.0 // indirect
-	github.com/palantir/witchcraft-go-error v1.42.0 // indirect
-	github.com/palantir/witchcraft-go-logging v1.63.0 // indirect
-	github.com/palantir/witchcraft-go-params v1.39.0 // indirect
-	github.com/palantir/witchcraft-go-tracing v1.41.0 // indirect
+	github.com/palantir/witchcraft-go-error v1.48.0 // indirect
+	github.com/palantir/witchcraft-go-logging v1.72.0 // indirect
+	github.com/palantir/witchcraft-go-params v1.46.0 // indirect
+	github.com/palantir/witchcraft-go-tracing v1.47.0 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/pierrec/lz4/v4 v4.1.28 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
