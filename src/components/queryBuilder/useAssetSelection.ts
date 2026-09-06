@@ -20,6 +20,7 @@ interface UseAssetSelectionArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
   datasourceUrl: string;
+  workspaceRid?: string;
   assetRidResolution: TemplateValueResolution;
   dataScopeResolution: TemplateValueResolution;
   resolveTemplateText: (value: string) => TemplateValueResolution;
@@ -49,6 +50,7 @@ export function useAssetSelection({
   query,
   onChange,
   datasourceUrl,
+  workspaceRid,
   assetRidResolution,
   dataScopeResolution,
   resolveTemplateText,
@@ -136,7 +138,7 @@ export function useAssetSelection({
     async (searchText: string): Promise<AssetOption[]> => {
       const requestId = resolutionCoordinator.startAssetOptionsRequest();
       try {
-        const found = await searchAssets(datasourceUrl, searchText);
+        const found = await searchAssets(datasourceUrl, searchText, workspaceRid);
         if (resolutionCoordinator.isCurrentAssetOptionsRequest(requestId)) {
           latestAssetOptionsAssetsRef.current = found;
         }
@@ -156,7 +158,7 @@ export function useAssetSelection({
         return [];
       }
     },
-    [datasourceUrl, resolutionCoordinator]
+    [datasourceUrl, workspaceRid, resolutionCoordinator]
   );
 
   useEffect(() => {

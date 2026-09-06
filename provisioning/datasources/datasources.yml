@@ -11,5 +11,7 @@ datasources:
     editable: true
     jsonData:
       baseUrl: 'https://api-staging.gov.nominal.io/api'
+      # Optional. Limits asset search to one workspace.
+      # workspaceRid: 'ri.security.gov-staging.workspace.<uuid>'
     secureJsonData:
       apiKey: '${NOMINAL_API_KEY}'

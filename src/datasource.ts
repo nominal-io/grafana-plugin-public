@@ -10,13 +10,14 @@ import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
-
+  workspaceRid?: string;
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
     super(instanceSettings);
 
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
+    this.workspaceRid = instanceSettings.jsonData?.workspaceRid;
   }
 
 

@@ -8,6 +8,7 @@ import {
   getSupportedScopeNames,
   getSupportedScopes,
   resolveDataSourceRids,
+  searchAssets,
 } from './api';
 
 const DATASOURCE_URL = '/api/datasources/uid/test/resources';
@@ -191,5 +192,19 @@ describe('searchChannels', () => {
       },
       { requestId: 'nominal-channel-options-1' }
     );
+  });
+});
+
+describe('searchAssets', () => {
+  const text = { type: 'searchText', searchText: 'eng' };
+  const workspace = { type: 'workspace', workspace: 'ri.security.test.workspace.1' };
+
+  it.each([
+    ['without a workspace sends a bare searchText query', undefined, text],
+    ['with a workspace ANDs searchText and workspace', workspace.workspace, { type: 'and', and: [text, workspace] }],
+  ])('%s', async (_name, workspaceRid, query) => {
+    post.mockResolvedValue({ results: [] });
+    await searchAssets(DATASOURCE_URL, 'eng', workspaceRid);
+    expect(post).toHaveBeenCalledWith(`${DATASOURCE_URL}/scout/v1/search-assets`, expect.objectContaining({ query }));
   });
 });

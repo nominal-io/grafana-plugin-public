@@ -247,12 +247,16 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	pageSize := 50
 	totalFetched := 0
 
+	query := map[string]interface{}{"type": "searchText", "searchText": searchText}
+	if config.WorkspaceRid != "" {
+		query = map[string]interface{}{"type": "and", "and": []interface{}{
+			query, map[string]interface{}{"type": "workspace", "workspace": config.WorkspaceRid},
+		}}
+	}
+
 	for totalFetched < maxResults {
 		requestBody := map[string]interface{}{
-			"query": map[string]interface{}{
-				"searchText": searchText,
-				"type":       "searchText",
-			},
+			"query": query,
 			"sort": map[string]interface{}{
 				"field":        "CREATED_AT",
 				"isDescending": false,

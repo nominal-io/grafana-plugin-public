@@ -14,6 +14,7 @@ interface UseNominalQueryBuilderArgs {
   onChange: (query: NominalQuery) => void;
   onRunQuery: () => void;
   datasourceUrl: string;
+  workspaceRid?: string;
 }
 
 export function useNominalQueryBuilder({
@@ -21,6 +22,7 @@ export function useNominalQueryBuilder({
   onChange,
   onRunQuery,
   datasourceUrl,
+  workspaceRid,
 }: UseNominalQueryBuilderArgs): QueryBuilderModel {
   // Track whether the user has interacted with query fields - prevents auto-clearing on
   // initial load. Cross-cutting: written by asset + channel commands, read by the asset
@@ -43,6 +45,7 @@ export function useNominalQueryBuilder({
     query,
     onChange,
     datasourceUrl,
+    workspaceRid,
     assetRidResolution: queryResolution.assetRid,
     dataScopeResolution: queryResolution.dataScopeName,
     resolveTemplateText,

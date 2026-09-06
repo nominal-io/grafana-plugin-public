@@ -109,6 +109,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onChange,
     onRunQuery,
     datasourceUrl: datasource.url,
+    workspaceRid: datasource.workspaceRid,
   });
 
   const aggregationOptions = React.useMemo(
