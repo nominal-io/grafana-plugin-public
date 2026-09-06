@@ -15,12 +15,15 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 	"github.com/palantir/pkg/uuid"
 )
@@ -87,6 +90,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
 		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
+		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -100,6 +104,7 @@ type Datasource struct {
 	authService       authapi.AuthenticationServiceV2Client
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
+	workspaceService  workspaceapi.WorkspaceServiceClient
 
 	resourceHTTPClient *http.Client
 
@@ -838,10 +843,33 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	}
 
 	log.DefaultLogger.Debug("Health check successful", "user", profile.DisplayName)
-	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusOk,
-		Message: "Successfully connected to Nominal API",
-	}, nil
+
+	message := "Successfully connected to Nominal API"
+	if config.WorkspaceRid != "" {
+		name, err := d.workspaceName(ctxWithTimeout, bearerToken, config.WorkspaceRid)
+		if err != nil {
+			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
+		}
+		message += ". Workspace: " + name
+	}
+	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
+}
+
+// workspaceName resolves a workspace RID to its display name, or the RID when unnamed.
+func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token, workspaceRid string) (string, error) {
+	parsed, err := rid.ParseRID(workspaceRid)
+	if err != nil {
+		return "", fmt.Errorf("Workspace RID is not a valid RID")
+	}
+	workspace, err := d.workspaceService.GetWorkspace(ctx, token, rids.WorkspaceRid(parsed))
+	if err != nil {
+		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid)
+		return "", fmt.Errorf("%s", appendInstanceID("Workspace not found or not accessible with this API key", err))
+	}
+	if workspace.DisplayName != nil && *workspace.DisplayName != "" {
+		return *workspace.DisplayName, nil
+	}
+	return workspaceRid, nil
 }
 
 // CallResource handles HTTP requests sent to the plugin.

@@ -115,12 +115,14 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 };
 
 /** Searches assets, returning only those with at least one supported-type dataScope. */
-export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
+export const searchAssets = async (
+  datasourceUrl: string,
+  searchText: string,
+  workspaceRid?: string
+): Promise<Asset[]> => {
+  const text = { type: 'searchText', searchText: searchText || '' };
   const response = await getBackendSrv().post(`${datasourceUrl}/scout/v1/search-assets`, {
-    query: {
-      searchText: searchText || '',
-      type: 'searchText',
-    },
+    query: workspaceRid ? { type: 'and', and: [text, { type: 'workspace', workspace: workspaceRid }] } : text,
     sort: {
       field: 'CREATED_AT',
       isDescending: false,

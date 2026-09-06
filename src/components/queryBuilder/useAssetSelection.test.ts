@@ -190,7 +190,7 @@ describe('useAssetSelection', () => {
 
     const options = await result.current.assetOptions('asset a');
 
-    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', 'asset a');
+    expect(mockSearchAssets).toHaveBeenCalledWith('/api/x', 'asset a', undefined);
     expect(options).toEqual([
       {
         label: 'Asset A',

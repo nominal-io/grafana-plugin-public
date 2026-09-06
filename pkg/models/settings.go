@@ -8,9 +8,11 @@ import (
 )
 
 type PluginSettings struct {
-	BaseUrl string                `json:"baseUrl"`
-	Path    string                `json:"path"` // Legacy field
-	Secrets *SecretPluginSettings `json:"-"`
+	BaseUrl string `json:"baseUrl"`
+	Path    string `json:"path"` // Legacy field
+	// WorkspaceRid limits asset search to one workspace; empty means all.
+	WorkspaceRid string                `json:"workspaceRid"`
+	Secrets      *SecretPluginSettings `json:"-"`
 }
 
 // GetAPIBaseURL returns the API base URL, preferring baseUrl over legacy path
