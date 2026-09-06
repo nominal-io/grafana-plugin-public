@@ -171,11 +171,7 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 		DataScopeName: target.dataScopeName,
 		Buckets:       buckets,
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{
+	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
 			DataSourceInstanceSettings: &settings,
 		},
@@ -187,19 +183,35 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 				MaxDataPoints: int64(buckets),
 			},
 		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected QueryData error: %v", err)
 	}
 
-	response, ok := resp.Responses["A"]
-	if !ok {
-		t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
+	// A freshly ingested dataset takes ~30s on staging to become queryable:
+	// compute first returns an internal error, then empty frames, then data.
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resp, err := ds.QueryData(ctx, request)
+		cancel()
+		if err != nil {
+			t.Fatalf("unexpected QueryData error: %v", err)
+		}
+		response, ok := resp.Responses["A"]
+		if !ok {
+			t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
+		}
+		rows := 0
+		for _, frame := range response.Frames {
+			rows += frame.Rows()
+		}
+		if response.Error == nil && rows > 0 {
+			assertLiveNominalNumericResponse(t, response, target.channel)
+			return
+		}
+		if attempt == 18 {
+			t.Fatalf("live query returned no data after %d attempts; last error: %v", attempt, response.Error)
+		}
+		t.Logf("live query not ready yet, retrying: error=%v", response.Error)
+		time.Sleep(10 * time.Second)
 	}
-	if response.Error != nil {
-		t.Fatalf("unexpected response error: %v", response.Error)
-	}
-	assertLiveNominalNumericResponse(t, response, target.channel)
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
