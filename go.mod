@@ -3,7 +3,7 @@ module github.com/nominal-inc/nominal-ds
 go 1.26.5
 
 require (
-	github.com/apache/arrow-go/v18 v18.7.0
+	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/grafana/grafana-plugin-sdk-go v0.296.4
 	github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
@@ -75,7 +75,7 @@ require (
 	github.com/palantir/witchcraft-go-params v1.39.0 // indirect
 	github.com/palantir/witchcraft-go-tracing v1.41.0 // indirect
 	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
-	github.com/pierrec/lz4/v4 v4.1.28 // indirect
+	github.com/pierrec/lz4/v4 v4.1.29 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
@@ -104,7 +104,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	google.golang.org/genproto v0.0.0-20210630183607-d20f26d13c79 // indirect
-	google.golang.org/grpc v1.83.1 // indirect
+	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/fsnotify/fsnotify.v1 v1.4.7 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
