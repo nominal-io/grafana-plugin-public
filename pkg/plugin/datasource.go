@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -107,6 +108,9 @@ type Datasource struct {
 	templateVariableCatalog *TemplateVariableCatalog
 
 	kill killCoalescer
+
+	orgRidMu sync.Mutex
+	orgRid   string // cached by resolveOrgRid
 }
 
 func (d *Datasource) getResourceHTTPClient() *http.Client {
@@ -148,9 +152,14 @@ func (d *Datasource) Dispose() {
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
-	// UA components live in ctx so any downstream HTTP picks them up; safe to set
-	// before validation because the error short-circuit below performs no I/O.
-	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ua := userAgentComponentsFromPluginContext(req.PluginContext)
+	ua.RequestKind = "query"
+	// Alerting sets FromAlert on the raw header map, not as a forwarded HTTP header.
+	if req.Headers[backend.FromAlertHeaderName] != "" {
+		ua.RequestKind = "alert"
+	}
+	ua.DashboardUID = req.GetHTTPHeader("X-Dashboard-Uid")
+	ctx = d.contextWithRequestIdentity(ctx, ua)
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
@@ -783,7 +792,9 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ua := userAgentComponentsFromPluginContext(req.PluginContext)
+	ua.RequestKind = "health"
+	ctx = d.contextWithRequestIdentity(ctx, ua)
 	log.DefaultLogger.Debug("CheckHealth called")
 
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -846,7 +857,10 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 
 // CallResource handles HTTP requests sent to the plugin.
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ua := userAgentComponentsFromPluginContext(req.PluginContext)
+	seg, _, _ := strings.Cut(normalizeResourcePath(req.Path), "/")
+	ua.RequestKind = "resource-" + seg
+	ctx = d.contextWithRequestIdentity(ctx, ua)
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
 	return newNominalResourceHandler(d).Handle(ctx, req, sender)

@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	conjureerrors "github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/errors"
+	"github.com/palantir/pkg/bearertoken"
 )
 
 type userAgentComponents struct {
@@ -21,6 +23,12 @@ type userAgentComponents struct {
 	GoArch         string
 	GoVersion      string
 	GrafanaVersion string
+
+	// Optional usage context, rendered as key/value tokens when set.
+	DatasourceUID string
+	OrgRid        string // Nominal org behind the API key
+	RequestKind   string // query, alert, health, or resource-<path>
+	DashboardUID  string
 }
 
 const unknownComponent = "unknown"
@@ -41,13 +49,29 @@ func userAgentComponentsFromPluginContext(pc backend.PluginContext) userAgentCom
 			c.GrafanaVersion = v
 		}
 	}
+	if pc.DataSourceInstanceSettings != nil {
+		c.DatasourceUID = pc.DataSourceInstanceSettings.UID
+	}
 	return c
 }
 
+// formatUserAgent keeps the fixed "nominal-grafana/..." prefix so existing log
+// filters keep working, then appends a key/value token per set optional field.
 func formatUserAgent(c userAgentComponents) string {
 	goVer := strings.TrimPrefix(c.GoVersion, "go")
-	return fmt.Sprintf("nominal-grafana/%s (%s-%s) go/%s grafana/%s",
+	var b strings.Builder
+	fmt.Fprintf(&b, "nominal-grafana/%s (%s-%s) go/%s grafana/%s",
 		c.PluginVersion, c.GoOS, c.GoArch, goVer, c.GrafanaVersion)
+	for _, kv := range [][2]string{
+		{"ds", c.DatasourceUID}, {"org", c.OrgRid},
+		{"req", c.RequestKind}, {"dash", c.DashboardUID},
+	} {
+		if kv[1] != "" {
+			// Header and JSON values must not split into extra tokens.
+			b.WriteString(" " + kv[0] + "/" + strings.Join(strings.Fields(kv[1]), ""))
+		}
+	}
+	return b.String()
 }
 
 // fallbackUserAgentString is computed once at package init — the values feeding
@@ -72,16 +96,36 @@ func userAgentComponentsFromContext(ctx context.Context) (userAgentComponents, b
 	return c, ok
 }
 
-// contextWithPluginRequestIdentity decorates ctx with the User-Agent
-// components derived from a Grafana PluginContext, so any downstream HTTP
-// client (Conjure middleware or raw transport) carries identifying headers.
-// Every Grafana entry point — QueryData, CheckHealth, CallResource — should
-// call this at the top of its handler. New entry points that skip it will
-// silently fall back to the "unknown" UA, which makes outbound traffic
-// indistinguishable from a misconfigured caller; tests in observability_test.go
-// guard against that regression for the three known entry points.
-func contextWithPluginRequestIdentity(ctx context.Context, pc backend.PluginContext) context.Context {
-	return contextWithUserAgentComponents(ctx, userAgentComponentsFromPluginContext(pc))
+// contextWithRequestIdentity adds the Nominal org to c and stores it in ctx so
+// every downstream HTTP client carries the full User-Agent. Each entry point
+// (QueryData, CheckHealth, CallResource) must call it first; one that does not
+// falls back to the "unknown" UA, which observability_test.go guards against.
+func (d *Datasource) contextWithRequestIdentity(ctx context.Context, c userAgentComponents) context.Context {
+	// The org lookup is itself an outbound call, so it carries the rest of the UA.
+	c.OrgRid = d.resolveOrgRid(contextWithUserAgentComponents(ctx, c))
+	return contextWithUserAgentComponents(ctx, c)
+}
+
+// resolveOrgRid looks up the org behind the API key once per instance. A failed
+// lookup is retried on the next request.
+func (d *Datasource) resolveOrgRid(ctx context.Context) string {
+	apiKey := d.settings.DecryptedSecureJSONData["apiKey"]
+	if d.authService == nil || apiKey == "" {
+		return ""
+	}
+	d.orgRidMu.Lock()
+	defer d.orgRidMu.Unlock()
+	if d.orgRid == "" {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		profile, err := d.authService.GetMyProfile(ctx, bearertoken.Token(apiKey))
+		if err != nil {
+			log.DefaultLogger.Debug("Org lookup failed; User-Agent omits org", "error", err)
+			return ""
+		}
+		d.orgRid = profile.OrgRid.String()
+	}
+	return d.orgRid
 }
 
 type userAgentTransport struct {

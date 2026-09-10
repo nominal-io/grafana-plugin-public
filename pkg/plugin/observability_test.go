@@ -524,3 +524,89 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 		t.Errorf("kill flush UA = %q, want prefix %q", got, "nominal-grafana/9.9.9-test")
 	}
 }
+
+// TestRequestIdentity_UserAgentCarriesContext checks the User-Agent a fake
+// Nominal API sees from each entry point.
+func TestRequestIdentity_UserAgentCarriesContext(t *testing.T) {
+	var mu sync.Mutex
+	var uas []string
+	profileCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		uas = append(uas, r.Header.Get("User-Agent"))
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/my/profile") {
+			profileCalls++
+			_, _ = w.Write([]byte(`{"rid":"ri.authn.gov-staging.user.u1","orgRid":"ri.authn.gov-staging.org.o1","email":"","displayName":"","avatarUrl":""}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(conjureErrorBody("00000000-0000-0000-0000-000000000000")))
+	}))
+	defer srv.Close()
+
+	conjureClient, err := conjurehttpclient.NewClient(
+		conjurehttpclient.WithBaseURLs([]string{srv.URL}),
+		conjurehttpclient.WithMiddleware(userAgentMiddleware()),
+	)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	settings := backend.DataSourceInstanceSettings{
+		UID:                     "ds-uid-1",
+		JSONData:                []byte(`{"baseUrl": "` + srv.URL + `"}`),
+		DecryptedSecureJSONData: map[string]string{"apiKey": "x"},
+	}
+	ds := &Datasource{
+		settings:       settings,
+		authService:    authapi.NewAuthenticationServiceV2Client(conjureClient),
+		computeService: computeapi1.NewComputeServiceClient(conjureClient),
+	}
+	pc := backend.PluginContext{PluginVersion: "9.9.9-test", DataSourceInstanceSettings: &settings}
+	base := formatUserAgent(userAgentComponentsFromPluginContext(pc)) + " org/ri.authn.gov-staging.org.o1"
+	channelQuery := []byte(`{"queryType":"timeShift","assetRid":"a","channel":"c","dataScopeName":"d"}`)
+
+	cases := []struct {
+		name string
+		run  func() error
+		want string
+	}{
+		{"panel query", func() error {
+			_, err := ds.QueryData(context.Background(), &backend.QueryDataRequest{
+				PluginContext: pc,
+				Headers:       map[string]string{"http_X-Dashboard-Uid": "dash-1"},
+				Queries:       []backend.DataQuery{{RefID: "A", JSON: channelQuery}},
+			})
+			return err
+		}, base + " req/query dash/dash-1"},
+		{"alert query", func() error {
+			_, err := ds.QueryData(context.Background(), &backend.QueryDataRequest{
+				PluginContext: pc,
+				Headers:       map[string]string{backend.FromAlertHeaderName: "true"},
+				Queries:       []backend.DataQuery{{RefID: "A", JSON: channelQuery}},
+			})
+			return err
+		}, base + " req/alert"},
+		{"resource call", func() error {
+			return ds.CallResource(context.Background(), &backend.CallResourceRequest{
+				PluginContext: pc, Path: "/test", Method: http.MethodGet,
+			}, &recordingCallResourceSender{})
+		}, base + " req/resource-test"},
+	}
+	for _, tc := range cases {
+		if err := tc.run(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		mu.Lock()
+		got := uas[len(uas)-1]
+		mu.Unlock()
+		if got != tc.want {
+			t.Errorf("%s UA\n got %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+	// One cached org lookup, plus the resource handler's own connection test.
+	if profileCalls != 2 {
+		t.Errorf("my/profile calls = %d, want 2", profileCalls)
+	}
+}
