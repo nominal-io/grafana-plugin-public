@@ -11,7 +11,7 @@ import (
 )
 
 func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	req := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
@@ -44,7 +44,7 @@ func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
 }
 
 func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
 		PluginContext: backend.PluginContext{
@@ -63,9 +63,9 @@ func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
 }
 
 func TestQueryDataWithInvalidJSON(t *testing.T) {
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: testDatasourceSettings(),
-	}
+	})
 
 	req := newQueryRequest([]backend.DataQuery{
 		{
@@ -94,10 +94,10 @@ func TestQueryDataWithInvalidJSON(t *testing.T) {
 
 func TestKillDeliverySurvivesDispose(t *testing.T) {
 	// Dispose also runs for instances that never queried, so it must not panic.
-	(&Datasource{}).Dispose()
+	(withCatalog(&Datasource{})).Dispose()
 
 	mockService := &mockComputeService{}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 	target := killTarget{token: bearertoken.Token("t1")}
 
 	ds.enqueueKill(uuid.NewUUID(), target)

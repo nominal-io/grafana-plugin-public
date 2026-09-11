@@ -20,7 +20,7 @@ import (
 )
 
 func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 	query := backend.DataQuery{
 		RefID: "A",
@@ -63,7 +63,7 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 }
 
 func TestPrepareQueryAggregationRules(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 
 	tests := []struct {
@@ -402,10 +402,10 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
