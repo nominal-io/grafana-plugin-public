@@ -42,7 +42,7 @@ func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *Nomin
 }
 
 func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 	query := backend.DataQuery{
 		RefID: "A",
@@ -85,7 +85,7 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 }
 
 func TestPrepareQueryAggregationRules(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 
 	tests := []struct {
@@ -533,7 +533,7 @@ func TestPartitionPreparedQueriesKeepsQueryModelPairs(t *testing.T) {
 }
 
 func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	req := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
@@ -566,7 +566,7 @@ func TestQueryDataWithNilDataSourceInstanceSettings(t *testing.T) {
 }
 
 func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
 		PluginContext: backend.PluginContext{
@@ -585,11 +585,11 @@ func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
 }
 
 func TestQueryDataWithInvalidJSON(t *testing.T) {
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
-	}
+	})
 
 	req := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
@@ -625,11 +625,11 @@ func TestQueryDataWithInvalidJSON(t *testing.T) {
 }
 
 func TestQueryDataRoutesQueriesByType(t *testing.T) {
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -886,12 +886,12 @@ func TestBatchQueryExecution(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -976,12 +976,12 @@ func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1283,12 +1283,12 @@ func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1345,12 +1345,12 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1423,12 +1423,12 @@ func TestBatchQueryError(t *testing.T) {
 		batchComputeError: fmt.Errorf("API error: service unavailable"),
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1493,12 +1493,12 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1592,12 +1592,12 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1682,12 +1682,12 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1751,7 +1751,7 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 }
 
 func TestErrorMessageFormatPreservation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric channel error retains original format without hint", func(t *testing.T) {
 		result := createMockErrorResult(404, "CHANNEL_NOT_FOUND")
@@ -1851,7 +1851,7 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 }
 
 func TestTransformBatchResultLegacyNumeric(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric batch result produces float64 value fields", func(t *testing.T) {
 		values := []float64{1.5, 2.5, 3.5, 4.5}
@@ -2028,7 +2028,7 @@ func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsR
 }
 
 func TestEnumPlotTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("maps indices to category strings", func(t *testing.T) {
 		categories := []string{"on", "off", "standby"}
@@ -2132,7 +2132,7 @@ func TestEnumPlotTransformation(t *testing.T) {
 }
 
 func TestExtractionTruncatesToShortestInput(t *testing.T) {
-	exec := newTestQueryExecution(&Datasource{}, nil)
+	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 
 	t.Run("enum plot", func(t *testing.T) {
 		plot := computeapi.EnumPlot{
@@ -2215,7 +2215,7 @@ func TestExtractionTruncatesToShortestInput(t *testing.T) {
 }
 
 func TestBucketedEnumModeBreaksTiesByLowestIndex(t *testing.T) {
-	exec := newTestQueryExecution(&Datasource{}, nil)
+	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	plot := computeapi.BucketedEnumPlot{
 		Timestamps: []api.Timestamp{
 			testTimestamp(1704067200),
@@ -2248,7 +2248,7 @@ func TestBucketedEnumModeBreaksTiesByLowestIndex(t *testing.T) {
 }
 
 func TestEnumPointTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("passes through resolved string value directly", func(t *testing.T) {
 		result := createMockEnumPointComputeResult("active")
@@ -2304,7 +2304,7 @@ func TestEnumPointTransformation(t *testing.T) {
 }
 
 func TestDisplayNameFromDS(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
 		values := []float64{1.0, 2.0}
@@ -2414,7 +2414,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 // Complements field_config_test.go which covers the builders in isolation —
 // these tests guard the wire-up.
 func TestFieldConfigUnit(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	// assertTimeFieldUnitFree confirms the unit lands only on the value field,
 	// never on the time axis. Grafana ignores Unit on time fields today, but the
@@ -2822,7 +2822,7 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qm := NominalQueryModel{Aggregations: []string{"MEAN"}}
 	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
@@ -2948,7 +2948,7 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qm := NominalQueryModel{Aggregations: []string{"MEAN", "MIN", "MAX"}}
 	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
@@ -3015,7 +3015,7 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qm := NominalQueryModel{Aggregations: []string{"FIRST_POINT", "LAST_POINT"}}
 	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
@@ -3121,7 +3121,7 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qm := NominalQueryModel{Aggregations: []string{"MEAN", "FIRST_POINT"}}
 	result, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, qm)
 	if err != nil {
@@ -3155,7 +3155,7 @@ func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
 	arrowPlot := computeapi.ArrowNumericPlot{ArrowBinary: []byte{}}
 	response := computeapi.NewComputeNodeResponseFromArrowNumeric(arrowPlot)
 
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	_, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, NominalQueryModel{})
 	if err == nil {
 		t.Fatal("expected error for ArrowNumericPlot, got nil")
@@ -3399,7 +3399,7 @@ func TestLogLabelEncoderZeroValue(t *testing.T) {
 }
 
 func TestLogPagedTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("transforms paged log entries into log frame", func(t *testing.T) {
 		messages := []string{"error: disk full", "warn: high memory", "info: started"}
@@ -3578,7 +3578,7 @@ func TestCompareLogEntriesNewestFirst(t *testing.T) {
 }
 
 func TestLogPointTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("transforms single log point", func(t *testing.T) {
 		result := createMockLogPointResult("single entry", map[string]string{"host": "srv-1"})
@@ -3624,7 +3624,7 @@ func TestLogPointTransformation(t *testing.T) {
 }
 
 func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	channelLabel := func(t *testing.T, channel string) string {
 		t.Helper()
@@ -3680,12 +3680,12 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -3802,12 +3802,12 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData: []byte(`{"baseUrl": "https://api.test.com"}`),
 		},
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -3921,10 +3921,10 @@ func TestFieldConfigForEnum(t *testing.T) {
 
 func TestKillDeliverySurvivesDispose(t *testing.T) {
 	// Dispose also runs for instances that never queried, so it must not panic.
-	(&Datasource{}).Dispose()
+	(withCatalog(&Datasource{})).Dispose()
 
 	mockService := &mockComputeService{}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 	target := killTarget{token: bearertoken.Token("t1")}
 
 	ds.enqueueKill(uuid.NewUUID(), target)
@@ -3962,7 +3962,7 @@ func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
 	}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 	defer ds.Dispose()
 
 	req := newBatchQueryRequest(3)
@@ -4025,7 +4025,7 @@ func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx, mockService := tt.setup()
-			ds := &Datasource{computeService: mockService}
+			ds := withCatalog(&Datasource{computeService: mockService})
 
 			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -4070,7 +4070,7 @@ func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
 		cancel() // cancelled mid-flight during the first chunk
 		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
 	}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 
 	resp, err := ds.QueryData(ctx, newBatchQueryRequest(maxBatchComputeSubrequests+1))
 	if err != nil {

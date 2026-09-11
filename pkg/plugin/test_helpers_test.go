@@ -134,7 +134,7 @@ func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse,
 
 // newTestDatasource creates a Datasource for testing CallResource handlers.
 func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
-	ds := &Datasource{
+	return withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
 			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
@@ -142,10 +142,7 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 		authService:        authSvc,
 		datasourceService:  dsSvc,
 		resourceHTTPClient: &http.Client{},
-	}
-	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
-	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
-	return ds
+	})
 }
 
 // withCatalog wires a test Datasource to a catalog the way NewDatasource does,

@@ -139,9 +139,9 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
-	}
+	})
 	exec := &NominalQueryExecution{
 		datasource: ds,
 		config:     &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "x"}},
@@ -357,10 +357,10 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 			JSONData:                []byte(`{"baseUrl": "` + srv.URL + `"}`),
 			DecryptedSecureJSONData: map[string]string{"apiKey": "x"},
 		}
-		ds := &Datasource{
+		ds := withCatalog(&Datasource{
 			settings:    settings,
 			authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
-		}
+		})
 		return ds, settings
 	}
 
@@ -455,9 +455,9 @@ func TestCheckHealth_SurfacesInstanceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
-	}
+	})
 
 	settings := backend.DataSourceInstanceSettings{
 		JSONData: []byte(`{"baseUrl": "` + srv.URL + `"}`),
@@ -502,9 +502,9 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService: computeapi1.NewComputeServiceClient(conjureClient),
-	}
+	})
 	defer ds.Dispose()
 
 	ds.enqueueKill(uuid.NewUUID(), killTarget{
