@@ -150,6 +150,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     () => toAggregationComboboxOptions(state.aggregationState.options),
     [state.aggregationState.options]
   );
+  const isNumericAggregation = state.aggregationState.kind === 'numeric';
 
   return (
     <div className={styles.root}>
@@ -230,9 +231,10 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   label="Aggregation(s)"
                   labelWidth={16}
                   tooltip={state.aggregationState.tooltip}
-                  grow
+                  grow={isNumericAggregation}
                   shrink
-                  className={styles.fillField}
+                  // fillField stretches its child to 100% width; only the MultiCombobox wants that.
+                  className={isNumericAggregation ? styles.fillField : undefined}
                 >
                   {state.aggregationState.kind === 'string' ? (
                     <Input value={state.aggregationState.value[0]} disabled readOnly width={10} />
