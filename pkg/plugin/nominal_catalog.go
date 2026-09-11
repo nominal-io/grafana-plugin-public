@@ -21,8 +21,9 @@ import (
 	"github.com/palantir/pkg/rid"
 )
 
-// assetCacheTTL controls how long fetched asset metadata is cached.
-const assetCacheTTL = 5 * time.Minute
+// catalogCacheTTL controls how long cached asset and channel metadata stay valid.
+// Both catalog caches share it.
+const catalogCacheTTL = 5 * time.Minute
 
 // sweepInterval limits lazy cache cleanup triggered by writes.
 const sweepInterval = 30 * time.Minute
@@ -165,14 +166,14 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 }
 
 // FetchAssetByRid fetches a single asset by its RID using the batch lookup endpoint.
-// Results are cached for assetCacheTTL. The returned value is a copy, so callers
+// Results are cached for catalogCacheTTL. The returned value is a copy, so callers
 // may mutate it without affecting the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
 	c.assetCacheMu.Lock()
 	if c.assetCache == nil {
 		c.assetCache = make(map[string]assetCacheEntry)
 	}
-	if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < assetCacheTTL {
+	if entry, ok := c.assetCache[assetRid]; ok && time.Since(entry.fetchedAt) < catalogCacheTTL {
 		c.assetCacheMu.Unlock()
 		return entry.asset.clone(), nil
 	}
@@ -191,7 +192,7 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	return asset.clone(), nil
 }
 
-// sweepExpiredLocked deletes entries older than assetCacheTTL, at most once per
+// sweepExpiredLocked deletes entries older than catalogCacheTTL, at most once per
 // sweepInterval. Caller must hold the mutex guarding entries and lastSweep.
 func sweepExpiredLocked[V any](entries map[string]V, lastSweep *time.Time, fetchedAt func(V) time.Time, label string) {
 	now := time.Now()
@@ -200,7 +201,7 @@ func sweepExpiredLocked[V any](entries map[string]V, lastSweep *time.Time, fetch
 	}
 	removed := 0
 	for k, entry := range entries {
-		if now.Sub(fetchedAt(entry)) >= assetCacheTTL {
+		if now.Sub(fetchedAt(entry)) >= catalogCacheTTL {
 			delete(entries, k)
 			removed++
 		}
@@ -440,7 +441,7 @@ func (c *NominalCatalog) lookupChannelMetadata(cacheKey string) (channelMetadata
 		c.channelMetadataCache = make(map[string]channelMetadataCacheEntry)
 	}
 	entry, ok := c.channelMetadataCache[cacheKey]
-	if !ok || time.Since(entry.fetchedAt) >= assetCacheTTL {
+	if !ok || time.Since(entry.fetchedAt) >= catalogCacheTTL {
 		return channelMetadataCacheEntry{}, false
 	}
 	return entry, true
