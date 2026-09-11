@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -147,62 +148,67 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 
 		chunkQueries := batch.queries[chunkStart:chunkEnd]
 		chunkModels := batch.models[chunkStart:chunkEnd]
-		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
-		for i, qm := range chunkModels {
-			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
-		}
+		func() {
+			// A shared request ID lets one kill cancel the entire chunk. Mint it
+			// before the recovery boundary so any panic can cancel possible work.
+			requestID := uuid.NewUUID()
+			defer func() {
+				if r := recover(); r != nil {
+					log.DefaultLogger.Error("Recovered panic while executing query chunk",
+						"chunkStart", chunkStart,
+						"chunkEnd", chunkEnd,
+						"panic", fmt.Sprintf("%v", r),
+						"panicType", fmt.Sprintf("%T", r),
+						"stack", string(debug.Stack()),
+					)
+					ua, _ := userAgentComponentsFromContext(ctx)
+					e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
+					for _, q := range chunkQueries {
+						results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal,
+							"Internal error while executing query chunk")
+					}
+				}
+			}()
 
-		// A shared request ID lets one kill cancel the entire batch.
-		requestID := uuid.NewUUID()
-		for i := range computeRequests {
-			computeRequests[i].RequestId = &requestID
-		}
-
-		batchRequest := computeapi1.BatchComputeWithUnitsRequest{
-			Requests: computeRequests,
-		}
-
-		log.DefaultLogger.Debug(
-			"Making batch compute API call",
-			"chunkStart", chunkStart,
-			"chunkEnd", chunkEnd,
-			"queryCount", len(computeRequests),
-		)
-
-		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
-		if err != nil || ctx.Err() != nil {
-			// Kill unconfirmed work; unknown and finished IDs are harmless.
-			ua, _ := userAgentComponentsFromContext(ctx)
-			e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
-		}
-		if err != nil {
-			logErrorWithConjureFields("Batch compute API call failed", err,
-				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
-			errMsg := formatUserError("Batch compute failed", err)
-			for _, q := range chunkQueries {
-				results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal, errMsg)
+			computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
+			for i, qm := range chunkModels {
+				computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
 			}
-			continue
-		}
-
-		log.DefaultLogger.Debug(
-			"Batch compute successful",
-			"chunkStart", chunkStart,
-			"chunkEnd", chunkEnd,
-			"resultCount", len(batchResponse.Results),
-		)
-
-		for i, q := range chunkQueries {
-			if i >= len(batchResponse.Results) {
-				results[q.RefID] = backend.ErrDataResponse(
-					backend.StatusInternal,
-					"Missing result in batch response",
-				)
-				continue
+			for i := range computeRequests {
+				computeRequests[i].RequestId = &requestID
 			}
 
-			results[q.RefID] = e.transformBatchResult(batchResponse.Results[i], chunkModels[i])
-		}
+			batchRequest := computeapi1.BatchComputeWithUnitsRequest{Requests: computeRequests}
+			log.DefaultLogger.Debug("Making batch compute API call",
+				"chunkStart", chunkStart, "chunkEnd", chunkEnd, "queryCount", len(computeRequests))
+
+			batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
+			if err != nil || ctx.Err() != nil {
+				// Kill unconfirmed work; unknown and finished IDs are harmless.
+				ua, _ := userAgentComponentsFromContext(ctx)
+				e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
+			}
+			if err != nil {
+				logErrorWithConjureFields("Batch compute API call failed", err,
+					"chunkStart", chunkStart, "chunkEnd", chunkEnd)
+				errMsg := formatUserError("Batch compute failed", err)
+				for _, q := range chunkQueries {
+					results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal, errMsg)
+				}
+				return
+			}
+
+			log.DefaultLogger.Debug("Batch compute successful",
+				"chunkStart", chunkStart, "chunkEnd", chunkEnd, "resultCount", len(batchResponse.Results))
+			for i, q := range chunkQueries {
+				if i >= len(batchResponse.Results) {
+					results[q.RefID] = backend.ErrDataResponse(backend.StatusInternal,
+						"Missing result in batch response")
+					continue
+				}
+				results[q.RefID] = e.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+			}
+		}()
 	}
 
 	return results

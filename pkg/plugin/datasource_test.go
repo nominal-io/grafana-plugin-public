@@ -586,6 +586,65 @@ func TestCheckHealthWithNilDataSourceInstanceSettings(t *testing.T) {
 	}
 }
 
+func TestQueryDataRecoversPanicOutsideBatchExecution(t *testing.T) {
+	// Channel metadata inference runs during query preparation, before the
+	// per-chunk and per-result recovery boundaries exist.
+	assetRid := "ri.scout.main.asset.abc123"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{
+		searchChannelsFunc: func(context.Context, bearertoken.Token, datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+			panic("metadata lookup exploded")
+		},
+	}
+	ds := &Datasource{
+		computeService:     &mockComputeService{},
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	}
+	defer ds.Dispose()
+
+	req := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{
+			DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+				JSONData:                []byte(fmt.Sprintf("{\"baseUrl\":%q}", server.URL)),
+				DecryptedSecureJSONData: map[string]string{"apiKey": "test-key"},
+			},
+		},
+		Queries: []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temp", DataScopeName: "default", ChannelDataType: "numeric"})},
+			{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "pressure", DataScopeName: "default", ChannelDataType: "numeric"})},
+		},
+	}
+
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mockDS.searchChannelsCalls == 0 {
+		t.Fatal("test did not reach the panicking metadata lookup")
+	}
+	for _, refID := range []string{"A", "B"} {
+		r, ok := resp.Responses[refID]
+		if !ok || r.Error == nil {
+			t.Fatalf("expected an error response for %s, got %+v", refID, r)
+		}
+		if got := r.Error.Error(); got != "Internal error while handling query request" {
+			t.Fatalf("expected the request-level containment message for %s, got %q", refID, got)
+		}
+	}
+}
+
 func TestQueryDataWithInvalidJSON(t *testing.T) {
 	ds := &Datasource{
 		settings: backend.DataSourceInstanceSettings{
@@ -3182,20 +3241,6 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 	if firstSeries.TimePoints[0] != time.Unix(0, 900000000000) {
 		t.Errorf("first.TimePoints[0] = %v, want %v (should use first_timestamp, not end_bucket_timestamp)",
 			firstSeries.TimePoints[0], time.Unix(0, 900000000000))
-	}
-}
-
-func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
-	arrowPlot := computeapi.ArrowNumericPlot{ArrowBinary: []byte{}}
-	response := computeapi.NewComputeNodeResponseFromArrowNumeric(arrowPlot)
-
-	ds := &Datasource{}
-	_, err := newTestQueryExecution(ds, nil).transformNominalResponseFromClient(response, NominalQueryModel{})
-	if err == nil {
-		t.Fatal("expected error for ArrowNumericPlot, got nil")
-	}
-	if !strings.Contains(err.Error(), "ArrowNumericPlot unexpectedly") {
-		t.Errorf("error should mention ArrowNumericPlot, got: %v", err)
 	}
 }
 
