@@ -37,7 +37,17 @@ const getStyles = (theme: GrafanaTheme2) => ({
       border: `1px solid ${configComplete ? theme.colors.success.main : theme.colors.border.weak}`,
       marginBottom: theme.spacing(0.5),
       width: '100%',
+      containerType: 'inline-size',
     }),
+  // Fields shrink and truncate instead of wrapping, until the row is too narrow to read.
+  row: css({
+    display: 'flex',
+    alignItems: 'center',
+    gap: theme.spacing(1),
+    [`@container (max-width: ${theme.spacing(80)})`]: {
+      flexWrap: 'wrap',
+    },
+  }),
   assetSummary: css({
     marginTop: theme.spacing(0.75),
     padding: theme.spacing(0.75, 1.25),
@@ -100,6 +110,32 @@ const getStyles = (theme: GrafanaTheme2) => ({
     fontWeight: theme.typography.fontWeightMedium,
     marginLeft: theme.spacing(0.5),
   }),
+  // Floor is label plus 15 units. Inner min-width: 0 lets the field shrink below content.
+  shrinkField: (labelWidth: number) =>
+    css({
+      minWidth: theme.spacing(labelWidth + 15),
+      '& > div:last-child': {
+        minWidth: 0,
+      },
+      '& input': {
+        textOverflow: 'ellipsis',
+      },
+    }),
+  // The "... N" counter fires only when the container is narrower than its pills, so it
+  // must fill a field that also grows, or it stays collapsed after narrowing once. The
+  // shrink factor folds pills before the channel clips. Floor is label 17 + minWidth 26,
+  // with the label's 4px trailing margin counted in the field's own margin.
+  fillField: css({
+    minWidth: theme.spacing(43),
+    flexShrink: 100,
+    '& > div:last-child': {
+      minWidth: 0,
+      '& > div': {
+        display: 'block',
+        width: '100%',
+      },
+    },
+  }),
 });
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
@@ -115,14 +151,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     () => toAggregationComboboxOptions(state.aggregationState.options),
     [state.aggregationState.options]
   );
+  const isNumericAggregation = state.aggregationState.kind === 'numeric';
 
   return (
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
-          <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
+          <div className={styles.row} data-testid="query-editor-asset-scope-row">
             {/* Asset Selection */}
-            <InlineField label="Asset" labelWidth={8}>
+            <InlineField label="Asset" labelWidth={8} shrink className={styles.shrinkField(8)}>
               <Combobox
                 id="nominal-query-asset-picker"
                 value={state.assetSelectValue}
@@ -139,7 +176,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             </InlineField>
 
             {state.assetComplete && (
-              <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
+              <InlineField
+                label="Data scope"
+                labelWidth={12}
+                loading={!state.selectedAsset && state.assetComplete}
+                shrink
+                className={styles.shrinkField(12)}
+              >
                 <Combobox
                   id="nominal-query-data-scope-picker"
                   value={query?.dataScopeName || ''}
@@ -155,13 +198,13 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 />
               </InlineField>
             )}
-          </Stack>
+          </div>
 
           {/* Channel Selection - only show if asset is selected */}
           {state.assetComplete && (
-            <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-channel-aggregation-row">
+            <div className={styles.row} data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
-                <InlineField label="Channel" labelWidth={8}>
+                <InlineField label="Channel" labelWidth={8} shrink className={styles.shrinkField(8)}>
                   {/*
                     TODO: add Combobox prefixIcon after bumping @grafana/ui to >=12.3.0;
                     the current 12.1.0 pin does not include it.
@@ -185,7 +228,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
               {/* Aggregation selector - shown when a channel is selected */}
               {query?.channel && (
-                <InlineField label="Aggregation(s)" tooltip={state.aggregationState.tooltip}>
+                <InlineField
+                  label="Aggregation(s)"
+                  labelWidth={17}
+                  tooltip={state.aggregationState.tooltip}
+                  grow={isNumericAggregation}
+                  shrink
+                  // fillField stretches its child to 100% width; only the MultiCombobox wants that.
+                  className={isNumericAggregation ? styles.fillField : undefined}
+                >
                   {state.aggregationState.kind === 'string' ? (
                     <Input value={state.aggregationState.value[0]} disabled readOnly width={10} />
                   ) : state.aggregationState.kind === 'log' ? (
@@ -197,14 +248,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       onChange={commands.changeAggregations}
                       placeholder="Select aggregations..."
                       width="auto"
-                      minWidth={40}
+                      minWidth={26}
                       maxWidth={100}
                       data-testid="aggregation-multi-combobox"
                     />
                   )}
                 </InlineField>
               )}
-            </Stack>
+            </div>
           )}
         </Stack>
 
