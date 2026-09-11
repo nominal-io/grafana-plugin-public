@@ -47,6 +47,9 @@ const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity
 2024-09-05T18:09:00Z,9,29,41
 `
 
+// liveNominalSampleCount is the number of data rows in liveNominalCSV.
+const liveNominalSampleCount = 10
+
 type liveNominalQueryTarget struct {
 	assetRid      string
 	channel       string
@@ -187,8 +190,21 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 
 	// A freshly ingested dataset takes ~30s on staging to become queryable:
 	// compute first returns an internal error, then empty frames, then data.
-	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Bound the wait on the test deadline. Overrunning -timeout panics past
+	// t.Cleanup and leaks the temporary asset and dataset.
+	const queryTimeout = 30 * time.Second
+	deadline, hasDeadline := t.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(5 * time.Minute)
+	}
+	deadline = deadline.Add(-time.Minute) // room for the archive cleanups
+	start := time.Now()
+	attempts := 0
+	lastValues := 0
+	var lastErr error
+	for time.Until(deadline) >= queryTimeout {
+		attempts++
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 		resp, err := ds.QueryData(ctx, request)
 		cancel()
 		if err != nil {
@@ -198,20 +214,17 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
 		}
-		rows := 0
-		for _, frame := range response.Frames {
-			rows += frame.Rows()
-		}
-		if response.Error == nil && rows > 0 {
+		values := liveNominalValues(t, response)
+		if response.Error == nil && len(values) >= liveNominalSampleCount {
 			assertLiveNominalNumericResponse(t, response, target.channel)
 			return
 		}
-		if attempt == 18 {
-			t.Fatalf("live query returned no data after %d attempts; last error: %v", attempt, response.Error)
-		}
-		t.Logf("live query not ready yet, retrying: error=%v", response.Error)
+		lastValues, lastErr = len(values), response.Error
+		t.Logf("live query not ready yet, retrying: values=%d/%d error=%v", len(values), liveNominalSampleCount, response.Error)
 		time.Sleep(10 * time.Second)
 	}
+	t.Fatalf("live query never returned data: %d attempts over %s; last response had %d of %d non-null values, error: %v",
+		attempts, time.Since(start).Round(time.Second), lastValues, liveNominalSampleCount, lastErr)
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
@@ -579,6 +592,31 @@ func liveNominalCSVTimeRange() (time.Time, time.Time) {
 		time.Date(2024, 9, 5, 18, 10, 0, 0, time.UTC)
 }
 
+// liveNominalValues returns the non-null values across the response's frames.
+// Empty buckets arrive as rows with nil values, so frame.Rows() overcounts.
+func liveNominalValues(t *testing.T, response backend.DataResponse) []float64 {
+	t.Helper()
+	var values []float64
+	for _, frame := range response.Frames {
+		if len(frame.Fields) < 2 {
+			continue
+		}
+		field := frame.Fields[1]
+		for i := 0; i < field.Len(); i++ {
+			raw, ok := field.ConcreteAt(i)
+			if !ok {
+				continue
+			}
+			value, isFloat := raw.(float64)
+			if !isFloat {
+				t.Fatalf("expected live query value to be numeric, got %T", raw)
+			}
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 func assertLiveNominalNumericResponse(t *testing.T, response backend.DataResponse, channel string) {
 	t.Helper()
 
@@ -592,33 +630,14 @@ func assertLiveNominalNumericResponse(t *testing.T, response backend.DataRespons
 	if len(frame.Fields) < 2 {
 		t.Fatalf("expected live query frame to contain time and value fields, got %d fields", len(frame.Fields))
 	}
-	if frame.Fields[0].Len() == 0 || frame.Fields[1].Len() == 0 {
-		t.Fatalf("expected live query frame to contain data points")
-	}
 
-	sawValue := false
-	for i := 0; i < frame.Fields[1].Len(); i++ {
-		rawValue := frame.Fields[1].At(i)
-		var value *float64
-		switch typed := rawValue.(type) {
-		case nil:
-			continue
-		case *float64:
-			value = typed
-		case float64:
-			value = &typed
-		default:
-			t.Fatalf("expected live query value to be numeric, got %T", rawValue)
-		}
-		if value == nil {
-			continue
-		}
-		if *value < 20 || *value > 29 {
-			t.Fatalf("expected live query value to come from the ingested CSV range [20, 29], got %v", *value)
-		}
-		sawValue = true
+	values := liveNominalValues(t, response)
+	if len(values) != liveNominalSampleCount {
+		t.Fatalf("expected %d non-null values from live query, one per ingested CSV row, got %d", liveNominalSampleCount, len(values))
 	}
-	if !sawValue {
-		t.Fatalf("expected at least one non-null value from live query")
+	for _, value := range values {
+		if value < 20 || value > 29 {
+			t.Fatalf("expected live query value to come from the ingested CSV range [20, 29], got %v", value)
+		}
 	}
 }
