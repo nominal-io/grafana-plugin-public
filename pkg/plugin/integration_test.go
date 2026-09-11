@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,9 +47,6 @@ const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity
 2024-09-05T18:08:00Z,8,28,42
 2024-09-05T18:09:00Z,9,29,41
 `
-
-// liveNominalSampleCount is the number of data rows in liveNominalCSV.
-const liveNominalSampleCount = 10
 
 type liveNominalQueryTarget struct {
 	assetRid      string
@@ -199,6 +197,7 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 	}
 	deadline = deadline.Add(-time.Minute) // room for the archive cleanups
 	start := time.Now()
+	_, expected := liveNominalCSVSamples(t)
 	attempts := 0
 	lastValues := 0
 	var lastErr error
@@ -215,16 +214,19 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 			t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
 		}
 		values := liveNominalValues(t, response)
-		if response.Error == nil && len(values) >= liveNominalSampleCount {
-			assertLiveNominalNumericResponse(t, response, target.channel)
+		if len(values) > len(expected) {
+			t.Fatalf("live query returned %d non-null values but the fixture ingested %d; the extra points come from upstream of the plugin", len(values), len(expected))
+		}
+		if response.Error == nil && len(values) == len(expected) {
+			assertLiveNominalNumericResponse(t, response, target.channel, expected)
 			return
 		}
 		lastValues, lastErr = len(values), response.Error
-		t.Logf("live query not ready yet, retrying: values=%d/%d error=%v", len(values), liveNominalSampleCount, response.Error)
+		t.Logf("live query not ready yet, retrying: values=%d/%d error=%v", len(values), len(expected), response.Error)
 		time.Sleep(10 * time.Second)
 	}
 	t.Fatalf("live query never returned data: %d attempts over %s; last response had %d of %d non-null values, error: %v",
-		attempts, time.Since(start).Round(time.Second), lastValues, liveNominalSampleCount, lastErr)
+		attempts, time.Since(start).Round(time.Second), lastValues, len(expected), lastErr)
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
@@ -337,7 +339,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	fileID := ingestLiveNominalCSV(t, ctx, clients, dataset.Rid)
 	waitForLiveNominalIngest(t, ctx, clients, dataset.Rid, fileID)
 
-	from, to := liveNominalCSVTimeRange()
+	from, to := liveNominalCSVTimeRange(t)
 	return liveNominalQueryTarget{
 		assetRid:      asset.Rid.String(),
 		channel:       liveNominalChannelName,
@@ -587,9 +589,36 @@ func (s liveNominalIngestStatus) isComplete() (bool, error) {
 	}
 }
 
-func liveNominalCSVTimeRange() (time.Time, time.Time) {
-	return time.Date(2024, 9, 5, 17, 59, 0, 0, time.UTC),
-		time.Date(2024, 9, 5, 18, 10, 0, 0, time.UTC)
+// liveNominalCSVSamples parses the fixture into timestamps and the queried channel's values.
+func liveNominalCSVSamples(t *testing.T) ([]time.Time, []float64) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(liveNominalCSV), "\n")
+	column := slices.Index(strings.Split(lines[0], ","), liveNominalChannelName)
+	if column < 0 {
+		t.Fatalf("liveNominalCSV has no %q column", liveNominalChannelName)
+	}
+	var timestamps []time.Time
+	var values []float64
+	for _, line := range lines[1:] {
+		fields := strings.Split(line, ",")
+		timestamp, err := time.Parse(time.RFC3339, fields[0])
+		if err != nil {
+			t.Fatalf("liveNominalCSV timestamp %q: %v", fields[0], err)
+		}
+		value, err := strconv.ParseFloat(fields[column], 64)
+		if err != nil {
+			t.Fatalf("liveNominalCSV %s %q: %v", liveNominalChannelName, fields[column], err)
+		}
+		timestamps = append(timestamps, timestamp)
+		values = append(values, value)
+	}
+	return timestamps, values
+}
+
+// liveNominalCSVTimeRange pads the fixture's span by a minute on each side.
+func liveNominalCSVTimeRange(t *testing.T) (time.Time, time.Time) {
+	timestamps, _ := liveNominalCSVSamples(t)
+	return timestamps[0].Add(-time.Minute), timestamps[len(timestamps)-1].Add(time.Minute)
 }
 
 // liveNominalValues returns the non-null values across the response's frames.
@@ -617,7 +646,7 @@ func liveNominalValues(t *testing.T, response backend.DataResponse) []float64 {
 	return values
 }
 
-func assertLiveNominalNumericResponse(t *testing.T, response backend.DataResponse, channel string) {
+func assertLiveNominalNumericResponse(t *testing.T, response backend.DataResponse, channel string, expected []float64) {
 	t.Helper()
 
 	if len(response.Frames) == 0 {
@@ -632,12 +661,7 @@ func assertLiveNominalNumericResponse(t *testing.T, response backend.DataRespons
 	}
 
 	values := liveNominalValues(t, response)
-	if len(values) != liveNominalSampleCount {
-		t.Fatalf("expected %d non-null values from live query, one per ingested CSV row, got %d", liveNominalSampleCount, len(values))
-	}
-	for _, value := range values {
-		if value < 20 || value > 29 {
-			t.Fatalf("expected live query value to come from the ingested CSV range [20, 29], got %v", value)
-		}
+	if !slices.Equal(values, expected) {
+		t.Fatalf("expected live query values to match the ingested CSV %v, got %v", expected, values)
 	}
 }
