@@ -148,11 +148,30 @@ func (d *Datasource) Dispose() {
 //
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
-func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (response *backend.QueryDataResponse, err error) {
+	// Last-resort boundary. The SDK does not recover on this path, so a panic
+	// anywhere outside the per-chunk and per-result guards would end the
+	// process and every in-flight query on this instance.
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.Error("Recovered panic while handling query request",
+				"panic", fmt.Sprintf("%v", r),
+				"panicType", fmt.Sprintf("%T", r),
+				"stack", string(debug.Stack()),
+			)
+			response = backend.NewQueryDataResponse()
+			for _, q := range req.Queries {
+				response.Responses[q.RefID] = backend.ErrDataResponse(backend.StatusInternal,
+					"Internal error while handling query request")
+			}
+			err = nil
+		}
+	}()
+
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
-	response := backend.NewQueryDataResponse()
+	response = backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -166,13 +185,13 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	}
 
 	// Load config once for all queries
-	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
-	if err != nil {
-		log.DefaultLogger.Error("Failed to load plugin settings", "error", err)
+	config, loadErr := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
+	if loadErr != nil {
+		log.DefaultLogger.Error("Failed to load plugin settings", "error", loadErr)
 		for _, q := range req.Queries {
 			response.Responses[q.RefID] = backend.ErrDataResponse(
 				backend.StatusInternal,
-				fmt.Sprintf("Failed to load settings: %v", err),
+				fmt.Sprintf("Failed to load settings: %v", loadErr),
 			)
 		}
 		return response, nil
