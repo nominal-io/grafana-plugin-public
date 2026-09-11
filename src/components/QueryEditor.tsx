@@ -123,9 +123,10 @@ const getStyles = (theme: GrafanaTheme2) => ({
     }),
   // The "... N" counter fires only when the container is narrower than its pills, so it
   // must fill a field that also grows, or it stays collapsed after narrowing once. The
-  // shrink factor folds pills before the channel clips. Floor is label 16 + minWidth 26.
+  // shrink factor folds pills before the channel clips. Floor is label 17 + minWidth 26,
+  // with the label's 4px trailing margin counted in the field's own margin.
   fillField: css({
-    minWidth: theme.spacing(42),
+    minWidth: theme.spacing(43),
     flexShrink: 100,
     '& > div:last-child': {
       minWidth: 0,
@@ -229,7 +230,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               {query?.channel && (
                 <InlineField
                   label="Aggregation(s)"
-                  labelWidth={16}
+                  labelWidth={17}
                   tooltip={state.aggregationState.tooltip}
                   grow={isNumericAggregation}
                   shrink
