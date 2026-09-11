@@ -120,9 +120,8 @@ func (c *ttlCache[V]) sweepLocked() {
 // concurrent caller of the same key. The load is detached from the initiating
 // caller so that caller's cancellation cannot fail the others, and bounded by
 // detachedLookupTimeout. The cache is re-read inside the flight, closing the
-// race between a caller's own miss and entering the group. load decides what
-// to store, so a load that returns nothing cacheable is retried on the next
-// miss.
+// race between a caller's own miss and entering the group. A successful load
+// is stored here, so errors are never cached and the next miss retries.
 func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
 	var zero V
 	if v, hit := c.lookup(key); hit {
@@ -140,7 +139,12 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 		}
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
-		return load(workCtx)
+		v, err := load(workCtx)
+		if err != nil {
+			return nil, err
+		}
+		c.store(key, v)
+		return v, nil
 	})
 
 	select {
@@ -283,7 +287,6 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 		if err != nil {
 			return nil, err
 		}
-		c.assetCache.store(assetRid, asset)
 		return asset, nil
 	})
 	if err != nil {
@@ -421,7 +424,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	channel := qm.Channel
 	entry, err := c.channelMetadataCache.get(ctx, cacheKey,
 		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
-			return c.computeChannelMetadata(lookupCtx, config, cacheKey, assetRid, dataScopeName, channel)
+			return c.computeChannelMetadata(lookupCtx, config, assetRid, dataScopeName, channel)
 		})
 	if err != nil {
 		// Metadata enrichment is best-effort.
@@ -430,8 +433,9 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	applyChannelMetadata(qm, entry)
 }
 
-// computeChannelMetadata performs an uncached lookup and stores cacheable results.
-func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, cacheKey, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
+// computeChannelMetadata performs an uncached lookup. An empty entry means the
+// channel has no usable metadata, and caching it avoids repeating the search.
+func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
 	asset, err := c.FetchAssetByRid(ctx, config, assetRid)
 	if err != nil {
 		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", assetRid, "error", err)
@@ -463,7 +467,6 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	}
 
 	if entry, ok := channelMetadataEntryForExactMatch(channelsResponse.Results, channel); ok {
-		c.channelMetadataCache.store(cacheKey, entry)
 		return entry, nil
 	}
 
@@ -473,7 +476,6 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	log.DefaultLogger.Debug("No usable channel metadata for inference",
 		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	entry := channelMetadataCacheEntry{}
-	c.channelMetadataCache.store(cacheKey, entry)
 	return entry, nil
 }
 
