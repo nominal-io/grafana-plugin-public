@@ -702,6 +702,67 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 	}
 }
 
+func TestNominalCatalogFetchAssetByRidSharesFailureAndRetriesAfter(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.failshare"
+	const callers = 4
+
+	blocker := newBlockingLookup()
+	var fetches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fetches.Add(1) == 1 {
+			blocker.block()
+			http.Error(w, `{"error":"upstream down"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]SingleAssetResponse{assetRid: {Rid: assetRid, Title: "Recovered"}})
+	}))
+	t.Cleanup(func() {
+		blocker.unblock()
+		server.Close()
+	})
+
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	results := make([]assetLookupResult, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		ctx, waiting := newFlightWaitContext(context.Background())
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i].asset, results[i].err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		}()
+		if i == 0 {
+			waitForTestSignal(t, blocker.arrived, "the blocked backend request")
+		}
+		waitForTestSignal(t, waiting, "a caller to join the flight")
+	}
+
+	allDone := make(chan struct{})
+	go func() { wg.Wait(); close(allDone) }()
+	blocker.unblock()
+	waitForTestSignal(t, allDone, "every caller to receive the failed shared result")
+
+	for i, got := range results {
+		if got.err == nil || got.asset != nil {
+			t.Fatalf("caller %d = (%+v, %v), want (nil, error)", i, got.asset, got.err)
+		}
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("asset backend calls during failed flight = %d, want 1", got)
+	}
+
+	asset, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
+	if err != nil || asset == nil || asset.Title != "Recovered" {
+		t.Fatalf("retry after failure = (%+v, %v), want Recovered asset", asset, err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("asset backend calls after retry = %d, want 2 (the failure must not be cached)", got)
+	}
+}
+
 func TestNominalCatalogDoesNotDispatchPreCanceledMiss(t *testing.T) {
 	tests := []struct {
 		name string
