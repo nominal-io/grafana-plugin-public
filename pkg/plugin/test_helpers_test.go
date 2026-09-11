@@ -144,6 +144,7 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 		resourceHTTPClient: &http.Client{},
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
 	return ds
 }
 
@@ -151,5 +152,6 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 // for tests that drive the query path.
 func withCatalog(ds *Datasource) *Datasource {
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
 	return ds
 }

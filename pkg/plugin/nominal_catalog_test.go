@@ -376,7 +376,7 @@ func TestNominalCatalogAssetCacheSweepOnStore(t *testing.T) {
 			catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
 			catalog.assetCache["expired"] = assetCacheEntry{
 				asset:     &SingleAssetResponse{Rid: "expired"},
-				fetchedAt: time.Now().Add(-2 * catalogCacheTTL),
+				fetchedAt: time.Now().Add(-2 * assetCacheTTL),
 			}
 			catalog.assetCache["fresh"] = assetCacheEntry{
 				asset:     &SingleAssetResponse{Rid: "fresh"},
@@ -420,7 +420,7 @@ func TestNominalCatalogChannelCacheSweepOnStore(t *testing.T) {
 			catalog := newNominalCatalog(nil, nil)
 			catalog.channelMetadataCache["expired"] = channelMetadataCacheEntry{
 				channelDataType: "numeric",
-				fetchedAt:       time.Now().Add(-2 * catalogCacheTTL),
+				fetchedAt:       time.Now().Add(-2 * assetCacheTTL),
 			}
 			catalog.channelMetadataCache["fresh"] = channelMetadataCacheEntry{
 				channelDataType: "numeric",
