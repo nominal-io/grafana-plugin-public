@@ -57,19 +57,21 @@ func TestUnsupportedResponseAffectsOnlyItsQuery(t *testing.T) {
 }
 
 func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
-	corrupt := createTestArrowBucketedNumeric(
+	realDecode := decodeArrowBucketedNumeric
+	decodeArrowBucketedNumeric = func(computeapi.ArrowBucketedNumericPlot, []aggColumnSpec) ([]AggregationSeries, error) {
+		panic("arrow decode exploded")
+	}
+	t.Cleanup(func() { decodeArrowBucketedNumeric = realDecode })
+
+	arrow := createTestArrowBucketedNumeric(
 		[]int64{1773975408000000000, 1773975414000000000},
 		[]float64{0.71, -0.40}, nil)
-	// Byte 415 is in the record-batch metadata; corrupting it zeroes a buffer
-	// length so arrow-go v18 panics counting nulls.
-	corrupt[415] ^= 0xFF
-
 	mock := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
 				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
-						computeapi.ArrowBucketedNumericPlot{ArrowBinary: corrupt}),
+						computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrow}),
 				)},
 				createMockComputeResult(nil),
 			},

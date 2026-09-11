@@ -526,6 +526,11 @@ func unsupportedComputeResponseError(typeName string) error {
 
 // transformNominalResponseFromClient converts conjure client response to Grafana time series data.
 // qm is needed so the Arrow bucketed handler knows which aggregation columns to extract.
+// decodeArrowBucketedNumeric is a variable so a test can make the result
+// transform panic directly instead of relying on arrow-go to panic on a
+// corrupted stream.
+var decodeArrowBucketedNumeric = extractArrowBucketedNumericSeries
+
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
@@ -569,7 +574,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			if len(specs) == 0 {
 				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
 			}
-			series, err := extractArrowBucketedNumericSeries(arrowBucketed, specs)
+			series, err := decodeArrowBucketedNumeric(arrowBucketed, specs)
 			if err != nil {
 				return err
 			}
