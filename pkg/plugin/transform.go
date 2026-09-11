@@ -239,6 +239,11 @@ func unsupportedComputeResponseError(typeName string) error {
 	return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
 }
 
+// decodeArrowBucketedNumeric is a variable so a test can make the result
+// transform panic directly instead of relying on arrow-go to panic on a
+// corrupted stream.
+var decodeArrowBucketedNumeric = extractArrowBucketedNumericSeries
+
 // transformNominalResponseFromClient converts a compute response into a
 // TransformResult. qm names the aggregation columns the Arrow bucketed arm reads.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
@@ -283,7 +288,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			if len(specs) == 0 {
 				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
 			}
-			series, err := extractArrowBucketedNumericSeries(arrowBucketed, specs)
+			series, err := decodeArrowBucketedNumeric(arrowBucketed, specs)
 			if err != nil {
 				return err
 			}
