@@ -2,11 +2,13 @@ import React from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
-import { NominalQuery } from '../types';
+import { NominalQuery, NominalDataSourceOptions } from '../types';
 import { DataSource } from '../datasource';
+import type { DataSourceInstanceSettings } from '@grafana/data';
 
 const DATASOURCE_URL = '/api/datasources/uid/test/resources';
 const ASSET_RID = 'ri.scout.main.asset.abc123';
+const WORKSPACE_RID = 'ri.security.main.workspace.w1';
 const LOG_DS_RID = 'ri.logset.main.log-set.xyz';
 
 const ASSET = {
@@ -596,6 +598,51 @@ describe('channel data type inference effect', () => {
     });
 
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ assetRid: ASSET_RID_B }));
+  });
+
+  it('sends the configured workspace RID with the asset picker search', async () => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/scout/v1/search-assets')) {
+        return { results: [ASSET] };
+      }
+      if (url.endsWith('/scout/v1/asset/multiple')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+
+    const datasource = new DataSource({
+      uid: 'test',
+      jsonData: { workspaceRid: WORKSPACE_RID },
+    } as DataSourceInstanceSettings<NominalDataSourceOptions>);
+
+    render(
+      <QueryEditor
+        query={makeQuery({ assetRid: ASSET_RID })}
+        onChange={jest.fn()}
+        onRunQuery={jest.fn()}
+        datasource={datasource}
+      />
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      fireEvent.change(await screen.findByTestId('asset-combobox'), { target: { value: 'eng' } });
+    });
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith(
+        `${DATASOURCE_URL}/scout/v1/search-assets`,
+        expect.objectContaining({
+          query: expect.objectContaining({
+            and: expect.arrayContaining([{ type: 'workspace', workspace: WORKSPACE_RID }]),
+          }),
+        })
+      );
+    });
   });
 
   it('wires the data scope picker onChange to selectDataScope with the option value', async () => {
