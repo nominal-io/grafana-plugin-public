@@ -69,6 +69,7 @@ export interface NominalTimestamp {
  */
 export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
+  workspaceRid?: string;
   path?: string; // Legacy support
 }
 

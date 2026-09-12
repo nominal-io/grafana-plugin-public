@@ -14,9 +14,10 @@ Bring Nominal time-series data into Grafana dashboards and Explore, with templat
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
 4. Enter your Nominal API key in **API Key**.
-5. Select **Save & test**.
+5. Recommended: set **Workspace RID** (Nominal app: **Settings > API keys > Copy RID**) so asset search stays within one workspace. Empty searches every workspace the key can access.
+6. Select **Save & test**.
 
-Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key.
+Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key. With a Workspace RID set, it also confirms the key can see that workspace and shows its name.
 
 ## Query basics
 
@@ -95,6 +96,7 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 - If **Save & test** fails, confirm that the Base URL includes the `/api` path and that the API key is valid.
 - If asset or channel search fails, confirm that the data source can reach Nominal and that the API key has access to the requested data.
+- If an expected asset is missing from search, check the **Workspace RID**: only assets in that workspace are listed. Assets referenced by RID in saved dashboards keep working regardless of the workspace setting.
 
 ## Known limitations
 
