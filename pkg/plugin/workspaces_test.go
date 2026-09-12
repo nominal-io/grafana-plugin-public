@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 )
 
 const testWorkspaceRid = "ri.security.test.workspace.11111111-1111-1111-1111-111111111111"
@@ -36,10 +36,19 @@ func (m *mockWorkspaceService) GetDefaultWorkspace(context.Context, bearertoken.
 	return nil, nil
 }
 
-func newWorkspaceTestDatasource(baseURL, workspaceRid string, ws *mockWorkspaceService) *Datasource {
+func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *mockWorkspaceService) *Datasource {
+	t.Helper()
 	ds := newTestDatasource(baseURL, &mockAuthService{}, &mockDatasourceService{})
 	ds.settings.JSONData = []byte(fmt.Sprintf(`{"baseUrl": %q, "workspaceRid": %q}`, baseURL, workspaceRid))
 	ds.workspaceService = ws
+	if workspaceRid != "" {
+		parsed, err := rid.ParseRID(workspaceRid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		typed := rids.WorkspaceRid(parsed)
+		ds.workspaceRid = &typed
+	}
 	return ds
 }
 
@@ -54,12 +63,12 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "Successfully connected to Nominal API"},
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
-		{"malformed rid", "not-a-rid", &mockWorkspaceService{}, backend.HealthStatusError, "not a valid RID"},
-		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: errors.New("403")}, backend.HealthStatusError, "not accessible"},
+		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "not accessible"},
+		{"workspace lookup times out", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ds := newWorkspaceTestDatasource("http://example", tc.workspaceRid, tc.ws)
+			ds := newWorkspaceTestDatasource(t, "http://example", tc.workspaceRid, tc.ws)
 			result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
 				PluginContext: backend.PluginContext{DataSourceInstanceSettings: &ds.settings},
 			})
@@ -83,7 +92,7 @@ func TestAssetsVariableAppliesWorkspaceFilter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ds := newWorkspaceTestDatasource(server.URL, testWorkspaceRid, &mockWorkspaceService{})
+	ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, &mockWorkspaceService{})
 	body, _ := json.Marshal(map[string]any{"searchText": "eng"})
 	resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "assets", Method: http.MethodPost, Body: body})
 	if resp.Status != http.StatusOK {
@@ -99,5 +108,26 @@ func TestAssetsVariableAppliesWorkspaceFilter(t *testing.T) {
 	})
 	if got, _ := json.Marshal(gotQuery); string(got) != string(want) {
 		t.Fatalf("query = %s, want %s", got, want)
+	}
+}
+
+func TestNewDatasourceWorkspaceRid(t *testing.T) {
+	cases := []struct {
+		name, workspaceRid string
+		wantErr            bool
+	}{
+		{"empty", "", false},
+		{"valid", testWorkspaceRid, false},
+		{"malformed", "not-a-rid", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewDatasource(context.Background(), backend.DataSourceInstanceSettings{
+				JSONData: []byte(fmt.Sprintf(`{"baseUrl":"http://example","workspaceRid":%q}`, tc.workspaceRid)),
+			})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
 	}
 }

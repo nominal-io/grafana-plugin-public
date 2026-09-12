@@ -54,6 +54,16 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to load plugin settings: %v", err)
 	}
 
+	var workspaceRid *rids.WorkspaceRid
+	if config.WorkspaceRid != "" {
+		parsed, err := rid.ParseRID(config.WorkspaceRid)
+		if err != nil {
+			return nil, fmt.Errorf("Workspace RID %q is not a valid RID", config.WorkspaceRid)
+		}
+		typed := rids.WorkspaceRid(parsed)
+		workspaceRid = &typed
+	}
+
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
@@ -91,6 +101,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
+		workspaceRid:       workspaceRid,
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -105,6 +116,8 @@ type Datasource struct {
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 	workspaceService  workspaceapi.WorkspaceServiceClient
+
+	workspaceRid *rids.WorkspaceRid
 
 	resourceHTTPClient *http.Client
 
@@ -845,8 +858,8 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	log.DefaultLogger.Debug("Health check successful", "user", profile.DisplayName)
 
 	message := "Successfully connected to Nominal API"
-	if config.WorkspaceRid != "" {
-		name, err := d.workspaceName(ctxWithTimeout, bearerToken, config.WorkspaceRid)
+	if d.workspaceRid != nil {
+		name, err := d.workspaceName(ctxWithTimeout, bearerToken, *d.workspaceRid)
 		if err != nil {
 			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
 		}
@@ -856,20 +869,21 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 }
 
 // workspaceName resolves a workspace RID to its display name, or the RID when unnamed.
-func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token, workspaceRid string) (string, error) {
-	parsed, err := rid.ParseRID(workspaceRid)
+func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token, workspaceRid rids.WorkspaceRid) (string, error) {
+	workspace, err := d.workspaceService.GetWorkspace(ctx, token, workspaceRid)
 	if err != nil {
-		return "", fmt.Errorf("Workspace RID is not a valid RID")
-	}
-	workspace, err := d.workspaceService.GetWorkspace(ctx, token, rids.WorkspaceRid(parsed))
-	if err != nil {
-		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid)
+		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid.String())
+		if extractErrorDetails(err).Status == 0 {
+			// No HTTP response (timeout, DNS, refused) is not an access problem.
+			message, _ := classifyConnectionError(err)
+			return "", fmt.Errorf("%s", message)
+		}
 		return "", fmt.Errorf("%s", appendInstanceID("Workspace not found or not accessible with this API key", err))
 	}
 	if workspace.DisplayName != nil && *workspace.DisplayName != "" {
 		return *workspace.DisplayName, nil
 	}
-	return workspaceRid, nil
+	return workspaceRid.String(), nil
 }
 
 // CallResource handles HTTP requests sent to the plugin.
