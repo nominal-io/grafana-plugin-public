@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -50,14 +51,9 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to load plugin settings: %v", err)
 	}
 
-	var workspaceRid *rids.WorkspaceRid
-	if config.WorkspaceRid != "" {
-		parsed, err := rid.ParseRID(config.WorkspaceRid)
-		if err != nil {
-			return nil, fmt.Errorf("Workspace RID %q is not a valid RID", config.WorkspaceRid)
-		}
-		typed := rids.WorkspaceRid(parsed)
-		workspaceRid = &typed
+	workspaceRid, err := parseWorkspaceRid(config.WorkspaceRid)
+	if err != nil {
+		return nil, err
 	}
 
 	baseURL := config.GetAPIBaseURL()
@@ -268,17 +264,24 @@ func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token,
 	workspace, err := d.workspaceService.GetWorkspace(ctx, token, workspaceRid)
 	if err != nil {
 		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid.String())
-		if extractErrorDetails(err).Status == 0 {
-			// No HTTP response (timeout, DNS, refused) is not an access problem.
-			message, _ := classifyConnectionError(err)
-			return "", fmt.Errorf("%s", message)
-		}
-		return "", fmt.Errorf("%s", appendInstanceID("Workspace not found or not accessible with this API key", err))
+		return "", errors.New(appendInstanceID("Workspace not found or not accessible with this API key", err))
 	}
 	if workspace.DisplayName != nil && *workspace.DisplayName != "" {
 		return *workspace.DisplayName, nil
 	}
 	return workspaceRid.String(), nil
+}
+
+// parseWorkspaceRid returns nil for an empty setting.
+func parseWorkspaceRid(s string) (*rids.WorkspaceRid, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parsed, err := rid.ParseRID(s)
+	if err != nil {
+		return nil, fmt.Errorf("Workspace RID %q is not a valid RID", s)
+	}
+	return (*rids.WorkspaceRid)(&parsed), nil
 }
 
 // CallResource handles HTTP requests sent to the plugin.

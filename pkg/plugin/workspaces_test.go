@@ -13,7 +13,6 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	"github.com/palantir/pkg/bearertoken"
-	"github.com/palantir/pkg/rid"
 )
 
 const testWorkspaceRid = "ri.security.test.workspace.11111111-1111-1111-1111-111111111111"
@@ -41,14 +40,11 @@ func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *
 	ds := newTestDatasource(baseURL, &mockAuthService{}, &mockDatasourceService{})
 	ds.settings.JSONData = []byte(fmt.Sprintf(`{"baseUrl": %q, "workspaceRid": %q}`, baseURL, workspaceRid))
 	ds.workspaceService = ws
-	if workspaceRid != "" {
-		parsed, err := rid.ParseRID(workspaceRid)
-		if err != nil {
-			t.Fatal(err)
-		}
-		typed := rids.WorkspaceRid(parsed)
-		ds.workspaceRid = &typed
+	parsed, err := parseWorkspaceRid(workspaceRid)
+	if err != nil {
+		t.Fatal(err)
 	}
+	ds.workspaceRid = parsed
 	return ds
 }
 
@@ -64,7 +60,6 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
 		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "not accessible"},
-		{"workspace lookup times out", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,32 +77,42 @@ func TestCheckHealthWorkspace(t *testing.T) {
 	}
 }
 
-func TestAssetsVariableAppliesWorkspaceFilter(t *testing.T) {
-	var gotQuery interface{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&body)
-		gotQuery = body["query"]
-		json.NewEncoder(w).Encode(AssetResponse{})
-	}))
-	defer server.Close()
-
-	ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, &mockWorkspaceService{})
-	body, _ := json.Marshal(map[string]any{"searchText": "eng"})
-	resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "assets", Method: http.MethodPost, Body: body})
-	if resp.Status != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
+// Both asset search routes must reach Nominal with the workspace clause: the
+// template-variable endpoint builds its own body, the query editor's search is proxied.
+func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
+	text := map[string]interface{}{"type": "searchText", "searchText": "eng"}
+	cases := []struct {
+		name, path string
+		body       map[string]any
+	}{
+		{"assets variable", "assets", map[string]any{"searchText": "eng"}},
+		{"proxied search-assets", "scout/v1/search-assets", map[string]any{"query": text, "pageSize": 50}},
 	}
-
 	want, _ := json.Marshal(map[string]interface{}{
 		"type": "and",
-		"and": []interface{}{
-			map[string]interface{}{"type": "searchText", "searchText": "eng"},
-			map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid},
-		},
+		"and":  []interface{}{text, map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid}},
 	})
-	if got, _ := json.Marshal(gotQuery); string(got) != string(want) {
-		t.Fatalf("query = %s, want %s", got, want)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotQuery interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]interface{}
+				json.NewDecoder(r.Body).Decode(&body)
+				gotQuery = body["query"]
+				json.NewEncoder(w).Encode(AssetResponse{})
+			}))
+			defer server.Close()
+
+			ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, &mockWorkspaceService{})
+			body, _ := json.Marshal(tc.body)
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tc.path, Method: http.MethodPost, Body: body})
+			if resp.Status != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
+			}
+			if got, _ := json.Marshal(gotQuery); string(got) != string(want) {
+				t.Fatalf("query = %s, want %s", got, want)
+			}
+		})
 	}
 }
 

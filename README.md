@@ -62,7 +62,7 @@ NOMINAL_API_KEY=... \
 go test -count=1 ./pkg/plugin -run TestLiveNominal
 ```
 
-`NOMINAL_BASE_URL` is optional and defaults to `https://api.gov.nominal.io/api`. `NOMINAL_WORKSPACE_RID` is optional: when set, the health check verifies access to that workspace and the live query test creates its temporary asset and dataset there.
+`NOMINAL_BASE_URL` is optional and defaults to `https://api.gov.nominal.io/api`. `NOMINAL_WORKSPACE_RID` is optional: when set, the health check verifies access to that workspace.
 For the shared local plugin `.env` credentials, use the staging API URL:
 
 ```sh
