@@ -159,9 +159,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
-          {/* Asset and scope names are short or template variables, so this row wraps only when
-              its fields no longer fit: floors 23 + 27, gap 1, margins 1. */}
-          <div className={styles.row(52)} data-testid="query-editor-asset-scope-row">
+          {/* Row floor is 52 (23 + 27, gap 1, margins 1). Asset and scope names are short or
+              template variables, so 60 leaves about 14 characters per field before wrapping. */}
+          <div className={styles.row(60)} data-testid="query-editor-asset-scope-row">
             {/* Asset Selection */}
             <InlineField label="Asset" labelWidth={8} shrink className={styles.shrinkField(8)}>
               <Combobox
