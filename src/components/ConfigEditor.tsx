@@ -87,7 +87,6 @@ export function ConfigEditor(props: Props) {
         tooltip={'Nominal API base URL including the full path (e.g., https://api.gov.nominal.io/api)'}
       >
         <Input
-          required
           id="config-editor-base-url"
           onChange={onBaseUrlChange}
           value={jsonData.baseUrl || ''}
@@ -104,7 +103,6 @@ export function ConfigEditor(props: Props) {
         tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
       >
         <SecretInput
-          required
           id="config-editor-api-key"
           isConfigured={secureJsonFields?.apiKey || false}
           value={apiKey}

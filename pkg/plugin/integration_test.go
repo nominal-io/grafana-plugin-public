@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	ingestapi "github.com/nominal-io/nominal-api-go/ingest/api"
 	nominalapi "github.com/nominal-io/nominal-api-go/io/nominal/api"
@@ -57,13 +56,12 @@ type liveNominalQueryTarget struct {
 }
 
 type liveNominalAPIClients struct {
-	workspace *rids.WorkspaceRid
-	baseURL   string
-	http      *http.Client
-	token     bearertoken.Token
-	asset     assetservice.AssetServiceClient
-	ingest    ingestapi.IngestServiceClient
-	upload    uploadapi.UploadServiceClient
+	baseURL string
+	http    *http.Client
+	token   bearertoken.Token
+	asset   assetservice.AssetServiceClient
+	ingest  ingestapi.IngestServiceClient
+	upload  uploadapi.UploadServiceClient
 }
 
 type liveNominalDataset struct {
@@ -285,8 +283,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	})
 
 	asset, err := clients.asset.CreateAsset(ctx, clients.token, assetapi.CreateAssetRequest{
-		Title:     name,
-		Workspace: clients.workspace,
+		Title: name,
 	})
 	if err != nil {
 		t.Fatalf("failed to create live Nominal asset: %v", err)
@@ -354,19 +351,6 @@ func liveNominalBaseURLFromSettings(t *testing.T, settings backend.DataSourceIns
 func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalAPIClients {
 	t.Helper()
 
-	config, err := models.LoadPluginSettings(settings)
-	if err != nil {
-		t.Fatalf("failed to load live Nominal settings: %v", err)
-	}
-	var workspace *rids.WorkspaceRid
-	if config.WorkspaceRid != "" {
-		parsed, err := rid.ParseRID(config.WorkspaceRid)
-		if err != nil {
-			t.Fatalf("invalid live-test workspace RID: %v", err)
-		}
-		workspace = (*rids.WorkspaceRid)(&parsed)
-	}
-
 	apiKey := settings.DecryptedSecureJSONData["apiKey"]
 	if apiKey == "" {
 		t.Fatal("apiKey missing from live Nominal settings")
@@ -380,19 +364,18 @@ func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceS
 	}
 
 	return liveNominalAPIClients{
-		workspace: workspace,
-		baseURL:   liveNominalBaseURLFromSettings(t, settings),
-		http:      &http.Client{Timeout: 30 * time.Second},
-		token:     bearertoken.Token(apiKey),
-		asset:     assetservice.NewAssetServiceClient(conjureClient),
-		ingest:    ingestapi.NewIngestServiceClient(conjureClient),
-		upload:    uploadapi.NewUploadServiceClient(conjureClient),
+		baseURL: liveNominalBaseURLFromSettings(t, settings),
+		http:    &http.Client{Timeout: 30 * time.Second},
+		token:   bearertoken.Token(apiKey),
+		asset:   assetservice.NewAssetServiceClient(conjureClient),
+		ingest:  ingestapi.NewIngestServiceClient(conjureClient),
+		upload:  uploadapi.NewUploadServiceClient(conjureClient),
 	}
 }
 
 func (c liveNominalAPIClients) createDataset(ctx context.Context, name string, isV2Dataset bool) (liveNominalDataset, error) {
 	var dataset liveNominalDataset
-	body := map[string]any{
+	err := c.doJSON(ctx, http.MethodPost, "/catalog/v1/datasets", map[string]any{
 		"name":           name,
 		"metadata":       map[string]string{},
 		"originMetadata": map[string]any{},
@@ -400,11 +383,7 @@ func (c liveNominalAPIClients) createDataset(ctx context.Context, name string, i
 		"properties":     map[string]string{},
 		"markingRids":    []string{},
 		"isV2Dataset":    isV2Dataset,
-	}
-	if c.workspace != nil {
-		body["workspace"] = c.workspace
-	}
-	err := c.doJSON(ctx, http.MethodPost, "/catalog/v1/datasets", body, &dataset)
+	}, &dataset)
 	return dataset, err
 }
 
