@@ -115,10 +115,12 @@ export function ConfigEditor(props: Props) {
 
 
       <InlineField
-        label="Workspace RID (recommended)"
+        label="Workspace RID"
         labelWidth={26}
         interactive
-        tooltip={'Limits asset search to one workspace (Nominal app: Settings > API keys > Copy RID). Empty searches all.'}
+        tooltip={
+          'Recommended. Limits the assets you can browse to one workspace. Empty browses every workspace the key can access. Assets from other workspaces still resolve if referenced directly by RID.'
+        }
       >
         <Input
           id="config-editor-workspace-rid"
@@ -134,7 +136,7 @@ export function ConfigEditor(props: Props) {
         <ol className={styles.quickSetupList}>
           <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
           <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
-          <li>Recommended: paste your Workspace RID so asset search stays within one workspace</li>
+          <li>Recommended: paste your Workspace RID to limit results to one workspace</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>
