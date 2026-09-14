@@ -39,15 +39,17 @@ const getStyles = (theme: GrafanaTheme2) => ({
       width: '100%',
       containerType: 'inline-size',
     }),
-  // Fields shrink and truncate instead of wrapping, until the row is too narrow to read.
-  row: css({
-    display: 'flex',
-    alignItems: 'center',
-    gap: theme.spacing(1),
-    [`@container (max-width: ${theme.spacing(80)})`]: {
-      flexWrap: 'wrap',
-    },
-  }),
+  // Fields shrink and truncate instead of wrapping until the editor is narrower than
+  // wrapBelow spacing units. Each field carries a 4px trailing margin on top of its floor.
+  row: (wrapBelow: number) =>
+    css({
+      display: 'flex',
+      alignItems: 'center',
+      gap: theme.spacing(1),
+      [`@container (max-width: ${theme.spacing(wrapBelow)})`]: {
+        flexWrap: 'wrap',
+      },
+    }),
   assetSummary: css({
     marginTop: theme.spacing(0.75),
     padding: theme.spacing(0.75, 1.25),
@@ -157,7 +159,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
-          <div className={styles.row} data-testid="query-editor-asset-scope-row">
+          {/* Asset and scope names are short or template variables, so this row wraps only when
+              its fields no longer fit: floors 23 + 27, gap 1, margins 1. */}
+          <div className={styles.row(52)} data-testid="query-editor-asset-scope-row">
             {/* Asset Selection */}
             <InlineField label="Asset" labelWidth={8} shrink className={styles.shrinkField(8)}>
               <Combobox
@@ -200,9 +204,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             )}
           </div>
 
-          {/* Channel Selection - only show if asset is selected */}
+          {/* Channel Selection - only show if asset is selected. Row floor is 68 (23 + 43, gap 1,
+              margins 1). 80 is a readability limit: below it a long channel name on its own line
+              reads better than two clipped fields. */}
           {state.assetComplete && (
-            <div className={styles.row} data-testid="query-editor-channel-aggregation-row">
+            <div className={styles.row(80)} data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8} shrink className={styles.shrinkField(8)}>
                   {/*
