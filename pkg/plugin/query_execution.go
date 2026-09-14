@@ -170,8 +170,8 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		)
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
-		if err != nil || ctx.Err() != nil {
-			// Kill unconfirmed work; unknown and finished IDs are harmless.
+		// Kill only when nothing answered: Grafana cancelled the query or the connection dropped.
+		if ctx.Err() != nil || (err != nil && extractErrorDetails(err).Status == 0) {
 			ua, _ := userAgentComponentsFromContext(ctx)
 			e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
 		}
