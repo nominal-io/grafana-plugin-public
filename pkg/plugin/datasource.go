@@ -145,14 +145,11 @@ func (d *Datasource) Dispose() {
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (response *backend.QueryDataResponse, err error) {
-	// Last-resort boundary. The SDK does not recover on this path, so a panic
-	// anywhere outside the per-chunk and per-result guards would end the
-	// process and every in-flight query on this instance.
+	// The SDK does not recover here; one panic would kill every in-flight query.
 	defer func() {
 		if r := recover(); r != nil {
 			log.DefaultLogger.Error("Recovered panic while handling query request",
 				"panic", fmt.Sprintf("%v", r),
-				"panicType", fmt.Sprintf("%T", r),
 				"stack", string(debug.Stack()),
 			)
 			response = backend.NewQueryDataResponse()
@@ -181,13 +178,13 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	}
 
 	// Load config once for all queries
-	config, loadErr := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
-	if loadErr != nil {
-		log.DefaultLogger.Error("Failed to load plugin settings", "error", loadErr)
+	config, err := models.LoadPluginSettings(*req.PluginContext.DataSourceInstanceSettings)
+	if err != nil {
+		log.DefaultLogger.Error("Failed to load plugin settings", "error", err)
 		for _, q := range req.Queries {
 			response.Responses[q.RefID] = backend.ErrDataResponse(
 				backend.StatusInternal,
-				fmt.Sprintf("Failed to load settings: %v", loadErr),
+				fmt.Sprintf("Failed to load settings: %v", err),
 			)
 		}
 		return response, nil

@@ -23,7 +23,6 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			log.DefaultLogger.Error("Recovered panic while transforming query result",
 				"channel", qm.Channel,
 				"panic", fmt.Sprintf("%v", r),
-				"panicType", fmt.Sprintf("%T", r),
 				"stack", string(debug.Stack()),
 			)
 			response = backend.ErrDataResponse(
@@ -227,8 +226,6 @@ type TransformResult struct {
 	LogEntries []LogEntry
 }
 
-// unsupportedComputeResponse builds an AcceptFuncs handler for a response arm
-// the plugin cannot render.
 func unsupportedComputeResponse[T any](typeName string) func(T) error {
 	return func(T) error {
 		return unsupportedComputeResponseError(typeName)
@@ -239,9 +236,7 @@ func unsupportedComputeResponseError(typeName string) error {
 	return fmt.Errorf("compute response type %q is not supported by the plugin", typeName)
 }
 
-// decodeArrowBucketedNumeric is a variable so a test can make the result
-// transform panic directly instead of relying on arrow-go to panic on a
-// corrupted stream.
+// Variable so a test can inject a panic into the result transform.
 var decodeArrowBucketedNumeric = extractArrowBucketedNumericSeries
 
 // transformNominalResponseFromClient converts a compute response into a
@@ -380,7 +375,6 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[computeapi.NumericHistogramPlot]("numericHistogram"),
 		unsupportedComputeResponse[computeapi.EnumHistogramPlot]("enumHistogram"),
 		unsupportedComputeResponse[computeapi.CurveFitResult]("curveFit"),
-		// grouped is an ordinary multi-series response; unsupported until a real renderer lands.
 		unsupportedComputeResponse[computeapi.GroupedComputeNodeResponses]("grouped"),
 		unsupportedComputeResponse[computeapi.ArrowArrayPlot]("array"),
 		unsupportedComputeResponse[computeapi.ArrowBucketedStructPlot]("bucketedStruct"),
