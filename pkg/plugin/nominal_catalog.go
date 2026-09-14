@@ -240,6 +240,16 @@ func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *mo
 	return nil, nil
 }
 
+// withWorkspaceFilter ANDs a search-assets query with a workspace clause; empty RID returns the query unchanged.
+func withWorkspaceFilter(query interface{}, workspaceRid string) interface{} {
+	if workspaceRid == "" {
+		return query
+	}
+	return map[string]interface{}{"type": "and", "and": []interface{}{
+		query, map[string]interface{}{"type": "workspace", "workspace": workspaceRid},
+	}}
+}
+
 // FetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls.
 func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
 	var allResults []AssetResponse
@@ -247,12 +257,11 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	pageSize := 50
 	totalFetched := 0
 
+	query := withWorkspaceFilter(map[string]interface{}{"type": "searchText", "searchText": searchText}, config.WorkspaceRid)
+
 	for totalFetched < maxResults {
 		requestBody := map[string]interface{}{
-			"query": map[string]interface{}{
-				"searchText": searchText,
-				"type":       "searchText",
-			},
+			"query": query,
 			"sort": map[string]interface{}{
 				"field":        "CREATED_AT",
 				"isDescending": false,

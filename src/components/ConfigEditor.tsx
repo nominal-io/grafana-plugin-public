@@ -43,6 +43,16 @@ export function ConfigEditor(props: Props) {
     });
   };
 
+  const onWorkspaceRidChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        workspaceRid: event.target.value.trim(),
+      },
+    });
+  };
+
 
   // Secure field (only sent to the backend)
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -72,7 +82,7 @@ export function ConfigEditor(props: Props) {
     <>
       <InlineField
         label="Base URL"
-        labelWidth={14}
+        labelWidth={26}
         interactive
         tooltip={'Nominal API base URL including the full path (e.g., https://api.gov.nominal.io/api)'}
       >
@@ -88,12 +98,11 @@ export function ConfigEditor(props: Props) {
 
       <InlineField
         label="API Key"
-        labelWidth={14}
+        labelWidth={26}
         interactive
         tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
       >
         <SecretInput
-          required
           id="config-editor-api-key"
           isConfigured={secureJsonFields?.apiKey || false}
           value={apiKey}
@@ -105,11 +114,29 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
 
+      <InlineField
+        label="Workspace RID"
+        labelWidth={26}
+        interactive
+        tooltip={
+          'Recommended. Limits the assets you can browse to one workspace. Empty browses every workspace the key can access. Assets from other workspaces still resolve if referenced directly by RID.'
+        }
+      >
+        <Input
+          id="config-editor-workspace-rid"
+          onChange={onWorkspaceRidChange}
+          value={jsonData.workspaceRid || ''}
+          placeholder="ri.security.<env>.workspace.<uuid>"
+          width={40}
+        />
+      </InlineField>
+
       <div className={styles.quickSetup}>
         <h4 className={styles.quickSetupTitle}>Quick Setup Guide:</h4>
         <ol className={styles.quickSetupList}>
           <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
           <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
+          <li>Recommended: paste your Workspace RID to limit results to one workspace</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>
