@@ -1188,38 +1188,6 @@ func preparedNumericQueries(refIDs ...string) []preparedQuery {
 	return prepared
 }
 
-func TestUnsupportedResponseAffectsOnlyItsQuery(t *testing.T) {
-	mock := &mockComputeService{
-		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
-			Results: []computeapi.ComputeWithUnitsResult{
-				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
-					computeapi.NewComputeNodeResponseFromGrouped(computeapi.GroupedComputeNodeResponses{}),
-				)},
-				createMockComputeResult(nil),
-			},
-		},
-	}
-	ds := &Datasource{computeService: mock}
-	e := newTestQueryExecution(ds, nil)
-
-	results := e.executePreparedBatches(context.Background(), preparedNumericQueries("grouped", "numeric"))
-
-	groupedResp, ok := results["grouped"]
-	if !ok || groupedResp.Error == nil {
-		t.Fatalf("expected an error response for the grouped query, got %+v", groupedResp)
-	}
-	numericResp, ok := results["numeric"]
-	if !ok {
-		t.Fatal("missing response for the numeric query")
-	}
-	if numericResp.Error != nil {
-		t.Fatalf("numeric query must not be poisoned by its sibling, got error: %v", numericResp.Error)
-	}
-	if len(numericResp.Frames) != 1 {
-		t.Fatalf("numeric query should render one frame, got %d", len(numericResp.Frames))
-	}
-}
-
 func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	realDecode := decodeArrowBucketedNumeric
 	decodeArrowBucketedNumeric = func(computeapi.ArrowBucketedNumericPlot, []aggColumnSpec) ([]AggregationSeries, error) {

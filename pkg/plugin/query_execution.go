@@ -188,7 +188,6 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 						"chunkStart", chunkStart,
 						"chunkEnd", chunkEnd,
 						"panic", fmt.Sprintf("%v", r),
-						"panicType", fmt.Sprintf("%T", r),
 						"stack", string(debug.Stack()),
 					)
 					ua, _ := userAgentComponentsFromContext(ctx)
@@ -203,8 +202,6 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 			computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 			for i, qm := range chunkModels {
 				computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
-			}
-			for i := range computeRequests {
 				computeRequests[i].RequestId = &requestID
 			}
 
