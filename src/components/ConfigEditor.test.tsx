@@ -19,7 +19,7 @@ describe('ConfigEditor', () => {
     } as Options;
     render(<ConfigEditor options={options} onOptionsChange={onOptionsChange} />);
 
-    fireEvent.change(screen.getByLabelText('Workspace RID (recommended)'), { target: { value: typed } });
+    fireEvent.change(screen.getByLabelText('Workspace RID'), { target: { value: typed } });
 
     expect(onOptionsChange).toHaveBeenCalledWith(
       expect.objectContaining({ jsonData: { baseUrl: 'https://api.example/api', workspaceRid: stored } })
