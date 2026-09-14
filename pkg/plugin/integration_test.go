@@ -99,7 +99,7 @@ func liveNominalSettings(t *testing.T) backend.DataSourceInstanceSettings {
 		baseURL = defaultAPIBaseURL
 	}
 
-	jsonData, err := json.Marshal(map[string]string{"baseUrl": baseURL, "workspaceRid": os.Getenv("NOMINAL_WORKSPACE_RID")})
+	jsonData, err := json.Marshal(map[string]string{"baseUrl": baseURL})
 	if err != nil {
 		t.Fatalf("failed to marshal datasource JSON: %v", err)
 	}
