@@ -1,13 +1,6 @@
 import React from 'react';
 import { css, keyframes } from '@emotion/css';
-import {
-  Combobox,
-  InlineField,
-  Input,
-  Stack,
-  MultiCombobox,
-  useStyles2,
-} from '@grafana/ui';
+import { Combobox, InlineField, Input, Stack, MultiCombobox, useStyles2 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import type { NominalDataSourceOptions, NominalQuery } from '../types';
@@ -39,8 +32,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
       width: '100%',
       containerType: 'inline-size',
     }),
-  // Fields shrink and truncate instead of wrapping until the editor is narrower than
-  // wrapBelow spacing units. Each field carries a 4px trailing margin on top of its floor.
+  // Fields shrink and truncate; the row only wraps below wrapBelow spacing units.
   row: (wrapBelow: number) =>
     css({
       display: 'flex',
@@ -112,7 +104,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
     fontWeight: theme.typography.fontWeightMedium,
     marginLeft: theme.spacing(0.5),
   }),
-  // Floor is label plus 15 units. Inner min-width: 0 lets the field shrink below content.
+  // min-width: 0 lets the field shrink below its content width.
   shrinkField: (labelWidth: number) =>
     css({
       minWidth: theme.spacing(labelWidth + 15),
@@ -123,10 +115,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
         textOverflow: 'ellipsis',
       },
     }),
-  // The "... N" counter fires only when the container is narrower than its pills, so it
-  // must fill a field that also grows, or it stays collapsed after narrowing once. The
-  // shrink factor folds pills before the channel clips. Floor is label 17 + minWidth 26,
-  // with the label's 4px trailing margin counted in the field's own margin.
+  // The MultiCombobox "... N" counter only appears when its container is narrower than
+  // its pills, so the field must grow and shrink with the row. It shrinks first so pills
+  // fold before the channel field clips.
   fillField: css({
     minWidth: theme.spacing(43),
     flexShrink: 100,
@@ -159,8 +150,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     <div className={styles.root}>
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
-          {/* Row floor is 52 (23 + 27, gap 1, margins 1). Asset and scope names are short or
-              template variables, so 60 leaves about 14 characters per field before wrapping. */}
+          {/* Asset and scope names are short, so 60 leaves about 14 characters per field. */}
           <div className={styles.row(60)} data-testid="query-editor-asset-scope-row">
             {/* Asset Selection */}
             <InlineField label="Asset" labelWidth={8} shrink className={styles.shrinkField(8)}>
@@ -204,9 +194,8 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             )}
           </div>
 
-          {/* Channel Selection - only show if asset is selected. Row floor is 68 (23 + 43, gap 1,
-              margins 1). 80 is a readability limit: below it a long channel name on its own line
-              reads better than two clipped fields. */}
+          {/* Channel Selection - only show if asset is selected. Wraps at 80 so a long channel
+              name gets its own line instead of two clipped fields. */}
           {state.assetComplete && (
             <div className={styles.row(80)} data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
@@ -269,28 +258,16 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         {state.selectedAsset && (
           <div className={styles.assetSummary}>
             <span className={styles.summaryLabel}>Asset:</span>
-            <span className={styles.summaryPill}>
-              {state.selectedAsset.title}
-            </span>
+            <span className={styles.summaryPill}>{state.selectedAsset.title}</span>
             <span className={styles.summaryLabel}>RID:</span>
             <span className={styles.ridWrapper}>
-              <span
-                onClick={commands.copySelectedAssetRid}
-                title="Click to copy RID"
-                className={styles.ridClickTarget}
-              >
+              <span onClick={commands.copySelectedAssetRid} title="Click to copy RID" className={styles.ridClickTarget}>
                 {state.selectedAsset.rid}
               </span>
-              {state.showCopiedMessage && (
-                <span className={styles.copiedMessage}>
-                  ✓ Copied to clipboard
-                </span>
-              )}
+              {state.showCopiedMessage && <span className={styles.copiedMessage}>✓ Copied to clipboard</span>}
             </span>
             <span className={styles.summaryLabel}>Data Scopes:</span>
-            <span className={styles.scopeCount}>
-              {getSupportedScopeNames(state.selectedAsset).length}
-            </span>
+            <span className={styles.scopeCount}>{getSupportedScopeNames(state.selectedAsset).length}</span>
           </div>
         )}
       </div>
