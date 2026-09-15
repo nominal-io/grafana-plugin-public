@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,11 +172,7 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 		DataScopeName: target.dataScopeName,
 		Buckets:       buckets,
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{
+	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
 			DataSourceInstanceSettings: &settings,
 		},
@@ -187,19 +184,49 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 				MaxDataPoints: int64(buckets),
 			},
 		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected QueryData error: %v", err)
 	}
 
-	response, ok := resp.Responses["A"]
-	if !ok {
-		t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
+	// A freshly ingested dataset takes ~30s on staging to become queryable:
+	// compute first returns an internal error, then empty frames, then data.
+	// Bound the wait on the test deadline. Overrunning -timeout panics past
+	// t.Cleanup and leaks the temporary asset and dataset.
+	const queryTimeout = 30 * time.Second
+	deadline, hasDeadline := t.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(5 * time.Minute)
 	}
-	if response.Error != nil {
-		t.Fatalf("unexpected response error: %v", response.Error)
+	deadline = deadline.Add(-time.Minute) // room for the archive cleanups
+	start := time.Now()
+	_, expected := liveNominalCSVSamples(t)
+	attempts := 0
+	lastValues := 0
+	var lastErr error
+	for time.Until(deadline) >= queryTimeout {
+		attempts++
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		resp, err := ds.QueryData(ctx, request)
+		cancel()
+		if err != nil {
+			t.Fatalf("unexpected QueryData error: %v", err)
+		}
+		response, ok := resp.Responses["A"]
+		if !ok {
+			t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
+		}
+		values := liveNominalValues(t, response)
+		if len(values) > len(expected) {
+			t.Fatalf("live query returned %d non-null values but the fixture ingested %d; the extra points come from upstream of the plugin", len(values), len(expected))
+		}
+		if response.Error == nil && len(values) == len(expected) {
+			assertLiveNominalNumericResponse(t, response, target.channel, expected)
+			return
+		}
+		lastValues, lastErr = len(values), response.Error
+		t.Logf("live query not ready yet, retrying: values=%d/%d error=%v", len(values), len(expected), response.Error)
+		time.Sleep(10 * time.Second)
 	}
-	assertLiveNominalNumericResponse(t, response, target.channel)
+	t.Fatalf("live query never returned data: %d attempts over %s; last response had %d of %d non-null values, error: %v",
+		attempts, time.Since(start).Round(time.Second), lastValues, len(expected), lastErr)
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
@@ -312,7 +339,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	fileID := ingestLiveNominalCSV(t, ctx, clients, dataset.Rid)
 	waitForLiveNominalIngest(t, ctx, clients, dataset.Rid, fileID)
 
-	from, to := liveNominalCSVTimeRange()
+	from, to := liveNominalCSVTimeRange(t)
 	return liveNominalQueryTarget{
 		assetRid:      asset.Rid.String(),
 		channel:       liveNominalChannelName,
@@ -562,12 +589,64 @@ func (s liveNominalIngestStatus) isComplete() (bool, error) {
 	}
 }
 
-func liveNominalCSVTimeRange() (time.Time, time.Time) {
-	return time.Date(2024, 9, 5, 17, 59, 0, 0, time.UTC),
-		time.Date(2024, 9, 5, 18, 10, 0, 0, time.UTC)
+// liveNominalCSVSamples parses the fixture into timestamps and the queried channel's values.
+func liveNominalCSVSamples(t *testing.T) ([]time.Time, []float64) {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(liveNominalCSV), "\n")
+	column := slices.Index(strings.Split(lines[0], ","), liveNominalChannelName)
+	if column < 0 {
+		t.Fatalf("liveNominalCSV has no %q column", liveNominalChannelName)
+	}
+	var timestamps []time.Time
+	var values []float64
+	for _, line := range lines[1:] {
+		fields := strings.Split(line, ",")
+		timestamp, err := time.Parse(time.RFC3339, fields[0])
+		if err != nil {
+			t.Fatalf("liveNominalCSV timestamp %q: %v", fields[0], err)
+		}
+		value, err := strconv.ParseFloat(fields[column], 64)
+		if err != nil {
+			t.Fatalf("liveNominalCSV %s %q: %v", liveNominalChannelName, fields[column], err)
+		}
+		timestamps = append(timestamps, timestamp)
+		values = append(values, value)
+	}
+	return timestamps, values
 }
 
-func assertLiveNominalNumericResponse(t *testing.T, response backend.DataResponse, channel string) {
+// liveNominalCSVTimeRange pads the fixture's span by a minute on each side.
+func liveNominalCSVTimeRange(t *testing.T) (time.Time, time.Time) {
+	timestamps, _ := liveNominalCSVSamples(t)
+	return timestamps[0].Add(-time.Minute), timestamps[len(timestamps)-1].Add(time.Minute)
+}
+
+// liveNominalValues returns the non-null values across the response's frames.
+// Empty buckets arrive as rows with nil values, so frame.Rows() overcounts.
+func liveNominalValues(t *testing.T, response backend.DataResponse) []float64 {
+	t.Helper()
+	var values []float64
+	for _, frame := range response.Frames {
+		if len(frame.Fields) < 2 {
+			continue
+		}
+		field := frame.Fields[1]
+		for i := 0; i < field.Len(); i++ {
+			raw, ok := field.ConcreteAt(i)
+			if !ok {
+				continue
+			}
+			value, isFloat := raw.(float64)
+			if !isFloat {
+				t.Fatalf("expected live query value to be numeric, got %T", raw)
+			}
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func assertLiveNominalNumericResponse(t *testing.T, response backend.DataResponse, channel string, expected []float64) {
 	t.Helper()
 
 	if len(response.Frames) == 0 {
@@ -580,33 +659,9 @@ func assertLiveNominalNumericResponse(t *testing.T, response backend.DataRespons
 	if len(frame.Fields) < 2 {
 		t.Fatalf("expected live query frame to contain time and value fields, got %d fields", len(frame.Fields))
 	}
-	if frame.Fields[0].Len() == 0 || frame.Fields[1].Len() == 0 {
-		t.Fatalf("expected live query frame to contain data points")
-	}
 
-	sawValue := false
-	for i := 0; i < frame.Fields[1].Len(); i++ {
-		rawValue := frame.Fields[1].At(i)
-		var value *float64
-		switch typed := rawValue.(type) {
-		case nil:
-			continue
-		case *float64:
-			value = typed
-		case float64:
-			value = &typed
-		default:
-			t.Fatalf("expected live query value to be numeric, got %T", rawValue)
-		}
-		if value == nil {
-			continue
-		}
-		if *value < 20 || *value > 29 {
-			t.Fatalf("expected live query value to come from the ingested CSV range [20, 29], got %v", *value)
-		}
-		sawValue = true
-	}
-	if !sawValue {
-		t.Fatalf("expected at least one non-null value from live query")
+	values := liveNominalValues(t, response)
+	if !slices.Equal(values, expected) {
+		t.Fatalf("expected live query values to match the ingested CSV %v, got %v", expected, values)
 	}
 }
