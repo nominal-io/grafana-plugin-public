@@ -3863,45 +3863,50 @@ func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	}
 }
 
-// A batch is killed exactly when its success was never confirmed.
-func TestKillEnqueuedOnlyWhenSuccessUnconfirmed(t *testing.T) {
+func TestBatchQueryKillPolicy(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func() (context.Context, *mockComputeService)
-		wantKill bool
+		name            string
+		err             error
+		cancelMidFlight bool
+		wantKill        bool
 	}{
 		{
-			name: "transport error",
-			setup: func() (context.Context, *mockComputeService) {
-				return context.Background(), &mockComputeService{batchComputeError: fmt.Errorf("connection reset")}
-			},
+			name:     "transport error",
+			err:      fmt.Errorf("connection reset"),
 			wantKill: true,
 		},
 		{
-			name: "context canceled mid-flight",
-			setup: func() (context.Context, *mockComputeService) {
-				ctx, cancel := context.WithCancel(context.Background())
-				mockService := &mockComputeService{}
-				mockService.batchComputeFunc = func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-					cancel() // supersede the in-flight request
-					return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
-				}
-				return ctx, mockService
-			},
-			wantKill: true,
-		},
-		{
-			name: "confirmed success",
-			setup: func() (context.Context, *mockComputeService) {
-				return context.Background(), &mockComputeService{batchComputeResponse: makeBatchComputeWithUnitsResponse(1)}
-			},
+			name:     "confirmed success",
 			wantKill: false,
+		},
+		{
+			name:     "error with HTTP status",
+			err:      &apiError{Status: http.StatusInternalServerError},
+			wantKill: false,
+		},
+		{
+			name:            "context canceled with HTTP status error",
+			err:             &apiError{Status: http.StatusBadRequest},
+			cancelMidFlight: true,
+			wantKill:        true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, mockService := tt.setup()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mockService := &mockComputeService{
+				batchComputeFunc: func(request computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+					if tt.cancelMidFlight {
+						cancel()
+					}
+					if tt.err != nil {
+						return computeapi.BatchComputeWithUnitsResponse{}, tt.err
+					}
+					return makeBatchComputeWithUnitsResponse(len(request.Requests)), nil
+				},
+			}
 			ds := &Datasource{computeService: mockService}
 
 			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
