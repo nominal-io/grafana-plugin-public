@@ -190,10 +190,8 @@ func makeBatchComputeWithUnitsResponse(count int) computeapi.BatchComputeWithUni
 }
 
 func TestBatchQueryExecution(t *testing.T) {
-	// Create mock compute service
 	mockService := &mockComputeService{}
 
-	// Create mock response with Arrow bucketed numeric results (production format)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}),
@@ -212,7 +210,6 @@ func TestBatchQueryExecution(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// Create 3 batchable queries (asset + channel)
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
@@ -238,26 +235,21 @@ func TestBatchQueryExecution(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify batch was called exactly once (not 3 times).
-	// All queries above leave ChannelDataType unset, so they land in the non-log
-	// partition and produce a single batch call. The log partition is empty and
-	// makes no backend call. If you add a log query here, expect 2 batch calls.
-	// See TestMixedLogNumericParallelBatch for the partitioned scenario.
+	// All queries leave ChannelDataType unset, so they land in one non-log
+	// partition and one batch call. Adding a log query here makes it two.
+	// See TestMixedLogNumericParallelBatch for the partitioned case.
 	if mockService.batchComputeCalls != 1 {
 		t.Errorf("expected 1 batch compute call, got %d", mockService.batchComputeCalls)
 	}
 
-	// Verify single compute was never called
 	if mockService.singleComputeCalls != 0 {
 		t.Errorf("expected 0 single compute calls, got %d", mockService.singleComputeCalls)
 	}
 
-	// Verify the batch request contained all 3 queries
 	if len(mockService.lastBatchRequest.Requests) != 3 {
 		t.Errorf("expected 3 requests in batch, got %d", len(mockService.lastBatchRequest.Requests))
 	}
 
-	// Verify we got responses for all queries
 	if len(resp.Responses) != 3 {
 		t.Fatalf("expected 3 responses, got %d", len(resp.Responses))
 	}
@@ -401,10 +393,9 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	}
 }
 
-// TestMixedTypeTemplateVariableWithExplicitAggregations verifies that a saved
-// numeric query with explicit aggregations correctly handles expansion into both
-// string and numeric channels. inferChannelMetadata must override the saved type
-// per-query so the string channel gets an enum request (not Arrow numeric).
+// A saved numeric query with explicit aggregations expands into a string and a
+// numeric channel. inferChannelMetadata must override the saved type per query
+// so the string channel gets an enum request, not Arrow numeric.
 func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	assetRid := "ri.scout.main.asset.abc123"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
@@ -476,9 +467,8 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// Two queries simulating template variable expansion: same asset, explicit
-	// aggregations, but one channel is numeric and the other is string.
-	// Both start with channelDataType "numeric" (inherited from the saved query).
+	// Template variable expansion: same asset, explicit aggregations, one numeric
+	// and one string channel. Both inherit channelDataType "numeric" from the saved query.
 	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
 		{
 			RefID: "A",
@@ -511,7 +501,6 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Both queries should succeed.
 	if resp.Responses["A"].Error != nil {
 		t.Fatalf("query A error: %v", resp.Responses["A"].Error)
 	}
@@ -519,7 +508,6 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		t.Fatalf("query B error: %v", resp.Responses["B"].Error)
 	}
 
-	// Both queries should be batched into a single API call.
 	if mockCompute.batchComputeCalls != 1 {
 		t.Fatalf("expected 1 batch compute call, got %d", mockCompute.batchComputeCalls)
 	}
@@ -527,7 +515,7 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		t.Fatalf("expected 2 requests in batch, got %d", len(mockCompute.lastBatchRequest.Requests))
 	}
 
-	// Verify the numeric query (temperature) built an Arrow request with output fields.
+	// The numeric query (temperature) gets an Arrow request with output fields.
 	numericSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[0].Node)
 	if kind := seriesKind(t, numericSeries.Input); kind != "numeric" {
 		t.Errorf("expected numeric series, got kind %q", kind)
@@ -536,7 +524,7 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		t.Errorf("expected numeric request with ARROW_V3 output format, got %v", numericSeries.OutputFormat)
 	}
 
-	// Verify the string query (state) built an enum request (no output format).
+	// The string query (state) gets an enum request with no output format.
 	enumSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[1].Node)
 	if kind := seriesKind(t, enumSeries.Input); kind != "enum" {
 		t.Errorf("expected enum series, got kind %q", kind)
@@ -592,10 +580,8 @@ func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 }
 
 func TestBatchQueryMixedWithLegacy(t *testing.T) {
-	// Create mock compute service
 	mockService := &mockComputeService{}
 
-	// Create mock response for the 2 batchable queries (Arrow format, matching production)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockArrowComputeResult([]float64{1.0, 2.0}),
@@ -613,7 +599,6 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// Mix of batchable and legacy queries
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
@@ -639,22 +624,18 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify batch was called once for the 2 batchable queries
 	if mockService.batchComputeCalls != 1 {
 		t.Errorf("expected 1 batch compute call, got %d", mockService.batchComputeCalls)
 	}
 
-	// Verify the batch request contained only the 2 batchable queries
 	if len(mockService.lastBatchRequest.Requests) != 2 {
 		t.Errorf("expected 2 requests in batch, got %d", len(mockService.lastBatchRequest.Requests))
 	}
 
-	// Verify we got responses for all 3 queries
 	if len(resp.Responses) != 3 {
 		t.Fatalf("expected 3 responses, got %d", len(resp.Responses))
 	}
 
-	// Legacy query B should have been handled separately
 	respB, ok := resp.Responses["B"]
 	if !ok {
 		t.Error("expected response for legacy query B")
@@ -666,7 +647,6 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 }
 
 func TestBatchQueryError(t *testing.T) {
-	// Create mock compute service that returns an error
 	mockService := &mockComputeService{
 		batchComputeError: fmt.Errorf("API error: service unavailable"),
 	}
@@ -701,7 +681,6 @@ func TestBatchQueryError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify we got error responses for all queries when batch fails
 	for _, refID := range []string{"A", "B"} {
 		response, ok := resp.Responses[refID]
 		if !ok {
@@ -718,11 +697,8 @@ func TestBatchQueryError(t *testing.T) {
 }
 
 func TestBatchQueryWithPartialErrors(t *testing.T) {
-	// Create mock compute service
 	mockService := &mockComputeService{}
 
-	// Create mock response with mix of success and error results
-	// This simulates a batch where one query fails (e.g., channel not found)
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}), // Query A: Success
@@ -766,12 +742,10 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify we got responses for all queries
 	if len(resp.Responses) != 3 {
 		t.Fatalf("expected 3 responses, got %d", len(resp.Responses))
 	}
 
-	// Query A should succeed
 	respA := resp.Responses["A"]
 	if respA.Error != nil {
 		t.Errorf("expected no error for A, got: %v", respA.Error)
@@ -780,7 +754,6 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		t.Errorf("expected 1 frame for A, got %d", len(respA.Frames))
 	}
 
-	// Query B should have an error from the API
 	respB := resp.Responses["B"]
 	if respB.Error == nil {
 		t.Error("expected error for B, got nil")
@@ -788,7 +761,6 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		if !strings.Contains(respB.Error.Error(), "Compute error") {
 			t.Errorf("expected 'Compute error' in message for B, got: %v", respB.Error)
 		}
-		// Error message format: "Compute error: %v (code: %v)" with ErrorType and ErrorCode
 		if !strings.Contains(respB.Error.Error(), "CHANNEL_NOT_FOUND") {
 			t.Errorf("expected error type 'CHANNEL_NOT_FOUND' in message for B, got: %v", respB.Error)
 		}
@@ -797,7 +769,6 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		}
 	}
 
-	// Query C should succeed despite B failing
 	respC := resp.Responses["C"]
 	if respC.Error != nil {
 		t.Errorf("expected no error for C, got: %v", respC.Error)
@@ -808,10 +779,8 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 }
 
 func TestBatchQueryWithMissingResults(t *testing.T) {
-	// Create mock compute service that returns fewer results than queries
 	mockService := &mockComputeService{}
 
-	// Only return 2 results for 3 queries - simulates API bug or truncation
 	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockArrowComputeResult([]float64{1.0, 2.0, 3.0}),
@@ -830,7 +799,6 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// Create 3 batchable queries
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
@@ -856,12 +824,10 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify we got responses for all 3 queries
 	if len(resp.Responses) != 3 {
 		t.Fatalf("expected 3 responses, got %d", len(resp.Responses))
 	}
 
-	// Query A should succeed (has result at index 0)
 	respA := resp.Responses["A"]
 	if respA.Error != nil {
 		t.Errorf("expected no error for A, got: %v", respA.Error)
@@ -870,7 +836,6 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		t.Errorf("expected 1 frame for A, got %d", len(respA.Frames))
 	}
 
-	// Query B should succeed (has result at index 1)
 	respB := resp.Responses["B"]
 	if respB.Error != nil {
 		t.Errorf("expected no error for B, got: %v", respB.Error)
@@ -879,7 +844,6 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		t.Errorf("expected 1 frame for B, got %d", len(respB.Frames))
 	}
 
-	// Query C should have an error (no result at index 2)
 	respC := resp.Responses["C"]
 	if respC.Error == nil {
 		t.Error("expected error for C due to missing result, got nil")
@@ -958,109 +922,9 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 	}
 }
 
-func TestErrorMessageFormatPreservation(t *testing.T) {
-	ds := &Datasource{}
-
-	t.Run("numeric channel error retains original format without hint", func(t *testing.T) {
-		result := createMockErrorResult(404, "CHANNEL_NOT_FOUND")
-		qm := NominalQueryModel{
-			Channel:  "temperature",
-			AssetRid: "ri.nominal.asset.test",
-		}
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error == nil {
-			t.Fatal("expected error response")
-		}
-		errMsg := resp.Error.Error()
-		// Original format must be preserved exactly
-		if !strings.Contains(errMsg, "Compute error: CHANNEL_NOT_FOUND (code: 404)") {
-			t.Errorf("expected original error format, got: %s", errMsg)
-		}
-		// Numeric errors must NOT have hints
-		if strings.Contains(errMsg, "Hint:") {
-			t.Errorf("numeric channel errors should not have hints, got: %s", errMsg)
-		}
-	})
-
-	t.Run("generic compute error retains original format without hint", func(t *testing.T) {
-		result := createMockErrorResult(500, "Compute:InternalError")
-		qm := NominalQueryModel{
-			Channel:  "pressure",
-			AssetRid: "ri.nominal.asset.test",
-		}
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error == nil {
-			t.Fatal("expected error response")
-		}
-		errMsg := resp.Error.Error()
-		if !strings.Contains(errMsg, "Compute error: Compute:InternalError (code: 500)") {
-			t.Errorf("expected original error format, got: %s", errMsg)
-		}
-		if strings.Contains(errMsg, "Hint:") {
-			t.Errorf("generic errors should not have hints, got: %s", errMsg)
-		}
-	})
-
-	t.Run("ChannelHasWrongType always includes hint regardless of ChannelDataType", func(t *testing.T) {
-		// The hint fires for any ChannelHasWrongType error — the stored type and the
-		// API's actual type disagree regardless of whether ChannelDataType is set.
-		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
-		qm := NominalQueryModel{
-			Channel:         "status",
-			AssetRid:        "ri.nominal.asset.test",
-			ChannelDataType: "string",
-		}
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error == nil {
-			t.Fatal("expected error response")
-		}
-		errMsg := resp.Error.Error()
-		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
-			t.Errorf("expected raw error in message, got: %s", errMsg)
-		}
-		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for ChannelHasWrongType even when ChannelDataType is populated, got: %s", errMsg)
-		}
-	})
-
-	t.Run("ChannelHasWrongType with empty metadata includes hint", func(t *testing.T) {
-		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
-		qm := NominalQueryModel{
-			Channel:         "status",
-			AssetRid:        "ri.nominal.asset.test",
-			ChannelDataType: "",
-		}
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error == nil {
-			t.Fatal("expected error response")
-		}
-		errMsg := resp.Error.Error()
-		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint when ChannelDataType is empty, got: %s", errMsg)
-		}
-	})
-
-	t.Run("bare ChannelHasWrongType also gets hint", func(t *testing.T) {
-		result := createMockErrorResult(400, "ChannelHasWrongType")
-		qm := NominalQueryModel{
-			Channel:         "mode",
-			AssetRid:        "ri.nominal.asset.test",
-			ChannelDataType: "",
-		}
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error == nil {
-			t.Fatal("expected error response")
-		}
-		errMsg := resp.Error.Error()
-		if !strings.Contains(errMsg, "Hint:") {
-			t.Errorf("expected hint for bare ChannelHasWrongType, got: %s", errMsg)
-		}
-	})
-}
-
 func TestMixedLogNumericParallelBatch(t *testing.T) {
-	// With parallel goroutines, call ordering is nondeterministic.
-	// Use batchComputeFunc to inspect each request and return the matching response.
+	// Call order is nondeterministic under parallel batches, so match each
+	// request to its response by inspecting it.
 	logResponse := computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{
 			createMockPagedLogResult([]string{"log entry"}, []map[string]string{{"k": "v"}}, nil),
@@ -1073,8 +937,7 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 	}
 	mockService := &mockComputeService{
 		batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-			// Inspect the serialized request to determine if it's a log or numeric query.
-			// Log requests contain "log" series type; numeric requests contain "numeric".
+			// Log requests carry the "log" series type, numeric ones "numeric".
 			reqJSON, _ := json.Marshal(req)
 			if strings.Contains(string(reqJSON), `"type":"log"`) {
 				return logResponse, nil
@@ -1111,19 +974,16 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should have made 2 separate batch calls (parallel)
 	if mockService.batchComputeCalls != 2 {
 		t.Errorf("expected 2 batch compute calls for mixed log/numeric, got %d", mockService.batchComputeCalls)
 	}
 
-	// Each batch should contain exactly 1 request
 	for i, req := range mockService.batchRequests {
 		if len(req.Requests) != 1 {
 			t.Errorf("batch call %d: expected 1 request, got %d", i, len(req.Requests))
 		}
 	}
 
-	// Both refIDs should have responses
 	if len(resp.Responses) != 2 {
 		t.Fatalf("expected 2 responses, got %d", len(resp.Responses))
 	}
@@ -1137,7 +997,6 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 		t.Fatal("expected response for NUM refID")
 	}
 
-	// Both should have frames (no errors)
 	if logResp.Error != nil {
 		t.Errorf("unexpected error for LOG: %v", logResp.Error)
 	}

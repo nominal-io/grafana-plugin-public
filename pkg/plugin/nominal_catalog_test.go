@@ -534,8 +534,8 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// 3 queries for the same asset+scope+channel — should only make 1 asset
-	// fetch and 1 SearchChannels call.
+	// 3 queries for the same asset+scope+channel should make 1 asset fetch
+	// and 1 SearchChannels call.
 	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
 		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
 		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},

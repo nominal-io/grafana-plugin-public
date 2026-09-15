@@ -267,9 +267,8 @@ func TestApplyChannelMetadataPreservesOmittedFields(t *testing.T) {
 	}
 }
 
-// TestPrepareQueryInfersChannelUnit guards the unit branch of inferChannelMetadata.
 // Covers the SearchChannels result shapes inferChannelMetadata must handle:
-// type + unit, nil unit, nil DataType + unit, and no name match (all cached).
+// type + unit, nil unit, nil DataType + unit, and no name match.
 func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	const (
 		assetRid      = "ri.scout.main.asset.unitprobe"
@@ -291,11 +290,8 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	dsRid := rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))
 	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
 
-	// Every case exercises the same flow: prepareQuery twice → assert the model
-	// shape from the first call and that the second call hits the cache (no
-	// second SearchChannels). The varying inputs are the SearchChannels response
-	// and the queried channel name; the varying outputs are the resolved
-	// ChannelUnit and ChannelDataType.
+	// Every case calls prepareQuery twice: the first call sets the model shape,
+	// the second must hit the cache and make no SearchChannels call.
 	tests := []struct {
 		name           string
 		queryChannel   string
@@ -416,8 +412,8 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 
-	// A log query with no aggregations should NOT get default ["MEAN"] injected,
-	// and should NOT be rejected for missing aggregations.
+	// A log query with no aggregations must neither get the default ["MEAN"]
+	// nor be rejected.
 	req := newQueryRequest([]backend.DataQuery{
 		{
 			RefID:     "A",
@@ -435,7 +431,7 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected response for refID A")
 	}
-	// The query should not have been rejected — no StatusBadRequest error about aggregations.
+	// No StatusBadRequest about aggregations.
 	if response.Status == backend.StatusBadRequest {
 		t.Errorf("log query was rejected with bad request: %v", response.Error)
 	}

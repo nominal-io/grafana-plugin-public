@@ -29,11 +29,6 @@ import (
 	"github.com/palantir/pkg/uuid"
 )
 
-// ============================================================================
-// Mock services for CallResource handler tests
-// ============================================================================
-
-// mockAuthService implements authapi.AuthenticationServiceV2Client for testing
 type mockAuthService struct {
 	getMyProfileResponse authapi.UserV2
 	getMyProfileError    error
@@ -99,14 +94,13 @@ func (m *mockAuthService) ResetMyCoachmarkDismissal(ctx context.Context, authHea
 	return nil
 }
 
-// mockDatasourceService implements datasourceservice.DataSourceServiceClient for testing
 type mockDatasourceService struct {
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
 	searchChannelsCalls    int
-	// searchChannelsFunc, when non-nil, overrides searchChannelsResponse/searchChannelsError.
-	// This allows tests to return different responses on successive calls (e.g. pagination).
+	// searchChannelsFunc, when non-nil, overrides the static response and error,
+	// so successive calls can differ (pagination).
 	searchChannelsFunc func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error)
 }
 
@@ -163,11 +157,9 @@ func (m *mockDatasourceService) GetMatchingChannelsWithTags(ctx context.Context,
 	return datasourceapi.GetMatchingChannelsWithTagsResponse{}, nil
 }
 
-// Verify mock types implement their interfaces at compile time
 var _ authapi.AuthenticationServiceV2Client = (*mockAuthService)(nil)
 var _ datasourceservice.DataSourceServiceClient = (*mockDatasourceService)(nil)
 
-// callResourceAndCapture is a test helper that calls CallResource and captures the response
 func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResourceRequest) *backend.CallResourceResponse {
 	t.Helper()
 	var captured *backend.CallResourceResponse
@@ -185,10 +177,6 @@ func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResou
 	return captured
 }
 
-// newTestAssetServer creates an httptest server that handles asset-related API endpoints.
-// It returns the server (caller must defer Close) and configures:
-//   - POST /scout/v1/asset/multiple — batch asset lookup by RID
-//   - POST /scout/v1/search-assets — paginated asset search
 func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,7 +211,6 @@ func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, sea
 	}))
 }
 
-// newTestDatasource creates a Datasource for testing CallResource handlers.
 func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
 	return &Datasource{
 		settings: backend.DataSourceInstanceSettings{
@@ -245,7 +232,6 @@ func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *Nomin
 	return newNominalQueryExecution(ds, config)
 }
 
-// mustMarshal is a test helper that panics on marshal failure
 func mustMarshal(v interface{}) []byte {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -254,7 +240,6 @@ func mustMarshal(v interface{}) []byte {
 	return data
 }
 
-// mockComputeService implements computeapi1.ComputeServiceClient for testing
 type mockComputeService struct {
 	mu                    sync.Mutex
 	batchComputeCalls     int
@@ -265,8 +250,8 @@ type mockComputeService struct {
 	batchComputeError     error
 	batchComputeErrors    []error
 	singleComputeCalls    int
-	// batchComputeFunc, if set, is called instead of using the static responses.
-	// Useful for tests with nondeterministic call ordering (e.g. parallel batches).
+	// batchComputeFunc, if set, replaces the static responses. Use it when call
+	// order is nondeterministic (parallel batches).
 	batchComputeFunc func(requestArg computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error)
 
 	killCalls []killCall
@@ -357,7 +342,6 @@ func (m *mockComputeService) killCallsSnapshot() []killCall {
 	return append([]killCall(nil), m.killCalls...)
 }
 
-// createMockComputeResult creates a mock ComputeWithUnitsResult with numeric data
 func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
 	timestamps := make([]api.Timestamp, len(values))
 	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
@@ -381,7 +365,6 @@ func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult
 	}
 }
 
-// createMockEnumComputeResult creates a mock ComputeWithUnitsResult with enum data
 func createMockEnumComputeResult(categories []string, indices []int) computeapi.ComputeWithUnitsResult {
 	timestamps := make([]api.Timestamp, len(indices))
 	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
@@ -406,10 +389,150 @@ func createMockEnumComputeResult(categories []string, indices []int) computeapi.
 	}
 }
 
+// Column order is reversed from production (timestamp first) on purpose, to
+// exercise name-based column lookup.
+func createTestArrowBucketedNumeric(timestamps []int64, means []float64, nullMask []bool) []byte {
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "mean", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+	}, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	meanBuilder := array.NewFloat64Builder(pool)
+	defer tsBuilder.Release()
+	defer meanBuilder.Release()
+
+	for i, ts := range timestamps {
+		tsBuilder.Append(ts)
+		if nullMask != nil && nullMask[i] {
+			meanBuilder.AppendNull()
+		} else {
+			meanBuilder.Append(means[i])
+		}
+	}
+
+	tsArr := tsBuilder.NewArray()
+	meanArr := meanBuilder.NewArray()
+	defer tsArr.Release()
+	defer meanArr.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{tsArr, meanArr}, int64(len(timestamps)))
+	defer rec.Release()
+
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		panic(err)
+	}
+	writer.Close()
+	return buf.Bytes()
+}
+
+type nullableInt64Values struct {
+	values []int64
+	nulls  []bool
+}
+
+func buildFirstLastArrow(
+	tb testing.TB,
+	endBucketTs []int64,
+	firstValues []float64,
+	firstTimestamps nullableInt64Values,
+	lastValues []float64,
+	lastTimestamps nullableInt64Values,
+) []byte {
+	tb.Helper()
+	rows := len(endBucketTs)
+	if len(firstValues) != rows {
+		tb.Fatalf("len(firstValues) = %d, want %d", len(firstValues), rows)
+	}
+	if len(firstTimestamps.values) != rows {
+		tb.Fatalf("len(firstTimestamps.values) = %d, want %d", len(firstTimestamps.values), rows)
+	}
+	if firstTimestamps.nulls != nil && len(firstTimestamps.nulls) != rows {
+		tb.Fatalf("len(firstTimestamps.nulls) = %d, want %d", len(firstTimestamps.nulls), rows)
+	}
+	if len(lastValues) != rows {
+		tb.Fatalf("len(lastValues) = %d, want %d", len(lastValues), rows)
+	}
+	if len(lastTimestamps.values) != rows {
+		tb.Fatalf("len(lastTimestamps.values) = %d, want %d", len(lastTimestamps.values), rows)
+	}
+	if lastTimestamps.nulls != nil && len(lastTimestamps.nulls) != rows {
+		tb.Fatalf("len(lastTimestamps.nulls) = %d, want %d", len(lastTimestamps.nulls), rows)
+	}
+
+	pool := memory.DefaultAllocator
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "first_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "first_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: "last_value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "last_timestamp", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+	}, nil)
+
+	tsBuilder := array.NewInt64Builder(pool)
+	firstValueBuilder := array.NewFloat64Builder(pool)
+	firstTimestampBuilder := array.NewInt64Builder(pool)
+	lastValueBuilder := array.NewFloat64Builder(pool)
+	lastTimestampBuilder := array.NewInt64Builder(pool)
+	for row := 0; row < rows; row++ {
+		tsBuilder.Append(endBucketTs[row])
+		firstValueBuilder.Append(firstValues[row])
+		if firstTimestamps.nulls != nil && firstTimestamps.nulls[row] {
+			firstTimestampBuilder.AppendNull()
+		} else {
+			firstTimestampBuilder.Append(firstTimestamps.values[row])
+		}
+		lastValueBuilder.Append(lastValues[row])
+		if lastTimestamps.nulls != nil && lastTimestamps.nulls[row] {
+			lastTimestampBuilder.AppendNull()
+		} else {
+			lastTimestampBuilder.Append(lastTimestamps.values[row])
+		}
+	}
+
+	tsArr := tsBuilder.NewArray()
+	firstValueArr := firstValueBuilder.NewArray()
+	firstTimestampArr := firstTimestampBuilder.NewArray()
+	lastValueArr := lastValueBuilder.NewArray()
+	lastTimestampArr := lastTimestampBuilder.NewArray()
+	tsBuilder.Release()
+	firstValueBuilder.Release()
+	firstTimestampBuilder.Release()
+	lastValueBuilder.Release()
+	lastTimestampBuilder.Release()
+
+	rec := array.NewRecord(schema, []arrow.Array{
+		tsArr,
+		firstValueArr,
+		firstTimestampArr,
+		lastValueArr,
+		lastTimestampArr,
+	}, int64(rows))
+	var buf bytes.Buffer
+	writer := ipc.NewWriter(&buf, ipc.WithSchema(schema))
+	if err := writer.Write(rec); err != nil {
+		tb.Fatalf("write FIRST/LAST Arrow record: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		tb.Fatalf("close FIRST/LAST Arrow writer: %v", err)
+	}
+
+	rec.Release()
+	tsArr.Release()
+	firstValueArr.Release()
+	firstTimestampArr.Release()
+	lastValueArr.Release()
+	lastTimestampArr.Release()
+
+	return buf.Bytes()
+}
+
 type testArrowMultiAggNullPattern func(row int, column int) bool
 
-// createTestArrowMultiAgg builds an Arrow IPC buffer with end_bucket_timestamp
-// plus multiple named float64 columns (e.g. "mean", "min", "max").
+// Arrow buffer with end_bucket_timestamp plus named float64 columns ("mean", "min", ...).
 func createTestArrowMultiAgg(timestamps []int64, columns map[string][]float64) []byte {
 	return createTestArrowMultiAggWithNullPattern(nil, timestamps, columns, nil)
 }
@@ -499,9 +622,7 @@ func testTimestamp(seconds int64) api.Timestamp {
 	}
 }
 
-// createMockPagedLogResult creates a mock ComputeWithUnitsResult with paged log data.
-// A nil timestamps slice auto-generates one ascending minute-spaced timestamp per
-// message; pass timestamps explicitly to control ordering or length mismatches.
+// A nil timestamps slice yields one ascending minute-spaced timestamp per message.
 func createMockPagedLogResult(messages []string, args []map[string]string, timestamps []api.Timestamp) computeapi.ComputeWithUnitsResult {
 	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
 	if timestamps == nil {
@@ -553,7 +674,6 @@ func newQueryRequest(queries []backend.DataQuery) *backend.QueryDataRequest {
 	return newQueryRequestForURL(testBaseURL, queries)
 }
 
-// createMockErrorResult creates a mock ComputeWithUnitsResult with an error
 func createMockErrorResult(code int, errorType string) computeapi.ComputeWithUnitsResult {
 	errorResult := computeapi.ErrorResult{
 		Code:      computeapi.ErrorCode(code),
@@ -567,9 +687,8 @@ func createMockErrorResult(code int, errorType string) computeapi.ComputeWithUni
 	}
 }
 
-// createMockArrowComputeResult creates a mock ComputeWithUnitsResult with Arrow
-// bucketed numeric data (mean column). This mirrors production behavior where
-// numeric queries send OutputFormat=ARROW_V3 and receive ArrowBucketedNumericPlot.
+// Mirrors production: numeric queries send OutputFormat=ARROW_V3 and receive
+// an ArrowBucketedNumericPlot with a mean column.
 func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
 	baseTime := int64(1704067200000000000) // 2024-01-01 00:00:00 UTC in nanos
 	timestamps := make([]int64, len(values))
@@ -585,7 +704,6 @@ func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsR
 	}
 }
 
-// createMockEnumPointComputeResult creates a mock ComputeWithUnitsResult with a single enum point
 func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsResult {
 	enumPoint := computeapi.EnumPoint{
 		Timestamp: api.Timestamp{
@@ -603,9 +721,8 @@ func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsR
 	}
 }
 
-// createTestArrowFirstLast builds an Arrow IPC buffer matching the API schema for
-// FIRST_POINT/LAST_POINT: first_value, first_timestamp, last_value, last_timestamp,
-// plus the shared end_bucket_timestamp.
+// Arrow buffer in the FIRST_POINT/LAST_POINT schema: end_bucket_timestamp,
+// first_value, first_timestamp, last_value, last_timestamp.
 func createTestArrowFirstLast(
 	tb testing.TB,
 	endBucketTs []int64,
@@ -620,7 +737,6 @@ func createTestArrowFirstLast(
 	})
 }
 
-// createMockLogPointResult creates a mock ComputeWithUnitsResult with a single log point.
 func createMockLogPointResult(message string, args map[string]string) computeapi.ComputeWithUnitsResult {
 	logPoint := computeapi.LogPoint{
 		Timestamp: api.Timestamp{

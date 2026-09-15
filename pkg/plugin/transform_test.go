@@ -36,11 +36,9 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 		}
 
 		frame := resp.Frames[0]
-		// Must have time + value fields
 		if len(frame.Fields) != 2 {
 			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
 		}
-		// Value field must be *float64 (nullable)
 		valueField := frame.Fields[1]
 		if valueField.Len() != len(values) {
 			t.Fatalf("expected %d values, got %d", len(values), valueField.Len())
@@ -117,13 +115,11 @@ func TestEnumPlotTransformation(t *testing.T) {
 			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
 		}
 
-		// Verify value field is string type
 		valueField := frame.Fields[1]
 		if valueField.Name != "value" {
 			t.Errorf("expected field name 'value', got %q", valueField.Name)
 		}
 
-		// Check resolved string values
 		if valueField.Len() != 4 {
 			t.Fatalf("expected 4 values, got %d", valueField.Len())
 		}
@@ -491,7 +487,7 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	if first.Values[0] == nil || *first.Values[0] != 10.0 {
 		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
 	}
-	// Verify FIRST_POINT uses its own timestamps, not end_bucket_timestamp
+	// FIRST_POINT uses its own timestamps, not end_bucket_timestamp.
 	if first.TimePoints[0] != time.Unix(0, 900000000000) {
 		t.Errorf("first.TimePoints[0] = %v, want %v", first.TimePoints[0], time.Unix(0, 900000000000))
 	}
@@ -504,19 +500,18 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	if last.Values[2] == nil || *last.Values[2] != 35.0 {
 		t.Errorf("last.Values[2] = %v, want 35.0", last.Values[2])
 	}
-	// Verify LAST_POINT uses its own timestamps
 	if last.TimePoints[2] != time.Unix(0, 2999000000000) {
 		t.Errorf("last.TimePoints[2] = %v, want %v", last.TimePoints[2], time.Unix(0, 2999000000000))
 	}
 
-	// Verify first and last have DIFFERENT time axes
+	// First and last have different time axes.
 	if first.TimePoints[0] == last.TimePoints[0] {
 		t.Errorf("first and last should have different timestamps, both got %v", first.TimePoints[0])
 	}
 }
 
-// TestTransformArrowMixedAggWithFirstPoint tests a query with both standard aggregations
-// (which share end_bucket_timestamp) and FIRST_POINT (which has its own timestamp column).
+// Standard aggregations share end_bucket_timestamp. FIRST_POINT has its own
+// timestamp column.
 func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
@@ -639,7 +634,6 @@ func TestDisplayNameFromDS(t *testing.T) {
 			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
 		}
 		frame := resp.Frames[0]
-		// Fields: [time, value]
 		if len(frame.Fields) != 2 {
 			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
 		}
@@ -724,19 +718,14 @@ func TestDisplayNameFromDS(t *testing.T) {
 	})
 }
 
-// TestFieldConfigUnit verifies FieldConfig.Unit wiring through the real
-// transformBatchResult frame-construction path across its three branches:
-// multi-agg, enum, and legacy single-numeric.
-//
-// Complements field_config_test.go which covers the builders in isolation —
-// these tests guard the wire-up.
+// Checks FieldConfig.Unit wiring through transformBatchResult's three branches:
+// multi-agg, enum, and legacy single-numeric. TestFieldConfigForNumeric and
+// TestFieldConfigForEnum cover the builders in isolation.
 func TestFieldConfigUnit(t *testing.T) {
 	ds := &Datasource{}
 
-	// assertTimeFieldUnitFree confirms the unit lands only on the value field,
-	// never on the time axis. Grafana ignores Unit on time fields today, but the
-	// negative assertion guards against a future bug where the builder applies
-	// FieldConfig to the wrong field.
+	// Grafana ignores Unit on time fields today; this guards against a builder
+	// applying FieldConfig to the wrong field.
 	assertTimeFieldUnitFree := func(t *testing.T, frame *data.Frame) {
 		t.Helper()
 		if cfg := frame.Fields[0].Config; cfg != nil && cfg.Unit != "" {
@@ -807,7 +796,7 @@ func TestFieldConfigUnit(t *testing.T) {
 
 	t.Run("enum path on Cel-tagged channel does NOT set Unit", func(t *testing.T) {
 		// Enum branch, data present. Even with ChannelUnit set, enum/string
-		// frames must not carry a unit — numeric formatting is meaningless.
+		// frames must not carry a unit; numeric formatting is meaningless.
 		result := createMockEnumComputeResult([]string{"on", "off"}, []int{0, 1})
 		qm := NominalQueryModel{
 			Channel:     "engine_state",
@@ -906,10 +895,9 @@ func TestFieldConfigUnit(t *testing.T) {
 }
 
 func TestFieldConfigForNumeric(t *testing.T) {
-	// End-to-end frame-building paths are covered by TestFieldConfigUnit above.
-	// This test exercises only the helper's unique behavior: mapped unit applied,
-	// unit suppressed when the aggregation does not carry it, and suffix fallthrough
-	// for symbols not in unitSymbolToGrafanaID.
+	// Only the helper's own behavior: mapped unit applied, unit suppressed when
+	// the aggregation does not carry it, and suffix fallthrough for symbols not
+	// in unitSymbolToGrafanaID. TestFieldConfigUnit covers the frame paths.
 	tests := []struct {
 		name               string
 		channelUnit        string
@@ -968,4 +956,102 @@ func TestFieldConfigForEnum(t *testing.T) {
 	if got.DisplayNameFromDS != "engine_state" {
 		t.Errorf("DisplayNameFromDS = %q, want %q", got.DisplayNameFromDS, "engine_state")
 	}
+}
+
+func TestErrorMessageFormatPreservation(t *testing.T) {
+	ds := &Datasource{}
+
+	t.Run("numeric channel error retains original format without hint", func(t *testing.T) {
+		result := createMockErrorResult(404, "CHANNEL_NOT_FOUND")
+		qm := NominalQueryModel{
+			Channel:  "temperature",
+			AssetRid: "ri.nominal.asset.test",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Compute error: CHANNEL_NOT_FOUND (code: 404)") {
+			t.Errorf("expected original error format, got: %s", errMsg)
+		}
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("numeric channel errors should not have hints, got: %s", errMsg)
+		}
+	})
+
+	t.Run("generic compute error retains original format without hint", func(t *testing.T) {
+		result := createMockErrorResult(500, "Compute:InternalError")
+		qm := NominalQueryModel{
+			Channel:  "pressure",
+			AssetRid: "ri.nominal.asset.test",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Compute error: Compute:InternalError (code: 500)") {
+			t.Errorf("expected original error format, got: %s", errMsg)
+		}
+		if strings.Contains(errMsg, "Hint:") {
+			t.Errorf("generic errors should not have hints, got: %s", errMsg)
+		}
+	})
+
+	t.Run("ChannelHasWrongType always includes hint regardless of ChannelDataType", func(t *testing.T) {
+		// The hint fires for any ChannelHasWrongType error. The stored type and the
+		// API's actual type disagree regardless of whether ChannelDataType is set.
+		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "status",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "string",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Compute error: Compute:ChannelHasWrongType (code: 400)") {
+			t.Errorf("expected raw error in message, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for ChannelHasWrongType even when ChannelDataType is populated, got: %s", errMsg)
+		}
+	})
+
+	t.Run("ChannelHasWrongType with empty metadata includes hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "Compute:ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "status",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint when ChannelDataType is empty, got: %s", errMsg)
+		}
+	})
+
+	t.Run("bare ChannelHasWrongType also gets hint", func(t *testing.T) {
+		result := createMockErrorResult(400, "ChannelHasWrongType")
+		qm := NominalQueryModel{
+			Channel:         "mode",
+			AssetRid:        "ri.nominal.asset.test",
+			ChannelDataType: "",
+		}
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error == nil {
+			t.Fatal("expected error response")
+		}
+		errMsg := resp.Error.Error()
+		if !strings.Contains(errMsg, "Hint:") {
+			t.Errorf("expected hint for bare ChannelHasWrongType, got: %s", errMsg)
+		}
+	})
 }
