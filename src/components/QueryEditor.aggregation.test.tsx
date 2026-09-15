@@ -57,10 +57,13 @@ describe('Aggregation widget', () => {
     jest.useRealTimers();
   });
 
-  it('renders disabled Mode input for string channels', async () => {
+  it.each([
+    { channel: 'state', channelDataType: 'string', value: 'Mode' },
+    { channel: 'app.logs', channelDataType: 'log', value: 'Logs (raw)' },
+  ])('renders a fixed-width read-only $value box for $channelDataType channels', async ({ channel, channelDataType, value }) => {
     render(
       <QueryEditor
-        query={makeQuery({ channel: 'state', channelDataType: 'string' })}
+        query={makeQuery({ channel, channelDataType })}
         onChange={jest.fn()}
         onRunQuery={jest.fn()}
         datasource={mockDatasource}
@@ -68,13 +71,10 @@ describe('Aggregation widget', () => {
     );
     await settleInitialEffects();
 
-    // String channels render a read-only "Mode" input instead of a multi-value picker.
-    const modeInput = screen.getByDisplayValue('Mode');
-    expect(modeInput).toBeInTheDocument();
-    // The Grafana Input component with disabled prop renders as a visually
-    // disabled field. Verify there's no combobox in the aggregation section.
+    expect(screen.getByDisplayValue(value)).toBeInTheDocument();
     const aggSection = getAggregationSection();
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(window.getComputedStyle(within(aggSection).getByTestId('input-wrapper')).width).toMatch(/px$/);
   });
 
   it('aggregation query changes trigger the current rerun path', async () => {
@@ -174,23 +174,6 @@ describe('Aggregation widget', () => {
     fireEvent.blur(combobox);
 
     expect(onRunQuery).not.toHaveBeenCalled();
-  });
-
-  it('renders disabled Logs (raw) input for log channels', async () => {
-    render(
-      <QueryEditor
-        query={makeQuery({ channel: 'app.logs', channelDataType: 'log' })}
-        onChange={jest.fn()}
-        onRunQuery={jest.fn()}
-        datasource={mockDatasource}
-      />
-    );
-    await settleInitialEffects();
-
-    const logsInput = screen.getByDisplayValue('Logs (raw)');
-    expect(logsInput).toBeInTheDocument();
-    const aggSection = getAggregationSection();
-    expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
   it('empty aggregations falls back to MEAN', async () => {
