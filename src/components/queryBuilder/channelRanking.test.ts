@@ -91,9 +91,9 @@ describe('rankChannelOptions', () => {
   });
 
   it('ranks SDK metric channels normally when the query starts with a double underscore', () => {
-    const result = rankChannelOptions([opt('__request'), opt('__nominal.metric.request_rtt')], '__nominal');
+    const result = rankChannelOptions([opt('my__nominal_ref'), opt('__nominal.metric.request_rtt')], '__nominal');
 
-    expect(names(result)).toEqual(['__nominal.metric.request_rtt', '__request']);
+    expect(names(result)).toEqual(['__nominal.metric.request_rtt', 'my__nominal_ref']);
   });
 
   it('returns a new permutation and does not mutate the input array', () => {
