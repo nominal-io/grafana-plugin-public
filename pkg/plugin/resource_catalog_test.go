@@ -1044,3 +1044,8 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 }
+
+// strPtr is a helper to create a *string
+func strPtr(s string) *string {
+	return &s
+}

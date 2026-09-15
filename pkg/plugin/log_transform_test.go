@@ -11,28 +11,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	"github.com/palantir/pkg/safelong"
 )
-
-// createMockLogPointResult creates a mock ComputeWithUnitsResult with a single log point.
-func createMockLogPointResult(message string, args map[string]string) computeapi.ComputeWithUnitsResult {
-	logPoint := computeapi.LogPoint{
-		Timestamp: api.Timestamp{
-			Seconds: safelong.SafeLong(1704067200),
-			Nanos:   safelong.SafeLong(0),
-		},
-		Value: computeapi.LogValue{
-			Message: message,
-			Id:      [16]byte{0x01},
-			Args:    args,
-		},
-	}
-	computeResponse := computeapi.NewComputeNodeResponseFromLogPoint(&logPoint)
-	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
-}
 
 func parseLogLabels(t *testing.T, raw json.RawMessage) map[string]string {
 	t.Helper()

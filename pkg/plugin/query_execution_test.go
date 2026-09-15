@@ -1058,38 +1058,6 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 	})
 }
 
-// createMockErrorResult creates a mock ComputeWithUnitsResult with an error
-func createMockErrorResult(code int, errorType string) computeapi.ComputeWithUnitsResult {
-	errorResult := computeapi.ErrorResult{
-		Code:      computeapi.ErrorCode(code),
-		ErrorType: computeapi.ErrorType(errorType),
-	}
-
-	computeResult := computeapi.NewComputeNodeResultFromError(errorResult)
-
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
-}
-
-// createMockArrowComputeResult creates a mock ComputeWithUnitsResult with Arrow
-// bucketed numeric data (mean column). This mirrors production behavior where
-// numeric queries send OutputFormat=ARROW_V3 and receive ArrowBucketedNumericPlot.
-func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
-	baseTime := int64(1704067200000000000) // 2024-01-01 00:00:00 UTC in nanos
-	timestamps := make([]int64, len(values))
-	for i := range timestamps {
-		timestamps[i] = baseTime + int64(i*60)*1_000_000_000
-	}
-	arrowBytes := createTestArrowBucketedNumeric(timestamps, values, nil)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
-	computeResponse := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
-	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
-}
-
 func TestMixedLogNumericParallelBatch(t *testing.T) {
 	// With parallel goroutines, call ordering is nondeterministic.
 	// Use batchComputeFunc to inspect each request and return the matching response.

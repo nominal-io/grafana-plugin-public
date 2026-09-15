@@ -94,24 +94,6 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 	})
 }
 
-// createMockEnumPointComputeResult creates a mock ComputeWithUnitsResult with a single enum point
-func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsResult {
-	enumPoint := computeapi.EnumPoint{
-		Timestamp: api.Timestamp{
-			Seconds: safelong.SafeLong(1704067200),
-			Nanos:   safelong.SafeLong(0),
-		},
-		Value: value,
-	}
-
-	computeResponse := computeapi.NewComputeNodeResponseFromEnumPoint(&enumPoint)
-	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
-
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
-}
-
 func TestEnumPlotTransformation(t *testing.T) {
 	ds := &Datasource{}
 
@@ -475,23 +457,6 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 			t.Errorf("AggSeries[%d].Values[2] = %v, want %v", i, s.Values[2], exp.last)
 		}
 	}
-}
-
-// createTestArrowFirstLast builds an Arrow IPC buffer matching the API schema for
-// FIRST_POINT/LAST_POINT: first_value, first_timestamp, last_value, last_timestamp,
-// plus the shared end_bucket_timestamp.
-func createTestArrowFirstLast(
-	tb testing.TB,
-	endBucketTs []int64,
-	firstValues []float64, firstTimestamps []int64,
-	lastValues []float64, lastTimestamps []int64,
-) []byte {
-	tb.Helper()
-	return buildFirstLastArrow(tb, endBucketTs, firstValues, nullableInt64Values{
-		values: firstTimestamps,
-	}, lastValues, nullableInt64Values{
-		values: lastTimestamps,
-	})
 }
 
 func TestTransformArrowFirstLastPoint(t *testing.T) {

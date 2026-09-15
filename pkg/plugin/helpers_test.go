@@ -406,33 +406,6 @@ func createMockEnumComputeResult(categories []string, indices []int) computeapi.
 	}
 }
 
-// newCountingAssetServer is like newTestAssetServer but also counts requests
-// to the /scout/v1/asset/multiple endpoint.
-func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/scout/v1/asset/multiple" {
-			*fetchCount++
-			var rids []string
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &rids); err != nil {
-				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-				return
-			}
-			result := make(map[string]SingleAssetResponse)
-			for _, rid := range rids {
-				if asset, ok := assets[rid]; ok {
-					result[rid] = asset
-				}
-			}
-			json.NewEncoder(w).Encode(result)
-		} else {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}
-	}))
-}
-
 type testArrowMultiAggNullPattern func(row int, column int) bool
 
 // createTestArrowMultiAgg builds an Arrow IPC buffer with end_bucket_timestamp
@@ -558,11 +531,6 @@ func createMockPagedLogResult(messages []string, args []map[string]string, times
 	}
 }
 
-// strPtr is a helper to create a *string
-func strPtr(s string) *string {
-	return &s
-}
-
 func newQueryRequestForURL(baseURL string, queries []backend.DataQuery) *backend.QueryDataRequest {
 	return &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
@@ -583,4 +551,91 @@ func testDatasourceSettings() backend.DataSourceInstanceSettings {
 
 func newQueryRequest(queries []backend.DataQuery) *backend.QueryDataRequest {
 	return newQueryRequestForURL(testBaseURL, queries)
+}
+
+// createMockErrorResult creates a mock ComputeWithUnitsResult with an error
+func createMockErrorResult(code int, errorType string) computeapi.ComputeWithUnitsResult {
+	errorResult := computeapi.ErrorResult{
+		Code:      computeapi.ErrorCode(code),
+		ErrorType: computeapi.ErrorType(errorType),
+	}
+
+	computeResult := computeapi.NewComputeNodeResultFromError(errorResult)
+
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createMockArrowComputeResult creates a mock ComputeWithUnitsResult with Arrow
+// bucketed numeric data (mean column). This mirrors production behavior where
+// numeric queries send OutputFormat=ARROW_V3 and receive ArrowBucketedNumericPlot.
+func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
+	baseTime := int64(1704067200000000000) // 2024-01-01 00:00:00 UTC in nanos
+	timestamps := make([]int64, len(values))
+	for i := range timestamps {
+		timestamps[i] = baseTime + int64(i*60)*1_000_000_000
+	}
+	arrowBytes := createTestArrowBucketedNumeric(timestamps, values, nil)
+	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	computeResponse := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createMockEnumPointComputeResult creates a mock ComputeWithUnitsResult with a single enum point
+func createMockEnumPointComputeResult(value string) computeapi.ComputeWithUnitsResult {
+	enumPoint := computeapi.EnumPoint{
+		Timestamp: api.Timestamp{
+			Seconds: safelong.SafeLong(1704067200),
+			Nanos:   safelong.SafeLong(0),
+		},
+		Value: value,
+	}
+
+	computeResponse := computeapi.NewComputeNodeResponseFromEnumPoint(&enumPoint)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
+}
+
+// createTestArrowFirstLast builds an Arrow IPC buffer matching the API schema for
+// FIRST_POINT/LAST_POINT: first_value, first_timestamp, last_value, last_timestamp,
+// plus the shared end_bucket_timestamp.
+func createTestArrowFirstLast(
+	tb testing.TB,
+	endBucketTs []int64,
+	firstValues []float64, firstTimestamps []int64,
+	lastValues []float64, lastTimestamps []int64,
+) []byte {
+	tb.Helper()
+	return buildFirstLastArrow(tb, endBucketTs, firstValues, nullableInt64Values{
+		values: firstTimestamps,
+	}, lastValues, nullableInt64Values{
+		values: lastTimestamps,
+	})
+}
+
+// createMockLogPointResult creates a mock ComputeWithUnitsResult with a single log point.
+func createMockLogPointResult(message string, args map[string]string) computeapi.ComputeWithUnitsResult {
+	logPoint := computeapi.LogPoint{
+		Timestamp: api.Timestamp{
+			Seconds: safelong.SafeLong(1704067200),
+			Nanos:   safelong.SafeLong(0),
+		},
+		Value: computeapi.LogValue{
+			Message: message,
+			Id:      [16]byte{0x01},
+			Args:    args,
+		},
+	}
+	computeResponse := computeapi.NewComputeNodeResponseFromLogPoint(&logPoint)
+	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
+	return computeapi.ComputeWithUnitsResult{
+		ComputeResult: computeResult,
+	}
 }

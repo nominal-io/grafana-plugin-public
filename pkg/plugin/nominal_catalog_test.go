@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -712,4 +714,31 @@ func TestGetChannelDataType(t *testing.T) {
 func ptrSeriesDataType(v api.SeriesDataType_Value) *api.SeriesDataType {
 	dt := api.New_SeriesDataType(v)
 	return &dt
+}
+
+// newCountingAssetServer is like newTestAssetServer but also counts requests
+// to the /scout/v1/asset/multiple endpoint.
+func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/scout/v1/asset/multiple" {
+			*fetchCount++
+			var rids []string
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &rids); err != nil {
+				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
+				return
+			}
+			result := make(map[string]SingleAssetResponse)
+			for _, rid := range rids {
+				if asset, ok := assets[rid]; ok {
+					result[rid] = asset
+				}
+			}
+			json.NewEncoder(w).Encode(result)
+		} else {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		}
+	}))
 }
