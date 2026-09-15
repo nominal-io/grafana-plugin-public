@@ -7,11 +7,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	"github.com/palantir/pkg/rid"
 )
 
@@ -405,4 +409,307 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
 	}
+}
+
+func TestChannelMetadataEntryForExactMatch(t *testing.T) {
+	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
+
+	tests := []struct {
+		name        string
+		channels    []datasourceapi.ChannelMetadata
+		channelName string
+		wantEntry   channelMetadataCacheEntry
+		wantOK      bool
+	}{
+		{
+			name: "exact match returns normalized type and trimmed unit",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name:     api.Channel("engine_temp"),
+				DataType: &numericType,
+				Unit:     &runapi.Unit{Symbol: " Cel "},
+			}},
+			channelName: "engine_temp",
+			wantEntry: channelMetadataCacheEntry{
+				channelDataType: "numeric",
+				unit:            "Cel",
+			},
+			wantOK: true,
+		},
+		{
+			name: "case mismatch is ignored",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name:     api.Channel("Engine_Temp"),
+				DataType: &numericType,
+				Unit:     &runapi.Unit{Symbol: "Cel"},
+			}},
+			channelName: "engine_temp",
+			wantOK:      false,
+		},
+		{
+			name: "exact match with no usable metadata is ignored",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name: api.Channel("engine_temp"),
+			}},
+			channelName: "engine_temp",
+			wantOK:      false,
+		},
+		{
+			name: "unit-only exact match returns entry",
+			channels: []datasourceapi.ChannelMetadata{{
+				Name: api.Channel("engine_temp"),
+				Unit: &runapi.Unit{Symbol: "psia"},
+			}},
+			channelName: "engine_temp",
+			wantEntry: channelMetadataCacheEntry{
+				unit: "psia",
+			},
+			wantOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := channelMetadataEntryForExactMatch(tt.channels, tt.channelName)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got.channelDataType != tt.wantEntry.channelDataType {
+				t.Errorf("channelDataType = %q, want %q", got.channelDataType, tt.wantEntry.channelDataType)
+			}
+			if got.unit != tt.wantEntry.unit {
+				t.Errorf("unit = %q, want %q", got.unit, tt.wantEntry.unit)
+			}
+		})
+	}
+}
+
+func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
+	assetRid := "ri.scout.main.asset.dedup1"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult([]string{"b"}, []int{1}),
+				createMockEnumComputeResult([]string{"c"}, []int{2}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+
+	// 3 queries for the same asset+scope+channel — should only make 1 asset
+	// fetch and 1 SearchChannels call.
+	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
+		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+	})
+
+	_, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if assetFetchCount != 1 {
+		t.Errorf("expected 1 asset fetch call (cached), got %d", assetFetchCount)
+	}
+	if mockDS.searchChannelsCalls != 1 {
+		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
+	}
+}
+
+func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ttl1"
+	dataSourceRid := "ri.scout.main.data-source.ds1"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	makeReq := func() *backend.QueryDataRequest {
+		return newQueryRequestForURL(server.URL, []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		})
+	}
+
+	ds.resourceHTTPClient = server.Client()
+
+	// Two separate QueryData calls should reuse the cached asset.
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if assetFetchCount != 1 {
+		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", assetFetchCount)
+	}
+}
+
+func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
+	assetRid := "ri.scout.main.asset.ttl2"
+	dataSourceRid := "ri.scout.main.data-source.ds2"
+
+	var assetFetchCount int
+	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Test Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, &assetFetchCount)
+	defer server.Close()
+
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{
+					Name:       api.Channel("temperature"),
+					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds2")),
+					DataType:   &stringType,
+				},
+			},
+		},
+	}
+	mockCompute := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{
+				createMockEnumComputeResult([]string{"a"}, []int{0}),
+			},
+		},
+	}
+
+	ds := &Datasource{
+		computeService:    mockCompute,
+		datasourceService: mockDS,
+	}
+
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	makeReq := func() *backend.QueryDataRequest {
+		return newQueryRequestForURL(server.URL, []backend.DataQuery{
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		})
+	}
+
+	ds.resourceHTTPClient = server.Client()
+
+	// Two separate QueryData calls should reuse the cached channel type.
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if mockDS.searchChannelsCalls != 1 {
+		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", mockDS.searchChannelsCalls)
+	}
+}
+
+func TestGetChannelDataType(t *testing.T) {
+	tests := []struct {
+		name     string
+		dataType *api.SeriesDataType
+		expected string
+	}{
+		{"nil dataType returns empty", nil, ""},
+		{"STRING returns string", ptrSeriesDataType(api.SeriesDataType_STRING), "string"},
+		{"STRING_ARRAY returns string", ptrSeriesDataType(api.SeriesDataType_STRING_ARRAY), "string"},
+		{"LOG returns log", ptrSeriesDataType(api.SeriesDataType_LOG), "log"},
+		{"DOUBLE returns numeric", ptrSeriesDataType(api.SeriesDataType_DOUBLE), "numeric"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch := datasourceapi.ChannelMetadata{DataType: tt.dataType}
+			got := getChannelDataType(ch)
+			if got != tt.expected {
+				t.Errorf("getChannelDataType() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func ptrSeriesDataType(v api.SeriesDataType_Value) *api.SeriesDataType {
+	dt := api.New_SeriesDataType(v)
+	return &dt
 }
