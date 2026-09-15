@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
@@ -206,4 +208,45 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 	}
 
 	return results
+}
+
+func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) backend.DataResponse {
+	var response backend.DataResponse
+
+	log.DefaultLogger.Debug("Processing connectionTest query")
+
+	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
+	if err != nil {
+		logErrorWithConjureFields("Connection test failed", err)
+		message, _ := classifyConnectionError(err)
+		return backend.ErrDataResponse(backend.StatusInternal, message)
+	}
+
+	log.DefaultLogger.Debug("Connection test successful", "profileRid", profile.Rid)
+
+	frame := data.NewFrame("connectionTest")
+	frame.Fields = append(frame.Fields,
+		data.NewField("status", nil, []string{"success"}),
+		data.NewField("message", nil, []string{"Successfully connected to Nominal API"}),
+	)
+
+	response.Frames = append(response.Frames, frame)
+	return response
+}
+
+// handleLegacyQuery handles legacy queries that don't have asset/channel
+func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRange backend.TimeRange) backend.DataResponse {
+	var response backend.DataResponse
+
+	log.DefaultLogger.Debug("Using legacy query support")
+
+	frame := data.NewFrame("response")
+	frame.Fields = append(frame.Fields,
+		data.NewField("time", nil, []time.Time{timeRange.From, timeRange.To}),
+		data.NewField("values", nil, []float64{qm.Constant, qm.Constant + 10}),
+	)
+
+	response.Frames = append(response.Frames, frame)
+	return response
 }
