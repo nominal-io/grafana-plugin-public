@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -144,27 +143,11 @@ func (d *Datasource) Dispose() {
 //
 // Query execution itself lives behind NominalQueryExecution so Datasource stays
 // focused on Grafana setup, settings loading, and plugin lifecycle concerns.
-func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (response *backend.QueryDataResponse, err error) {
-	// The SDK does not recover here; one panic would kill every in-flight query.
-	defer func() {
-		if r := recover(); r != nil {
-			log.DefaultLogger.Error("Recovered panic while handling query request",
-				"panic", fmt.Sprintf("%v", r),
-				"stack", string(debug.Stack()),
-			)
-			response = backend.NewQueryDataResponse()
-			for _, q := range req.Queries {
-				response.Responses[q.RefID] = backend.ErrDataResponse(backend.StatusInternal,
-					"Internal error while handling query request")
-			}
-			err = nil
-		}
-	}()
-
+func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
-	response = backend.NewQueryDataResponse()
+	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
 	if req.PluginContext.DataSourceInstanceSettings == nil {
