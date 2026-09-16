@@ -17,7 +17,8 @@ import (
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
 func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWithUnitsResult, qm NominalQueryModel) (response backend.DataResponse) {
-	// A malformed result must fail only its own query.
+	// Batch execution runs in its own goroutines, outside the SDK gRPC panic
+	// recovery. A malformed result must fail only its own query.
 	defer func() {
 		if r := recover(); r != nil {
 			log.DefaultLogger.Error("Recovered panic while transforming query result",

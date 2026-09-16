@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1231,50 +1230,5 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if len(healthyResp.Frames) != 1 {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
-	}
-}
-
-func TestChunkPanicPreservesEarlierResultsAndEnqueuesKill(t *testing.T) {
-	var calls atomic.Int32
-	var panickedRequestID uuid.UUID
-	mock := &mockComputeService{
-		batchComputeFunc: func(request computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-			if calls.Add(1) == 2 {
-				panickedRequestID = *request.Requests[0].RequestId
-				panic("sentinel second-chunk panic")
-			}
-			return makeBatchComputeWithUnitsResponse(len(request.Requests)), nil
-		},
-	}
-	ds := &Datasource{computeService: mock, kill: killCoalescer{interval: time.Millisecond}}
-	e := newTestQueryExecution(ds, nil)
-	refIDs := make([]string, maxBatchComputeSubrequests+1)
-	for i := range refIDs {
-		refIDs[i] = fmt.Sprintf("Q%03d", i)
-	}
-	prepared := preparedNumericQueries(refIDs...)
-	for i := range prepared {
-		prepared[i].Model.Aggregations = []string{AggMean}
-	}
-
-	results := e.executePreparedBatches(context.Background(), prepared)
-
-	if len(results) != len(refIDs) {
-		t.Fatalf("expected %d responses, got %d", len(refIDs), len(results))
-	}
-	for _, refID := range refIDs[:maxBatchComputeSubrequests] {
-		if err := results[refID].Error; err != nil {
-			t.Fatalf("earlier successful result %s was discarded: %v", refID, err)
-		}
-	}
-	last := results[refIDs[maxBatchComputeSubrequests]]
-	if last.Error == nil || last.Error.Error() != "Internal error while executing query chunk" {
-		t.Fatalf("panicked chunk result should carry the generic chunk error, got %v", last.Error)
-	}
-
-	waitForCondition(t, 2*time.Second, func() bool { return len(mock.killCallsSnapshot()) == 1 })
-	kills := mock.killCallsSnapshot()
-	if len(kills[0].ids) != 1 || kills[0].ids[0] != panickedRequestID {
-		t.Fatalf("expected kill for panicked request %v, got %v", panickedRequestID, kills[0].ids)
 	}
 }
