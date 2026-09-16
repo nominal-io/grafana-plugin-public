@@ -264,7 +264,11 @@ func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token,
 	workspace, err := d.workspaceService.GetWorkspace(ctx, token, workspaceRid)
 	if err != nil {
 		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid.String())
-		return "", errors.New(appendInstanceID("Workspace not found or not accessible with this API key", err))
+		if status := extractErrorDetails(err).Status; status == http.StatusForbidden || status == http.StatusNotFound {
+			return "", errors.New(appendInstanceID("Workspace not found or not accessible with this API key", err))
+		}
+		message, _ := classifyConnectionError(err)
+		return "", errors.New(message)
 	}
 	if workspace.DisplayName != nil && *workspace.DisplayName != "" {
 		return *workspace.DisplayName, nil
@@ -280,6 +284,9 @@ func parseWorkspaceRid(s string) (*rids.WorkspaceRid, error) {
 	parsed, err := rid.ParseRID(s)
 	if err != nil {
 		return nil, fmt.Errorf("Workspace RID %q is not a valid RID", s)
+	}
+	if parsed.Type != "workspace" {
+		return nil, fmt.Errorf("Workspace RID %q has type %q, not workspace", s, parsed.Type)
 	}
 	return (*rids.WorkspaceRid)(&parsed), nil
 }

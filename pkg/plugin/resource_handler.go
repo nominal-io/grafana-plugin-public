@@ -195,7 +195,7 @@ func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *ba
 	reqBody := req.Body
 	if targetPath == "scout/v1/search-assets" && config.WorkspaceRid != "" {
 		var search map[string]interface{}
-		if err := json.Unmarshal(reqBody, &search); err != nil {
+		if err := json.Unmarshal(reqBody, &search); err != nil || search == nil {
 			return jsonErrorResponse(sender, http.StatusBadRequest, "Failed to parse search-assets request body")
 		}
 		search["query"] = withWorkspaceFilter(search["query"], config.WorkspaceRid)

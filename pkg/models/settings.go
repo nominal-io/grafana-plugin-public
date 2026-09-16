@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
@@ -38,6 +39,7 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
 	}
 
+	settings.WorkspaceRid = strings.TrimSpace(settings.WorkspaceRid)
 	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
 
 	return &settings, nil

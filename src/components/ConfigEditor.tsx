@@ -48,7 +48,7 @@ export function ConfigEditor(props: Props) {
       ...options,
       jsonData: {
         ...jsonData,
-        workspaceRid: event.target.value.trim(),
+        workspaceRid: event.target.value,
       },
     });
   };

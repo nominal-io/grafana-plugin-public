@@ -245,9 +245,11 @@ func withWorkspaceFilter(query interface{}, workspaceRid string) interface{} {
 	if workspaceRid == "" {
 		return query
 	}
-	return map[string]interface{}{"type": "and", "and": []interface{}{
-		query, map[string]interface{}{"type": "workspace", "workspace": workspaceRid},
-	}}
+	clause := map[string]interface{}{"type": "workspace", "workspace": workspaceRid}
+	if query == nil {
+		return clause
+	}
+	return map[string]interface{}{"type": "and", "and": []interface{}{query, clause}}
 }
 
 // FetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls.

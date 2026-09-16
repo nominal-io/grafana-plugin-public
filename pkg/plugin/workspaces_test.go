@@ -60,6 +60,7 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
 		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "not accessible"},
+		{"workspace lookup timeout", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,17 +82,18 @@ func TestCheckHealthWorkspace(t *testing.T) {
 // template-variable endpoint builds its own body, the query editor's search is proxied.
 func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 	text := map[string]interface{}{"type": "searchText", "searchText": "eng"}
+	clause := map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid}
+	anded, _ := json.Marshal(map[string]interface{}{"type": "and", "and": []interface{}{text, clause}})
+	bare, _ := json.Marshal(clause)
 	cases := []struct {
 		name, path string
-		body       map[string]any
+		body       string
+		want       string
 	}{
-		{"assets variable", "assets", map[string]any{"searchText": "eng"}},
-		{"proxied search-assets", "scout/v1/search-assets", map[string]any{"query": text, "pageSize": 50}},
+		{"assets variable", "assets", `{"searchText":"eng"}`, string(anded)},
+		{"proxied search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
+		{"proxied search-assets without query", "scout/v1/search-assets", `{"pageSize":50}`, string(bare)},
 	}
-	want, _ := json.Marshal(map[string]interface{}{
-		"type": "and",
-		"and":  []interface{}{text, map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid}},
-	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotQuery interface{}
@@ -104,15 +106,22 @@ func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 			defer server.Close()
 
 			ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, &mockWorkspaceService{})
-			body, _ := json.Marshal(tc.body)
-			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tc.path, Method: http.MethodPost, Body: body})
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tc.path, Method: http.MethodPost, Body: []byte(tc.body)})
 			if resp.Status != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
 			}
-			if got, _ := json.Marshal(gotQuery); string(got) != string(want) {
-				t.Fatalf("query = %s, want %s", got, want)
+			if got, _ := json.Marshal(gotQuery); string(got) != tc.want {
+				t.Fatalf("query = %s, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProxiedSearchAssetsRejectsNullBody(t *testing.T) {
+	ds := newWorkspaceTestDatasource(t, "http://example", testWorkspaceRid, &mockWorkspaceService{})
+	resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "scout/v1/search-assets", Method: http.MethodPost, Body: []byte("null")})
+	if resp.Status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.Status)
 	}
 }
 
@@ -123,7 +132,9 @@ func TestNewDatasourceWorkspaceRid(t *testing.T) {
 	}{
 		{"empty", "", false},
 		{"valid", testWorkspaceRid, false},
+		{"padded", " " + testWorkspaceRid + "\n", false},
 		{"malformed", "not-a-rid", true},
+		{"asset rid", "ri.scout.test.asset.11111111-1111-1111-1111-111111111111", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
