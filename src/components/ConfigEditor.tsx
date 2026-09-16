@@ -103,6 +103,7 @@ export function ConfigEditor(props: Props) {
         tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
       >
         <SecretInput
+          required
           id="config-editor-api-key"
           isConfigured={secureJsonFields?.apiKey || false}
           value={apiKey}
