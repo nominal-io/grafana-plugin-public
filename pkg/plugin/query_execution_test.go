@@ -378,8 +378,9 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	if len(mockCompute.lastBatchRequest.Requests) != 1 {
 		t.Fatalf("expected 1 compute request, got %d", len(mockCompute.lastBatchRequest.Requests))
 	}
-	if len(mockDS.searchChannelsRequest.ExactMatch) != 1 || mockDS.searchChannelsRequest.ExactMatch[0] != "state" {
-		t.Fatalf("expected exact-match channel lookup for state, got %v", mockDS.searchChannelsRequest.ExactMatch)
+	searchRequest := mockDS.searchChannelsRequestSnapshot()
+	if len(searchRequest.ExactMatch) != 1 || searchRequest.ExactMatch[0] != "state" {
+		t.Fatalf("expected exact-match channel lookup for state, got %v", searchRequest.ExactMatch)
 	}
 
 	response := resp.Responses["A"]
