@@ -102,12 +102,10 @@ function compareNames(a: string, b: string): number {
   return naturalCompare(a, b);
 }
 
-/** Reorders server results so the best match is first: the SearchChannels API
- *  scores '.'/'_' variants of a name identically (pg_trgm) and tie-breaks by
- *  row UUID, while the Combobox default-highlights row 0. SDK metric channels
- *  sort after every customer match unless the query itself starts with '__'.
- *  Never drops rows; non-matches keep server order at the end. Always returns
- *  a new array, so callers may mutate the result. */
+/** Puts the best match at row 0, the Combobox's Enter target. The server scores
+ *  '.'/'_' variants of a name identically. SDK metric channels sort after every
+ *  customer match unless the query starts with '__'. Never drops rows; returns
+ *  a new array. */
 export function rankChannelOptions(options: ChannelOption[], searchText: string): ChannelOption[] {
   const query = searchText.trim();
   if (!query) {
