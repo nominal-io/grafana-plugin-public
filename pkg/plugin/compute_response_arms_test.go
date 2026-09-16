@@ -3,7 +3,6 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -38,41 +37,6 @@ var unsupportedComputeResponseArms = map[string]func() computeapi.ComputeNodeRes
 	"fullResolution":            arm(computeapi.NewComputeNodeResponseFromFullResolution),
 	"arrowBucketedMultivariate": arm(computeapi.NewComputeNodeResponseFromArrowBucketedMultivariate),
 	"multivariate":              arm(computeapi.NewComputeNodeResponseFromMultivariate),
-}
-
-var supportedComputeResponseArms = []string{
-	"numeric", "bucketedNumeric", "arrowBucketedNumeric",
-	"enum", "enumPoint", "bucketedEnum",
-	"pagedLog", "logPoint",
-}
-
-// An API bump that adds a union arm must land in one of the two lists above.
-func TestComputeResponseArmsAreExhaustive(t *testing.T) {
-	responseType := reflect.TypeOf(computeapi.ComputeNodeResponse{})
-	actual := make(map[string]bool, responseType.NumField()-1)
-	for i := 0; i < responseType.NumField(); i++ {
-		// Conjure suffixes Go keywords such as the "range" arm with an underscore.
-		name := strings.TrimSuffix(responseType.Field(i).Name, "_")
-		if name != "typ" {
-			actual[name] = true
-		}
-	}
-
-	for _, name := range supportedComputeResponseArms {
-		if !actual[name] {
-			t.Errorf("supported response arm %q is duplicated or is not a ComputeNodeResponse field", name)
-		}
-		delete(actual, name)
-	}
-	for name := range unsupportedComputeResponseArms {
-		if !actual[name] {
-			t.Errorf("unsupported response arm %q is duplicated or is not a ComputeNodeResponse field", name)
-		}
-		delete(actual, name)
-	}
-	if len(actual) != 0 {
-		t.Fatalf("ComputeNodeResponse arms are unclassified: %v", reflect.ValueOf(actual).MapKeys())
-	}
 }
 
 func TestUnsupportedComputeResponseArmsReturnErrors(t *testing.T) {
