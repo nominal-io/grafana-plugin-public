@@ -75,6 +75,27 @@ describe('rankChannelOptions', () => {
     expect(names(result)).toEqual(['a.chan', 'b.chan2', 'b.chan10']);
   });
 
+  it('places SDK metric channels after customer channels when the query is blank', () => {
+    const result = rankChannelOptions([opt('__nominal.metric.request_rtt'), opt('temp'), opt('_private')], '');
+
+    expect(names(result)).toEqual(['_private', 'temp', '__nominal.metric.request_rtt']);
+  });
+
+  it('places SDK metric channels after every customer match, even with a better match tier', () => {
+    const result = rankChannelOptions(
+      [opt('__nominal.metric.request_rtt'), opt('rttx.speed'), opt('unrelated')],
+      'rtt'
+    );
+
+    expect(names(result)).toEqual(['rttx.speed', '__nominal.metric.request_rtt', 'unrelated']);
+  });
+
+  it('ranks SDK metric channels normally when the query starts with a double underscore', () => {
+    const result = rankChannelOptions([opt('my__nominal_ref'), opt('__nominal.metric.request_rtt')], '__nominal');
+
+    expect(names(result)).toEqual(['__nominal.metric.request_rtt', 'my__nominal_ref']);
+  });
+
   it('returns a new permutation and does not mutate the input array', () => {
     const input = [opt('b'), opt('a')];
     const snapshot = [...input];

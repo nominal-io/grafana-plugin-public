@@ -86,25 +86,51 @@ function matchRank(name: string, query: string, lowerQuery: string): number {
 const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 const naturalCompare = collator.compare;
 
-/** Reorders server results so the best match is first: the SearchChannels API
- *  scores '.'/'_' variants of a name identically (pg_trgm) and tie-breaks by
- *  row UUID, while the Combobox default-highlights row 0. Never drops rows;
- *  non-matches keep server order at the end. Always returns a new array, so
- *  callers may mutate the result. */
+// Latency metrics the Python SDK's stream writer injects into every streamed dataset.
+const SDK_METRIC_PREFIX = '__nominal.';
+
+function isSdkMetric(name: string): boolean {
+  return name.startsWith(SDK_METRIC_PREFIX);
+}
+
+function compareNames(a: string, b: string): number {
+  const aInternal = isSdkMetric(a);
+  const bInternal = isSdkMetric(b);
+  if (aInternal !== bInternal) {
+    return aInternal ? 1 : -1;
+  }
+  return naturalCompare(a, b);
+}
+
+/** Puts the best match at row 0, the Combobox's Enter target. The server scores
+ *  '.'/'_' variants of a name identically. SDK metric channels sort after every
+ *  customer match unless the query starts with '__'. Never drops rows; returns
+ *  a new array. */
 export function rankChannelOptions(options: ChannelOption[], searchText: string): ChannelOption[] {
   const query = searchText.trim();
   if (!query) {
-    return [...options].sort((a, b) => naturalCompare(a.value, b.value));
+    return [...options].sort((a, b) => compareNames(a.value, b.value));
   }
   const lowerQuery = query.toLowerCase();
+  const demoteSdkMetrics = !lowerQuery.startsWith('__');
   return options
-    .map((option, index) => ({ option, index, rank: matchRank(option.value, query, lowerQuery) }))
+    .map((option, index) => {
+      const rank = matchRank(option.value, query, lowerQuery);
+      const demoted = rank !== NO_MATCH && demoteSdkMetrics && isSdkMetric(option.value);
+      return { option, index, rank, demoted };
+    })
     .sort((a, b) => {
-      if (a.rank !== b.rank) {
-        return b.rank - a.rank;
+      if ((a.rank === NO_MATCH) !== (b.rank === NO_MATCH)) {
+        return a.rank === NO_MATCH ? 1 : -1;
       }
       if (a.rank === NO_MATCH) {
         return a.index - b.index;
+      }
+      if (a.demoted !== b.demoted) {
+        return a.demoted ? 1 : -1;
+      }
+      if (a.rank !== b.rank) {
+        return b.rank - a.rank;
       }
       return naturalCompare(a.option.value, b.option.value) || a.index - b.index;
     })
