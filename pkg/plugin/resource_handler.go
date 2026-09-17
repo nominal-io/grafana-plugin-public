@@ -15,6 +15,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 )
 
 // proxyAllowedHeaders is the set of safe request headers forwarded to the
@@ -50,6 +51,10 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
 		return h.handleChannelVariables(ctx, req, sender)
+	case "scout/v1/search-assets":
+		return h.handleSearchAssets(ctx, req, sender)
+	case "scout/v1/asset/multiple":
+		return h.handleAssetMultiple(ctx, req, sender)
 	}
 
 	if strings.HasPrefix(path, "nominal/") {
@@ -162,6 +167,64 @@ func (h *NominalResourceHandler) handleTestConnection(ctx context.Context, req *
 		"message": "Successfully connected to Nominal API and retrieved user profile",
 	}
 	return jsonMarshalResponse(sender, http.StatusOK, response)
+}
+
+func (h *NominalResourceHandler) handleSearchAssets(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var search map[string]any
+	if ok, err := decodeResourceJSON(req.Body, sender, &search, "Failed to parse search-assets request body"); !ok {
+		return err
+	}
+	if search == nil {
+		return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid request body")
+	}
+	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "search-assets: failed to load settings")
+	if !ok {
+		return err
+	}
+	search["query"] = withWorkspaceFilter(search["query"], config.WorkspaceRid)
+	return h.relayScoutPost(ctx, sender, config, "/scout/v1/search-assets", search)
+}
+
+func (h *NominalResourceHandler) handleAssetMultiple(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var rids []string
+	if ok, err := decodeResourceJSON(req.Body, sender, &rids, "Failed to parse asset/multiple request body"); !ok {
+		return err
+	}
+	if len(rids) == 0 {
+		return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid request body")
+	}
+	for _, r := range rids {
+		if _, err := rid.ParseRID(r); err != nil {
+			return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid asset RID")
+		}
+	}
+	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "asset/multiple: failed to load settings")
+	if !ok {
+		return err
+	}
+	return h.relayScoutPost(ctx, sender, config, "/scout/v1/asset/multiple", rids)
+}
+
+// relayScoutPost POSTs body to a fixed upstream path under the datasource API
+// key and returns the upstream JSON body unchanged. Upstream error statuses
+// are passed through, with the errorInstanceId appended to the message.
+func (h *NominalResourceHandler) relayScoutPost(ctx context.Context, sender backend.CallResourceResponseSender, config *models.PluginSettings, upstreamPath string, body any) error {
+	responseBody, err := h.datasource.catalog().postNominalJSON(ctx, config, upstreamPath, body)
+	if err != nil {
+		logErrorWithConjureFields("Nominal API request failed", err, "path", upstreamPath)
+		status := http.StatusBadGateway
+		if d := extractErrorDetails(err); d.Status != 0 {
+			status = d.Status
+		}
+		return jsonErrorResponse(sender, status, appendInstanceID("Nominal API request failed", err))
+	}
+	return jsonBytesResponse(sender, http.StatusOK, responseBody)
 }
 
 // handleNominalProxy handles proxying requests to Nominal API with secure API key injection.
