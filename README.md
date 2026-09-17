@@ -249,18 +249,14 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
   # {"message":"Successfully connected to Nominal API","status":"OK"}
   ```
 
-- Authentication Test
+- Asset Search
+
+  The backend exposes a fixed set of resource endpoints: `test`, `connection-test`, `channels`, `assets`, `datascopes`, `channelvariables`, `scout/v1/search-assets`, and `scout/v1/asset/multiple`. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
 
   ```sh
-  curl -s "http://localhost:3000/api/datasources/uid/{UID}/resources/api/authentication/v2/my/profile" | jq
-  ```
-
-- Compute API Request
-
-  ```sh
-  curl -s 'http://localhost:3000/api/datasources/uid/{UID}/resources/api/compute/v2/compute' \
+  curl -s -X POST "http://localhost:3000/api/datasources/uid/{UID}/resources/scout/v1/search-assets" \
     -H 'Content-Type: application/json' \
-    -d@../../tests/bash/payloads/compute-api.json | jq
+    -d '{"query":{"type":"searchText","searchText":""},"sort":{"field":"CREATED_AT","isDescending":true},"pageSize":10}' | jq
   ```
 
 - Find Your Datasource
