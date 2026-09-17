@@ -144,8 +144,8 @@ export function ConfigEditor(props: Props) {
           https://app.gov.nominal.io/settings/org/api-keys).
         </p>
         <ol className={styles.quickSetupList}>
-          <li>Set Base URL to your Nominal API endpoint including the full path (e.g. https://api.gov.nominal.io/api)</li>
-          <li>Create a Nominal API key and enter it in the API Key field</li>
+          <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
+          <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>

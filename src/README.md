@@ -15,7 +15,7 @@ The Base URL, API key, and Workspace RID can all be copied from **Settings > API
 1. In Grafana, go to **Connections** > **Data sources**.
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
-4. Create a Nominal API key and enter it in **API Key**.
+4. Create a Nominal API key and paste it in **API Key**.
 5. Recommended: set **Workspace RID** to limit asset search to one workspace. Empty searches every workspace the key can access.
 6. Select **Save & test**.
 
