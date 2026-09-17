@@ -1,13 +1,9 @@
 package plugin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -17,14 +13,6 @@ import (
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
-
-// proxyAllowedHeaders is the set of safe request headers forwarded to the
-// upstream Nominal API. Sensitive caller context like Cookie and
-// Authorization must never be relayed.
-var proxyAllowedHeaders = map[string]bool{
-	"Content-Type": true,
-	"Accept":       true,
-}
 
 type NominalResourceHandler struct {
 	datasource *Datasource
@@ -57,14 +45,7 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleAssetMultiple(ctx, req, sender)
 	}
 
-	if strings.HasPrefix(path, "nominal/") {
-		targetPath := strings.TrimPrefix(path, "nominal/")
-		log.DefaultLogger.Debug("Stripped /nominal prefix", "newPath", targetPath)
-		return h.handleNominalProxy(ctx, req, sender, targetPath)
-	}
-
-	log.DefaultLogger.Debug("Handling proxy request to Nominal API")
-	return h.handleNominalProxy(ctx, req, sender, path)
+	return jsonErrorResponse(sender, http.StatusNotFound, "Unknown resource path")
 }
 
 func normalizeResourcePath(path string) string {
@@ -225,107 +206,4 @@ func (h *NominalResourceHandler) relayScoutPost(ctx context.Context, sender back
 		return jsonErrorResponse(sender, status, appendInstanceID("Nominal API request failed", err))
 	}
 	return jsonBytesResponse(sender, http.StatusOK, responseBody)
-}
-
-// handleNominalProxy handles proxying requests to Nominal API with secure API key injection.
-func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender, targetPath string) error {
-	d := h.datasource
-
-	// Load settings to get API key and base URL
-	config, ok, err := loadResourceSettings(d.settings, sender, "Proxy request: failed to load settings")
-	if !ok {
-		return err
-	}
-
-	apiKey := config.Secrets.ApiKey
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" || apiKey == "" {
-		return jsonErrorResponse(sender, http.StatusBadRequest, "Missing base URL or API key configuration")
-	}
-
-	// Construct the full target URL
-	baseURL = strings.TrimSuffix(baseURL, "/")
-	targetURL := baseURL + "/" + targetPath
-
-	log.DefaultLogger.Debug("Proxy request", "fromPath", req.Path, "targetPath", targetPath, "toURL", targetURL)
-
-	// Parse the target URL to ensure it's valid
-	parsedURL, err := url.Parse(targetURL)
-	if err != nil {
-		return fmt.Errorf("invalid target URL: %v", err)
-	}
-
-	reqBody := req.Body
-	if targetPath == "scout/v1/search-assets" && config.WorkspaceRid != "" {
-		var search map[string]interface{}
-		if err := json.Unmarshal(reqBody, &search); err != nil || search == nil {
-			return jsonErrorResponse(sender, http.StatusBadRequest, "Failed to parse search-assets request body")
-		}
-		search["query"] = withWorkspaceFilter(search["query"], config.WorkspaceRid)
-		if reqBody, err = json.Marshal(search); err != nil {
-			return fmt.Errorf("failed to encode search-assets request body: %v", err)
-		}
-	}
-
-	// Create the proxied request
-	var body io.Reader
-	if reqBody != nil {
-		body = bytes.NewReader(reqBody)
-	}
-
-	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, parsedURL.String(), body)
-	if err != nil {
-		return fmt.Errorf("failed to create proxy request: %v", err)
-	}
-
-	// Set the Host header explicitly - only if we have a valid host
-	if parsedURL.Host != "" {
-		proxyReq.Host = parsedURL.Host
-	}
-
-	// Forward only the small allowlist of headers the upstream needs.
-	for key, values := range req.Headers {
-		if !proxyAllowedHeaders[http.CanonicalHeaderKey(key)] {
-			continue
-		}
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
-
-	// Use the datasource API key for all proxied upstream requests.
-	proxyReq.Header.Set("Authorization", "Bearer "+apiKey)
-
-	log.DefaultLogger.Debug("Using API key for proxy request")
-
-	// Ensure Content-Type is set for POST requests
-	if req.Method == "POST" && proxyReq.Header.Get("Content-Type") == "" {
-		proxyReq.Header.Set("Content-Type", "application/json")
-	}
-
-	// Make the request
-	resp, err := d.getResourceHTTPClient().Do(proxyReq)
-	if err != nil {
-		return fmt.Errorf("proxy request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body
-	responseBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
-	}
-
-	// Copy response headers
-	responseHeaders := make(map[string][]string)
-	for key, values := range resp.Header {
-		responseHeaders[key] = values
-	}
-
-	// Send the proxied response
-	return sender.Send(&backend.CallResourceResponse{
-		Status:  resp.StatusCode,
-		Headers: responseHeaders,
-		Body:    responseBody,
-	})
 }
