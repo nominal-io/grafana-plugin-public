@@ -119,7 +119,7 @@ export function ConfigEditor(props: Props) {
         labelWidth={26}
         interactive
         tooltip={
-          'Recommended. Limits the assets you can browse to one workspace. Empty browses every workspace the key can access. Assets from other workspaces still resolve if referenced directly by RID.'
+          'Recommended. Limits asset search to this workspace instead of every workspace the key can access. Only search is filtered; assets from other workspaces still work in queries.'
         }
       >
         <Input
