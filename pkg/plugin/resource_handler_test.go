@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -310,5 +311,104 @@ func TestProxyHeaderFiltering(t *testing.T) {
 	authHeader := receivedHeaders.Get("Authorization")
 	if authHeader != "Bearer test-api-key" {
 		t.Errorf("Authorization header = %q, want %q", authHeader, "Bearer test-api-key")
+	}
+}
+
+func TestScoutEndpointsRejectBadRequests(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	ds := newTestDatasource(upstream.URL, &mockAuthService{}, &mockDatasourceService{})
+
+	tests := []struct {
+		name       string
+		path       string
+		method     string
+		body       string
+		wantStatus int
+	}{
+		{"GET search-assets", "scout/v1/search-assets", http.MethodGet, ``, http.StatusMethodNotAllowed},
+		{"DELETE asset/multiple", "scout/v1/asset/multiple", http.MethodDelete, ``, http.StatusMethodNotAllowed},
+		{"asset/multiple with object body", "scout/v1/asset/multiple", http.MethodPost, `{}`, http.StatusBadRequest},
+		{"asset/multiple with null body", "scout/v1/asset/multiple", http.MethodPost, `null`, http.StatusBadRequest},
+		{"asset/multiple with empty array", "scout/v1/asset/multiple", http.MethodPost, `[]`, http.StatusBadRequest},
+		{"asset/multiple with malformed rid", "scout/v1/asset/multiple", http.MethodPost, `["not-a-rid"]`, http.StatusBadRequest},
+		{"search-assets with null body", "scout/v1/search-assets", http.MethodPost, `null`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tt.path, Method: tt.method, Body: []byte(tt.body)})
+			if resp.Status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.wantStatus, string(resp.Body))
+			}
+		})
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("upstream was called %d times for rejected requests", upstreamHits)
+	}
+}
+
+func TestScoutEndpointsRelayUpstream(t *testing.T) {
+	tests := []struct {
+		name             string
+		path             string
+		body             string
+		upstreamStatus   int
+		upstreamBody     string
+		wantUpstreamPath string
+		wantUpstreamBody string
+		wantBodyContains string
+	}{
+		{"search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"relayed":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"relayed":true}`},
+		{"asset/multiple with leading slash", "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"relayed":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"relayed":true}`},
+		{"asset/multiple upstream error status", "scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusForbidden, `{"errorCode":"PERMISSION_DENIED","errorName":"Default:PermissionDenied","errorInstanceId":"abc-123"}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, "abc-123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath, gotMethod, gotAuth, gotCookie, gotBody string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotMethod = r.URL.Path, r.Method
+				gotAuth, gotCookie = r.Header.Get("Authorization"), r.Header.Get("Cookie")
+				b, _ := io.ReadAll(r.Body)
+				gotBody = string(b)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.upstreamStatus)
+				w.Write([]byte(tt.upstreamBody))
+			}))
+			defer upstream.Close()
+			ds := newTestDatasource(upstream.URL, &mockAuthService{}, &mockDatasourceService{})
+
+			req := &backend.CallResourceRequest{
+				Path:   tt.path,
+				Method: http.MethodPost,
+				Body:   []byte(tt.body),
+				Headers: map[string][]string{
+					"Cookie":        {"session=secret"},
+					"Authorization": {"Bearer user-token"},
+				},
+			}
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != tt.upstreamStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.upstreamStatus, string(resp.Body))
+			}
+			if !strings.Contains(string(resp.Body), tt.wantBodyContains) {
+				t.Fatalf("body = %s, want it to contain %s", string(resp.Body), tt.wantBodyContains)
+			}
+			if gotPath != tt.wantUpstreamPath || gotMethod != http.MethodPost {
+				t.Fatalf("upstream got %s %s, want POST %s", gotMethod, gotPath, tt.wantUpstreamPath)
+			}
+			if gotAuth != "Bearer test-api-key" {
+				t.Fatalf("upstream Authorization = %q, want datasource API key", gotAuth)
+			}
+			if gotCookie != "" {
+				t.Fatalf("caller Cookie was forwarded upstream: %q", gotCookie)
+			}
+			if !strings.Contains(gotBody, tt.wantUpstreamBody) {
+				t.Fatalf("upstream body = %s, want it to contain %s", gotBody, tt.wantUpstreamBody)
+			}
+		})
 	}
 }
