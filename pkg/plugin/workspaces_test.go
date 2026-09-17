@@ -59,8 +59,8 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "Successfully connected to Nominal API"},
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
-		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "not accessible"},
-		{"workspace lookup timeout", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout"},
+		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "Workspace not found or not accessible with this API key"},
+		{"workspace lookup timeout", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout - unable to reach Nominal API"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,8 +71,8 @@ func TestCheckHealthWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Status != tc.wantStatus || !strings.Contains(result.Message, tc.wantMessage) {
-				t.Fatalf("got %s %q, want %s containing %q", result.Status, result.Message, tc.wantStatus, tc.wantMessage)
+			if result.Status != tc.wantStatus || !strings.HasSuffix(result.Message, tc.wantMessage) {
+				t.Fatalf("got %s %q, want %s ending in %q", result.Status, result.Message, tc.wantStatus, tc.wantMessage)
 			}
 		})
 	}
@@ -105,7 +105,7 @@ func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 			}))
 			defer server.Close()
 
-			ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, &mockWorkspaceService{})
+			ds := newWorkspaceTestDatasource(t, server.URL, testWorkspaceRid, nil)
 			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tc.path, Method: http.MethodPost, Body: []byte(tc.body)})
 			if resp.Status != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
@@ -118,7 +118,7 @@ func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 }
 
 func TestProxiedSearchAssetsRejectsNullBody(t *testing.T) {
-	ds := newWorkspaceTestDatasource(t, "http://example", testWorkspaceRid, &mockWorkspaceService{})
+	ds := newWorkspaceTestDatasource(t, "http://example", testWorkspaceRid, nil)
 	resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "scout/v1/search-assets", Method: http.MethodPost, Body: []byte("null")})
 	if resp.Status != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.Status)

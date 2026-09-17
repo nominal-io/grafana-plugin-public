@@ -53,7 +53,6 @@ export function ConfigEditor(props: Props) {
     });
   };
 
-
   // Secure field (only sent to the backend)
   const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
