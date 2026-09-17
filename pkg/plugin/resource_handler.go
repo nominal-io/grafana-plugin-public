@@ -192,10 +192,22 @@ func (h *NominalResourceHandler) handleNominalProxy(ctx context.Context, req *ba
 		return fmt.Errorf("invalid target URL: %v", err)
 	}
 
+	reqBody := req.Body
+	if targetPath == "scout/v1/search-assets" && config.WorkspaceRid != "" {
+		var search map[string]interface{}
+		if err := json.Unmarshal(reqBody, &search); err != nil || search == nil {
+			return jsonErrorResponse(sender, http.StatusBadRequest, "Failed to parse search-assets request body")
+		}
+		search["query"] = withWorkspaceFilter(search["query"], config.WorkspaceRid)
+		if reqBody, err = json.Marshal(search); err != nil {
+			return fmt.Errorf("failed to encode search-assets request body: %v", err)
+		}
+	}
+
 	// Create the proxied request
 	var body io.Reader
-	if req.Body != nil {
-		body = bytes.NewReader(req.Body)
+	if reqBody != nil {
+		body = bytes.NewReader(reqBody)
 	}
 
 	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, parsedURL.String(), body)

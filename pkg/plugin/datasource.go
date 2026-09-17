@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,12 +13,15 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/uuid"
 )
 
@@ -45,6 +49,11 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	config, err := models.LoadPluginSettings(settings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load plugin settings: %v", err)
+	}
+
+	workspaceRid, err := parseWorkspaceRid(config.WorkspaceRid)
+	if err != nil {
+		return nil, err
 	}
 
 	baseURL := config.GetAPIBaseURL()
@@ -83,6 +92,8 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
 		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
+		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
+		workspaceRid:       workspaceRid,
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -96,6 +107,9 @@ type Datasource struct {
 	authService       authapi.AuthenticationServiceV2Client
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
+	workspaceService  workspaceapi.WorkspaceServiceClient
+
+	workspaceRid *rids.WorkspaceRid
 
 	resourceHTTPClient *http.Client
 
@@ -233,10 +247,48 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	}
 
 	log.DefaultLogger.Debug("Health check successful", "user", profile.DisplayName)
-	return &backend.CheckHealthResult{
-		Status:  backend.HealthStatusOk,
-		Message: "Successfully connected to Nominal API",
-	}, nil
+
+	message := "Successfully connected to Nominal API"
+	if d.workspaceRid != nil {
+		name, err := d.workspaceName(ctxWithTimeout, bearerToken, *d.workspaceRid)
+		if err != nil {
+			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
+		}
+		message += ". Workspace: " + name
+	}
+	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
+}
+
+// workspaceName resolves a workspace RID to its display name, or the RID when unnamed.
+func (d *Datasource) workspaceName(ctx context.Context, token bearertoken.Token, workspaceRid rids.WorkspaceRid) (string, error) {
+	workspace, err := d.workspaceService.GetWorkspace(ctx, token, workspaceRid)
+	if err != nil {
+		logErrorWithConjureFields("Workspace lookup failed", err, "workspaceRid", workspaceRid.String())
+		if status := extractErrorDetails(err).Status; status == http.StatusForbidden || status == http.StatusNotFound {
+			return "", errors.New(appendInstanceID("Workspace not found or not accessible with this API key", err))
+		}
+		message, _ := classifyConnectionError(err)
+		return "", errors.New(message)
+	}
+	if workspace.DisplayName != nil && *workspace.DisplayName != "" {
+		return *workspace.DisplayName, nil
+	}
+	return workspaceRid.String(), nil
+}
+
+// parseWorkspaceRid returns nil for an empty setting.
+func parseWorkspaceRid(s string) (*rids.WorkspaceRid, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parsed, err := rid.ParseRID(s)
+	if err != nil {
+		return nil, fmt.Errorf("Workspace RID %q is not a valid RID", s)
+	}
+	if parsed.Type != "workspace" {
+		return nil, fmt.Errorf("Workspace RID %q has type %q, not workspace", s, parsed.Type)
+	}
+	return (*rids.WorkspaceRid)(&parsed), nil
 }
 
 // CallResource handles HTTP requests sent to the plugin.

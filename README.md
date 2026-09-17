@@ -233,7 +233,7 @@ Then in Grafana UI:
 1. Go to **Configuration > Data sources**
 2. Click **Add data source**
 3. Search for **Nominal**
-4. Configure with your Nominal API key and base URL
+4. Configure with your Nominal API key, base URL, and (recommended) workspace RID
 
 ## API Testing
 
