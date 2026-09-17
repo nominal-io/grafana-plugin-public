@@ -18,6 +18,12 @@ const getStyles = (theme: GrafanaTheme2) => ({
     fontSize: theme.typography.h5.fontSize,
     margin: `0 0 ${theme.spacing(1)} 0`,
   }),
+  quickSetupNote: css({
+    color: theme.colors.text.primary,
+    fontSize: theme.typography.bodySmall.fontSize,
+    lineHeight: theme.typography.body.lineHeight,
+    margin: `0 0 ${theme.spacing(1)} 0`,
+  }),
   quickSetupList: css({
     color: theme.colors.text.primary,
     fontSize: theme.typography.bodySmall.fontSize,
@@ -133,10 +139,14 @@ export function ConfigEditor(props: Props) {
 
       <div className={styles.quickSetup}>
         <h4 className={styles.quickSetupTitle}>Quick Setup Guide:</h4>
+        <p className={styles.quickSetupNote}>
+          All three values can be copied from <strong>Settings &gt; API keys</strong> in the Nominal app (e.g.
+          https://app.gov.nominal.io/settings/org/api-keys).
+        </p>
         <ol className={styles.quickSetupList}>
-          <li>Set Base URL to your Nominal API endpoint including the full path (e.g., https://api.gov.nominal.io/api)</li>
-          <li>Enter your Nominal API key (NOM_KEY) in the API Key field</li>
-          <li>Recommended: paste your Workspace RID to limit results to one workspace</li>
+          <li>Set Base URL to your Nominal API endpoint including the full path (e.g. https://api.gov.nominal.io/api)</li>
+          <li>Create a Nominal API key and enter it in the API Key field</li>
+          <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>
