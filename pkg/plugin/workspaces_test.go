@@ -91,8 +91,8 @@ func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 		want       string
 	}{
 		{"assets variable", "assets", `{"searchText":"eng"}`, string(anded)},
-		{"relayed search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
-		{"relayed search-assets without query", "scout/v1/search-assets", `{"pageSize":50}`, string(bare)},
+		{"relayed search-assets", "search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
+		{"relayed search-assets without query", "search-assets", `{"pageSize":50}`, string(bare)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
