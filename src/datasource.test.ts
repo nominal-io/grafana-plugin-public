@@ -74,6 +74,34 @@ describe('filterQuery', () => {
       queryText: 'legacy query',
     })).toBe(true);
   });
+
+  it('accepts SQL queries with text and rejects empty ones', () => {
+    expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' })).toBe(true);
+    expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: '  ' })).toBe(false);
+  });
+});
+
+describe('applyTemplateVariables', () => {
+  it('interpolates raw SQL with SQL quoting', () => {
+    const ds = createDataSource();
+    mockTemplateSrv.replace.mockImplementation((value: string, _scopedVars?: unknown, format?: any) =>
+      value === 'channel IN ($ch)' ? value.replace('$ch', format(['a', 'b'], { multi: true })) : value
+    );
+
+    const result = ds.applyTemplateVariables({ refId: 'A', queryType: 'sql', rawSql: 'channel IN ($ch)' }, {});
+
+    expect(result.rawSql).toBe("channel IN ('a','b')");
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('channel IN ($ch)', {}, expect.any(Function));
+  });
+
+  it('keeps builder interpolation unchanged', () => {
+    const ds = createDataSource();
+    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', channel: '$channel', dataScopeName: '$scope' }, {});
+
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$asset', {});
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channel', {});
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$scope', {});
+  });
 });
 
 describe('metricFindQuery routing', () => {

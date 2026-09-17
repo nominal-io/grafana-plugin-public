@@ -1,6 +1,6 @@
 import React, { ChangeEvent } from 'react';
 import { css } from '@emotion/css';
-import { InlineField, Input, SecretInput, useStyles2 } from '@grafana/ui';
+import { InlineField, InlineSwitch, Input, SecretInput, useStyles2 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 
@@ -55,6 +55,16 @@ export function ConfigEditor(props: Props) {
       jsonData: {
         ...jsonData,
         workspaceRid: event.target.value,
+      },
+    });
+  };
+
+  const onEnableSqlChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        enableSql: event.target.checked,
       },
     });
   };
@@ -137,6 +147,15 @@ export function ConfigEditor(props: Props) {
         />
       </InlineField>
 
+      <InlineField
+        label="SQL queries"
+        labelWidth={26}
+        interactive
+        tooltip="Adds a SQL mode to the query editor that runs raw SQL against the Nominal Warehouse with this data source's API key. Off by default."
+      >
+        <InlineSwitch id="config-editor-enable-sql" value={jsonData.enableSql ?? false} onChange={onEnableSqlChange} />
+      </InlineField>
+
       <div className={styles.quickSetup}>
         <h4 className={styles.quickSetupTitle}>Quick Setup Guide:</h4>
         <p className={styles.quickSetupNote}>
@@ -147,6 +166,7 @@ export function ConfigEditor(props: Props) {
           <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
           <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
+          <li>Optional: enable SQL queries to use raw SQL in the query editor</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>

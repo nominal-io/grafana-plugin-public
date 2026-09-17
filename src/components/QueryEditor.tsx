@@ -2,18 +2,21 @@ import React from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
+  Alert,
   InlineField,
   Input,
+  RadioButtonGroup,
   Stack,
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import type { NominalDataSourceOptions, NominalQuery } from '../types';
+import { QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
+import { SqlQueryEditor } from './SqlQueryEditor';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -102,7 +105,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const styles = useStyles2(getStyles);
   const { state, commands } = useNominalQueryBuilder({
     query,
@@ -238,5 +241,58 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         )}
       </div>
     </div>
+  );
+}
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const styles = useStyles2(getStyles);
+  const sqlEnabled = datasource.instanceSettings?.jsonData?.enableSql ?? false;
+  const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+
+  const switchMode = (mode: 'builder' | typeof QUERY_TYPE_SQL) => {
+    if (mode === QUERY_TYPE_SQL) {
+      onChange({
+        ...query,
+        queryType: QUERY_TYPE_SQL,
+        format: query.format ?? 'timeseries',
+        rawSql: query.rawSql ?? '',
+      });
+      return;
+    }
+
+    onChange({ ...query, queryType: 'timeShift' });
+  };
+
+  if (!sqlEnabled && !isSqlQuery) {
+    return <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />;
+  }
+
+  return (
+    <>
+      {sqlEnabled && (
+        <div className={styles.root}>
+          <InlineField label="Mode" labelWidth={8}>
+            <RadioButtonGroup
+              value={isSqlQuery ? QUERY_TYPE_SQL : 'builder'}
+              options={[
+                { label: 'Builder', value: 'builder' },
+                { label: 'SQL', value: QUERY_TYPE_SQL },
+              ]}
+              onChange={switchMode}
+            />
+          </InlineField>
+        </div>
+      )}
+      {isSqlQuery ? (
+        <div className={styles.root}>
+          <div className={styles.editorBox(true)}>
+            {!sqlEnabled && <Alert severity="warning" title="SQL queries are disabled for this data source" />}
+            <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
+          </div>
+        </div>
+      ) : (
+        <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />
+      )}
+    </>
   );
 }
