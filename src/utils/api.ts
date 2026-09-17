@@ -103,7 +103,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
   }
 
   const response = await getBackendSrv().post(
-    `${datasourceUrl}/scout/v1/asset/multiple`,
+    `${datasourceUrl}/assets-by-rid`,
     [rid]
   );
 
@@ -116,7 +116,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 
 /** Searches assets, returning only those with at least one supported-type dataScope. */
 export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
-  const response = await getBackendSrv().post(`${datasourceUrl}/scout/v1/search-assets`, {
+  const response = await getBackendSrv().post(`${datasourceUrl}/search-assets`, {
     query: {
       searchText: searchText || '',
       type: 'searchText',

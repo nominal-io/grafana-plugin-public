@@ -34,10 +34,11 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
 		return h.handleChannelVariables(ctx, req, sender)
-	case "scout/v1/search-assets":
+	// Old names kept for browser tabs holding a stale bundle.
+	case "search-assets", "scout/v1/search-assets":
 		return h.handleSearchAssets(ctx, req, sender)
-	case "scout/v1/asset/multiple":
-		return h.handleAssetMultiple(ctx, req, sender)
+	case "assets-by-rid", "scout/v1/asset/multiple":
+		return h.handleAssetsByRid(ctx, req, sender)
 	}
 
 	return jsonErrorResponse(sender, http.StatusNotFound, "Unknown resource path")
@@ -120,12 +121,12 @@ func (h *NominalResourceHandler) handleSearchAssets(ctx context.Context, req *ba
 	return h.nominalPostResponse(ctx, sender, config, "/scout/v1/search-assets", search)
 }
 
-func (h *NominalResourceHandler) handleAssetMultiple(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+func (h *NominalResourceHandler) handleAssetsByRid(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	if ok, err := requirePost(req, sender); !ok {
 		return err
 	}
 	var rids []string
-	if ok, err := decodeResourceJSON(req.Body, sender, &rids, "Failed to parse asset/multiple request body"); !ok {
+	if ok, err := decodeResourceJSON(req.Body, sender, &rids, "Failed to parse assets-by-rid request body"); !ok {
 		return err
 	}
 	if len(rids) == 0 {
@@ -136,7 +137,7 @@ func (h *NominalResourceHandler) handleAssetMultiple(ctx context.Context, req *b
 			return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid asset RID")
 		}
 	}
-	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "asset/multiple: failed to load settings")
+	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "assets-by-rid: failed to load settings")
 	if !ok {
 		return err
 	}
