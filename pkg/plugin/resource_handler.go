@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
-	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
 
@@ -26,9 +24,6 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 	path := normalizeResourcePath(req.Path)
 
 	switch path {
-	case "test", "connection-test":
-		log.DefaultLogger.Debug("Handling test connection request")
-		return h.handleTestConnection(ctx, req, sender)
 	case "channels":
 		log.DefaultLogger.Debug("Handling channels search request")
 		return h.handleChannelsSearch(ctx, req, sender)
@@ -104,50 +99,6 @@ func requirePost(req *backend.CallResourceRequest, sender backend.CallResourceRe
 		return true, nil
 	}
 	return false, jsonErrorResponse(sender, http.StatusMethodNotAllowed, "Method not allowed. Use POST.")
-}
-
-// handleTestConnection handles the test connection endpoint.
-func (h *NominalResourceHandler) handleTestConnection(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	d := h.datasource
-
-	// Add timeout to prevent hanging
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	// Load settings to get API key and base URL
-	config, ok, err := loadResourceSettings(d.settings, sender, "Test connection: failed to load settings")
-	if !ok {
-		return err
-	}
-
-	baseURL := config.GetAPIBaseURL()
-	if baseURL == "" {
-		log.DefaultLogger.Debug("Test connection: missing base URL")
-		return jsonErrorResponse(sender, http.StatusBadRequest, "Base URL is required")
-	}
-
-	if config.Secrets.ApiKey == "" {
-		log.DefaultLogger.Debug("Test connection: missing API key")
-		return jsonErrorResponse(sender, http.StatusBadRequest, "API key is required")
-	}
-
-	// Test connection using conjure client with timeout
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
-	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
-	if err != nil {
-		logErrorWithConjureFields("Test connection failed", err)
-		message, statusCode := classifyConnectionError(err)
-		return jsonErrorResponse(sender, statusCode, message)
-	}
-
-	log.DefaultLogger.Debug("Test connection successful", "profileRid", profile.Rid)
-
-	// Connection successful
-	response := map[string]interface{}{
-		"status":  "success",
-		"message": "Successfully connected to Nominal API and retrieved user profile",
-	}
-	return jsonMarshalResponse(sender, http.StatusOK, response)
 }
 
 func (h *NominalResourceHandler) handleSearchAssets(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
