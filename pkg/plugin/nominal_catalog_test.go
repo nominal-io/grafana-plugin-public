@@ -455,6 +455,20 @@ func TestNominalCatalogInferChannelMetadataCachesMiss(t *testing.T) {
 	}
 }
 
+func TestFuzzySearchTextFor(t *testing.T) {
+	cases := map[string]string{
+		"temp":  "temp",
+		"a-b_1": "a-b_1",
+		"---":   "",
+		"___":   "",
+	}
+	for channel, want := range cases {
+		if got := fuzzySearchTextFor(channel); got != want {
+			t.Errorf("fuzzySearchTextFor(%q) = %q, want %q", channel, got, want)
+		}
+	}
+}
+
 func TestChannelMetadataEntryForExactMatch(t *testing.T) {
 	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
@@ -342,7 +343,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	searchRequest := datasourceapi.SearchChannelsRequest{
 		// The API filters on ExactMatch (case-insensitive contains) but orders by
 		// similarity to FuzzySearchText. Without it the wanted row can page out.
-		FuzzySearchText: qm.Channel,
+		FuzzySearchText: fuzzySearchTextFor(qm.Channel),
 		ExactMatch:      []string{qm.Channel},
 		DataSources:     dataSourceRids,
 	}
@@ -399,6 +400,15 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
+}
+
+// The similarity score only sees letters and digits. A name without any scores
+// 0 everywhere, and a non-empty search text drops zero-score rows, so send "".
+func fuzzySearchTextFor(channel string) string {
+	if strings.ContainsFunc(channel, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+		return channel
+	}
+	return ""
 }
 
 func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
