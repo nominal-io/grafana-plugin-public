@@ -160,7 +160,7 @@ func BenchmarkMarshalLogArgsPopulated(b *testing.B) {
 
 func BenchmarkExtractEnumDataFromConjure(b *testing.B) {
 	suppressBenchmarkLogs()
-	exec := newTestQueryExecution(&Datasource{}, nil)
+	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	for _, rows := range []int{250, 1000, 10000} {
 		plot := benchmarkEnumPlot(rows)
 		b.Run(fmt.Sprintf("rows_%d", rows), func(b *testing.B) {
@@ -187,7 +187,7 @@ func BenchmarkExtractEnumDataFromConjure(b *testing.B) {
 
 func BenchmarkExtractBucketedEnumDataFromConjure(b *testing.B) {
 	suppressBenchmarkLogs()
-	exec := newTestQueryExecution(&Datasource{}, nil)
+	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	for _, rows := range []int{250, 1000, 10000} {
 		plot := benchmarkBucketedEnumPlot(rows)
 		b.Run(fmt.Sprintf("rows_%d", rows), func(b *testing.B) {
@@ -214,7 +214,7 @@ func BenchmarkExtractBucketedEnumDataFromConjure(b *testing.B) {
 
 func BenchmarkPagedLogTransform(b *testing.B) {
 	suppressBenchmarkLogs()
-	exec := newTestQueryExecution(&Datasource{}, nil)
+	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	qm := NominalQueryModel{
 		Channel:         "app.logs",
 		ChannelDataType: "log",
