@@ -3,11 +3,13 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
 
@@ -212,8 +215,7 @@ func TestNominalCatalogHasSupportedDataSource(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.cached"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Cached Asset",
@@ -221,7 +223,7 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -247,16 +249,15 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	if first.Title != "Cached Asset" || second.Title != "Cached Asset" {
 		t.Fatalf("cached titles = %q/%q, want Cached Asset", first.Title, second.Title)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
 }
 
 func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	assetRid := "ri.scout.main.asset.copied"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Copied Asset",
@@ -264,7 +265,7 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -304,8 +305,40 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	if got := *second.DataScopes[0].DataSource.Dataset; got != dataSourceRid {
 		t.Fatalf("cached dataset RID = %q, want %q (mutation leaked into cache)", got, dataSourceRid)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (second call should still be served from cache)", int(assetFetches.Load()))
+	}
+}
+
+// A not-found asset (a dashboard saved against a since-deleted one) caches as
+// nil, which round-trips through singleflight's any value uncheckable by the compiler.
+func TestNominalCatalogFetchAssetByRidCachesNotFound(t *testing.T) {
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{}, nil)
+	defer server.Close()
+
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	first, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing")
+	if err != nil {
+		t.Fatalf("first FetchAssetByRid returned error: %v", err)
+	}
+	if first != nil {
+		t.Fatalf("first FetchAssetByRid = %+v, want nil for a missing asset", first)
+	}
+
+	second, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing")
+	if err != nil {
+		t.Fatalf("second FetchAssetByRid returned error: %v", err)
+	}
+	if second != nil {
+		t.Fatalf("second FetchAssetByRid = %+v, want nil for a missing asset", second)
+	}
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1 (the not-found result should be cached)", int(assetFetches.Load()))
 	}
 }
 
@@ -331,8 +364,7 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	assetRid := "ri.scout.main.asset.requires-client"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Unexpected Asset",
@@ -340,7 +372,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	config := &models.PluginSettings{
@@ -354,16 +386,38 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err == nil || !strings.Contains(err.Error(), "resource HTTP client is not configured") {
 		t.Fatalf("FetchAssetByRid error = %v, want missing resource HTTP client error", err)
 	}
-	if fetchCount != 0 {
-		t.Fatalf("asset fetch count = %d, want 0", fetchCount)
+	if int(assetFetches.Load()) != 0 {
+		t.Fatalf("asset fetch count = %d, want 0", int(assetFetches.Load()))
+	}
+}
+
+func TestTTLCacheExpiredEntryReloads(t *testing.T) {
+	cache := newTTLCache[string](catalogCacheTTL, "test")
+	cache.mu.Lock()
+	cache.entries["key"] = ttlCacheEntry[string]{value: "stale", fetchedAt: time.Now().Add(-catalogCacheTTL)}
+	cache.mu.Unlock()
+
+	loads := 0
+	load := func(context.Context) (string, error) {
+		loads++
+		return "fresh", nil
+	}
+
+	if got, err := cache.get(context.Background(), "key", load); err != nil || got != "fresh" {
+		t.Fatalf("get after expiry = (%q, %v), want (fresh, nil)", got, err)
+	}
+	if got, err := cache.get(context.Background(), "key", load); err != nil || got != "fresh" {
+		t.Fatalf("get after reload = (%q, %v), want (fresh, nil)", got, err)
+	}
+	if loads != 1 {
+		t.Fatalf("loads = %d, want 1: the expired entry must reload once and then serve from cache", loads)
 	}
 }
 
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	var fetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Metadata Asset",
@@ -371,7 +425,7 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &fetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -405,11 +459,11 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if second.ChannelDataType != ChannelDataTypeString {
 		t.Fatalf("second ChannelDataType = %q, want %q", second.ChannelDataType, ChannelDataTypeString)
 	}
-	if fetchCount != 1 {
-		t.Fatalf("asset fetch count = %d, want 1", fetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset fetch count = %d, want 1", int(assetFetches.Load()))
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
 }
 
@@ -489,8 +543,7 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	assetRid := "ri.scout.main.asset.dedup1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -498,7 +551,7 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -547,11 +600,11 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch call (cached), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch call (cached), got %d", int(assetFetches.Load()))
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Errorf("expected 1 SearchChannels call (deduplicated), got %d", got)
 	}
 }
 
@@ -559,8 +612,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl1"
 	dataSourceRid := "ri.scout.main.data-source.ds1"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -568,7 +620,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -615,8 +667,8 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if assetFetchCount != 1 {
-		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", assetFetchCount)
+	if int(assetFetches.Load()) != 1 {
+		t.Errorf("expected 1 asset fetch across 2 QueryData calls (TTL cache), got %d", int(assetFetches.Load()))
 	}
 }
 
@@ -624,8 +676,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	assetRid := "ri.scout.main.asset.ttl2"
 	dataSourceRid := "ri.scout.main.data-source.ds2"
 
-	var assetFetchCount int
-	server := newCountingAssetServer(t, map[string]SingleAssetResponse{
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
 		assetRid: {
 			Rid:   assetRid,
 			Title: "Test Asset",
@@ -633,7 +684,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
 			},
 		},
-	}, &assetFetchCount)
+	}, nil)
 	defer server.Close()
 
 	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
@@ -680,8 +731,8 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		t.Fatalf("second call: %v", err)
 	}
 
-	if mockDS.searchChannelsCalls != 1 {
-		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Errorf("expected 1 SearchChannels call across 2 QueryData calls (TTL cache), got %d", got)
 	}
 }
 
@@ -714,29 +765,302 @@ func ptrSeriesDataType(v api.SeriesDataType_Value) *api.SeriesDataType {
 	return &dt
 }
 
-// newCountingAssetServer is like newTestAssetServer but also counts requests
-// to the /scout/v1/asset/multiple endpoint.
-func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, fetchCount *int) *httptest.Server {
+const catalogTestTimeout = 2 * time.Second
+
+type blockingLookup struct {
+	arrived     chan struct{}
+	release     chan struct{}
+	arrivedOnce sync.Once
+	releaseOnce sync.Once
+	calls       atomic.Int32
+}
+
+func newBlockingLookup() *blockingLookup {
+	return &blockingLookup{arrived: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *blockingLookup) block() {
+	b.calls.Add(1)
+	b.arrivedOnce.Do(func() { close(b.arrived) })
+	<-b.release
+}
+
+func (b *blockingLookup) unblock() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+func waitForTestSignal(t *testing.T, signal <-chan struct{}, description string) {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-signal:
+	case <-time.After(catalogTestTimeout):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+type flightWaitContext struct {
+	context.Context
+	waiting chan struct{}
+	once    sync.Once
+}
+
+func newFlightWaitContext(ctx context.Context) (*flightWaitContext, <-chan struct{}) {
+	waiting := make(chan struct{})
+	return &flightWaitContext{Context: ctx, waiting: waiting}, waiting
+}
+
+func (c *flightWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+type assetLookupResult struct {
+	asset *SingleAssetResponse
+	err   error
+}
+
+// runSurvivingCallerScenario blocks a first caller on the backend, joins a
+// second to the same flight, cancels the first while the backend is still
+// blocked, then releases the backend for the survivor.
+func runSurvivingCallerScenario(t *testing.T, blocker *blockingLookup, canceledCall, survivorCall func(ctx context.Context)) {
+	t.Helper()
+	cancelBase, cancel := context.WithCancel(context.Background())
+	cancelCtx, cancelWaiting := newFlightWaitContext(cancelBase)
+	survivorCtx, survivorWaiting := newFlightWaitContext(context.Background())
+	canceledDone := make(chan struct{})
+	survivorDone := make(chan struct{})
+
+	go func() {
+		canceledCall(cancelCtx)
+		close(canceledDone)
+	}()
+	waitForTestSignal(t, blocker.arrived, "the blocked backend request")
+	waitForTestSignal(t, cancelWaiting, "the initiating caller to wait on the flight")
+
+	go func() {
+		survivorCall(survivorCtx)
+		close(survivorDone)
+	}()
+	waitForTestSignal(t, survivorWaiting, "the surviving caller to join the flight")
+
+	cancel()
+	waitForTestSignal(t, canceledDone, "the canceled caller to return while the backend is blocked")
+	blocker.unblock()
+	waitForTestSignal(t, survivorDone, "the surviving caller to receive the shared result")
+}
+
+func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.detach"
+	blocker := newBlockingLookup()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		blocker.block()
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/scout/v1/asset/multiple" {
-			*fetchCount++
-			var rids []string
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &rids); err != nil {
-				http.Error(w, `{"error":"bad request"}`, http.StatusBadRequest)
-				return
-			}
-			result := make(map[string]SingleAssetResponse)
-			for _, rid := range rids {
-				if asset, ok := assets[rid]; ok {
-					result[rid] = asset
-				}
-			}
-			json.NewEncoder(w).Encode(result)
-		} else {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-		}
+		_ = json.NewEncoder(w).Encode(map[string]SingleAssetResponse{
+			assetRid: {Rid: assetRid, Title: "Detached"},
+		})
 	}))
+	t.Cleanup(func() {
+		blocker.unblock()
+		server.Close()
+	})
+
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	var canceled, survivor assetLookupResult
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) {
+			canceled.asset, canceled.err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		},
+		func(ctx context.Context) {
+			survivor.asset, survivor.err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		},
+	)
+
+	if !errors.Is(canceled.err, context.Canceled) || canceled.asset != nil {
+		t.Fatalf("canceled lookup = (%+v, %v), want (nil, context.Canceled)", canceled.asset, canceled.err)
+	}
+	if survivor.err != nil || survivor.asset == nil || survivor.asset.Title != "Detached" {
+		t.Fatalf("surviving lookup = (%+v, %v), want Detached asset", survivor.asset, survivor.err)
+	}
+	if got := blocker.calls.Load(); got != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", got)
+	}
+}
+
+func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.infercancel"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid: assetRid,
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	t.Cleanup(server.Close)
+
+	blocker := newBlockingLookup()
+	t.Cleanup(blocker.unblock)
+	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
+	mockDS := &mockDatasourceService{
+		searchChannelsFunc: func(_ context.Context, _ bearertoken.Token, _ datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+			blocker.block()
+			return datasourceapi.SearchChannelsResponse{Results: []datasourceapi.ChannelMetadata{{
+				Name:       api.Channel("state"),
+				DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "dataset1")),
+				DataType:   &stringType,
+			}}}, nil
+		},
+	}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+	canceledModel := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
+	survivorModel := canceledModel
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) { catalog.InferChannelMetadata(ctx, config, &canceledModel) },
+		func(ctx context.Context) { catalog.InferChannelMetadata(ctx, config, &survivorModel) },
+	)
+
+	if canceledModel.ChannelDataType != ChannelDataTypeNumeric {
+		t.Fatalf("canceled caller ChannelDataType = %q, want %q", canceledModel.ChannelDataType, ChannelDataTypeNumeric)
+	}
+	if survivorModel.ChannelDataType != ChannelDataTypeString {
+		t.Fatalf("surviving caller ChannelDataType = %q, want %q", survivorModel.ChannelDataType, ChannelDataTypeString)
+	}
+	if got := blocker.calls.Load(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
+	}
+	if int(assetFetches.Load()) != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", int(assetFetches.Load()))
+	}
+}
+
+func TestNominalCatalogFetchAssetByRidSharesFailureAndRetriesAfter(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.failshare"
+	const callers = 4
+
+	blocker := newBlockingLookup()
+	var fetches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fetches.Add(1) == 1 {
+			blocker.block()
+			http.Error(w, `{"error":"upstream down"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]SingleAssetResponse{assetRid: {Rid: assetRid, Title: "Recovered"}})
+	}))
+	t.Cleanup(func() {
+		blocker.unblock()
+		server.Close()
+	})
+
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	results := make([]assetLookupResult, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		ctx, waiting := newFlightWaitContext(context.Background())
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i].asset, results[i].err = catalog.FetchAssetByRid(ctx, config, assetRid)
+		}()
+		if i == 0 {
+			waitForTestSignal(t, blocker.arrived, "the blocked backend request")
+		}
+		waitForTestSignal(t, waiting, "a caller to join the flight")
+	}
+
+	allDone := make(chan struct{})
+	go func() { wg.Wait(); close(allDone) }()
+	blocker.unblock()
+	waitForTestSignal(t, allDone, "every caller to receive the failed shared result")
+
+	for i, got := range results {
+		if got.err == nil || got.asset != nil {
+			t.Fatalf("caller %d = (%+v, %v), want (nil, error)", i, got.asset, got.err)
+		}
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("asset backend calls during failed flight = %d, want 1", got)
+	}
+
+	asset, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
+	if err != nil || asset == nil || asset.Title != "Recovered" {
+		t.Fatalf("retry after failure = (%+v, %v), want Recovered asset", asset, err)
+	}
+	if got := fetches.Load(); got != 2 {
+		t.Fatalf("asset backend calls after retry = %d, want 2 (the failure must not be cached)", got)
+	}
+}
+
+func TestNominalCatalogDoesNotDispatchPreCanceledMiss(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings)
+	}{
+		{
+			name: "asset fetch",
+			call: func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings) {
+				asset, err := catalog.FetchAssetByRid(ctx, config, "ri.scout.main.asset.canceled")
+				if !errors.Is(err, context.Canceled) || asset != nil {
+					t.Fatalf("pre-canceled lookup = (%+v, %v), want (nil, context.Canceled)", asset, err)
+				}
+			},
+		},
+		{
+			name: "channel metadata inference",
+			call: func(t *testing.T, ctx context.Context, catalog *NominalCatalog, config *models.PluginSettings) {
+				qm := NominalQueryModel{
+					AssetRid:        "ri.scout.main.asset.canceled",
+					DataScopeName:   "scope-a",
+					Channel:         "state",
+					ChannelDataType: ChannelDataTypeNumeric,
+				}
+				catalog.InferChannelMetadata(ctx, config, &qm)
+				if qm.ChannelDataType != ChannelDataTypeNumeric {
+					t.Fatalf("pre-canceled inference mutated ChannelDataType to %q", qm.ChannelDataType)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			blocker := newBlockingLookup()
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				blocker.block()
+			}))
+			t.Cleanup(func() {
+				blocker.unblock()
+				server.Close()
+			})
+			mockDS := &mockDatasourceService{}
+			config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+			catalog := newNominalCatalog(server.Client(), mockDS)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			tt.call(t, ctx, catalog, config)
+
+			select {
+			case <-blocker.arrived:
+				t.Fatal("pre-canceled cache miss dispatched a backend request")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if got := mockDS.searchChannelsCallCount(); got != 0 {
+				t.Fatalf("SearchChannels calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestChannelMetadataCacheKeyKeepsDelimiterNamesDistinct(t *testing.T) {
+	a := channelMetadataCacheKey("asset", "scope|x", "chan")
+	b := channelMetadataCacheKey("asset", "scope", "x|chan")
+	if a == b {
+		t.Fatalf("cache keys collide across the separator: %q", a)
+	}
 }
