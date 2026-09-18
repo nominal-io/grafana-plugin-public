@@ -142,8 +142,8 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	if values[0] != (metricFindValue{Text: "state", Value: "state"}) || values[1] != (metricFindValue{Text: "rpm", Value: "rpm"}) {
 		t.Fatalf("values = %+v, want state/rpm metric values", values)
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
 
 	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: assetRid, DataScopeName: "$scope"})
