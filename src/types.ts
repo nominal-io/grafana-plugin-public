@@ -1,6 +1,9 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
+export type SqlFormat = 'timeseries' | 'table';
+export const QUERY_TYPE_SQL = 'sql' as const;
+
 export interface NominalQuery extends DataQuery {
   // Asset information
   assetRid?: string;
@@ -15,7 +18,9 @@ export interface NominalQuery extends DataQuery {
 
   // Query parameters
   buckets?: number;
-  queryType?: 'timeShift' | 'decimation' | 'raw';
+  queryType?: 'timeShift' | 'decimation' | 'raw' | typeof QUERY_TYPE_SQL;
+  rawSql?: string;
+  format?: SqlFormat;
 
   // Template variables support
   templateVariables?: Record<string, any>;
@@ -46,6 +51,13 @@ export const DEFAULT_QUERY: Partial<NominalQuery> = {
   constant: 6.5,
 };
 
+export const DEFAULT_SQL = `SELECT $__timeGroup(ts) AS time, channel, AVG(value) AS value
+FROM points_double
+WHERE dataset_rid = '<dataset-rid>'
+  AND $__timeFilter(ts)
+GROUP BY 1, 2
+ORDER BY 1`;
+
 export interface DataPoint {
   Time: number;
   Value: number;
@@ -70,6 +82,7 @@ export interface NominalTimestamp {
 export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
   workspaceRid?: string;
+  enableSql?: boolean;
   path?: string; // Legacy support
 }
 

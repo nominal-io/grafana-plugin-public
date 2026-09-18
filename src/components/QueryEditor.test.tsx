@@ -71,6 +71,11 @@ jest.mock('@grafana/ui', () => {
         readOnly: true,
       });
     },
+    CodeEditor: (props: Record<string, any>) => React.createElement('textarea', {
+      value: props.value,
+      onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => props.onChange?.(event.target.value),
+      onBlur: (event: React.FocusEvent<HTMLTextAreaElement>) => props.onBlur?.(event.target.value),
+    }),
   };
 });
 
@@ -125,6 +130,56 @@ async function settleEffects(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
+
+describe('SQL query mode', () => {
+  const mockDatasource = { url: DATASOURCE_URL, instanceSettings: { jsonData: {} } } as unknown as DataSource;
+
+  function renderSqlQueryEditor(query: NominalQuery, onChange = jest.fn(), enableSql = false) {
+    (mockDatasource as any).instanceSettings.jsonData.enableSql = enableSql;
+    return render(
+      <QueryEditor query={query} onChange={onChange} onRunQuery={jest.fn()} datasource={mockDatasource} />
+    );
+  }
+
+  it('does not show the mode toggle when SQL is disabled', () => {
+    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' });
+
+    expect(screen.queryByRole('radio', { name: /^sql$/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the mode toggle when SQL is enabled', () => {
+    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' }, jest.fn(), true);
+
+    expect(screen.getByRole('radio', { name: /^sql$/i })).toBeInTheDocument();
+  });
+
+  it('switches to SQL mode with time series format', () => {
+    const onChange = jest.fn();
+    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' }, onChange, true);
+
+    fireEvent.click(screen.getByRole('radio', { name: /^sql$/i }));
+
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      queryType: 'sql',
+      format: 'timeseries',
+      rawSql: '',
+    }));
+  });
+
+  it('renders SQL without the asset combobox', () => {
+    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
+
+    expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
+    expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
+  });
+
+  it('keeps a saved SQL query accessible with a warning when SQL is disabled', () => {
+    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
+
+    expect(screen.getByText('SQL queries are disabled for this data source')).toBeInTheDocument();
+    expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
+  });
+});
 
 describe('channel data type inference effect', () => {
   // Per-test overrides for the /channels response routed below.

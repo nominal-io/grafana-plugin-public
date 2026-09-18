@@ -6,14 +6,17 @@ import {
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
+import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
+  readonly instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>;
 
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
     super(instanceSettings);
+    this.instanceSettings = instanceSettings;
 
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
@@ -26,6 +29,13 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   applyTemplateVariables(query: NominalQuery, scopedVars: ScopedVars) {
+    if (query.queryType === QUERY_TYPE_SQL) {
+      return {
+        ...query,
+        rawSql: getTemplateSrv().replace(query.rawSql || '', scopedVars, sqlInterpolateVariable),
+      };
+    }
+
     return {
       ...query,
       queryText: getTemplateSrv().replace(query.queryText || '', scopedVars),
@@ -38,6 +48,10 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   filterQuery(query: NominalQuery): boolean {
     if (query.hide) {
       return false;
+    }
+
+    if (query.queryType === QUERY_TYPE_SQL) {
+      return !!query.rawSql?.trim();
     }
 
     const queryText = query.queryText?.trim();
