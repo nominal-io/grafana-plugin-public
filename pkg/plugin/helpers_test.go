@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -95,6 +96,7 @@ func (m *mockAuthService) ResetMyCoachmarkDismissal(ctx context.Context, authHea
 }
 
 type mockDatasourceService struct {
+	mu                     sync.Mutex // guards searchChannelsCalls and searchChannelsRequest
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
 	searchChannelsRequest  datasourceapi.SearchChannelsRequest
@@ -105,12 +107,26 @@ type mockDatasourceService struct {
 }
 
 func (m *mockDatasourceService) SearchChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
+	m.mu.Lock()
 	m.searchChannelsCalls++
 	m.searchChannelsRequest = queryArg
+	m.mu.Unlock()
 	if m.searchChannelsFunc != nil {
 		return m.searchChannelsFunc(ctx, authHeader, queryArg)
 	}
 	return m.searchChannelsResponse, m.searchChannelsError
+}
+
+func (m *mockDatasourceService) searchChannelsCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.searchChannelsCalls
+}
+
+func (m *mockDatasourceService) searchChannelsRequestSnapshot() datasourceapi.SearchChannelsRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.searchChannelsRequest
 }
 
 func (m *mockDatasourceService) SearchFilteredChannels(ctx context.Context, authHeader bearertoken.Token, queryArg datasourceapi.SearchFilteredChannelsRequest) (datasourceapi.SearchFilteredChannelsResponse, error) {
@@ -179,11 +195,21 @@ func callResourceAndCapture(t *testing.T, ds *Datasource, req *backend.CallResou
 
 func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server, _ := newCountingAssetServer(t, assets, searchResults)
+	return server
+}
+
+// newCountingAssetServer is newTestAssetServer plus a count of batch asset
+// lookups, for tests that assert how often the backend was actually reached.
+func newCountingAssetServer(t *testing.T, assets map[string]SingleAssetResponse, searchResults []AssetResponse) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var assetFetches atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch r.URL.Path {
 		case "/scout/v1/asset/multiple":
+			assetFetches.Add(1)
 			var rids []string
 			body, _ := io.ReadAll(r.Body)
 			if err := json.Unmarshal(body, &rids); err != nil {
@@ -209,6 +235,7 @@ func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, sea
 			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		}
 	}))
+	return server, &assetFetches
 }
 
 func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
