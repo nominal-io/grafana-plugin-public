@@ -182,10 +182,10 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
-// with the standard Authorization and Content-Type headers. On non-200 the
-// response body is read, closed, and returned as a typed *apiError. On 200
-// the caller owns closing resp.Body.
-func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) (*http.Response, error) {
+// with the standard Authorization and Content-Type headers. It reads and
+// closes the response body itself: on non-200 it returns a typed *apiError
+// carrying the upstream status and body, otherwise the raw response bytes.
+func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.PluginSettings, path string, body any) ([]byte, error) {
 	baseURL := config.GetAPIBaseURL()
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
@@ -213,24 +213,27 @@ func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.Plu
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 
+	respBody, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return nil, newAPIError(resp.StatusCode, errBody)
+		return nil, newAPIError(resp.StatusCode, respBody)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", readErr)
 	}
 
-	return resp, nil
+	return respBody, nil
 }
 
 func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	resp, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+	body, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
 	var assetMap map[string]SingleAssetResponse
-	if err := json.NewDecoder(resp.Body).Decode(&assetMap); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&assetMap); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -274,16 +277,14 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 			requestBody["nextPageToken"] = pageToken
 		}
 
-		resp, err := c.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
+		body, err := c.postNominalJSON(ctx, config, "/scout/v1/search-assets", requestBody)
 		if err != nil {
 			return nil, err
 		}
 
 		var assetResp AssetResponse
-		decodeErr := json.NewDecoder(resp.Body).Decode(&assetResp)
-		resp.Body.Close()
-		if decodeErr != nil {
-			return nil, fmt.Errorf("failed to decode response: %w", decodeErr)
+		if err := json.NewDecoder(bytes.NewReader(body)).Decode(&assetResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
 		}
 
 		allResults = append(allResults, assetResp)
