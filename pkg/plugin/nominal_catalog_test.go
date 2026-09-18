@@ -411,6 +411,48 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if mockDS.searchChannelsCalls != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", mockDS.searchChannelsCalls)
 	}
+	// The API orders results by similarity to FuzzySearchText; ExactMatch only
+	// filters. Both must carry the channel name or the wanted row can page out.
+	req := mockDS.searchChannelsRequest
+	if req.FuzzySearchText != "state" {
+		t.Fatalf("FuzzySearchText = %q, want %q", req.FuzzySearchText, "state")
+	}
+	if len(req.ExactMatch) != 1 || req.ExactMatch[0] != "state" {
+		t.Fatalf("ExactMatch = %v, want [state]", req.ExactMatch)
+	}
+}
+
+func TestNominalCatalogInferChannelMetadataCachesMiss(t *testing.T) {
+	assetRid := "ri.scout.main.asset.metadata"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:   assetRid,
+			Title: "Metadata Asset",
+			DataScopes: []AssetDataScope{
+				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+			},
+		},
+	}, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{}
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	for i := 0; i < 2; i++ {
+		qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "missing", ChannelDataType: ChannelDataTypeNumeric}
+		catalog.InferChannelMetadata(context.Background(), config, &qm)
+		if qm.ChannelDataType != ChannelDataTypeNumeric {
+			t.Fatalf("call %d ChannelDataType = %q, want unchanged %q", i+1, qm.ChannelDataType, ChannelDataTypeNumeric)
+		}
+	}
+	if mockDS.searchChannelsCalls != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1 (miss cached)", mockDS.searchChannelsCalls)
+	}
 }
 
 func TestChannelMetadataEntryForExactMatch(t *testing.T) {
