@@ -145,7 +145,7 @@ func TestSettingsLoadFailureUsesJSONResponse(t *testing.T) {
 	ds.settings.JSONData = []byte(`{`)
 
 	req := &backend.CallResourceRequest{
-		Path:   "scout/v1/asset/multiple",
+		Path:   "assets-by-rid",
 		Method: http.MethodPost,
 		Body:   []byte(`["ri.scout.test.asset.a"]`),
 	}
@@ -193,13 +193,13 @@ func TestCallResourceRejectsBadRequests(t *testing.T) {
 		{"unrouted path", "scout/v1/raw", http.MethodPost, `{}`, http.StatusNotFound},
 		{"nominal prefix", "nominal/scout/v1/search-assets", http.MethodPost, `{}`, http.StatusNotFound},
 		{"dot segments", "scout/v1/search-assets/../../authentication/api/v2/my/profile", http.MethodPost, `{}`, http.StatusNotFound},
-		{"GET search-assets", "scout/v1/search-assets", http.MethodGet, ``, http.StatusMethodNotAllowed},
-		{"DELETE asset/multiple", "scout/v1/asset/multiple", http.MethodDelete, ``, http.StatusMethodNotAllowed},
-		{"asset/multiple with object body", "scout/v1/asset/multiple", http.MethodPost, `{}`, http.StatusBadRequest},
-		{"asset/multiple with null body", "scout/v1/asset/multiple", http.MethodPost, `null`, http.StatusBadRequest},
-		{"asset/multiple with empty array", "scout/v1/asset/multiple", http.MethodPost, `[]`, http.StatusBadRequest},
-		{"asset/multiple with malformed rid", "scout/v1/asset/multiple", http.MethodPost, `["not-a-rid"]`, http.StatusBadRequest},
-		{"search-assets with null body", "scout/v1/search-assets", http.MethodPost, `null`, http.StatusBadRequest},
+		{"GET search-assets", "search-assets", http.MethodGet, ``, http.StatusMethodNotAllowed},
+		{"DELETE assets-by-rid", "assets-by-rid", http.MethodDelete, ``, http.StatusMethodNotAllowed},
+		{"assets-by-rid with object body", "assets-by-rid", http.MethodPost, `{}`, http.StatusBadRequest},
+		{"assets-by-rid with null body", "assets-by-rid", http.MethodPost, `null`, http.StatusBadRequest},
+		{"assets-by-rid with empty array", "assets-by-rid", http.MethodPost, `[]`, http.StatusBadRequest},
+		{"assets-by-rid with malformed rid", "assets-by-rid", http.MethodPost, `["not-a-rid"]`, http.StatusBadRequest},
+		{"search-assets with null body", "search-assets", http.MethodPost, `null`, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -225,9 +225,11 @@ func TestScoutEndpointsRelayUpstream(t *testing.T) {
 		wantUpstreamBody string
 		wantBodyContains string
 	}{
-		{"search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"relayed":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"relayed":true}`},
-		{"asset/multiple with leading slash", "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"relayed":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"relayed":true}`},
-		{"asset/multiple upstream error status", "scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusForbidden, `{"errorCode":"PERMISSION_DENIED","errorName":"Default:PermissionDenied","errorInstanceId":"abc-123"}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, "abc-123"},
+		{"search-assets", "search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"relayed":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"relayed":true}`},
+		{"assets-by-rid with leading slash", "/assets-by-rid", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"relayed":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"relayed":true}`},
+		{"search-assets alias", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"relayed":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"relayed":true}`},
+		{"assets-by-rid alias", "scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"relayed":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"relayed":true}`},
+		{"assets-by-rid upstream error status", "assets-by-rid", `["ri.scout.test.asset.a"]`, http.StatusForbidden, `{"errorCode":"PERMISSION_DENIED","errorName":"Default:PermissionDenied","errorInstanceId":"abc-123"}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, "abc-123"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

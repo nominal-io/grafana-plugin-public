@@ -423,7 +423,7 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 			PluginContext: backend.PluginContext{
 				PluginVersion: pluginVersion,
 			},
-			Path:   "scout/v1/asset/multiple",
+			Path:   "assets-by-rid",
 			Method: http.MethodPost,
 			Body:   []byte(`["ri.scout.test.asset.a"]`),
 		}, sender)
