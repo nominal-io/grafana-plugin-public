@@ -227,7 +227,7 @@ func (e *NominalQueryExecution) inferChannelMetadata(ctx context.Context, qm *No
 	if e == nil || e.datasource == nil {
 		return
 	}
-	e.datasource.catalog().InferChannelMetadata(ctx, e.config, qm)
+	e.datasource.nominalCatalog.InferChannelMetadata(ctx, e.config, qm)
 }
 
 func applyChannelMetadata(qm *NominalQueryModel, entry channelMetadataCacheEntry) {

@@ -299,19 +299,10 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	return allResults, nil
 }
 
-// catalog lazily builds the NominalCatalog, snapshotting resourceHTTPClient and
-// datasourceService on first use. Mutate either field before the first call.
-func (d *Datasource) catalog() *NominalCatalog {
-	if d.nominalCatalog == nil {
-		d.nominalCatalog = newNominalCatalog(d.resourceHTTPClient, d.datasourceService)
-	}
-	return d.nominalCatalog
-}
-
 // InferChannelMetadata verifies (or backfills) channel metadata — both data type
 // and unit symbol — against the actual ChannelMetadata returned by SearchChannels.
 func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
-	if qm == nil || c == nil || c.datasourceService == nil {
+	if qm == nil || c.datasourceService == nil {
 		return
 	}
 	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
@@ -361,7 +352,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 }
 
 func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid) ([]datasourceapi.ChannelMetadata, error) {
-	if c == nil || c.datasourceService == nil || len(dataSourceRids) == 0 {
+	if c.datasourceService == nil || len(dataSourceRids) == 0 {
 		return nil, nil
 	}
 

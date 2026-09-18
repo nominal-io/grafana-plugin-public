@@ -167,10 +167,3 @@ func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *
 	}
 	return result, nil
 }
-
-func (d *Datasource) templateCatalog() *TemplateVariableCatalog {
-	if d.templateVariableCatalog == nil {
-		d.templateVariableCatalog = newTemplateVariableCatalog(d.catalog())
-	}
-	return d.templateVariableCatalog
-}

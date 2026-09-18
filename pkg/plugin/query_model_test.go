@@ -20,7 +20,7 @@ import (
 )
 
 func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 	query := backend.DataQuery{
 		RefID: "A",
@@ -63,7 +63,7 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 }
 
 func TestPrepareQueryAggregationRules(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
 
 	tests := []struct {
@@ -210,10 +210,10 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 			},
 		},
 	}
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
@@ -353,7 +353,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			mockDS := &mockDatasourceService{
 				searchChannelsResponse: datasourceapi.SearchChannelsResponse{Results: tt.searchChannels},
 			}
-			ds := &Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()}
+			ds := withCatalog(&Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()})
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
 				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
@@ -402,10 +402,10 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),

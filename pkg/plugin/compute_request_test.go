@@ -107,7 +107,7 @@ func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) comp
 }
 
 func TestBuildComputeContext(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	tests := []struct {
 		name         string
@@ -261,7 +261,7 @@ func TestNumericOutputFields(t *testing.T) {
 // buildComputeRequest path (time range -> node wrapping -> context), while the detailed
 // per-kind plan shape is covered by the buildSeriesPlan tests below.
 func TestBuildComputeRequest(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	qm := NominalQueryModel{
 		AssetRid:      "ri.nominal.asset.12345",
@@ -296,7 +296,7 @@ func TestBuildComputeRequest(t *testing.T) {
 }
 
 func TestBuildAssetChannel(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	tests := []struct {
 		name          string
@@ -339,7 +339,7 @@ func TestBuildAssetChannel(t *testing.T) {
 }
 
 func TestBuildSeriesPlanBranching(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qe := newTestQueryExecution(ds, nil)
 
 	baseQM := NominalQueryModel{
@@ -386,7 +386,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 }
 
 func TestBuildSeriesPlanBuckets(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qe := newTestQueryExecution(ds, nil)
 
 	wantBuckets := func(t *testing.T, plan computeapi1.SummarizeSeries, want int) {
@@ -425,7 +425,7 @@ func TestBuildSeriesPlanBuckets(t *testing.T) {
 }
 
 func TestBuildSeriesPlanArrowFormat(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qe := newTestQueryExecution(ds, nil)
 
 	t.Run("numeric path sets ARROW_V3 and NumericOutputFields", func(t *testing.T) {
@@ -480,7 +480,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 }
 
 func TestBuildSeriesPlanLogPath(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qe := newTestQueryExecution(ds, nil)
 
 	qm := NominalQueryModel{
@@ -518,7 +518,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 }
 
 func BenchmarkBuildComputeContext(b *testing.B) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 	qm := NominalQueryModel{
 		AssetRid: "ri.nominal.asset.12345",
 		Channel:  "temperature",

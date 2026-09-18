@@ -118,7 +118,7 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 		return err
 	}
 
-	result, err := d.templateCatalog().Assets(ctx, config, searchRequest)
+	result, err := d.templateVariableCatalog.Assets(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch assets", err)
 		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch assets", err))
@@ -162,7 +162,7 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		return err
 	}
 
-	result, err := d.templateCatalog().Datascopes(ctx, config, searchRequest)
+	result, err := d.templateVariableCatalog.Datascopes(ctx, config, searchRequest)
 	if err != nil {
 		logErrorWithConjureFields("Failed to fetch asset", err, "assetRid", searchRequest.AssetRid)
 		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch asset", err))
@@ -206,7 +206,7 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 		return err
 	}
 
-	result, err := d.templateCatalog().ChannelVariables(ctx, config, searchRequest)
+	result, err := d.templateVariableCatalog.ChannelVariables(ctx, config, searchRequest)
 	if err != nil {
 		var catalogErr *templateVariableCatalogError
 		if errors.As(err, &catalogErr) && catalogErr.kind == templateVariableAssetFetchError {

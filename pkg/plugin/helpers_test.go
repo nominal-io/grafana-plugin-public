@@ -212,7 +212,7 @@ func newTestAssetServer(t *testing.T, assets map[string]SingleAssetResponse, sea
 }
 
 func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Client, dsSvc datasourceservice.DataSourceServiceClient) *Datasource {
-	return &Datasource{
+	return withCatalog(&Datasource{
 		settings: backend.DataSourceInstanceSettings{
 			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
 			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
@@ -220,7 +220,14 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 		authService:        authSvc,
 		datasourceService:  dsSvc,
 		resourceHTTPClient: &http.Client{},
-	}
+	})
+}
+
+// withCatalog wires a test Datasource to a catalog the way NewDatasource does.
+func withCatalog(ds *Datasource) *Datasource {
+	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
+	return ds
 }
 
 func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *NominalQueryExecution {

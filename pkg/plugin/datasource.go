@@ -113,6 +113,8 @@ type Datasource struct {
 
 	resourceHTTPClient *http.Client
 
+	// Built once during construction. Every query shares these instances, so
+	// their caches are shared too.
 	nominalCatalog          *NominalCatalog
 	templateVariableCatalog *TemplateVariableCatalog
 
