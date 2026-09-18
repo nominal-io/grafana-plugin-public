@@ -77,22 +77,5 @@
   "dependencies": {
     "grafanaDependency": ">=12.1.0",
     "plugins": []
-  },
-  "routes": [
-    {
-      "path": "test",
-      "method": "GET",
-      "reqRole": "Editor"
-    },
-    {
-      "path": "connection-test",
-      "method": "GET",
-      "reqRole": "Editor"
-    },
-    {
-      "path": "nominal/*",
-      "method": "*",
-      "reqRole": "Editor"
-    }
-  ]
+  }
 }
