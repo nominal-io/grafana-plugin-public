@@ -17,7 +17,7 @@ import (
 )
 
 func TestTransformBatchResultLegacyNumeric(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric batch result produces float64 value fields", func(t *testing.T) {
 		values := []float64{1.5, 2.5, 3.5, 4.5}
@@ -93,7 +93,7 @@ func TestTransformBatchResultLegacyNumeric(t *testing.T) {
 }
 
 func TestEnumPlotTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("maps indices to category strings", func(t *testing.T) {
 		categories := []string{"on", "off", "standby"}
@@ -311,7 +311,7 @@ func TestBucketedEnumModeBreaksTiesByLowestIndex(t *testing.T) {
 }
 
 func TestEnumPointTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("passes through resolved string value directly", func(t *testing.T) {
 		result := createMockEnumPointComputeResult("active")
@@ -616,7 +616,7 @@ func TestTransformArrowNumericPlotReturnsError(t *testing.T) {
 }
 
 func TestDisplayNameFromDS(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
 		values := []float64{1.0, 2.0}
@@ -722,7 +722,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 // multi-agg, enum, and legacy single-numeric. TestFieldConfigForNumeric and
 // TestFieldConfigForEnum cover the builders in isolation.
 func TestFieldConfigUnit(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	// Grafana ignores Unit on time fields today; this guards against a builder
 	// applying FieldConfig to the wrong field.
@@ -959,7 +959,7 @@ func TestFieldConfigForEnum(t *testing.T) {
 }
 
 func TestErrorMessageFormatPreservation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("numeric channel error retains original format without hint", func(t *testing.T) {
 		result := createMockErrorResult(404, "CHANNEL_NOT_FOUND")
