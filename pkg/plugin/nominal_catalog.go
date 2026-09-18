@@ -417,8 +417,11 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{channel},
-		DataSources: dataSourceRids,
+		// The API filters on ExactMatch (case-insensitive contains) but orders by
+		// similarity to FuzzySearchText. Without it the wanted row can page out.
+		FuzzySearchText: channel,
+		ExactMatch:      []string{channel},
+		DataSources:     dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
@@ -430,6 +433,9 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return entry, nil
 	}
 
+	// Absent, paged out, or present without a data type or unit.
+	log.DefaultLogger.Debug("No usable channel metadata for inference",
+		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	return channelMetadataCacheEntry{}, nil
 }
 
