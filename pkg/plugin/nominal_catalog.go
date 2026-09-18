@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
@@ -340,8 +341,11 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{qm.Channel},
-		DataSources: dataSourceRids,
+		// The API filters on ExactMatch (case-insensitive contains) but orders by
+		// similarity to FuzzySearchText. Without it the wanted row can page out.
+		FuzzySearchText: fuzzySearchTextFor(qm.Channel),
+		ExactMatch:      []string{qm.Channel},
+		DataSources:     dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
@@ -356,6 +360,9 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 		return
 	}
 
+	// Absent, paged out, or present without a data type or unit.
+	log.DefaultLogger.Debug("No usable channel metadata for inference",
+		"assetRid", qm.AssetRid, "channel", qm.Channel, "results", len(channelsResponse.Results))
 	c.storeChannelMetadata(cacheKey, channelMetadataCacheEntry{fetchedAt: time.Now()})
 }
 
@@ -393,6 +400,15 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
+}
+
+// The similarity score only sees letters and digits. A name without any scores
+// 0 everywhere, and a non-empty search text drops zero-score rows, so send "".
+func fuzzySearchTextFor(channel string) string {
+	if strings.ContainsFunc(channel, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
+		return channel
+	}
+	return ""
 }
 
 func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
