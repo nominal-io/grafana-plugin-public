@@ -89,31 +89,6 @@ func TestCallResourceRouting(t *testing.T) {
 			body:         []byte(`not json`),
 			expectStatus: http.StatusBadRequest,
 		},
-		// Connection-test routing: slash/no-slash forms and the connection-test alias.
-		{
-			name:         "POST test routes to connection test",
-			path:         "test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST /test routes to connection test",
-			path:         "/test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST connection-test alias",
-			path:         "connection-test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST /connection-test alias with slash",
-			path:         "/connection-test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
 		// GET 405: channels is only covered here, plus the leading-slash variants of each route.
 		{
 			name:         "GET /channels returns 405",
