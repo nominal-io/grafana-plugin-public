@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.14.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.14.0...nominal-grafana-plugin@0.14.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* add optional workspace RID to data source settings ([#132](https://github.com/nominal-io/grafana-plugin-public/issues/132)) ([de10b81](https://github.com/nominal-io/grafana-plugin-public/commit/de10b8144f79b64f22ba62092b809b0fe0ced529))
+* **deps:** update module github.com/apache/arrow-go/v18 to v18.8.0 ([#133](https://github.com/nominal-io/grafana-plugin-public/issues/133)) ([7804fdd](https://github.com/nominal-io/grafana-plugin-public/commit/7804fdd7e542b6395ee3e5b290bc84be158cd7ae))
+* **deps:** update module github.com/grafana/grafana-plugin-sdk-go to v0.296.5 ([#141](https://github.com/nominal-io/grafana-plugin-public/issues/141)) ([1ac5ccd](https://github.com/nominal-io/grafana-plugin-public/commit/1ac5ccdea88fa55aa24e655781eb00b5f2019ddc))
+* skip batch kill when the server returned an HTTP error ([#136](https://github.com/nominal-io/grafana-plugin-public/issues/136)) ([71e3aef](https://github.com/nominal-io/grafana-plugin-public/commit/71e3aeffa771b6e2c7b6e6729ac6f5aecbf79c6c))
+* sort SDK metric channels after customer channels ([#140](https://github.com/nominal-io/grafana-plugin-public/issues/140)) ([8c9a3a7](https://github.com/nominal-io/grafana-plugin-public/commit/8c9a3a7424e2004cd9b73d564a05050619f89634))
+
+
+### Chores
+
+* **deps:** bump google.golang.org/grpc from 1.83.0 to 1.83.1 ([#125](https://github.com/nominal-io/grafana-plugin-public/issues/125)) ([1ce9f09](https://github.com/nominal-io/grafana-plugin-public/commit/1ce9f0911ab674ea7381f62e147a8a59f8c6a350))
+* **deps:** re-pin fast-uri and js-yaml for high severity CVEs ([#128](https://github.com/nominal-io/grafana-plugin-public/issues/128)) ([36f6c75](https://github.com/nominal-io/grafana-plugin-public/commit/36f6c755ed3f3195611ad1aaa39ca9576e73fae8))
+* update Go toolchain to 1.26.6 ([#121](https://github.com/nominal-io/grafana-plugin-public/issues/121)) ([1d6ed9d](https://github.com/nominal-io/grafana-plugin-public/commit/1d6ed9df8341dc6c512c70196637d86b648daaad))
+
 ## [0.14.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.13.0...nominal-grafana-plugin@0.14.0) (2026-09-01)
 
 
