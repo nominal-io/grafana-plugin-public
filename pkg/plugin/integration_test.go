@@ -48,6 +48,7 @@ const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity
 `
 
 type liveNominalQueryTarget struct {
+	datasetRid    string
 	assetRid      string
 	channel       string
 	dataScopeName string
@@ -99,7 +100,7 @@ func liveNominalSettings(t *testing.T) backend.DataSourceInstanceSettings {
 		baseURL = defaultAPIBaseURL
 	}
 
-	jsonData, err := json.Marshal(map[string]string{"baseUrl": baseURL})
+	jsonData, err := json.Marshal(map[string]any{"baseUrl": baseURL, "enableSql": true})
 	if err != nil {
 		t.Fatalf("failed to marshal datasource JSON: %v", err)
 	}
@@ -200,6 +201,23 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 		t.Fatalf("unexpected response error: %v", response.Error)
 	}
 	assertLiveNominalNumericResponse(t, response, target.channel)
+}
+
+func TestLiveNominalSqlQueryIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.
+	target := createLiveNominalQueryTarget(t, settings)
+	ds := liveNominalDatasource(t, settings)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{{RefID: "A", TimeRange: backend.TimeRange{From: target.from, To: target.to}, Interval: time.Minute, JSON: mustMarshal(NominalQueryModel{QueryType: QueryTypeSql, Format: "table", RawSql: fmt.Sprintf("SELECT ts, channel, value FROM points_double WHERE dataset_rid = '%s' AND $__timeFilter(ts) ORDER BY ts", target.datasetRid)})}}})
+	if err != nil {
+		t.Fatalf("unexpected QueryData error: %v", err)
+	}
+	response := resp.Responses["A"]
+	if response.Error != nil || len(response.Frames) != 1 || response.Frames[0].Rows() == 0 {
+		t.Fatalf("unexpected SQL response: %+v", response)
+	}
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
@@ -314,6 +332,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 
 	from, to := liveNominalCSVTimeRange()
 	return liveNominalQueryTarget{
+		datasetRid:    dataset.Rid.String(),
 		assetRid:      asset.Rid.String(),
 		channel:       liveNominalChannelName,
 		dataScopeName: liveNominalDataScopeName,

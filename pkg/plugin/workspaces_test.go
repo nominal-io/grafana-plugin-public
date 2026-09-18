@@ -18,8 +18,11 @@ import (
 const testWorkspaceRid = "ri.security.test.workspace.11111111-1111-1111-1111-111111111111"
 
 type mockWorkspaceService struct {
-	displayName *string
-	err         error
+	displayName      *string
+	err              error
+	defaultWorkspace *workspaceapi.Workspace
+	defaultCalls     int
+	defaultFunc      func() (*workspaceapi.Workspace, error)
 }
 
 func (m *mockWorkspaceService) GetWorkspace(_ context.Context, _ bearertoken.Token, workspaceRid rids.WorkspaceRid) (workspaceapi.Workspace, error) {
@@ -32,7 +35,11 @@ func (m *mockWorkspaceService) UpdateWorkspace(context.Context, bearertoken.Toke
 	return workspaceapi.Workspace{}, nil
 }
 func (m *mockWorkspaceService) GetDefaultWorkspace(context.Context, bearertoken.Token) (*workspaceapi.Workspace, error) {
-	return nil, nil
+	m.defaultCalls++
+	if m.defaultFunc != nil {
+		return m.defaultFunc()
+	}
+	return m.defaultWorkspace, m.err
 }
 
 func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *mockWorkspaceService) *Datasource {

@@ -13,6 +13,7 @@ type PluginSettings struct {
 	Path    string `json:"path"` // Legacy field
 	// WorkspaceRid limits asset search to one workspace; empty means all.
 	WorkspaceRid string                `json:"workspaceRid"`
+	EnableSql    bool                  `json:"enableSql"`
 	Secrets      *SecretPluginSettings `json:"-"`
 }
 

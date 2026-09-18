@@ -75,7 +75,7 @@ NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
 go test -count=1 ./pkg/plugin -run TestLiveNominalCheckHealthIntegration -v
 ```
 
-To also run the live `QueryData` integration path, point the test at staging.
+To also run the live `QueryData` and SQL integration paths, point the test at staging.
 The test creates a temporary asset, data scope, dataset, and numeric CSV channel,
 queries that channel through the plugin, and archives the temporary asset and
 dataset during cleanup.
@@ -87,7 +87,7 @@ set +a
 
 NOMINAL_LIVE_TESTS=1 \
 NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
-go test -count=1 ./pkg/plugin -run TestLiveNominalQueryDataIntegration -v
+go test -count=1 ./pkg/plugin -run 'TestLiveNominal(QueryData|SqlQuery)Integration' -v
 ```
 
 Optional query controls:
