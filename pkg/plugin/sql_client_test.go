@@ -204,15 +204,13 @@ func TestSqlGrpcTarget(t *testing.T) {
 	for _, tc := range []struct{ url, target string }{
 		{"https://api.gov.nominal.io/api", "api.gov.nominal.io:443"},
 		{"https://api-staging.gov.nominal.io:8443/api/", "api-staging.gov.nominal.io:8443"},
-		{"http://localhost:8080/api", "localhost:8080"},
-		{"http://127.0.0.1:8080/api", "127.0.0.1:8080"},
 	} {
 		target, creds, err := sqlGrpcTarget(tc.url)
 		if err != nil || target != tc.target || creds == nil {
 			t.Fatalf("%s: target=%q creds=%v err=%v", tc.url, target, creds, err)
 		}
 	}
-	for _, bad := range []string{"", "api.gov.nominal.io", "ftp://api.gov.nominal.io", "http://api.gov.nominal.io/api"} {
+	for _, bad := range []string{"", "api.gov.nominal.io", "ftp://api.gov.nominal.io", "http://localhost:8080/api"} {
 		if _, _, err := sqlGrpcTarget(bad); err == nil {
 			t.Fatalf("%q: expected error", bad)
 		}

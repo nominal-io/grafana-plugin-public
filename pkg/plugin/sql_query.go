@@ -61,6 +61,9 @@ func (e *NominalQueryExecution) executeSqlQuery(ctx context.Context, prepared pr
 		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("Macro expansion failed: %v", err))
 	}
 	if e.datasource.sqlClient == nil {
+		if e.datasource.sqlClientErr != nil {
+			return backend.ErrDataResponse(backend.StatusBadRequest, e.datasource.sqlClientErr.Error())
+		}
 		return backend.ErrDataResponse(backend.StatusInternal, "SQL client is not configured")
 	}
 	body, err := e.datasource.sqlClient.Query(ctx, string(token), workspace, expanded)

@@ -16,7 +16,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -51,40 +50,21 @@ func (c *sqlClient) Close() error {
 	return c.conn.Close()
 }
 
-// sqlGrpcTarget maps https://api.gov.nominal.io/api to api.gov.nominal.io:443 with TLS.
-// Like the Nominal Python client, plaintext is allowed only for http URLs on a loopback
-// host, for local development against a stack on the same machine.
+// sqlGrpcTarget maps https://api.gov.nominal.io/api to api.gov.nominal.io:443. SQL always
+// runs over TLS; the API key travels in request metadata.
 func sqlGrpcTarget(baseURL string) (string, credentials.TransportCredentials, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Hostname() == "" {
 		return "", nil, fmt.Errorf("invalid Nominal API base URL %q", baseURL)
 	}
+	if parsed.Scheme != "https" {
+		return "", nil, fmt.Errorf("Nominal API base URL %q must use https for SQL queries", baseURL)
+	}
 	port := parsed.Port()
-	switch parsed.Scheme {
-	case "https":
-		if port == "" {
-			port = "443"
-		}
-		return net.JoinHostPort(parsed.Hostname(), port), credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}), nil
-	case "http":
-		if !isLoopbackHost(parsed.Hostname()) {
-			return "", nil, fmt.Errorf("plaintext http is only allowed for loopback hosts in Nominal API base URL %q; use https", baseURL)
-		}
-		if port == "" {
-			port = "80"
-		}
-		return net.JoinHostPort(parsed.Hostname(), port), insecure.NewCredentials(), nil
-	default:
-		return "", nil, fmt.Errorf("unsupported scheme %q in Nominal API base URL", parsed.Scheme)
+	if port == "" {
+		port = "443"
 	}
-}
-
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return net.JoinHostPort(parsed.Hostname(), port), credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}), nil
 }
 
 // Query streams the Arrow IPC result for sql as one reader over the concatenated response

@@ -179,3 +179,17 @@ func TestSqlQueriesBoundParallelRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestExecuteSqlQueryReportsUnusableBaseURL(t *testing.T) {
+	workspace := sqlTestWorkspaceRid(t)
+	_, sqlClientErr := newSqlClient("http://example/api")
+	if sqlClientErr == nil {
+		t.Fatal("expected http base URL to be rejected")
+	}
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClientErr: sqlClientErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	prepared, _ := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 1"}`)})
+	response := e.executeSqlQuery(context.Background(), prepared)
+	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != sqlClientErr.Error() {
+		t.Fatalf("%+v", response)
+	}
+}

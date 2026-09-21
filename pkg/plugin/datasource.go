@@ -86,9 +86,11 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
 	}
 
-	sqlClient, err := newSqlClient(baseURL)
-	if err != nil {
-		return nil, err
+	// A base URL the SQL transport cannot use (for example plain http) must not break the
+	// Conjure-backed features, so the error is surfaced per SQL query instead.
+	sqlClient, sqlClientErr := newSqlClient(baseURL)
+	if sqlClientErr != nil {
+		log.DefaultLogger.Warn("SQL queries are unavailable for this data source", "error", sqlClientErr)
 	}
 
 	ds := &Datasource{
@@ -100,6 +102,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:       workspaceRid,
 		sqlClient:          sqlClient,
+		sqlClientErr:       sqlClientErr,
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -117,6 +120,7 @@ type Datasource struct {
 
 	workspaceRid *rids.WorkspaceRid
 	sqlClient    *sqlClient
+	sqlClientErr error
 	sqlWorkspace sqlWorkspaceCache
 
 	resourceHTTPClient *http.Client
