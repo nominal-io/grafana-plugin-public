@@ -4,6 +4,21 @@ import { DataQuery } from '@grafana/schema';
 export type SqlFormat = 'timeseries' | 'table';
 export const QUERY_TYPE_SQL = 'sql' as const;
 
+export interface SqlBuilderState {
+  datasetRid: string;
+  datasetName?: string;
+  channels: string[];
+  table: 'points_double' | 'points_int';
+  aggregation: 'AVG' | 'MIN' | 'MAX' | 'SUM' | 'COUNT';
+  interval: string; // Empty means Grafana's automatic interval.
+  tagKey?: string;
+  tagValue?: string;
+}
+
+export const DEFAULT_SQL_BUILDER: SqlBuilderState = {
+  datasetRid: '', channels: [], table: 'points_double', aggregation: 'AVG', interval: '',
+};
+
 export interface NominalQuery extends DataQuery {
   // Asset information
   assetRid?: string;
@@ -20,6 +35,8 @@ export interface NominalQuery extends DataQuery {
   buckets?: number;
   queryType?: 'timeShift' | 'decimation' | 'raw' | typeof QUERY_TYPE_SQL;
   rawSql?: string;
+  sqlEditorMode?: 'builder' | 'code';
+  sqlBuilder?: SqlBuilderState;
   format?: SqlFormat;
 
   // Template variables support
@@ -51,7 +68,7 @@ export const DEFAULT_QUERY: Partial<NominalQuery> = {
   constant: 6.5,
 };
 
-export const DEFAULT_SQL = `SELECT $__timeGroup(ts) AS time, channel, AVG(value) AS value
+export const DEFAULT_SQL = `SELECT $__timeGroup(ts) AS "time", channel, AVG(value) AS "value"
 FROM points_double
 WHERE dataset_rid = '<dataset-rid>'
   AND $__timeFilter(ts)
@@ -82,6 +99,8 @@ export interface NominalTimestamp {
 export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
   workspaceRid?: string;
+  queryApi?: 'compute' | 'sql';
+  /** Compatibility with datasource settings saved by the SQL preview. */
   enableSql?: boolean;
   path?: string; // Legacy support
 }
@@ -97,3 +116,7 @@ export interface NominalSecureJsonData {
 export type MyQuery = NominalQuery;
 export type MyDataSourceOptions = NominalDataSourceOptions;
 export type MySecureJsonData = NominalSecureJsonData;
+
+export function usesSql(options: NominalDataSourceOptions = {}): boolean {
+  return options.queryApi === 'sql' || (!options.queryApi && options.enableSql === true);
+}

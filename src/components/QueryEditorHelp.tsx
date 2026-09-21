@@ -104,8 +104,8 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
       </div>
 
       <div className={styles.section}>
-        <h3 className={styles.title}>SQL mode</h3>
-        <p className={styles.text}>Use raw SQL against the Nominal Warehouse when SQL queries are enabled in the data source settings.</p>
+        <h3 className={styles.title}>SQL queries</h3>
+        <p className={styles.text}>Choose Query API: SQL in the data source settings. Builder creates numeric time-series queries from a dataset, channels, aggregation and time bucket. Code supports custom SQL, joins and other tables.</p>
         <table className={styles.table}>
           <thead>
             <tr><th>Macro</th><th>Expands to</th></tr>

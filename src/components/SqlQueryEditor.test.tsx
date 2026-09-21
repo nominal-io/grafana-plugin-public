@@ -22,6 +22,15 @@ jest.mock('@grafana/ui', () => {
 });
 
 describe('SqlQueryEditor', () => {
+  it('reruns unchanged SQL when explicitly saved', () => {
+    const onChange = jest.fn();
+    const onRunQuery = jest.fn();
+    render(<SqlQueryEditor query={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }} onChange={onChange} onRunQuery={onRunQuery} />);
+    fireEvent.keyDown(within(screen.getByTestId('sql-code-editor')).getByRole('textbox'), { key: 's', ctrlKey: true });
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('commits SQL on blur and runs the query', () => {
     const onChange = jest.fn();
     const onRunQuery = jest.fn();
@@ -35,7 +44,7 @@ describe('SqlQueryEditor', () => {
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('does not persist the placeholder when unchanged', () => {
+  it('does not invent SQL for an empty code query', () => {
     const onChange = jest.fn();
     const onRunQuery = jest.fn();
     render(<SqlQueryEditor query={{ refId: 'A', queryType: 'sql', rawSql: '' }} onChange={onChange} onRunQuery={onRunQuery} />);
@@ -56,4 +65,24 @@ describe('SqlQueryEditor', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ format: 'table' }));
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
+  it('retains uncommitted code when changing the result format', () => {
+    const onChange = jest.fn();
+    render(<SqlQueryEditor query={{ refId: 'A', rawSql: 'SELECT 1' }} onChange={onChange} onRunQuery={jest.fn()} />);
+    fireEvent.change(within(screen.getByTestId('sql-code-editor')).getByRole('textbox'), { target: { value: 'SELECT 2' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Table' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rawSql: 'SELECT 2', format: 'table' }));
+  });
+
+  it('requires confirmation before replacing custom SQL with builder selections', () => {
+    const onChange = jest.fn();
+    render(<SqlQueryEditor query={{ refId: 'A', rawSql: 'SELECT 1' }} onChange={onChange} onRunQuery={jest.fn()} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Builder' }));
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep code' }));
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('radio', { name: 'Builder' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Replace SQL' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sqlEditorMode: 'builder', rawSql: '' }));
+  });
+
 });

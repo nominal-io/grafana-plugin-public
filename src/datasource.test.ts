@@ -1,6 +1,6 @@
 import { DataSource } from './datasource';
 import { NominalDataSourceOptions } from './types';
-import { DataSourceInstanceSettings } from '@grafana/data';
+import { CoreApp, DataSourceInstanceSettings } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 jest.mock('@grafana/runtime', () => ({
@@ -303,5 +303,15 @@ describe('validateMetricFindResponse', () => {
     mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
 
     await expect(ds.metricFindQuery('assets')).rejects.toThrow('Unable to load Nominal assets');
+  });
+});
+
+describe('datasource query API', () => {
+  it.each([
+    [{}, 'timeShift'], [{ queryApi: 'compute', enableSql: true }, 'timeShift'],
+    [{ queryApi: 'sql' }, 'sql'], [{ enableSql: true }, 'sql'],
+  ])('chooses new-query defaults from %j', (jsonData, queryType) => {
+    const ds = new DataSource({ uid: 'test', jsonData } as DataSourceInstanceSettings<NominalDataSourceOptions>);
+    expect(ds.getDefaultQuery(CoreApp.Dashboard).queryType).toBe(queryType);
   });
 });

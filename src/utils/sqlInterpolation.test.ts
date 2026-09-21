@@ -1,8 +1,12 @@
-import { isSqlVariableQuery, sqlInterpolateVariable } from './sqlInterpolation';
+import { sqlInterpolateVariable } from './sqlInterpolation';
 
 describe('sqlInterpolateVariable', () => {
   it('leaves a single value raw', () => {
     expect(sqlInterpolateVariable('engine_rpm', {})).toBe('engine_rpm');
+  });
+
+  it('escapes quotes in single values used inside SQL string literals', () => {
+    expect(sqlInterpolateVariable("pilot's sensor", {})).toBe("pilot''s sensor");
   });
 
   it('quotes a single multi-value variable', () => {
@@ -15,13 +19,5 @@ describe('sqlInterpolateVariable', () => {
 
   it('passes numbers through', () => {
     expect(sqlInterpolateVariable(5, {})).toBe('5');
-  });
-});
-
-describe('isSqlVariableQuery', () => {
-  it('detects SELECT and WITH queries', () => {
-    expect(isSqlVariableQuery('  select dataset_rid from datasets')).toBe(true);
-    expect(isSqlVariableQuery('WITH x AS (SELECT 1) SELECT * FROM x')).toBe(true);
-    expect(isSqlVariableQuery('assets(foo)')).toBe(false);
   });
 });

@@ -1,8 +1,8 @@
 import React, { ChangeEvent } from 'react';
 import { css } from '@emotion/css';
-import { InlineField, InlineSwitch, Input, SecretInput, useStyles2 } from '@grafana/ui';
+import { InlineField, RadioButtonGroup, Input, SecretInput, useStyles2 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
-import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
+import { NominalDataSourceOptions, NominalSecureJsonData, usesSql } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
@@ -59,12 +59,13 @@ export function ConfigEditor(props: Props) {
     });
   };
 
-  const onEnableSqlChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const onQueryAPIChange = (queryApi: 'compute' | 'sql') => {
     onOptionsChange({
       ...options,
       jsonData: {
         ...jsonData,
-        enableSql: event.target.checked,
+        queryApi,
+        enableSql: undefined,
       },
     });
   };
@@ -135,7 +136,7 @@ export function ConfigEditor(props: Props) {
         labelWidth={26}
         interactive
         tooltip={
-          'Recommended. Limits asset search to this workspace instead of every workspace the key can access. Only search is filtered; assets from other workspaces still work in queries.'
+          'Recommended. Selects the SQL workspace and limits Compute asset search. SQL otherwise uses the API key’s default workspace.'
         }
       >
         <Input
@@ -148,12 +149,15 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
       <InlineField
-        label="SQL queries"
+        label="Query API"
         labelWidth={26}
-        interactive
-        tooltip="Adds a SQL mode to the query editor that runs raw SQL against the Nominal Warehouse with this data source's API key. Off by default."
+        tooltip="Choose Compute for asset and data-scope queries, or SQL for warehouse queries. Use separate data sources to keep both. Changing this does not convert saved queries."
       >
-        <InlineSwitch id="config-editor-enable-sql" value={jsonData.enableSql ?? false} onChange={onEnableSqlChange} />
+        <RadioButtonGroup
+          value={usesSql(jsonData) ? 'sql' : 'compute'}
+          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+          onChange={onQueryAPIChange}
+        />
       </InlineField>
 
       <div className={styles.quickSetup}>
@@ -166,7 +170,7 @@ export function ConfigEditor(props: Props) {
           <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
           <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
-          <li>Optional: enable SQL queries to use raw SQL in the query editor</li>
+          <li>Choose the Query API. SQL supports a visual builder and a code editor.</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>

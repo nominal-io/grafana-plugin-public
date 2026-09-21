@@ -147,37 +147,27 @@ describe('SQL query mode', () => {
     expect(screen.queryByRole('radio', { name: /^sql$/i })).not.toBeInTheDocument();
   });
 
-  it('shows the mode toggle when SQL is enabled', () => {
-    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' }, jest.fn(), true);
-
-    expect(screen.getByRole('radio', { name: /^sql$/i })).toBeInTheDocument();
-  });
-
-  it('switches to SQL mode with time series format', () => {
+  it('requires an explicit new SQL query when switching from Compute', () => {
     const onChange = jest.fn();
-    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' }, onChange, true);
-
-    fireEvent.click(screen.getByRole('radio', { name: /^sql$/i }));
-
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
-      queryType: 'sql',
-      format: 'timeseries',
-      rawSql: '',
-    }));
+    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift', assetRid: 'old-asset', channel: 'old-channel' }, onChange, true);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Start a new SQL query' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', sqlEditorMode: 'builder', rawSql: '' }));
+    expect(onChange.mock.calls[0][0].assetRid).toBeUndefined();
+    expect(onChange.mock.calls[0][0].channel).toBeUndefined();
   });
 
-  it('renders SQL without the asset combobox', () => {
-    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
-
+  it('renders saved SQL in Code without the asset combobox', () => {
+    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }, jest.fn(), true);
     expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
     expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
   });
 
-  it('keeps a saved SQL query accessible with a warning when SQL is disabled', () => {
-    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
-
-    expect(screen.getByText('SQL queries are disabled for this data source')).toBeInTheDocument();
-    expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
+  it('preserves saved SQL and warns when a Compute datasource is selected', () => {
+    const onChange = jest.fn();
+    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }, onChange);
+    expect(screen.getByText('This SQL query needs a SQL data source')).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 

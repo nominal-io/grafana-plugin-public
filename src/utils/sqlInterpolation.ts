@@ -11,12 +11,8 @@ export function sqlInterpolateVariable(
   }
 
   if (typeof value === 'string') {
-    return variable.multi || variable.includeAll ? quote(value) : value;
+    return variable.multi || variable.includeAll ? quote(value) : value.replace(/'/g, "''");
   }
 
   return value.map(quote).join(',');
-}
-
-export function isSqlVariableQuery(query: string): boolean {
-  return /^\s*(select|with)\b/i.test(query);
 }
