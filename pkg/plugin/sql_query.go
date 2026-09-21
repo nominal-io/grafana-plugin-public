@@ -67,7 +67,7 @@ func (e *NominalQueryExecution) executeSqlQuery(ctx context.Context, prepared pr
 	if err != nil {
 		var endpointErr *sqlEndpointError
 		if errors.As(err, &endpointErr) {
-			log.DefaultLogger.Warn("SQL query rejected", "status", endpointErr.Status, "errorName", endpointErr.ErrorName, "sqlQueryId", endpointErr.SqlQueryId, "errorInstanceId", endpointErr.InstanceId)
+			log.DefaultLogger.Warn("SQL query rejected", "code", endpointErr.Code.String(), "reason", endpointErr.Reason, "sqlQueryId", endpointErr.SqlQueryId)
 			return backend.ErrDataResponse(endpointErr.backendStatus(), endpointErr.Error())
 		}
 		if ctx.Err() != nil {

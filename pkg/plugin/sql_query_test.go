@@ -3,8 +3,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,7 +14,10 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
+	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	"github.com/palantir/pkg/bearertoken"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 )
 
 func TestPrepareQuerySql(t *testing.T) {
@@ -75,10 +76,8 @@ func TestResolveSqlWorkspaceRetriesErrors(t *testing.T) {
 func TestExecuteSqlQuery(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
 	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Float64Builder).Append(42) })
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(stream) }))
-	defer srv.Close()
 	workspace := sqlTestWorkspaceRid(t)
-	ds := &Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}
+	ds := &Datasource{workspaceRid: &workspace, sqlClient: newFakeSqlClient(t, sqlPayloadServer(stream))}
 	e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	query := backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)}
 	prepared, _ := e.prepareQuery(context.Background(), query)
@@ -89,13 +88,11 @@ func TestExecuteSqlQuery(t *testing.T) {
 }
 
 func TestExecuteSqlQuerySurfacesEndpointError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"errorName":"bad","parameters":{"detail":"bad query","sqlQueryId":"q-1"}}`))
-	}))
-	defer srv.Close()
+	client := newFakeSqlClient(t, func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		return sqlStatusError(codes.InvalidArgument, "SQL query is invalid", "SQL_ERROR_INVALID_QUERY", "q-1", "bad query")
+	})
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: client}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	prepared, _ := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT x"}`)})
 	response := e.executeSqlQuery(context.Background(), prepared)
 	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != "bad query (sqlQueryId: q-1)" {
@@ -109,16 +106,15 @@ func TestQueryDataMixesSqlAndCompute(t *testing.T) {
 			schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
 			stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Float64Builder).Append(42) })
 			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client := newFakeSqlClient(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 				calls.Add(1)
-				_, _ = w.Write(stream)
-			}))
-			defer srv.Close()
+				return sqlPayloadServer(stream)(req, s)
+			})
 			workspace := sqlTestWorkspaceRid(t)
 			compute := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 				Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{7})},
 			}}
-			ds := &Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport), computeService: compute}
+			ds := &Datasource{workspaceRid: &workspace, sqlClient: client, computeService: compute}
 			req := newQueryRequest([]backend.DataQuery{
 				{RefID: "SQL", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)},
 				{RefID: "Compute", JSON: []byte(`{"queryType":"timeShift","assetRid":"ri.nominal.asset.1","channel":"temp","dataScopeName":"default","buckets":100}`), TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)}},
@@ -155,7 +151,7 @@ func TestSqlQueriesBoundParallelRequests(t *testing.T) {
 	var active, peak, total atomic.Int32
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).Append(1) })
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newFakeSqlClient(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		current := active.Add(1)
 		defer active.Add(-1)
 		total.Add(1)
@@ -165,11 +161,10 @@ func TestSqlQueriesBoundParallelRequests(t *testing.T) {
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
-		_, _ = w.Write(stream)
-	}))
-	defer srv.Close()
+		return sqlPayloadServer(stream)(req, s)
+	})
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, nil)}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: client}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	queries := make([]backend.DataQuery, 20)
 	for i := range queries {
 		queries[i] = backend.DataQuery{RefID: fmt.Sprint(i), JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`)}

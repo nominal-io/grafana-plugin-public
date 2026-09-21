@@ -86,6 +86,11 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
 	}
 
+	sqlClient, err := newSqlClient(baseURL)
+	if err != nil {
+		return nil, err
+	}
+
 	ds := &Datasource{
 		settings:           settings,
 		resourceHTTPClient: resourceHTTPClient,
@@ -94,7 +99,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:       workspaceRid,
-		sqlClient:          newSqlClient(baseURL, resourceHTTPClient.Transport),
+		sqlClient:          sqlClient,
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -146,6 +151,9 @@ func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
 func (d *Datasource) Dispose() {
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
+	}
+	if d.sqlClient != nil {
+		_ = d.sqlClient.Close()
 	}
 }
 
