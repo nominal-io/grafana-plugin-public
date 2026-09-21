@@ -79,7 +79,7 @@ func TestCheckHealthWorkspace(t *testing.T) {
 }
 
 // Both asset search routes must reach Nominal with the workspace clause: the
-// template-variable endpoint builds its own body, the query editor's search is relayed.
+// template-variable endpoint builds its own body, the query editor's search is posted as sent.
 func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 	text := map[string]interface{}{"type": "searchText", "searchText": "eng"}
 	clause := map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid}
@@ -91,8 +91,8 @@ func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 		want       string
 	}{
 		{"assets variable", "assets", `{"searchText":"eng"}`, string(anded)},
-		{"relayed search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
-		{"relayed search-assets without query", "scout/v1/search-assets", `{"pageSize":50}`, string(bare)},
+		{"posted search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
+		{"posted search-assets without query", "scout/v1/search-assets", `{"pageSize":50}`, string(bare)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -117,7 +117,7 @@ func (h *NominalResourceHandler) handleSearchAssets(ctx context.Context, req *ba
 		return err
 	}
 	search["query"] = withWorkspaceFilter(search["query"], config.WorkspaceRid)
-	return h.relayScoutPost(ctx, sender, config, "/scout/v1/search-assets", search)
+	return h.nominalPostResponse(ctx, sender, config, "/scout/v1/search-assets", search)
 }
 
 func (h *NominalResourceHandler) handleAssetMultiple(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
@@ -140,13 +140,13 @@ func (h *NominalResourceHandler) handleAssetMultiple(ctx context.Context, req *b
 	if !ok {
 		return err
 	}
-	return h.relayScoutPost(ctx, sender, config, "/scout/v1/asset/multiple", rids)
+	return h.nominalPostResponse(ctx, sender, config, "/scout/v1/asset/multiple", rids)
 }
 
-// relayScoutPost POSTs body to a fixed upstream path under the datasource API
+// nominalPostResponse POSTs body to a fixed upstream path under the datasource API
 // key and returns the upstream JSON body unchanged. Upstream error statuses
 // are passed through, with the errorInstanceId appended to the message.
-func (h *NominalResourceHandler) relayScoutPost(ctx context.Context, sender backend.CallResourceResponseSender, config *models.PluginSettings, upstreamPath string, body any) error {
+func (h *NominalResourceHandler) nominalPostResponse(ctx context.Context, sender backend.CallResourceResponseSender, config *models.PluginSettings, upstreamPath string, body any) error {
 	responseBody, err := h.datasource.catalog().postNominalJSON(ctx, config, upstreamPath, body)
 	if err != nil {
 		logErrorWithConjureFields("Nominal API request failed", err, "path", upstreamPath)

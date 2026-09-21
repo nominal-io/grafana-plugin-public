@@ -214,7 +214,7 @@ func TestCallResourceRejectsBadRequests(t *testing.T) {
 	}
 }
 
-func TestScoutEndpointsRelayUpstream(t *testing.T) {
+func TestAssetEndpointsPostUpstream(t *testing.T) {
 	tests := []struct {
 		name             string
 		path             string
@@ -225,8 +225,8 @@ func TestScoutEndpointsRelayUpstream(t *testing.T) {
 		wantUpstreamBody string
 		wantBodyContains string
 	}{
-		{"search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"relayed":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"relayed":true}`},
-		{"asset/multiple with leading slash", "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"relayed":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"relayed":true}`},
+		{"search-assets", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"posted":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"posted":true}`},
+		{"asset/multiple with leading slash", "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"posted":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"posted":true}`},
 		{"asset/multiple upstream error status", "scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusForbidden, `{"errorCode":"PERMISSION_DENIED","errorName":"Default:PermissionDenied","errorInstanceId":"abc-123"}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, "abc-123"},
 	}
 	for _, tt := range tests {
