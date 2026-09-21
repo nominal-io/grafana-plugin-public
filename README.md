@@ -43,6 +43,10 @@ pnpm run e2e              # Run Playwright tests
 
 > **Note**: Use `pnpm run server` (development Docker) for testing - it includes pre-configured datasources that Playwright tests expect. The production build starts with unconfigured datasources and will cause test failures.
 
+### Adding frontend resource routes
+
+Use `src/resourceRoutes.json` for frontend resource paths and register their POST handlers in `pkg/plugin/resource_handler.go`. The Go tests check every manifest entry against the router without live credentials. Add handler tests for request and response behavior.
+
 ### Backend integration tests
 
 The Go backend tests run without live Nominal credentials by default:
