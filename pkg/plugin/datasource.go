@@ -122,10 +122,6 @@ type Datasource struct {
 	kill killCoalescer
 }
 
-func (d *Datasource) getResourceHTTPClient() *http.Client {
-	return d.resourceHTTPClient
-}
-
 // sendBatchKill sends one best-effort batch without logging sensitive values.
 func (d *Datasource) sendBatchKill(ctx context.Context, target killTarget, ids []uuid.UUID) {
 	ctx = contextWithUserAgentComponents(ctx, target.ua)

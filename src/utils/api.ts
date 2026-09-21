@@ -1,4 +1,5 @@
 import { getBackendSrv } from '@grafana/runtime';
+import resourceRoutes from '../resourceRoutes.json';
 
 export type WeakTimestampType = 'ABSOLUTE' | 'RELATIVE' | 'PENDING' | 'UNKNOWN';
 
@@ -103,7 +104,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
   }
 
   const response = await getBackendSrv().post(
-    `${datasourceUrl}/scout/v1/asset/multiple`,
+    `${datasourceUrl}/${resourceRoutes.assetsByRid}`,
     [rid]
   );
 
@@ -116,7 +117,7 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
 
 /** Searches assets, returning only those with at least one supported-type dataScope. */
 export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
-  const response = await getBackendSrv().post(`${datasourceUrl}/scout/v1/search-assets`, {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.searchAssets}`, {
     query: {
       searchText: searchText || '',
       type: 'searchText',
@@ -150,7 +151,7 @@ export const searchChannels = async (
     searchText,
   };
   const response = options.requestId
-    ? await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody, { requestId: options.requestId })
-    : await getBackendSrv().post(`${datasourceUrl}/channels`, requestBody);
+    ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
+    : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
 };
