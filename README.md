@@ -23,6 +23,8 @@ This is a **production-ready Grafana data source plugin** with:
 
 > **Note**: Alternative implementations (pure TypeScript, panel plugin) are available in the [`archive/`](./archive/) directory for reference and development purposes.
 
+For SQL setup, examples and local testing, see [SQL queries](docs/sql.md).
+
 ## Quick Start
 
 ### Development and E2E testing

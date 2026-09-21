@@ -1,6 +1,6 @@
 import { DataSource } from './datasource';
 import { NominalDataSourceOptions } from './types';
-import { DataSourceInstanceSettings } from '@grafana/data';
+import { CoreApp, DataSourceInstanceSettings } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 jest.mock('@grafana/runtime', () => ({
@@ -73,6 +73,34 @@ describe('filterQuery', () => {
       refId: 'B',
       queryText: 'legacy query',
     })).toBe(true);
+  });
+
+  it('accepts SQL queries with text and rejects empty ones', () => {
+    expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' })).toBe(true);
+    expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: '  ' })).toBe(false);
+  });
+});
+
+describe('applyTemplateVariables', () => {
+  it('interpolates raw SQL with SQL quoting', () => {
+    const ds = createDataSource();
+    mockTemplateSrv.replace.mockImplementation((value: string, _scopedVars?: unknown, format?: any) =>
+      value === 'channel IN ($ch)' ? value.replace('$ch', format(['a', 'b'], { multi: true })) : value
+    );
+
+    const result = ds.applyTemplateVariables({ refId: 'A', queryType: 'sql', rawSql: 'channel IN ($ch)' }, {});
+
+    expect(result.rawSql).toBe("channel IN ('a','b')");
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('channel IN ($ch)', {}, expect.any(Function));
+  });
+
+  it('keeps builder interpolation unchanged', () => {
+    const ds = createDataSource();
+    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', channel: '$channel', dataScopeName: '$scope' }, {});
+
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$asset', {});
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channel', {});
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$scope', {});
   });
 });
 
@@ -275,5 +303,15 @@ describe('validateMetricFindResponse', () => {
     mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
 
     await expect(ds.metricFindQuery('assets')).rejects.toThrow('Unable to load Nominal assets');
+  });
+});
+
+describe('new query defaults', () => {
+  it.each([
+    [{}, 'timeShift'], [{ queryApi: 'compute', enableSql: true }, 'timeShift'],
+    [{ queryApi: 'sql' }, 'timeShift'], [{ enableSql: true }, 'timeShift'],
+  ])('ignores retired datasource API settings in %j', (jsonData, queryType) => {
+    const ds = new DataSource({ uid: 'test', jsonData } as DataSourceInstanceSettings<NominalDataSourceOptions>);
+    expect(ds.getDefaultQuery(CoreApp.Dashboard).queryType).toBe(queryType);
   });
 });

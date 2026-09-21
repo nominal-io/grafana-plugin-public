@@ -6,7 +6,8 @@ import {
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
+import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -27,6 +28,13 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   applyTemplateVariables(query: NominalQuery, scopedVars: ScopedVars) {
+    if (query.queryType === QUERY_TYPE_SQL) {
+      return {
+        ...query,
+        rawSql: getTemplateSrv().replace(query.rawSql || '', scopedVars, sqlInterpolateVariable),
+      };
+    }
+
     return {
       ...query,
       queryText: getTemplateSrv().replace(query.queryText || '', scopedVars),
@@ -39,6 +47,10 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   filterQuery(query: NominalQuery): boolean {
     if (query.hide) {
       return false;
+    }
+
+    if (query.queryType === QUERY_TYPE_SQL) {
+      return !!query.rawSql?.trim();
     }
 
     const queryText = query.queryText?.trim();
