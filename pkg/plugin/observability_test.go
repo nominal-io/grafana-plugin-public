@@ -358,8 +358,9 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 			DecryptedSecureJSONData: map[string]string{"apiKey": "x"},
 		}
 		ds := &Datasource{
-			settings:    settings,
-			authService: authapi.NewAuthenticationServiceV2Client(conjureClient),
+			settings:           settings,
+			authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
+			resourceHTTPClient: &http.Client{Transport: newUserAgentTransport(http.DefaultTransport)},
 		}
 		return ds, settings
 	}
@@ -422,8 +423,9 @@ func TestEntryPointsSeedRequestIdentity(t *testing.T) {
 			PluginContext: backend.PluginContext{
 				PluginVersion: pluginVersion,
 			},
-			Path:   "test",
-			Method: http.MethodGet,
+			Path:   "assets-by-rid",
+			Method: http.MethodPost,
+			Body:   []byte(`["ri.scout.test.asset.a"]`),
 		}, sender)
 		if err != nil {
 			t.Fatalf("CallResource returned err: %v", err)

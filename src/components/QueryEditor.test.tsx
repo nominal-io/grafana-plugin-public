@@ -193,7 +193,7 @@ describe('channel data type inference effect', () => {
     channelsResponse = { channels: [{ name: 'app.logs', dataType: 'log' }] };
     channelsShouldReject = false;
     post.mockImplementation(async (url: string, _body?: unknown) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
       if (url.endsWith('/channels')) {
@@ -208,10 +208,10 @@ describe('channel data type inference effect', () => {
 
   it('restores a saved legacy direct-mode RID query into the asset combobox', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
@@ -234,7 +234,7 @@ describe('channel data type inference effect', () => {
     expect(screen.queryByText('Asset RID')).not.toBeInTheDocument();
 
     await waitFor(() => {
-      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)).toBe(true);
     });
   });
 
@@ -260,15 +260,15 @@ describe('channel data type inference effect', () => {
 
     // ...and no by-RID asset fetch is attempted for the unresolved template.
     await settleEffects();
-    expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(false);
+    expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)).toBe(false);
   });
 
   it('fetches a saved template RID only once on mount (no restore/resolved double fetch)', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
@@ -287,12 +287,12 @@ describe('channel data type inference effect', () => {
     );
 
     await waitFor(() => {
-      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)).toBe(true);
     });
 
     await settleEffects();
 
-    const assetFetches = post.mock.calls.filter((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`);
+    const assetFetches = post.mock.calls.filter((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`);
     expect(assetFetches).toHaveLength(1);
   });
 
@@ -301,7 +301,7 @@ describe('channel data type inference effect', () => {
     const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
 
     post.mockImplementation(async (url: string, body?: unknown) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         const requestedRid = Array.isArray(body) ? body[0] : undefined;
         // Respond with whichever asset was requested so both resolutions succeed.
         if (requestedRid === ASSET_RID_B) {
@@ -309,7 +309,7 @@ describe('channel data type inference effect', () => {
         }
         return { [ASSET_RID]: ASSET };
       }
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
@@ -331,7 +331,7 @@ describe('channel data type inference effect', () => {
     await waitFor(() => {
       expect(
         post.mock.calls.some(
-          (call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple` && Array.isArray(call[1]) && call[1][0] === ASSET_RID
+          (call) => call[0] === `${DATASOURCE_URL}/assets-by-rid` && Array.isArray(call[1]) && call[1][0] === ASSET_RID
         )
       ).toBe(true);
     });
@@ -352,7 +352,7 @@ describe('channel data type inference effect', () => {
     await waitFor(() => {
       expect(
         post.mock.calls.some(
-          (call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple` && Array.isArray(call[1]) && call[1][0] === ASSET_RID_B
+          (call) => call[0] === `${DATASOURCE_URL}/assets-by-rid` && Array.isArray(call[1]) && call[1][0] === ASSET_RID_B
         )
       ).toBe(true);
     });
@@ -360,10 +360,10 @@ describe('channel data type inference effect', () => {
 
   it('renders asset and data scope pickers as comboboxes with custom value support', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
@@ -416,10 +416,10 @@ describe('channel data type inference effect', () => {
 
   it('publishes a Grafana alert when channel option loading fails', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET] };
       }
       if (url.endsWith('/channels')) {
@@ -438,7 +438,7 @@ describe('channel data type inference effect', () => {
     );
 
     await waitFor(() => {
-      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)).toBe(true);
+      expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)).toBe(true);
     });
 
     await screen.findByTestId('channel-combobox');
@@ -558,7 +558,7 @@ describe('channel data type inference effect', () => {
 
     await waitFor(() => {
       expect(
-        post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/scout/v1/asset/multiple`)
+        post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)
       ).toBe(true);
     });
 
@@ -609,10 +609,10 @@ describe('channel data type inference effect', () => {
     const ASSET_RID_B = 'ri.scout.main.asset.def456';
     const ASSET_B = { ...ASSET, rid: ASSET_RID_B, title: 'Asset B' };
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/search-assets')) {
+      if (url.endsWith('/search-assets')) {
         return { results: [ASSET, ASSET_B] };
       }
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID_B]: ASSET_B };
       }
       if (url.endsWith('/channels')) {
@@ -645,7 +645,7 @@ describe('channel data type inference effect', () => {
 
   it('wires the data scope picker onChange to selectDataScope with the option value', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
       if (url.endsWith('/channels')) {
@@ -710,7 +710,7 @@ describe('channel data type inference effect', () => {
   // template-variable case where the raw `$scope` syntax must reach the picker verbatim.
   it('passes the raw query dataScopeName through to the data scope picker value', async () => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/scout/v1/asset/multiple')) {
+      if (url.endsWith('/assets-by-rid')) {
         return { [ASSET_RID]: ASSET };
       }
       if (url.endsWith('/channels')) {

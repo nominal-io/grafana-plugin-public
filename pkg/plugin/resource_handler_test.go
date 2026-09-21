@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -88,31 +89,6 @@ func TestCallResourceRouting(t *testing.T) {
 			body:         []byte(`not json`),
 			expectStatus: http.StatusBadRequest,
 		},
-		// Connection-test routing: slash/no-slash forms and the connection-test alias.
-		{
-			name:         "POST test routes to connection test",
-			path:         "test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST /test routes to connection test",
-			path:         "/test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST connection-test alias",
-			path:         "connection-test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
-		{
-			name:         "POST /connection-test alias with slash",
-			path:         "/connection-test",
-			method:       "POST",
-			expectStatus: http.StatusOK,
-		},
 		// GET 405: channels is only covered here, plus the leading-slash variants of each route.
 		{
 			name:         "GET /channels returns 405",
@@ -164,69 +140,14 @@ func TestCallResourceRouting(t *testing.T) {
 	}
 }
 
-func TestCallResourceProxyPaths(t *testing.T) {
-	tests := []struct {
-		name           string
-		requestPath    string
-		wantUpstream   string
-		wantReqPath    string
-		wantBodySubstr string
-	}{
-		{
-			name:         "nominal prefix strips only nominal segment",
-			requestPath:  "nominal/scout/v1/search-assets",
-			wantUpstream: "/scout/v1/search-assets",
-			wantReqPath:  "nominal/scout/v1/search-assets",
-		},
-		{
-			name:         "leading slash nominal prefix strips only nominal segment",
-			requestPath:  "/nominal/scout/v1/search-assets",
-			wantUpstream: "/scout/v1/search-assets",
-			wantReqPath:  "/nominal/scout/v1/search-assets",
-		},
-		{
-			name:         "unknown path proxies normalized path",
-			requestPath:  "/scout/v1/raw",
-			wantUpstream: "/scout/v1/raw",
-			wantReqPath:  "/scout/v1/raw",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var gotPath string
-			proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotPath = r.URL.Path
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"ok":true}`))
-			}))
-			defer proxyServer.Close()
-
-			ds := newTestDatasource(proxyServer.URL, &mockAuthService{}, &mockDatasourceService{})
-			req := &backend.CallResourceRequest{Path: tt.requestPath, Method: "POST", Body: []byte(`{}`)}
-
-			resp := callResourceAndCapture(t, ds, req)
-			if resp.Status != http.StatusOK {
-				t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
-			}
-			if gotPath != tt.wantUpstream {
-				t.Fatalf("upstream path = %q, want %q", gotPath, tt.wantUpstream)
-			}
-			if req.Path != tt.wantReqPath {
-				t.Fatalf("request path was mutated to %q, want %q", req.Path, tt.wantReqPath)
-			}
-		})
-	}
-}
-
-func TestNominalProxySettingsLoadFailureUsesJSONResponse(t *testing.T) {
+func TestSettingsLoadFailureUsesJSONResponse(t *testing.T) {
 	ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 	ds.settings.JSONData = []byte(`{`)
 
 	req := &backend.CallResourceRequest{
-		Path:   "scout/v1/raw",
+		Path:   "assets-by-rid",
 		Method: http.MethodPost,
-		Body:   []byte(`{}`),
+		Body:   []byte(`["ri.scout.test.asset.a"]`),
 	}
 
 	var captured *backend.CallResourceResponse
@@ -253,62 +174,106 @@ func TestNominalProxySettingsLoadFailureUsesJSONResponse(t *testing.T) {
 	}
 }
 
-func TestProxyHeaderFiltering(t *testing.T) {
-	mockAuth := &mockAuthService{
-		getMyProfileResponse: authapi.UserV2{
-			Rid:         authapi.UserRid(rid.MustNew("user", "test", "user", "user123")),
-			DisplayName: "Test User",
-		},
-	}
-
-	var receivedHeaders http.Header
-	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedHeaders = r.Header.Clone()
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"ok": true}`))
+func TestCallResourceRejectsBadRequests(t *testing.T) {
+	upstreamHits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits++
+		w.Write([]byte(`{}`))
 	}))
-	defer proxyServer.Close()
+	defer upstream.Close()
+	ds := newTestDatasource(upstream.URL, &mockAuthService{}, &mockDatasourceService{})
 
-	ds := newTestDatasource(proxyServer.URL, mockAuth, &mockDatasourceService{})
+	tests := []struct {
+		name       string
+		path       string
+		method     string
+		body       string
+		wantStatus int
+	}{
+		{"unrouted path", "scout/v1/raw", http.MethodPost, `{}`, http.StatusNotFound},
+		{"nominal prefix", "nominal/scout/v1/search-assets", http.MethodPost, `{}`, http.StatusNotFound},
+		{"dot segments", "scout/v1/search-assets/../../authentication/api/v2/my/profile", http.MethodPost, `{}`, http.StatusNotFound},
+		{"GET search-assets", "search-assets", http.MethodGet, ``, http.StatusMethodNotAllowed},
+		{"DELETE assets-by-rid", "assets-by-rid", http.MethodDelete, ``, http.StatusMethodNotAllowed},
+		{"assets-by-rid with object body", "assets-by-rid", http.MethodPost, `{}`, http.StatusBadRequest},
+		{"assets-by-rid with null body", "assets-by-rid", http.MethodPost, `null`, http.StatusBadRequest},
+		{"assets-by-rid with empty array", "assets-by-rid", http.MethodPost, `[]`, http.StatusBadRequest},
+		{"assets-by-rid with malformed rid", "assets-by-rid", http.MethodPost, `["not-a-rid"]`, http.StatusBadRequest},
+		{"search-assets with null body", "search-assets", http.MethodPost, `null`, http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tt.path, Method: tt.method, Body: []byte(tt.body)})
+			if resp.Status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.wantStatus, string(resp.Body))
+			}
+		})
+	}
+	if upstreamHits != 0 {
+		t.Fatalf("upstream was called %d times for rejected requests", upstreamHits)
+	}
+}
 
-	req := &backend.CallResourceRequest{
-		Path:   "scout/v1/some-endpoint",
-		Method: "POST",
-		Body:   []byte(`{}`),
-		Headers: map[string][]string{
-			"Content-Type":    {"application/json"},
-			"Accept":          {"application/json"},
-			"Cookie":          {"session=secret"},
-			"Authorization":   {"Bearer user-token"},
-			"X-Forwarded-For": {"192.168.1.1"},
-			"X-Custom-Header": {"should-be-stripped"},
-		},
+func TestAssetEndpointsPostUpstream(t *testing.T) {
+	tests := []struct {
+		name             string
+		path             string
+		body             string
+		upstreamStatus   int
+		upstreamBody     string
+		wantUpstreamPath string
+		wantUpstreamBody string
+		wantBodyContains string
+	}{
+		{"search-assets", "search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"posted":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"posted":true}`},
+		{"assets-by-rid with leading slash", "/assets-by-rid", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"posted":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"posted":true}`},
+		{"search-assets alias", "scout/v1/search-assets", `{"query":{"type":"searchText","searchText":"x"},"pageSize":50}`, http.StatusOK, `{"posted":true}`, "/scout/v1/search-assets", `"searchText":"x"`, `{"posted":true}`},
+		{"assets-by-rid alias", "scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, http.StatusOK, `{"posted":true}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, `{"posted":true}`},
+		{"assets-by-rid upstream error status", "assets-by-rid", `["ri.scout.test.asset.a"]`, http.StatusForbidden, `{"errorCode":"PERMISSION_DENIED","errorName":"Default:PermissionDenied","errorInstanceId":"abc-123"}`, "/scout/v1/asset/multiple", `["ri.scout.test.asset.a"]`, "abc-123"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath, gotMethod, gotAuth, gotCookie, gotBody string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath, gotMethod = r.URL.Path, r.Method
+				gotAuth, gotCookie = r.Header.Get("Authorization"), r.Header.Get("Cookie")
+				b, _ := io.ReadAll(r.Body)
+				gotBody = string(b)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.upstreamStatus)
+				w.Write([]byte(tt.upstreamBody))
+			}))
+			defer upstream.Close()
+			ds := newTestDatasource(upstream.URL, &mockAuthService{}, &mockDatasourceService{})
 
-	resp := callResourceAndCapture(t, ds, req)
-	if resp.Status != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body = %s", resp.Status, string(resp.Body))
-	}
-
-	if receivedHeaders.Get("Content-Type") != "application/json" {
-		t.Errorf("Content-Type not forwarded: got %q", receivedHeaders.Get("Content-Type"))
-	}
-	if receivedHeaders.Get("Accept") != "application/json" {
-		t.Errorf("Accept not forwarded: got %q", receivedHeaders.Get("Accept"))
-	}
-
-	if receivedHeaders.Get("Cookie") != "" {
-		t.Errorf("Cookie header leaked through proxy: %q", receivedHeaders.Get("Cookie"))
-	}
-	if receivedHeaders.Get("X-Forwarded-For") != "" {
-		t.Errorf("X-Forwarded-For header leaked through proxy: %q", receivedHeaders.Get("X-Forwarded-For"))
-	}
-	if receivedHeaders.Get("X-Custom-Header") != "" {
-		t.Errorf("X-Custom-Header leaked through proxy: %q", receivedHeaders.Get("X-Custom-Header"))
-	}
-
-	authHeader := receivedHeaders.Get("Authorization")
-	if authHeader != "Bearer test-api-key" {
-		t.Errorf("Authorization header = %q, want %q", authHeader, "Bearer test-api-key")
+			req := &backend.CallResourceRequest{
+				Path:   tt.path,
+				Method: http.MethodPost,
+				Body:   []byte(tt.body),
+				Headers: map[string][]string{
+					"Cookie":        {"session=secret"},
+					"Authorization": {"Bearer user-token"},
+				},
+			}
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != tt.upstreamStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.upstreamStatus, string(resp.Body))
+			}
+			if !strings.Contains(string(resp.Body), tt.wantBodyContains) {
+				t.Fatalf("body = %s, want it to contain %s", string(resp.Body), tt.wantBodyContains)
+			}
+			if gotPath != tt.wantUpstreamPath || gotMethod != http.MethodPost {
+				t.Fatalf("upstream got %s %s, want POST %s", gotMethod, gotPath, tt.wantUpstreamPath)
+			}
+			if gotAuth != "Bearer test-api-key" {
+				t.Fatalf("upstream Authorization = %q, want datasource API key", gotAuth)
+			}
+			if gotCookie != "" {
+				t.Fatalf("caller Cookie was forwarded upstream: %q", gotCookie)
+			}
+			if !strings.Contains(gotBody, tt.wantUpstreamBody) {
+				t.Fatalf("upstream body = %s, want it to contain %s", gotBody, tt.wantUpstreamBody)
+			}
+		})
 	}
 }
