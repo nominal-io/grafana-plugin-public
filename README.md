@@ -43,6 +43,10 @@ pnpm run e2e              # Run Playwright tests
 
 > **Note**: Use `pnpm run server` (development Docker) for testing - it includes pre-configured datasources that Playwright tests expect. The production build starts with unconfigured datasources and will cause test failures.
 
+### Adding frontend resource routes
+
+Use `src/resourceRoutes.json` for frontend resource paths and register their POST handlers in `pkg/plugin/resource_handler.go`. The Go tests check every manifest entry against the router without live credentials. Add handler tests for request and response behavior.
+
 ### Backend integration tests
 
 The Go backend tests run without live Nominal credentials by default:
@@ -248,10 +252,10 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
 
 - Asset Search
 
-  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `scout/v1/search-assets`, and `scout/v1/asset/multiple`. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
+  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `search-assets`, and `assets-by-rid`. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
 
   ```sh
-  curl -s -X POST "http://localhost:3000/api/datasources/uid/{UID}/resources/scout/v1/search-assets" \
+  curl -s -X POST "http://localhost:3000/api/datasources/uid/{UID}/resources/search-assets" \
     -H 'Content-Type: application/json' \
     -d '{"query":{"type":"searchText","searchText":""},"sort":{"field":"CREATED_AT","isDescending":true},"pageSize":10}' | jq
   ```

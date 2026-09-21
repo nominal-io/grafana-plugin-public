@@ -7,6 +7,7 @@ import {
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY } from './types';
+import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
@@ -132,7 +133,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     let response: unknown;
     try {
       response = await getBackendSrv().post(
-        `${this.url}/assets`,
+        `${this.url}/${resourceRoutes.assets}`,
         {
           searchText: searchText,
           maxResults: 500,
@@ -153,7 +154,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     let response: unknown;
     try {
       response = await getBackendSrv().post(
-        `${this.url}/datascopes`,
+        `${this.url}/${resourceRoutes.datascopes}`,
         {
           assetRid: assetRid,
         }
@@ -177,7 +178,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     let response: unknown;
     try {
       response = await getBackendSrv().post(
-        `${this.url}/channelvariables`,
+        `${this.url}/${resourceRoutes.channelVariables}`,
         {
           assetRid: assetRid,
           dataScopeName: dataScopeName,

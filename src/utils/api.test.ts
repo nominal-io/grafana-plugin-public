@@ -134,7 +134,7 @@ describe('fetchAssetByRid', () => {
     post.mockResolvedValue({});
     await fetchAssetByRid(DATASOURCE_URL, VALID_RID);
     expect(post).toHaveBeenCalledWith(
-      `${DATASOURCE_URL}/scout/v1/asset/multiple`,
+      `${DATASOURCE_URL}/assets-by-rid`,
       [VALID_RID]
     );
   });
