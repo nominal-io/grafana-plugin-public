@@ -54,15 +54,23 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 
 	var sqlWG sync.WaitGroup
 	var responseMu sync.Mutex
+	// Bound parallel requests even when a dashboard contains many SQL targets.
+	jobs := make(chan preparedQuery, len(sqlQueries))
 	for _, prepared := range sqlQueries {
+		jobs <- prepared
+	}
+	close(jobs)
+	for range min(8, len(sqlQueries)) {
 		sqlWG.Add(1)
-		go func(p preparedQuery) {
+		go func() {
 			defer sqlWG.Done()
-			result := e.executeSqlQuery(ctx, p)
-			responseMu.Lock()
-			response.Responses[p.Query.RefID] = result
-			responseMu.Unlock()
-		}(prepared)
+			for p := range jobs {
+				result := e.executeSqlQuery(ctx, p)
+				responseMu.Lock()
+				response.Responses[p.Query.RefID] = result
+				responseMu.Unlock()
+			}
+		}()
 	}
 	for refID, res := range e.executePreparedBatches(ctx, batchable) {
 		responseMu.Lock()

@@ -14,7 +14,7 @@ import (
 )
 
 const sqlWorkspaceHint = "Set Workspace RID in the data source settings; the SQL endpoint requires a workspace and this API key has no default workspace."
-const sqlDisabledMessage = "SQL queries are disabled for this data source. Enable \"SQL queries\" in the data source settings."
+const sqlDisabledMessage = "This data source uses the Compute API. Select SQL as the Query API in the data source settings."
 
 type sqlWorkspaceCache struct {
 	mu  sync.Mutex
@@ -52,7 +52,7 @@ func sqlFormatOption(format string) sqlutil.FormatQueryOption {
 }
 
 func (e *NominalQueryExecution) executeSqlQuery(ctx context.Context, prepared preparedQuery) backend.DataResponse {
-	if !e.config.EnableSql {
+	if !e.config.UsesSQL() {
 		return backend.ErrDataResponse(backend.StatusBadRequest, sqlDisabledMessage)
 	}
 	token := bearertoken.Token(e.config.Secrets.ApiKey)

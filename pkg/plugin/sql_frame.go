@@ -299,7 +299,7 @@ func sqlString(column arrow.Array, row int) string {
 }
 
 func shapeSqlFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.Frame, error) {
-	if format == sqlutil.FormatOptionTable {
+	if format == sqlutil.FormatOptionTable || frame.Rows() == 0 {
 		return frame, nil
 	}
 	schema := frame.TimeSeriesSchema()
@@ -307,8 +307,10 @@ func shapeSqlFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.F
 		frame.AppendNotices(data.Notice{Severity: data.NoticeSeverityInfo, Text: "Result is shown as a table because a TIMESTAMP column is required for a time series."})
 		return frame, nil
 	}
-	if schema.Type == data.TimeSeriesTypeWide {
-		return frame, nil
+	for row := 0; row < frame.Rows(); row++ {
+		if _, present := frame.Fields[schema.TimeIndex].ConcreteAt(row); !present {
+			return nil, fmt.Errorf("time series result contains a null TIMESTAMP")
+		}
 	}
 	sorted := frame
 	if !sqlTimeFieldSorted(frame.Fields[schema.TimeIndex]) {
@@ -318,10 +320,15 @@ func shapeSqlFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.F
 			return nil, err
 		}
 	}
-	wide, err := data.LongToWide(sorted, nil)
+	if schema.Type == data.TimeSeriesTypeWide {
+		return sorted, nil
+	}
+	// A missing sample is unknown, including for non-nullable SQL results such as COUNT.
+	wide, err := data.LongToWide(sorted, &data.FillMissing{Mode: data.FillModeNull})
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert result to time series: %w", err)
 	}
+	wide.RefID = frame.RefID
 	return wide, nil
 }
 

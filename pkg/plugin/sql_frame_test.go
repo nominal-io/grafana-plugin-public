@@ -144,3 +144,57 @@ func BenchmarkFrameFromArrowStream(b *testing.B) {
 		}
 	}
 }
+
+func TestShapeSqlFrameEmptyTimeSeries(t *testing.T) {
+	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
+	frame.RefID = "A"
+	out, err := shapeSqlFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil {
+		t.Fatalf("an empty time range should return no data, not an error: %v", err)
+	}
+	if out.Rows() != 0 || out.RefID != "A" {
+		t.Fatalf("unexpected empty response: %+v", out)
+	}
+}
+
+func TestShapeSqlFrameSparseSeries(t *testing.T) {
+	ts := time.Unix(1700000000, 0)
+	frame := data.NewFrame("A",
+		data.NewField("time", nil, []time.Time{ts, ts.Add(time.Second)}),
+		data.NewField("channel", nil, []string{"a", "b"}),
+		data.NewField("count", nil, []int64{3, 4}),
+	)
+	frame.RefID = "B"
+	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
+	out, err := shapeSqlFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.RefID != "B" || out.Meta.ExecutedQueryString != frame.Meta.ExecutedQueryString {
+		t.Errorf("query identity and inspector metadata must survive conversion: %+v", out)
+	}
+	for col, missingRow := range map[int]int{1: 1, 2: 0} {
+		if value, present := out.Fields[col].ConcreteAt(missingRow); present {
+			t.Errorf("missing sample became %v; expected null", value)
+		}
+	}
+}
+
+func TestShapeSqlFrameSortsWideSeries(t *testing.T) {
+	ts := time.Unix(1700000000, 0)
+	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts.Add(time.Second), ts}), data.NewField("value", nil, []float64{2, 1}))
+	out, err := shapeSqlFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Fields[0].At(0).(time.Time).Equal(ts) || out.Fields[1].At(0).(float64) != 1 {
+		t.Fatal("time and value rows must be sorted together")
+	}
+}
+
+func TestShapeSqlFrameRejectsNullTime(t *testing.T) {
+	frame := data.NewFrame("A", data.NewField("time", nil, []*time.Time{nil}), data.NewField("value", nil, []float64{1}))
+	if _, err := shapeSqlFrame(frame, sqlutil.FormatOptionTimeSeries); err == nil {
+		t.Fatal("null timestamps cannot be plotted")
+	}
+}

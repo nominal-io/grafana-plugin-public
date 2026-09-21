@@ -92,6 +92,9 @@ go test -count=1 ./pkg/plugin -run 'TestLiveNominal(QueryData|SqlQuery)Integrati
 
 Optional query controls:
 
+- `NOMINAL_WORKSPACE_RID`: workspace for queries and temporary test resources.
+  Required when the key has no default workspace.
+
 - `NOMINAL_QUERY_BUCKETS`: bucket count, default `100`.
 - `NOMINAL_QUERY_ASSET_RID`, `NOMINAL_QUERY_DATA_SCOPE_NAME`, and
   `NOMINAL_QUERY_CHANNEL`: use an existing query target instead of creating

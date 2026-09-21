@@ -40,6 +40,8 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 	case "test", "connection-test":
 		log.DefaultLogger.Debug("Handling test connection request")
 		return h.handleTestConnection(ctx, req, sender)
+	case "sql/datasets", "sql/channels":
+		return h.handleSqlOptions(ctx, req, sender, path)
 	case "channels":
 		log.DefaultLogger.Debug("Handling channels search request")
 		return h.handleChannelsSearch(ctx, req, sender)

@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -12,9 +13,9 @@ import (
 
 const sqlEpochLiteral = "TIMESTAMP '1970-01-01 00:00:00'"
 
-// Whole-second TIMESTAMP literals avoid warehouse implicit coercion and fractional-literal issues.
+// Preserve the requested bounds, including subsecond timestamps.
 func sqlTimestampLiteral(t time.Time) string {
-	return "TIMESTAMP '" + t.UTC().Format("2006-01-02 15:04:05") + "'"
+	return "TIMESTAMP '" + t.UTC().Format("2006-01-02 15:04:05.999999999") + "'"
 }
 
 func interpolateSqlMacros(rawSQL string, q backend.DataQuery) (string, error) {
@@ -23,17 +24,13 @@ func interpolateSqlMacros(rawSQL string, q backend.DataQuery) (string, error) {
 		return "", err
 	}
 	query.RawSQL = rawSQL
-	from := q.TimeRange.From.Truncate(time.Second)
-	to := q.TimeRange.To.Truncate(time.Second)
-	if !to.Equal(q.TimeRange.To) {
-		to = to.Add(time.Second)
-	}
+	from, to := q.TimeRange.From, q.TimeRange.To
 	macros := sqlutil.Macros{
 		"timeFilter": func(_ *sqlutil.Query, args []string) (string, error) {
 			if len(args) != 1 || args[0] == "" {
 				return "", fmt.Errorf("$__timeFilter requires a column argument")
 			}
-			return fmt.Sprintf("%s >= %s AND %s < %s", args[0], sqlTimestampLiteral(from), args[0], sqlTimestampLiteral(to)), nil
+			return fmt.Sprintf("(%s >= %s AND %s < %s)", args[0], sqlTimestampLiteral(from), args[0], sqlTimestampLiteral(to)), nil
 		},
 		"timeFrom": func(_ *sqlutil.Query, args []string) (string, error) {
 			if len(args) != 1 || args[0] != "" {
@@ -52,11 +49,11 @@ func interpolateSqlMacros(rawSQL string, q backend.DataQuery) (string, error) {
 				return "", fmt.Errorf("$__timeGroup requires a column argument")
 			}
 			d := q.Interval
-			if len(args) == 2 {
+			if len(args) == 2 && strings.Trim(args[1], "'\"") != "$__interval" {
 				var err error
-				d, err = gtime.ParseDuration(args[1])
-				if err != nil {
-					return "", fmt.Errorf("$__timeGroup invalid period %q: %w", args[1], err)
+				d, err = gtime.ParseDuration(strings.Trim(args[1], "'\""))
+				if err != nil || d <= 0 {
+					return "", fmt.Errorf("$__timeGroup requires a positive duration, got %q", args[1])
 				}
 			}
 			seconds := d.Seconds()

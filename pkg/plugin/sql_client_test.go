@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 )
@@ -58,5 +59,34 @@ func TestSqlClientEndpointErrors(t *testing.T) {
 		if tc.status == 400 && endpoint.Error() != "detail (sqlQueryId: q)" {
 			t.Fatal(endpoint.Error())
 		}
+	}
+}
+
+func TestSqlClientCancelsRequests(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(started); <-release }))
+	defer srv.Close()
+	defer close(release)
+	client := newSqlClient(srv.URL, nil)
+	if client.http.Timeout == 0 {
+		t.Fatal("SQL requests need a finite timeout")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { _, err := client.Query(ctx, "key", "workspace", "SELECT 1"); result <- err }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected cancellation, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request did not cancel")
 	}
 }

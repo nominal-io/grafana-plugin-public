@@ -92,6 +92,11 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySql}, nil
 	}
 
+	if e.config.QueryAPI == "sql" {
+		response := backend.ErrDataResponse(backend.StatusBadRequest, "This is a Compute query on a SQL data source. Choose a Compute data source or create a new SQL query.")
+		return preparedQuery{}, &response
+	}
+
 	if err := e.validateQuery(qm); err != nil {
 		log.DefaultLogger.Error("Query validation failed", "error", err)
 		response := backend.ErrDataResponse(

@@ -2,10 +2,12 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -76,14 +78,14 @@ func TestExecuteSqlQuery(t *testing.T) {
 	defer srv.Close()
 	workspace := sqlTestWorkspaceRid(t)
 	ds := &Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}
-	e := newNominalQueryExecution(ds, &models.PluginSettings{EnableSql: true, Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(ds, &models.PluginSettings{QueryAPI: "sql", Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	query := backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)}
 	prepared, _ := e.prepareQuery(context.Background(), query)
 	response := e.executeSqlQuery(context.Background(), prepared)
 	if response.Error != nil || len(response.Frames) != 1 || response.Frames[0].Meta.ExecutedQueryString != "SELECT 42" {
 		t.Fatalf("%+v", response)
 	}
-	e.config.EnableSql = false
+	e.config.QueryAPI = "compute"
 	response = e.executeSqlQuery(context.Background(), prepared)
 	if response.Error == nil || response.Error.Error() != sqlDisabledMessage {
 		t.Fatalf("%+v", response)
@@ -126,4 +128,46 @@ func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
 		t.Fatal(err)
 	}
 	return *workspace
+}
+
+func TestSqlDatasourceRejectsComputeQueries(t *testing.T) {
+	e := newNominalQueryExecution(&Datasource{}, &models.PluginSettings{QueryAPI: "sql"})
+	_, response := e.prepareQuery(context.Background(), backend.DataQuery{JSON: []byte(`{"queryType":"timeShift","assetRid":"old-asset","channel":"old-channel"}`)})
+	if response == nil || response.Status != backend.StatusBadRequest {
+		t.Fatalf("%+v", response)
+	}
+}
+
+func TestSqlQueriesBoundParallelRequests(t *testing.T) {
+	var active, peak, total atomic.Int32
+	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
+	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).Append(1) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		total.Add(1)
+		for old := peak.Load(); current > old; old = peak.Load() {
+			if peak.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+		_, _ = w.Write(stream)
+	}))
+	defer srv.Close()
+	workspace := sqlTestWorkspaceRid(t)
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, nil)}, &models.PluginSettings{QueryAPI: "sql", Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	queries := make([]backend.DataQuery, 20)
+	for i := range queries {
+		queries[i] = backend.DataQuery{RefID: fmt.Sprint(i), JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`)}
+	}
+	response := e.Execute(context.Background(), queries)
+	if peak.Load() > 8 || total.Load() != 20 || len(response.Responses) != 20 {
+		t.Fatalf("peak=%d total=%d responses=%d", peak.Load(), total.Load(), len(response.Responses))
+	}
+	for ref, res := range response.Responses {
+		if res.Error != nil {
+			t.Fatalf("%s: %v", ref, res.Error)
+		}
+	}
 }
