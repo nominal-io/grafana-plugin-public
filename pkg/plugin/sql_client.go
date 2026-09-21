@@ -68,17 +68,13 @@ func (c *sqlClient) Query(ctx context.Context, token, workspaceRid, sql string) 
 	if err != nil {
 		return nil, err
 	}
-	return c.post(ctx, token, sqlQueryPath, payload, "application/octet-stream")
-}
-
-func (c *sqlClient) post(ctx context.Context, token, path string, payload []byte, accept string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+sqlQueryPath, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", accept)
+	req.Header.Set("Accept", "application/octet-stream")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("SQL request failed: %w", err)
@@ -101,40 +97,4 @@ func (c *sqlClient) post(ctx context.Context, token, path string, payload []byte
 		e.ErrorName, e.InstanceId, e.Detail, e.SqlQueryId = raw.ErrorName, raw.ErrorInstanceId, raw.Parameters.Detail, raw.Parameters.SqlQueryId
 	}
 	return nil, e
-}
-
-// Use the existing catalog REST endpoint. Importing the catalog package from
-// the pinned Go SDK conflicts with scout/api's global Conjure error registration.
-func (c *sqlClient) DatasetOptions(ctx context.Context, token, workspace, search string) ([]map[string]string, error) {
-	payload, err := json.Marshal(map[string]any{
-		"query": map[string]any{"type": "and", "and": []map[string]any{
-			{"type": "workspace", "workspace": workspace},
-			{"type": "searchText", "searchText": search},
-			{"type": "archiveStatus", "archiveStatus": false},
-		}},
-		"pageSize":    100,
-		"sortOptions": map[string]any{"field": "INGEST_DATE", "isDescending": true},
-	})
-	if err != nil {
-		return nil, err
-	}
-	body, err := c.post(ctx, token, "/catalog/v1/search-datasets-v2", payload, "application/json")
-	if err != nil {
-		return nil, err
-	}
-	defer body.Close()
-	var result struct {
-		Results []struct {
-			Name string `json:"name"`
-			Rid  string `json:"rid"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(io.LimitReader(body, 8<<20)).Decode(&result); err != nil {
-		return nil, fmt.Errorf("invalid dataset search response: %w", err)
-	}
-	options := make([]map[string]string, 0, min(len(result.Results), 100))
-	for _, dataset := range result.Results[:min(len(result.Results), 100)] {
-		options = append(options, map[string]string{"label": dataset.Name, "value": dataset.Rid})
-	}
-	return options, nil
 }

@@ -241,31 +241,6 @@ func TestLiveNominalSqlQueryIntegration(t *testing.T) {
 			}
 		}
 	}
-
-	for _, endpoint := range []string{"sql/datasets", "sql/channels"} {
-		options := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Method: "POST", Path: endpoint, Body: mustMarshal(map[string]string{"datasetRid": target.datasetRid, "searchText": ""})})
-		if options.Status != http.StatusOK {
-			t.Fatalf("%s failed: %d %s", endpoint, options.Status, options.Body)
-		}
-		var choices []map[string]string
-		if err := json.Unmarshal(options.Body, &choices); err != nil {
-			t.Fatal(err)
-		}
-		want := target.datasetRid
-		if endpoint == "sql/channels" {
-			want = "temperature"
-		}
-		found := false
-		for _, choice := range choices {
-			if choice["value"] == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("%s did not discover the test fixture", endpoint)
-		}
-	}
-
 }
 
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {

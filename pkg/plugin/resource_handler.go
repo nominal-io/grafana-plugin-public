@@ -24,8 +24,6 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 	path := normalizeResourcePath(req.Path)
 
 	switch path {
-	case "sql/datasets", "sql/channels":
-		return h.handleSqlOptions(ctx, req, sender, path)
 	case "channels":
 		log.DefaultLogger.Debug("Handling channels search request")
 		return h.handleChannelsSearch(ctx, req, sender)
