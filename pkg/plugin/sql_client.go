@@ -52,7 +52,8 @@ func (c *sqlClient) Close() error {
 }
 
 // sqlGrpcTarget maps https://api.gov.nominal.io/api to api.gov.nominal.io:443 with TLS.
-// Plaintext is allowed only for http URLs, for local development.
+// Like the Nominal Python client, plaintext is allowed only for http URLs on a loopback
+// host, for local development against a stack on the same machine.
 func sqlGrpcTarget(baseURL string) (string, credentials.TransportCredentials, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Hostname() == "" {
@@ -66,6 +67,9 @@ func sqlGrpcTarget(baseURL string) (string, credentials.TransportCredentials, er
 		}
 		return net.JoinHostPort(parsed.Hostname(), port), credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}), nil
 	case "http":
+		if !isLoopbackHost(parsed.Hostname()) {
+			return "", nil, fmt.Errorf("plaintext http is only allowed for loopback hosts in Nominal API base URL %q; use https", baseURL)
+		}
 		if port == "" {
 			port = "80"
 		}
@@ -73,6 +77,14 @@ func sqlGrpcTarget(baseURL string) (string, credentials.TransportCredentials, er
 	default:
 		return "", nil, fmt.Errorf("unsupported scheme %q in Nominal API base URL", parsed.Scheme)
 	}
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Query streams the Arrow IPC result for sql as one reader over the concatenated response
