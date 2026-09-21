@@ -12,16 +12,8 @@ type PluginSettings struct {
 	BaseUrl string `json:"baseUrl"`
 	Path    string `json:"path"` // Legacy field
 	// WorkspaceRid limits asset search to one workspace; empty means all.
-	WorkspaceRid string `json:"workspaceRid"`
-	QueryAPI     string `json:"queryApi,omitempty"`
-	// EnableSql is retained for settings saved by the SQL preview.
-	EnableSql bool                  `json:"enableSql"`
-	Secrets   *SecretPluginSettings `json:"-"`
-}
-
-// UsesSQL selects the API for this datasource. Explicit configuration wins over legacy settings.
-func (ps *PluginSettings) UsesSQL() bool {
-	return ps.QueryAPI == "sql" || (ps.QueryAPI == "" && ps.EnableSql)
+	WorkspaceRid string                `json:"workspaceRid"`
+	Secrets      *SecretPluginSettings `json:"-"`
 }
 
 // GetAPIBaseURL returns the API base URL, preferring baseUrl over legacy path
@@ -47,9 +39,6 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 		return nil, fmt.Errorf("could not unmarshal PluginSettings json: %w", err)
 	}
 
-	if settings.QueryAPI != "" && settings.QueryAPI != "compute" && settings.QueryAPI != "sql" {
-		return nil, fmt.Errorf("unknown query API %q; use compute or sql", settings.QueryAPI)
-	}
 	settings.WorkspaceRid = strings.TrimSpace(settings.WorkspaceRid)
 	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
 

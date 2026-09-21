@@ -254,7 +254,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
 		}
 		message += ". Workspace: " + name
-	} else if config.UsesSQL() {
+	} else {
 		message += ". SQL queries will use the API key's default workspace; set Workspace RID to pin one"
 	}
 	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil

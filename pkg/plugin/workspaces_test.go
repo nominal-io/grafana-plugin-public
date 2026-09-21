@@ -63,7 +63,7 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		wantStatus         backend.HealthStatus
 		wantMessage        string
 	}{
-		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "Successfully connected to Nominal API"},
+		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "SQL queries will use the API key's default workspace; set Workspace RID to pin one"},
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
 		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "Workspace not found or not accessible with this API key"},

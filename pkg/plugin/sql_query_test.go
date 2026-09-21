@@ -14,6 +14,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
+	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	"github.com/palantir/pkg/bearertoken"
 )
@@ -78,16 +79,11 @@ func TestExecuteSqlQuery(t *testing.T) {
 	defer srv.Close()
 	workspace := sqlTestWorkspaceRid(t)
 	ds := &Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}
-	e := newNominalQueryExecution(ds, &models.PluginSettings{QueryAPI: "sql", Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	query := backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)}
 	prepared, _ := e.prepareQuery(context.Background(), query)
 	response := e.executeSqlQuery(context.Background(), prepared)
 	if response.Error != nil || len(response.Frames) != 1 || response.Frames[0].Meta.ExecutedQueryString != "SELECT 42" {
-		t.Fatalf("%+v", response)
-	}
-	e.config.QueryAPI = "compute"
-	response = e.executeSqlQuery(context.Background(), prepared)
-	if response.Error == nil || response.Error.Error() != sqlDisabledMessage {
 		t.Fatalf("%+v", response)
 	}
 }
@@ -99,7 +95,7 @@ func TestExecuteSqlQuerySurfacesEndpointError(t *testing.T) {
 	}))
 	defer srv.Close()
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}, &models.PluginSettings{EnableSql: true, Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	prepared, _ := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT x"}`)})
 	response := e.executeSqlQuery(context.Background(), prepared)
 	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != "bad query (sqlQueryId: q-1)" {
@@ -107,17 +103,42 @@ func TestExecuteSqlQuerySurfacesEndpointError(t *testing.T) {
 	}
 }
 
-func TestExecuteMixesSqlAndLegacyQueries(t *testing.T) {
-	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
-	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Float64Builder).Append(42) })
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&calls, 1); _, _ = w.Write(stream) }))
-	defer srv.Close()
-	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport)}, &models.PluginSettings{EnableSql: true, Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
-	response := e.Execute(context.Background(), []backend.DataQuery{{RefID: "A", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)}, {RefID: "B", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 43","format":"table"}`)}, {RefID: "C", JSON: []byte(`{"constant":6.5}`)}})
-	if response.Responses["A"].Error != nil || response.Responses["B"].Error != nil || response.Responses["C"].Error != nil || atomic.LoadInt32(&calls) != 2 {
-		t.Fatalf("%+v", response.Responses)
+func TestQueryDataMixesSqlAndCompute(t *testing.T) {
+	for _, settings := range []string{`{}`, `{"queryApi":"sql"}`, `{"queryApi":"compute"}`, `{"enableSql":true}`} {
+		t.Run(settings, func(t *testing.T) {
+			schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
+			stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Float64Builder).Append(42) })
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = w.Write(stream)
+			}))
+			defer srv.Close()
+			workspace := sqlTestWorkspaceRid(t)
+			compute := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+				Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{7})},
+			}}
+			ds := &Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, http.DefaultTransport), computeService: compute}
+			req := newQueryRequest([]backend.DataQuery{
+				{RefID: "SQL", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)},
+				{RefID: "Compute", JSON: []byte(`{"queryType":"timeShift","assetRid":"ri.nominal.asset.1","channel":"temp","dataScopeName":"default","buckets":100}`), TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)}},
+				{RefID: "InvalidSQL", JSON: []byte(`{"queryType":"sql","rawSql":" "}`)},
+			})
+			req.PluginContext.DataSourceInstanceSettings.JSONData = []byte(settings)
+			response, err := ds.QueryData(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ref := range []string{"SQL", "Compute"} {
+				result, ok := response.Responses[ref]
+				if !ok || result.Error != nil || len(result.Frames) != 1 || result.Frames[0].Rows() != 1 {
+					t.Fatalf("%s: %+v", ref, result)
+				}
+			}
+			if response.Responses["InvalidSQL"].Error == nil || calls.Load() != 1 || compute.batchComputeCalls != 1 || len(compute.lastBatchRequest.Requests) != 1 {
+				t.Fatalf("SQL calls=%d Compute calls=%d responses=%+v", calls.Load(), compute.batchComputeCalls, response.Responses)
+			}
+		})
 	}
 }
 
@@ -128,14 +149,6 @@ func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
 		t.Fatal(err)
 	}
 	return *workspace
-}
-
-func TestSqlDatasourceRejectsComputeQueries(t *testing.T) {
-	e := newNominalQueryExecution(&Datasource{}, &models.PluginSettings{QueryAPI: "sql"})
-	_, response := e.prepareQuery(context.Background(), backend.DataQuery{JSON: []byte(`{"queryType":"timeShift","assetRid":"old-asset","channel":"old-channel"}`)})
-	if response == nil || response.Status != backend.StatusBadRequest {
-		t.Fatalf("%+v", response)
-	}
 }
 
 func TestSqlQueriesBoundParallelRequests(t *testing.T) {
@@ -156,7 +169,7 @@ func TestSqlQueriesBoundParallelRequests(t *testing.T) {
 	}))
 	defer srv.Close()
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, nil)}, &models.PluginSettings{QueryAPI: "sql", Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: newSqlClient(srv.URL, nil)}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	queries := make([]backend.DataQuery, 20)
 	for i := range queries {
 		queries[i] = backend.DataQuery{RefID: fmt.Sprint(i), JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`)}
