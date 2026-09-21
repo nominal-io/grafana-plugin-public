@@ -170,7 +170,7 @@ export function ConfigEditor(props: Props) {
           <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
           <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
-          <li>Choose the Query API. SQL supports a visual builder and a code editor.</li>
+          <li>Choose the Query API. SQL lets you write queries in a SQL editor.</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
         </ol>
       </div>

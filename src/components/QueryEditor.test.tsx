@@ -152,7 +152,7 @@ describe('SQL query mode', () => {
     renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift', assetRid: 'old-asset', channel: 'old-channel' }, onChange, true);
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Start a new SQL query' }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', sqlEditorMode: 'builder', rawSql: '' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', rawSql: '' }));
     expect(onChange.mock.calls[0][0].assetRid).toBeUndefined();
     expect(onChange.mock.calls[0][0].channel).toBeUndefined();
   });

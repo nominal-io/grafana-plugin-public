@@ -73,16 +73,12 @@ describe('SqlQueryEditor', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rawSql: 'SELECT 2', format: 'table' }));
   });
 
-  it('requires confirmation before replacing custom SQL with builder selections', () => {
+  it('opens saved builder queries as their existing SQL without rewriting them', () => {
     const onChange = jest.fn();
-    render(<SqlQueryEditor query={{ refId: 'A', rawSql: 'SELECT 1' }} onChange={onChange} onRunQuery={jest.fn()} />);
-    fireEvent.click(screen.getByRole('radio', { name: 'Builder' }));
+    const query = { refId: 'A', rawSql: 'SELECT 1', sqlEditorMode: 'builder', sqlBuilder: { datasetRid: 'dataset-1' } };
+    render(<SqlQueryEditor query={query} onChange={onChange} onRunQuery={jest.fn()} />);
+    expect(within(screen.getByTestId('sql-code-editor')).getByRole('textbox')).toHaveValue('SELECT 1');
+    expect(screen.queryByRole('radio', { name: 'Builder' })).not.toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Keep code' }));
-    expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('radio', { name: 'Builder' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Replace SQL' }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sqlEditorMode: 'builder', rawSql: '' }));
   });
-
 });

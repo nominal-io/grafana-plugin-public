@@ -4,21 +4,6 @@ import { DataQuery } from '@grafana/schema';
 export type SqlFormat = 'timeseries' | 'table';
 export const QUERY_TYPE_SQL = 'sql' as const;
 
-export interface SqlBuilderState {
-  datasetRid: string;
-  datasetName?: string;
-  channels: string[];
-  table: 'points_double' | 'points_int';
-  aggregation: 'AVG' | 'MIN' | 'MAX' | 'SUM' | 'COUNT';
-  interval: string; // Empty means Grafana's automatic interval.
-  tagKey?: string;
-  tagValue?: string;
-}
-
-export const DEFAULT_SQL_BUILDER: SqlBuilderState = {
-  datasetRid: '', channels: [], table: 'points_double', aggregation: 'AVG', interval: '',
-};
-
 export interface NominalQuery extends DataQuery {
   // Asset information
   assetRid?: string;
@@ -35,8 +20,6 @@ export interface NominalQuery extends DataQuery {
   buckets?: number;
   queryType?: 'timeShift' | 'decimation' | 'raw' | typeof QUERY_TYPE_SQL;
   rawSql?: string;
-  sqlEditorMode?: 'builder' | 'code';
-  sqlBuilder?: SqlBuilderState;
   format?: SqlFormat;
 
   // Template variables support

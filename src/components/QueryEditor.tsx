@@ -12,7 +12,7 @@ import {
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import { QUERY_TYPE_SQL, usesSql, DEFAULT_SQL_BUILDER, type NominalDataSourceOptions, type NominalQuery } from '../types';
+import { QUERY_TYPE_SQL, usesSql, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
@@ -258,12 +258,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       Choose a Compute data source to keep using this query, or replace it with a new SQL query.
       <div><Button variant="secondary" onClick={() => onChange({
         refId: query.refId, datasource: query.datasource, hide: query.hide,
-        queryType: QUERY_TYPE_SQL, sqlEditorMode: 'builder',
-        sqlBuilder: { ...DEFAULT_SQL_BUILDER, channels: [] }, rawSql: '', format: 'timeseries',
+        queryType: QUERY_TYPE_SQL, rawSql: '', format: 'timeseries',
       })}>Start a new SQL query</Button></div>
     </Alert>;
   }
   return isSqlQuery
-    ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasourceUrl={datasource.url} />
+    ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
     : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />;
 }

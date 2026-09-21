@@ -6,7 +6,7 @@ import {
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, DEFAULT_SQL_BUILDER, QUERY_TYPE_SQL, usesSql } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, usesSql } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import resourceRoutes from './resourceRoutes.json';
 
@@ -27,7 +27,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {
     return usesSql(this.instanceSettings.jsonData)
-      ? { queryType: QUERY_TYPE_SQL, sqlEditorMode: 'builder', sqlBuilder: { ...DEFAULT_SQL_BUILDER, channels: [] }, rawSql: '', format: 'timeseries' }
+      ? { queryType: QUERY_TYPE_SQL, rawSql: '', format: 'timeseries' }
       : DEFAULT_QUERY;
   }
 

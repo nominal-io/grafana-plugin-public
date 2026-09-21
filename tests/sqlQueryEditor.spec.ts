@@ -2,7 +2,7 @@ import { test, expect } from '@grafana/plugin-e2e';
 
 // The browser tests isolate the editor from Nominal availability. Go tests cover
 // the HTTP/Arrow contract; the opt-in live test verifies actual SQL execution.
-test('builds SQL, runs it, and preserves edits when changing editor modes', async ({
+test('edits SQL directly, renders results, and reruns unchanged queries', async ({
   gotoPanelEditPage,
   page,
   request,
@@ -26,13 +26,6 @@ test('builds SQL, runs it, and preserves edits when changing editor modes', asyn
   let dashboardUid: string | undefined;
   const executed: any[] = [];
   try {
-    await page.route('**/resources/sql/datasets', (route) =>
-      route.fulfill({ json: [{ label: 'Engine test', value: 'dataset-1' }] })
-    );
-    await page.route('**/resources/sql/channels', async (route) => {
-      expect(route.request().postDataJSON().datasetRid).toBe('dataset-1');
-      await route.fulfill({ json: [{ label: 'temperature', value: 'temperature' }] });
-    });
     await page.route('**/api/ds/query*', async (route) => {
       const body = route.request().postDataJSON();
       const queries = body.queries.filter((query: any) => query.datasource?.uid === datasource.uid);
@@ -74,7 +67,6 @@ test('builds SQL, runs it, and preserves edits when changing editor modes', asyn
                   refId: 'A',
                   datasource: { type: source.type, uid: datasource.uid },
                   queryType: 'sql',
-                  sqlEditorMode: 'builder',
                   rawSql: '',
                   format: 'table',
                 },
@@ -94,32 +86,19 @@ test('builds SQL, runs it, and preserves edits when changing editor modes', asyn
       await dialog.getByRole('button', { name: /^close$/i }).click();
     }
 
-    await page.getByTestId('sql-dataset-picker').click();
-    await page.getByRole('option', { name: /Engine test/ }).click();
-    await page.getByRole('combobox', { name: 'Search channels...' }).click();
-    await page.getByRole('option', { name: /temperature/ }).click();
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: /^Run query$/ }).click();
-    await expect.poll(() => executed.length).toBeGreaterThan(0);
-    expect(executed.at(-1)).toMatchObject({
-      queryType: 'sql',
-      format: 'table',
-      rawSql: expect.stringContaining("dataset_rid = 'dataset-1'"),
-    });
-    expect(executed.at(-1).rawSql).toContain("channel IN ('temperature')");
-    await expect(page.getByText('42', { exact: true }).first()).toBeVisible();
-
-    await page.getByRole('radio', { name: /^Code$/ }).click();
+    await expect(page.getByRole('radio', { name: /^Builder$/ })).toHaveCount(0);
     const editor = page.getByTestId('sql-code-editor').locator('textarea');
     await editor.click();
     await editor.press('Control+A');
     await editor.pressSequentially('SELECT 42 AS value');
     await editor.press('Control+Enter');
     await expect.poll(() => executed.at(-1)?.rawSql).toBe('SELECT 42 AS value');
-    await page.getByRole('radio', { name: /^Builder$/ }).click();
-    await expect(page.getByText('Replace edited SQL with the builder query?')).toBeVisible();
-    await page.getByRole('button', { name: 'Keep code' }).click();
-    await expect(page.getByTestId('sql-code-editor')).toContainText('SELECT 42 AS value');
+    expect(executed.at(-1)).toMatchObject({ queryType: 'sql', format: 'table' });
+    await expect(page.getByText('42', { exact: true }).first()).toBeVisible();
+    const count = executed.length;
+    await editor.press('Control+Enter');
+    await expect.poll(() => executed.length).toBeGreaterThan(count);
+    expect(executed.at(-1).rawSql).toBe('SELECT 42 AS value');
   } finally {
     if (dashboardUid) {
       await request.delete(`/api/dashboards/uid/${dashboardUid}`);
