@@ -306,11 +306,11 @@ describe('validateMetricFindResponse', () => {
   });
 });
 
-describe('datasource query API', () => {
+describe('new query defaults', () => {
   it.each([
     [{}, 'timeShift'], [{ queryApi: 'compute', enableSql: true }, 'timeShift'],
-    [{ queryApi: 'sql' }, 'sql'], [{ enableSql: true }, 'sql'],
-  ])('chooses new-query defaults from %j', (jsonData, queryType) => {
+    [{ queryApi: 'sql' }, 'timeShift'], [{ enableSql: true }, 'timeShift'],
+  ])('ignores retired datasource API settings in %j', (jsonData, queryType) => {
     const ds = new DataSource({ uid: 'test', jsonData } as DataSourceInstanceSettings<NominalDataSourceOptions>);
     expect(ds.getDefaultQuery(CoreApp.Dashboard).queryType).toBe(queryType);
   });

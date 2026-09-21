@@ -2,7 +2,7 @@ import { test, expect } from '@grafana/plugin-e2e';
 
 // The browser tests isolate the editor from Nominal availability. Go tests cover
 // the HTTP/Arrow contract; the opt-in live test verifies actual SQL execution.
-test('edits SQL directly, renders results, and reruns unchanged queries', async ({
+test('mixes Compute and SQL on one datasource and preserves SQL while switching', async ({
   gotoPanelEditPage,
   page,
   request,
@@ -18,7 +18,7 @@ test('edits SQL directly, renders results, and reruns unchanged queries', async 
       name: `Nominal SQL E2E ${Date.now()}`,
       type: source.type,
       access: 'proxy',
-      jsonData: { queryApi: 'sql' },
+      jsonData: {},
     },
   });
   expect(createResponse.ok()).toBeTruthy();
@@ -26,6 +26,14 @@ test('edits SQL directly, renders results, and reruns unchanged queries', async 
   let dashboardUid: string | undefined;
   const executed: any[] = [];
   try {
+    const assetRid = 'ri.scout.main.asset.e2e';
+    await page.route(`**/api/datasources/uid/${datasource.uid}/resources/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const asset = { rid: assetRid, title: 'E2E asset', labels: [], dataScopes: [{ dataScopeName: 'default', dataSource: { type: 'logSet', logSet: 'ri.logset.main.log-set.e2e' } }] };
+      await route.fulfill({ json: path.endsWith('/assets-by-rid') ? { [assetRid]: asset }
+        : path.endsWith('/channels') ? { channels: [{ name: 'temperature', dataType: 'numeric' }] }
+        : { results: [asset] } });
+    });
     await page.route('**/api/ds/query*', async (route) => {
       const body = route.request().postDataJSON();
       const queries = body.queries.filter((query: any) => query.datasource?.uid === datasource.uid);
@@ -66,6 +74,12 @@ test('edits SQL directly, renders results, and reruns unchanged queries', async 
                 {
                   refId: 'A',
                   datasource: { type: source.type, uid: datasource.uid },
+                  queryType: 'timeShift',
+                  assetRid, channel: 'temperature', channelDataType: 'numeric', dataScopeName: 'default',
+                },
+                {
+                  refId: 'B',
+                  datasource: { type: source.type, uid: datasource.uid },
                   queryType: 'sql',
                   rawSql: '',
                   format: 'table',
@@ -95,10 +109,19 @@ test('edits SQL directly, renders results, and reruns unchanged queries', async 
     await expect.poll(() => executed.at(-1)?.rawSql).toBe('SELECT 42 AS value');
     expect(executed.at(-1)).toMatchObject({ queryType: 'sql', format: 'table' });
     await expect(page.getByText('42', { exact: true }).first()).toBeVisible();
+    expect(executed.some((query) => query.refId === 'A' && query.queryType === 'timeShift')).toBeTruthy();
+    expect(executed.some((query) => query.refId === 'B' && query.queryType === 'sql')).toBeTruthy();
+    // Leave an uncommitted edit in Monaco before switching APIs.
+    await editor.press('Control+A');
+    await editor.pressSequentially('SELECT 43 AS value');
+    await page.getByRole('radio', { name: /^Compute$/ }).last().click();
+    await expect(page.getByTestId('sql-code-editor')).toHaveCount(0);
+    await page.getByRole('radio', { name: /^SQL$/ }).last().click();
+    await expect(page.getByTestId('sql-code-editor')).toContainText('SELECT 43 AS value');
     const count = executed.length;
     await editor.press('Control+Enter');
     await expect.poll(() => executed.length).toBeGreaterThan(count);
-    expect(executed.at(-1).rawSql).toBe('SELECT 42 AS value');
+    expect(executed.at(-1).rawSql).toBe('SELECT 43 AS value');
   } finally {
     if (dashboardUid) {
       await request.delete(`/api/dashboards/uid/${dashboardUid}`);

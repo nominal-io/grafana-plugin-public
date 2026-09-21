@@ -131,43 +131,49 @@ async function settleEffects(): Promise<void> {
   });
 }
 
-describe('SQL query mode', () => {
-  const mockDatasource = { url: DATASOURCE_URL, instanceSettings: { jsonData: {} } } as unknown as DataSource;
+describe('query API selection', () => {
+  const mockDatasource = { url: DATASOURCE_URL } as DataSource;
 
-  function renderSqlQueryEditor(query: NominalQuery, onChange = jest.fn(), enableSql = false) {
-    (mockDatasource as any).instanceSettings.jsonData.enableSql = enableSql;
-    return render(
-      <QueryEditor query={query} onChange={onChange} onRunQuery={jest.fn()} datasource={mockDatasource} />
-    );
+  function EditableQuery({ initialQuery, onChange = jest.fn() }: { initialQuery: NominalQuery; onChange?: jest.Mock }) {
+    const [query, setQuery] = React.useState(initialQuery);
+    return <QueryEditor query={query} onChange={(next) => { setQuery(next); onChange(next); }} onRunQuery={jest.fn()} datasource={mockDatasource} />;
   }
 
-  it('does not show the mode toggle when SQL is disabled', () => {
-    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift' });
-
-    expect(screen.queryByRole('radio', { name: /^sql$/i })).not.toBeInTheDocument();
+  beforeEach(() => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/assets-by-rid')) { return { [ASSET_RID]: ASSET }; }
+      if (url.endsWith('/channels')) { return { channels: [{ name: 'app.logs', dataType: 'log' }] }; }
+      return { results: [] };
+    });
   });
 
-  it('requires an explicit new SQL query when switching from Compute', () => {
+  it.each(['timeShift', 'decimation', 'raw'] as const)('retains %s Compute selections and SQL when switching APIs', async (queryType) => {
     const onChange = jest.fn();
-    renderSqlQueryEditor({ refId: 'A', queryType: 'timeShift', assetRid: 'old-asset', channel: 'old-channel' }, onChange, true);
-    expect(onChange).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Start a new SQL query' }));
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', rawSql: '' }));
-    expect(onChange.mock.calls[0][0].assetRid).toBeUndefined();
-    expect(onChange.mock.calls[0][0].channel).toBeUndefined();
-  });
-
-  it('renders saved SQL in Code without the asset combobox', () => {
-    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }, jest.fn(), true);
+    const original = { refId: 'A', queryType, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    render(<EditableQuery initialQuery={original} onChange={onChange} />);
+    await settleEffects();
+    expect(screen.getByRole('radio', { name: 'Compute' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
     expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
     expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
+    const editor = screen.getByTestId('sql-code-editor').querySelector('textarea')!;
+    fireEvent.change(editor, { target: { value: 'SELECT 42' } });
+    fireEvent.blur(editor);
+    fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
+    await settleEffects();
+    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ ...original, rawSql: 'SELECT 42' });
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 42');
   });
 
-  it('preserves saved SQL and warns when a Compute datasource is selected', () => {
+  it('opens saved SQL without requiring a datasource API setting', () => {
     const onChange = jest.fn();
-    renderSqlQueryEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }, onChange);
-    expect(screen.getByText('This SQL query needs a SQL data source')).toBeInTheDocument();
+    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }} onChange={onChange} />);
+    expect(screen.getByRole('radio', { name: 'SQL' })).toBeChecked();
+    expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 1');
     expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ queryType: 'timeShift', rawSql: 'SELECT 1' }));
   });
 });
 

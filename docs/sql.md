@@ -3,16 +3,20 @@
 Install a plugin build containing both the SQL backend (#143) and editor (#142).
 Deploy the backend first if rolling these changes out separately.
 
-Add a **Nominal** data source, select **Query API → SQL**, and enter the API base
-URL, API key and workspace RID. For example, name it **Nominal SQL** and keep your
-existing **Nominal Compute** data source for asset/data-scope queries. Changing
-the API setting does not convert saved queries. The key needs SQL access to the
-selected workspace and data; Save & Test checks API authentication and workspace
-access, while running a query verifies SQL access.
+Add a **Nominal** data source and enter the API base URL, API key and workspace
+RID. One data source supports both Compute and SQL; choose the API separately
+for each query in the panel editor. A panel can contain both kinds of query.
+Existing saved queries keep their API, regardless of the old data-source API
+setting. New queries default to Compute. Switching APIs retains the SQL text
+and Compute selections; it does not translate between them.
+
+The key needs access to the selected workspace and data. Save & Test checks API
+authentication and workspace access, while running a query verifies API access.
 
 ## SQL editor
 
-In a new panel, select the SQL data source and write SQL directly in the editor.
+In a panel, select your Nominal data source, choose **Query API → SQL** for a
+query, and write SQL directly in the editor.
 Start with `SELECT 1 AS value` and choose **Table** for a simple connection check.
 The editor commits and runs on blur, Ctrl/Cmd+S or Ctrl/Cmd+Enter.
 The API key stays on the Grafana server.
@@ -54,7 +58,8 @@ pnpm build
 pnpm server
 ```
 
-Open <http://localhost:3000>, add/configure a Nominal SQL data source, and run
+Open <http://localhost:3000>, configure a Nominal data source, choose SQL in a
+panel query, and run
 `SELECT 1 AS value` with Table format. Then run the numeric example above and select a
 time range containing data in your dataset. After rebuilding the Go backend,
 restart Grafana with `docker compose restart grafana`; refresh the browser after
@@ -69,9 +74,9 @@ pnpm exec playwright install chromium
 pnpm exec playwright test tests/sqlQueryEditor.spec.ts
 ```
 
-The browser test supplies mock results, checks edited SQL and keyboard reruns,
-and verifies a rendered value. It needs local Grafana but no Nominal credentials,
-and cleans up its datasource/dashboard.
+The browser test supplies mock results, checks API switching without losing edits,
+and verifies that Compute and SQL queries share a data source and panel. It needs
+local Grafana but no Nominal credentials, and cleans up its datasource/dashboard.
 It does not execute SQL against Nominal. For the real API check, export a key
 and matching base URL/workspace, then run:
 

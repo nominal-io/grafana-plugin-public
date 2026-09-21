@@ -1,8 +1,8 @@
 import React, { ChangeEvent } from 'react';
 import { css } from '@emotion/css';
-import { InlineField, RadioButtonGroup, Input, SecretInput, useStyles2 } from '@grafana/ui';
+import { InlineField, Input, SecretInput, useStyles2 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
-import { NominalDataSourceOptions, NominalSecureJsonData, usesSql } from '../types';
+import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<NominalDataSourceOptions, NominalSecureJsonData> { }
 
@@ -55,17 +55,6 @@ export function ConfigEditor(props: Props) {
       jsonData: {
         ...jsonData,
         workspaceRid: event.target.value,
-      },
-    });
-  };
-
-  const onQueryAPIChange = (queryApi: 'compute' | 'sql') => {
-    onOptionsChange({
-      ...options,
-      jsonData: {
-        ...jsonData,
-        queryApi,
-        enableSql: undefined,
       },
     });
   };
@@ -148,18 +137,6 @@ export function ConfigEditor(props: Props) {
         />
       </InlineField>
 
-      <InlineField
-        label="Query API"
-        labelWidth={26}
-        tooltip="Choose Compute for asset and data-scope queries, or SQL for warehouse queries. Use separate data sources to keep both. Changing this does not convert saved queries."
-      >
-        <RadioButtonGroup
-          value={usesSql(jsonData) ? 'sql' : 'compute'}
-          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
-          onChange={onQueryAPIChange}
-        />
-      </InlineField>
-
       <div className={styles.quickSetup}>
         <h4 className={styles.quickSetupTitle}>Quick Setup Guide:</h4>
         <p className={styles.quickSetupNote}>
@@ -170,8 +147,8 @@ export function ConfigEditor(props: Props) {
           <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
           <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
-          <li>Choose the Query API. SQL lets you write queries in a SQL editor.</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
+          <li>In a panel, choose Compute or SQL for each query using this data source</li>
         </ol>
       </div>
     </>

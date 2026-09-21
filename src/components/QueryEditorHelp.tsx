@@ -105,7 +105,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
 
       <div className={styles.section}>
         <h3 className={styles.title}>SQL queries</h3>
-        <p className={styles.text}>Choose Query API: SQL in the data source settings. Write SQL directly in the editor, then choose Time series or Table for the result format.</p>
+        <p className={styles.text}>Choose Query API: SQL for a query in the panel editor. Compute and SQL queries can share one data source and panel. Write SQL directly in the editor, then choose Time series or Table for the result format.</p>
         <table className={styles.table}>
           <thead>
             <tr><th>Macro</th><th>Expands to</th></tr>

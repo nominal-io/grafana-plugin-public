@@ -2,17 +2,16 @@ import React from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
-  Alert,
+  RadioButtonGroup,
   InlineField,
   Input,
-  Button,
   Stack,
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import { QUERY_TYPE_SQL, usesSql, type NominalDataSourceOptions, type NominalQuery } from '../types';
+import { QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
@@ -245,24 +244,35 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 }
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
-  const sqlEnabled = usesSql(datasource.instanceSettings?.jsonData);
   const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
 
-  if (isSqlQuery && !sqlEnabled) {
-    return <Alert severity="warning" title="This SQL query needs a SQL data source">
-      Select a Nominal data source configured with Query API: SQL. The saved query has been preserved.
-    </Alert>;
-  }
-  if (sqlEnabled && !isSqlQuery) {
-    return <Alert severity="warning" title="This Compute query needs a Compute data source">
-      Choose a Compute data source to keep using this query, or replace it with a new SQL query.
-      <div><Button variant="secondary" onClick={() => onChange({
-        refId: query.refId, datasource: query.datasource, hide: query.hide,
-        queryType: QUERY_TYPE_SQL, rawSql: '', format: 'timeseries',
-      })}>Start a new SQL query</Button></div>
-    </Alert>;
-  }
-  return isSqlQuery
-    ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
-    : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />;
+  const onQueryAPIChange = (api: 'compute' | 'sql') => {
+    if ((api === 'sql') === isSqlQuery) {
+      return;
+    }
+    onChange(api === 'sql'
+      ? {
+        ...query,
+        computeQueryType: query.queryType === QUERY_TYPE_SQL ? query.computeQueryType : query.queryType,
+        queryType: QUERY_TYPE_SQL,
+        rawSql: query.rawSql ?? '',
+        format: query.format ?? 'timeseries',
+      }
+      : { ...query, queryType: query.computeQueryType ?? 'timeShift' });
+  };
+
+  return (
+    <Stack direction="column" gap={1}>
+      <InlineField label="Query API" labelWidth={12} tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
+        <RadioButtonGroup
+          value={isSqlQuery ? 'sql' : 'compute'}
+          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+          onChange={onQueryAPIChange}
+        />
+      </InlineField>
+      {isSqlQuery
+        ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
+        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
+    </Stack>
+  );
 }

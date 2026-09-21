@@ -1,21 +1,16 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { ConfigEditor } from './ConfigEditor';
 
 describe('ConfigEditor', () => {
-  it('selects the SQL API for this datasource', () => {
-    const onOptionsChange = jest.fn();
+  it('configures one connection for both query APIs', () => {
     render(
       <ConfigEditor
-        options={{ jsonData: {}, secureJsonData: {}, secureJsonFields: {} } as any}
-        onOptionsChange={onOptionsChange}
+        options={{ jsonData: { queryApi: 'sql' }, secureJsonData: {}, secureJsonFields: {} } as any}
+        onOptionsChange={jest.fn()}
       />
     );
-
-    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-
-    expect(onOptionsChange).toHaveBeenCalledWith(expect.objectContaining({
-      jsonData: expect.objectContaining({ queryApi: 'sql' }),
-    }));
+    expect(screen.queryByRole('radio', { name: 'SQL' })).not.toBeInTheDocument();
+    expect(screen.getByText(/choose Compute or SQL for each query/)).toBeInTheDocument();
   });
 });

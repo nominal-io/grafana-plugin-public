@@ -1,6 +1,7 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
+export type ComputeQueryType = 'timeShift' | 'decimation' | 'raw';
 export type SqlFormat = 'timeseries' | 'table';
 export const QUERY_TYPE_SQL = 'sql' as const;
 
@@ -18,7 +19,9 @@ export interface NominalQuery extends DataQuery {
 
   // Query parameters
   buckets?: number;
-  queryType?: 'timeShift' | 'decimation' | 'raw' | typeof QUERY_TYPE_SQL;
+  queryType?: ComputeQueryType | typeof QUERY_TYPE_SQL;
+  // Retain the Compute mode when switching this query to SQL and back.
+  computeQueryType?: ComputeQueryType;
   rawSql?: string;
   format?: SqlFormat;
 
@@ -82,9 +85,6 @@ export interface NominalTimestamp {
 export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
   workspaceRid?: string;
-  queryApi?: 'compute' | 'sql';
-  /** Compatibility with datasource settings saved by the SQL preview. */
-  enableSql?: boolean;
   path?: string; // Legacy support
 }
 
@@ -99,7 +99,3 @@ export interface NominalSecureJsonData {
 export type MyQuery = NominalQuery;
 export type MyDataSourceOptions = NominalDataSourceOptions;
 export type MySecureJsonData = NominalSecureJsonData;
-
-export function usesSql(options: NominalDataSourceOptions = {}): boolean {
-  return options.queryApi === 'sql' || (!options.queryApi && options.enableSql === true);
-}

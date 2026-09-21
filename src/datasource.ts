@@ -6,18 +6,16 @@ import {
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, usesSql } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
-  readonly instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>;
 
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
     super(instanceSettings);
-    this.instanceSettings = instanceSettings;
 
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
@@ -26,9 +24,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {
-    return usesSql(this.instanceSettings.jsonData)
-      ? { queryType: QUERY_TYPE_SQL, rawSql: '', format: 'timeseries' }
-      : DEFAULT_QUERY;
+    return DEFAULT_QUERY;
   }
 
   applyTemplateVariables(query: NominalQuery, scopedVars: ScopedVars) {
