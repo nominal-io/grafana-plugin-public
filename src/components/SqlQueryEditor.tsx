@@ -18,23 +18,29 @@ interface Props {
 }
 
 const suggestions: CodeEditorSuggestionItem[] = [
-  { label: '$__timeFilter(column)', detail: 'Filters a timestamp column to the panel time range.' },
+  { label: '$__timeFilter(column)', insertText: '$__timeFilter(ts)', detail: 'Filters a timestamp column to the panel time range.' },
   { label: '$__timeFrom()', detail: 'Expands to the panel start timestamp.' },
   { label: '$__timeTo()', detail: 'Expands to the panel end timestamp.' },
-  { label: '$__timeGroup(column, interval)', detail: 'Groups timestamps using the panel or supplied interval.' },
-  { label: '$__interval', detail: 'Expands to Grafana’s calculated panel interval.' },
+  {
+    label: '$__timeGroup(column[, interval])',
+    insertText: '$__timeGroup(ts)',
+    detail: 'Buckets timestamps by the panel interval, or by a duration such as 1m.',
+  },
 ];
 
+const getSuggestions = () => suggestions;
+
 export function SqlQueryEditor({ query, onChange, onRunQuery }: Props) {
-  const [value, setValue] = useState(query.rawSql ?? '');
+  const savedSql = query.rawSql ?? '';
+  const [value, setValue] = useState(savedSql);
 
   useEffect(() => {
-    setValue(query.rawSql ?? '');
-  }, [query.rawSql]);
+    setValue(savedSql);
+  }, [savedSql]);
 
   const commit = useCallback(
     (text: string, runUnchanged = false) => {
-      if (text !== query.rawSql) {
+      if (text !== (query.rawSql ?? '')) {
         onChange({ ...query, queryType: QUERY_TYPE_SQL, rawSql: text });
         onRunQuery();
       } else if (runUnchanged && text.trim()) {
@@ -44,29 +50,37 @@ export function SqlQueryEditor({ query, onChange, onRunQuery }: Props) {
     [onChange, onRunQuery, query]
   );
 
-  // Monaco registers the command once at mount, so it must read the latest commit through a ref.
+  // The Monaco action outlives renders, so it reads the latest commit through a ref.
   const commitRef = useRef(commit);
   commitRef.current = commit;
+  const runAction = useRef<{ dispose: () => void } | undefined>(undefined);
 
   const onEditorDidMount = useCallback((editor: MonacoEditor, monaco: Monaco) => {
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => commitRef.current(editor.getValue(), true));
+    // An action is bound to this editor; editor.addCommand would bind the key for every editor on the page.
+    runAction.current = editor.addAction({
+      id: 'nominal.sql.runQuery',
+      label: 'Run query',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter],
+      run: () => commitRef.current(editor.getValue(), true),
+    });
   }, []);
+
+  const onEditorWillUnmount = useCallback(() => runAction.current?.dispose(), []);
 
   const onFormatChange = (format: SqlFormat) => {
     onChange({ ...query, queryType: QUERY_TYPE_SQL, rawSql: value, format });
     onRunQuery();
   };
 
+  const insertExample = () => {
+    setValue(DEFAULT_SQL);
+    onChange({ ...query, queryType: QUERY_TYPE_SQL, rawSql: DEFAULT_SQL, format: 'timeseries' });
+  };
+
   return (
     <Stack direction="column" gap={1}>
-      {!value && (
-        <Button
-          variant="secondary"
-          onClick={() => {
-            setValue(DEFAULT_SQL);
-            onChange({ ...query, rawSql: DEFAULT_SQL });
-          }}
-        >
+      {!savedSql && !value && (
+        <Button variant="secondary" onClick={insertExample}>
           Use time-series example
         </Button>
       )}
@@ -81,11 +95,13 @@ export function SqlQueryEditor({ query, onChange, onRunQuery }: Props) {
           onBlur={commit}
           onSave={(text) => commit(text, true)}
           onEditorDidMount={onEditorDidMount}
-          getSuggestions={() => suggestions}
+          onEditorWillUnmount={onEditorWillUnmount}
+          getSuggestions={getSuggestions}
         />
       </div>
       <InlineField label="Format" labelWidth={8}>
         <RadioButtonGroup<SqlFormat>
+          aria-label="Result format"
           value={query.format ?? 'timeseries'}
           options={[
             { label: 'Time series', value: 'timeseries' },

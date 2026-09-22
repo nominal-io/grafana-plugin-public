@@ -1,8 +1,10 @@
 import { test, expect } from '@grafana/plugin-e2e';
 
 // The browser tests isolate the editor from Nominal availability. Go tests cover
-// the HTTP/Arrow contract; the opt-in live test verifies actual SQL execution.
-test('mixes Compute and SQL on one datasource and preserves SQL while switching', async ({
+// the gRPC/Arrow contract; the opt-in live test verifies actual SQL execution.
+const MOCK_VALUES: Record<string, number> = { A: 42, B: 7, C: 9 };
+
+test('mixes Compute and SQL on one datasource and keeps SQL edits per query', async ({
   gotoPanelEditPage,
   page,
   request,
@@ -25,6 +27,7 @@ test('mixes Compute and SQL on one datasource and preserves SQL while switching'
   const { datasource } = await createResponse.json();
   let dashboardUid: string | undefined;
   const executed: any[] = [];
+  const lastRun = (refId: string) => [...executed].reverse().find((query) => query.refId === refId);
   try {
     const assetRid = 'ri.scout.main.asset.e2e';
     await page.route(`**/api/datasources/uid/${datasource.uid}/resources/**`, async (route) => {
@@ -48,17 +51,18 @@ test('mixes Compute and SQL on one datasource and preserves SQL while switching'
           frames: [
             {
               schema: {
-                name: 'SQL result',
+                name: `${query.refId} result`,
                 refId: query.refId,
                 fields: [{ name: 'value', type: 'number', typeInfo: { frame: 'float64' } }],
               },
-              data: { values: [[42]] },
+              data: { values: [[MOCK_VALUES[query.refId]]] },
             },
           ],
         };
       }
       await route.fulfill({ json: { results } });
     });
+    const target = { datasource: { type: source.type, uid: datasource.uid } };
     const dashboardResponse = await request.post('/api/dashboards/db', {
       data: {
         dashboard: {
@@ -69,21 +73,16 @@ test('mixes Compute and SQL on one datasource and preserves SQL while switching'
               title: 'SQL result',
               type: 'table',
               gridPos: { h: 8, w: 12, x: 0, y: 0 },
-              datasource: { type: source.type, uid: datasource.uid },
+              datasource: target.datasource,
               targets: [
+                { ...target, refId: 'A', queryType: 'sql', rawSql: '', format: 'table' },
                 {
-                  refId: 'A',
-                  datasource: { type: source.type, uid: datasource.uid },
+                  ...target,
+                  refId: 'B',
                   queryType: 'timeShift',
                   assetRid, channel: 'temperature', channelDataType: 'numeric', dataScopeName: 'default',
                 },
-                {
-                  refId: 'B',
-                  datasource: { type: source.type, uid: datasource.uid },
-                  queryType: 'sql',
-                  rawSql: '',
-                  format: 'table',
-                },
+                { ...target, refId: 'C', queryType: 'sql', rawSql: 'SELECT 9 AS value', format: 'table' },
               ],
             },
           ],
@@ -94,34 +93,38 @@ test('mixes Compute and SQL on one datasource and preserves SQL while switching'
     expect(dashboardResponse.ok()).toBeTruthy();
     const dashboard = await dashboardResponse.json();
     dashboardUid = dashboard.uid;
-    await gotoPanelEditPage({ dashboard: { uid: dashboard.uid }, id: '1' });
+    const panelEditPage = await gotoPanelEditPage({ dashboard: { uid: dashboard.uid }, id: '1' });
     const dialog = page.getByRole('dialog', { name: /what's new in grafana/i });
     if (await dialog.isVisible().catch(() => false)) {
       await dialog.getByRole('button', { name: /^close$/i }).click();
+      await expect(dialog).toBeHidden({ timeout: 10000 });
     }
 
-    await expect(page.getByRole('radio', { name: /^Builder$/ })).toHaveCount(0);
-    const editor = page.getByTestId('sql-code-editor').locator('textarea');
+    const rowA = panelEditPage.getQueryEditorRow('A');
+    const editor = rowA.getByTestId('sql-code-editor').locator('textarea');
     await editor.click();
     await editor.press('Control+A');
     await editor.pressSequentially('SELECT 42 AS value');
+    // Query C mounts a second SQL editor, so the shortcut must stay bound to query A.
     await editor.press('Control+Enter');
-    await expect.poll(() => executed.at(-1)?.rawSql).toBe('SELECT 42 AS value');
-    expect(executed.at(-1)).toMatchObject({ queryType: 'sql', format: 'table' });
+    await expect.poll(() => lastRun('A')?.rawSql).toBe('SELECT 42 AS value');
+    expect(lastRun('A')).toMatchObject({ queryType: 'sql', format: 'table' });
+    expect(lastRun('B')).toMatchObject({ queryType: 'timeShift' });
+    expect(lastRun('C')).toMatchObject({ queryType: 'sql', rawSql: 'SELECT 9 AS value' });
     await expect(page.getByText('42', { exact: true }).first()).toBeVisible();
-    expect(executed.some((query) => query.refId === 'A' && query.queryType === 'timeShift')).toBeTruthy();
-    expect(executed.some((query) => query.refId === 'B' && query.queryType === 'sql')).toBeTruthy();
+
     // Leave an uncommitted edit in Monaco before switching APIs.
     await editor.press('Control+A');
     await editor.pressSequentially('SELECT 43 AS value');
-    await page.getByRole('radio', { name: /^Compute$/ }).last().click();
-    await expect(page.getByTestId('sql-code-editor')).toHaveCount(0);
-    await page.getByRole('radio', { name: /^SQL$/ }).last().click();
-    await expect(page.getByTestId('sql-code-editor')).toContainText('SELECT 43 AS value');
+    await rowA.getByRole('radio', { name: /^Compute$/ }).click();
+    await expect(rowA.getByTestId('sql-code-editor')).toHaveCount(0);
+    await rowA.getByRole('radio', { name: /^SQL$/ }).click();
+    await expect(rowA.getByTestId('sql-code-editor')).toContainText('SELECT 43 AS value');
     const count = executed.length;
     await editor.press('Control+Enter');
     await expect.poll(() => executed.length).toBeGreaterThan(count);
-    expect(executed.at(-1).rawSql).toBe('SELECT 43 AS value');
+    expect(lastRun('A')?.rawSql).toBe('SELECT 43 AS value');
+    expect(lastRun('C')?.rawSql).toBe('SELECT 9 AS value');
   } finally {
     if (dashboardUid) {
       await request.delete(`/api/dashboards/uid/${dashboardUid}`);
