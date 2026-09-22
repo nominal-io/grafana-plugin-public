@@ -165,8 +165,8 @@ github.com/nmiyake/pkg/dirs v1.1.0 h1:qyTzK3bTqAJfekQcU6vlydM/YRxhHsv6MiRFEwTkJc
 github.com/nmiyake/pkg/dirs v1.1.0/go.mod h1:lGSUDZPexhLt+aWYfPHXsqnt+HFr2l/+lbEMWUhdZ/U=
 github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf h1:I/GjCLAljBWp6rSCOESEg7/ZwaXovY75O6+brO6gbAo=
 github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf/go.mod h1:IPK8FcQ/30GN7rwy1roN/3FyeKbTL4Hl6BzgwPfqtqY=
-github.com/nominal-io/nominal-api-protos-go v0.0.0-20260921234220-d28744b557fb h1:e8bDPSMIzXG3YasRyZFHUPCR8YZ3/esXDN0TrS0969w=
-github.com/nominal-io/nominal-api-protos-go v0.0.0-20260921234220-d28744b557fb/go.mod h1:k5tgZl5bKksi0FwvbPTgDmeL+w46go/Lt4Lrp+O7pdk=
+github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922101900-773abda49c70 h1:/1VqZ7ZJFPUzWkI5v9H7GGgwbG43bgFgDbKiYznhiAU=
+github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922101900-773abda49c70/go.mod h1:GGPJINtKVM+4LooEPxr6s99rlDg4ZLG4g7IQFYF1W9w=
 github.com/oasdiff/yaml v0.1.1 h1:6nHx+pn9gBRM6YpBlFZFQGCCd1nuvqOBtTD3KKTgGxY=
 github.com/oasdiff/yaml v0.1.1/go.mod h1:EYJNoyktvWMJ0Hmhx+6qTaqMOsalUaRGT8Sj1hNcegU=
 github.com/oasdiff/yaml3 v0.0.14 h1:aLJee3hxBK2H5wdXd9iPcIXb93Nty1Ge0pT171eHtkw=
