@@ -83,29 +83,29 @@ func newSQLColumn(field arrow.Field) sqlColumn {
 	case arrow.NULL:
 		return &nullColumn{}
 	case arrow.INT8:
-		return newTypedColumn(nullable, valuesOf[int8, *array.Int8])
+		return newTypedColumn(nullable, reader((*array.Int8).Value))
 	case arrow.INT16:
-		return newTypedColumn(nullable, valuesOf[int16, *array.Int16])
+		return newTypedColumn(nullable, reader((*array.Int16).Value))
 	case arrow.INT32:
-		return newTypedColumn(nullable, valuesOf[int32, *array.Int32])
+		return newTypedColumn(nullable, reader((*array.Int32).Value))
 	case arrow.INT64:
-		return newTypedColumn(nullable, valuesOf[int64, *array.Int64])
+		return newTypedColumn(nullable, reader((*array.Int64).Value))
 	case arrow.UINT8:
-		return newTypedColumn(nullable, valuesOf[uint8, *array.Uint8])
+		return newTypedColumn(nullable, reader((*array.Uint8).Value))
 	case arrow.UINT16:
-		return newTypedColumn(nullable, valuesOf[uint16, *array.Uint16])
+		return newTypedColumn(nullable, reader((*array.Uint16).Value))
 	case arrow.UINT32:
-		return newTypedColumn(nullable, valuesOf[uint32, *array.Uint32])
+		return newTypedColumn(nullable, reader((*array.Uint32).Value))
 	case arrow.UINT64:
-		return newTypedColumn(nullable, valuesOf[uint64, *array.Uint64])
+		return newTypedColumn(nullable, reader((*array.Uint64).Value))
 	case arrow.FLOAT32:
-		return newTypedColumn(nullable, valuesOf[float32, *array.Float32])
+		return newTypedColumn(nullable, reader((*array.Float32).Value))
 	case arrow.FLOAT64:
-		return newTypedColumn(nullable, valuesOf[float64, *array.Float64])
+		return newTypedColumn(nullable, reader((*array.Float64).Value))
 	case arrow.BOOL:
-		return newTypedColumn(nullable, valuesOf[bool, *array.Boolean])
+		return newTypedColumn(nullable, reader((*array.Boolean).Value))
 	case arrow.STRING:
-		return newTypedColumn(nullable, valuesOf[string, *array.String])
+		return newTypedColumn(nullable, reader((*array.String).Value))
 	case arrow.TIMESTAMP, arrow.DATE32, arrow.DATE64:
 		return newTypedColumn(nullable, timeValues)
 	case arrow.DECIMAL128, arrow.DECIMAL256:
@@ -178,12 +178,15 @@ func unexpectedArray(values arrow.Array) error {
 	return fmt.Errorf("unexpected %s array", values.DataType())
 }
 
-// valuesOf reads Arrow arrays whose values need no conversion for a Grafana field.
-func valuesOf[T any, A interface{ Value(int) T }](values arrow.Array) (func(int) T, error) {
-	if typed, ok := values.(A); ok {
-		return typed.Value, nil
+// reader reads arrays of type A, whose values need no conversion for a Grafana field, with value.
+func reader[A arrow.Array, T any](value func(A, int) T) valueReader[T] {
+	return func(values arrow.Array) (func(int) T, error) {
+		typed, ok := values.(A)
+		if !ok {
+			return nil, unexpectedArray(values)
+		}
+		return func(i int) T { return value(typed, i) }, nil
 	}
-	return nil, unexpectedArray(values)
 }
 
 func timeValues(values arrow.Array) (func(int) time.Time, error) {
