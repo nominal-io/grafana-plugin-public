@@ -8,7 +8,6 @@ on:
       - '!archive/**'
       - '.github/workflows/with-backend-ci.yml'
   pull_request:
-    branches: [ main ]
     paths:
       - '**'
       - '!archive/**'
