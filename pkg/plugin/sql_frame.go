@@ -1,9 +1,10 @@
 package plugin
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -14,316 +15,276 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
-func frameFromArrowStream(r io.Reader, name string) (*data.Frame, error) {
+// frameFromArrowStream decodes an Arrow IPC stream into one frame, keeping at most rowLimit rows.
+// It converts columns itself because data.FromArrowRecord rejects nested types such as the
+// map<string,string> tags column and assumes nanosecond timestamps. When the whole stream fits,
+// it also reads r to EOF, so a stream that fails after its last batch reports that error.
+func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame, error) {
 	reader, err := ipc.NewReader(r, ipc.WithAllocator(memory.DefaultAllocator))
+	if errors.Is(err, io.EOF) {
+		return nil, errors.New("SQL response was empty")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read Arrow stream: %w", err)
 	}
 	defer reader.Release()
-	columns := reader.Schema().Fields()
-	accumulators := make([]sqlColumnAccumulator, len(columns))
-	for i, column := range columns {
-		accumulators[i] = newSQLColumnAccumulator(column)
+
+	fields := reader.Schema().Fields()
+	columns := make([]sqlColumn, len(fields))
+	for i, field := range fields {
+		columns[i] = newSQLColumn(field)
 	}
-	for reader.Next() {
-		record := reader.Record()
-		for column := 0; column < int(record.NumCols()); column++ {
-			accumulators[column].append(record.Column(column))
+	var rows int64
+	truncated := false
+	for !truncated && reader.Next() {
+		record := reader.RecordBatch()
+		n := record.NumRows()
+		if rows+n > rowLimit {
+			n, truncated = rowLimit-rows, true
 		}
+		for i, column := range columns {
+			if err := column.append(record.Column(i), int(n)); err != nil {
+				return nil, fmt.Errorf("failed to read column %q: %w", fields[i].Name, err)
+			}
+		}
+		rows += n
 	}
 	if err := reader.Err(); err != nil {
-		return nil, fmt.Errorf("Arrow stream read error: %w", err)
+		return nil, fmt.Errorf("failed to read Arrow stream: %w", err)
 	}
+	if !truncated {
+		if _, err := io.Copy(io.Discard, r); err != nil {
+			return nil, err
+		}
+	}
+
 	frame := data.NewFrame(name)
-	for _, accumulator := range accumulators {
-		frame.Fields = append(frame.Fields, data.NewField(accumulator.field.Name, nil, accumulator.values))
+	for i, column := range columns {
+		frame.Fields = append(frame.Fields, data.NewField(fields[i].Name, nil, column.values()))
+	}
+	if truncated {
+		frame.AppendNotices(data.Notice{
+			Severity: data.NoticeSeverityWarning,
+			Text:     fmt.Sprintf("Results have been limited to %d rows because the SQL row limit was reached", rowLimit),
+		})
 	}
 	return frame, nil
 }
 
-func sqlFieldType(t arrow.DataType, nullable bool) data.FieldType {
-	if dictionary, ok := t.(*arrow.DictionaryType); ok {
-		return sqlFieldType(dictionary.ValueType, nullable)
+// sqlColumn collects one Arrow column across record batches.
+type sqlColumn interface {
+	append(column arrow.Array, rows int) error
+	values() any
+}
+
+func newSQLColumn(field arrow.Field) sqlColumn {
+	valueType, nullable := field.Type, field.Nullable
+	if dictionary, ok := valueType.(*arrow.DictionaryType); ok {
+		// A dictionary entry can be null even when the index is not.
+		valueType, nullable = dictionary.ValueType, true
 	}
-	switch t.ID() {
-	case arrow.TIMESTAMP:
-		if nullable {
-			return data.FieldTypeNullableTime
-		}
-		return data.FieldTypeTime
-	case arrow.FLOAT32, arrow.FLOAT64:
-		if nullable {
-			return data.FieldTypeNullableFloat64
-		}
-		return data.FieldTypeFloat64
+	switch valueType.ID() {
+	case arrow.NULL:
+		return &nullColumn{}
+	case arrow.TIMESTAMP, arrow.DATE32, arrow.DATE64:
+		return newTypedColumn(nullable, timeValues)
+	case arrow.FLOAT16, arrow.FLOAT32, arrow.FLOAT64, arrow.DECIMAL32, arrow.DECIMAL64, arrow.DECIMAL128, arrow.DECIMAL256:
+		return newTypedColumn(nullable, floatValues)
 	case arrow.INT8, arrow.INT16, arrow.INT32, arrow.INT64:
-		if nullable {
-			return data.FieldTypeNullableInt64
-		}
-		return data.FieldTypeInt64
+		return newTypedColumn(nullable, intValues)
 	case arrow.UINT8, arrow.UINT16, arrow.UINT32, arrow.UINT64:
-		if nullable {
-			return data.FieldTypeNullableUint64
-		}
-		return data.FieldTypeUint64
+		return newTypedColumn(nullable, uintValues)
 	case arrow.BOOL:
-		if nullable {
-			return data.FieldTypeNullableBool
-		}
-		return data.FieldTypeBool
+		return newTypedColumn(nullable, boolValues)
 	default:
-		if nullable {
-			return data.FieldTypeNullableString
-		}
-		return data.FieldTypeString
+		return newTypedColumn(nullable, stringValues)
 	}
 }
 
-type sqlColumnAccumulator struct {
-	field     arrow.Field
-	fieldType data.FieldType
-	values    any
+// valueReader returns a function that reads row i of an Arrow array as T.
+type valueReader[T any] func(values arrow.Array) (func(i int) T, error)
+
+type typedColumn[T any] struct {
+	read     valueReader[T]
+	nullable bool
+	vals     []T
+	ptrs     []*T
 }
 
-func sqlAppend[T any](existing, batch []T) []T {
-	if len(existing) == 0 {
-		return batch
+func newTypedColumn[T any](nullable bool, read valueReader[T]) *typedColumn[T] {
+	return &typedColumn[T]{read: read, nullable: nullable, vals: []T{}, ptrs: []*T{}}
+}
+
+func (c *typedColumn[T]) values() any {
+	if c.nullable {
+		return c.ptrs
 	}
-	return append(existing, batch...)
+	return c.vals
 }
 
-func newSQLColumnAccumulator(field arrow.Field) sqlColumnAccumulator {
-	fieldType := sqlFieldType(field.Type, field.Nullable)
-	var values any
-	switch fieldType {
-	case data.FieldTypeTime:
-		values = []time.Time{}
-	case data.FieldTypeNullableTime:
-		values = []*time.Time{}
-	case data.FieldTypeFloat64:
-		values = []float64{}
-	case data.FieldTypeNullableFloat64:
-		values = []*float64{}
-	case data.FieldTypeInt64:
-		values = []int64{}
-	case data.FieldTypeNullableInt64:
-		values = []*int64{}
-	case data.FieldTypeUint64:
-		values = []uint64{}
-	case data.FieldTypeNullableUint64:
-		values = []*uint64{}
-	case data.FieldTypeBool:
-		values = []bool{}
-	case data.FieldTypeNullableBool:
-		values = []*bool{}
-	case data.FieldTypeString:
-		values = []string{}
-	default:
-		values = []*string{}
-	}
-	return sqlColumnAccumulator{field: field, fieldType: fieldType, values: values}
-}
-
-func (a *sqlColumnAccumulator) append(column arrow.Array) {
-	n := column.Len()
-	switch a.fieldType {
-	case data.FieldTypeTime:
-		values := make([]time.Time, n)
-		for i := range values {
-			values[i] = sqlTime(column, i)
-		}
-		a.values = sqlAppend(a.values.([]time.Time), values)
-	case data.FieldTypeNullableTime:
-		values := make([]time.Time, n)
-		pointers := make([]*time.Time, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlTime(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*time.Time), pointers)
-	case data.FieldTypeFloat64:
-		values := make([]float64, n)
-		for i := range values {
-			values[i] = sqlFloat(column, i)
-		}
-		a.values = sqlAppend(a.values.([]float64), values)
-	case data.FieldTypeNullableFloat64:
-		values := make([]float64, n)
-		pointers := make([]*float64, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlFloat(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*float64), pointers)
-	case data.FieldTypeInt64:
-		values := make([]int64, n)
-		for i := range values {
-			values[i] = sqlInt(column, i)
-		}
-		a.values = sqlAppend(a.values.([]int64), values)
-	case data.FieldTypeNullableInt64:
-		values := make([]int64, n)
-		pointers := make([]*int64, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlInt(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*int64), pointers)
-	case data.FieldTypeUint64:
-		values := make([]uint64, n)
-		for i := range values {
-			values[i] = sqlUint(column, i)
-		}
-		a.values = sqlAppend(a.values.([]uint64), values)
-	case data.FieldTypeNullableUint64:
-		values := make([]uint64, n)
-		pointers := make([]*uint64, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlUint(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*uint64), pointers)
-	case data.FieldTypeBool:
-		values := make([]bool, n)
-		for i := range values {
-			values[i] = sqlBool(column, i)
-		}
-		a.values = sqlAppend(a.values.([]bool), values)
-	case data.FieldTypeNullableBool:
-		values := make([]bool, n)
-		pointers := make([]*bool, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlBool(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*bool), pointers)
-	case data.FieldTypeString:
-		values := make([]string, n)
-		for i := range values {
-			values[i] = sqlString(column, i)
-		}
-		a.values = sqlAppend(a.values.([]string), values)
-	default:
-		values := make([]string, n)
-		pointers := make([]*string, n)
-		for i := range values {
-			if !column.IsNull(i) {
-				values[i] = sqlString(column, i)
-				pointers[i] = &values[i]
-			}
-		}
-		a.values = sqlAppend(a.values.([]*string), pointers)
-	}
-}
-
-func sqlDictionaryValue(column arrow.Array, row int) (arrow.Array, int) {
+func (c *typedColumn[T]) append(column arrow.Array, rows int) error {
+	values, index, isNull := column, func(i int) int { return i }, column.IsNull
 	if dictionary, ok := column.(*array.Dictionary); ok {
-		return dictionary.Dictionary(), dictionary.GetValueIndex(row)
+		values, index = dictionary.Dictionary(), dictionary.GetValueIndex
+		for i := range rows {
+			if j := index(i); !dictionary.IsNull(i) && (j < 0 || j >= values.Len()) {
+				return fmt.Errorf("dictionary index %d is out of range", j)
+			}
+		}
+		isNull = func(i int) bool { return dictionary.IsNull(i) || values.IsNull(index(i)) }
 	}
-	return column, row
+	get, err := c.read(values)
+	if err != nil {
+		return err
+	}
+	if !c.nullable {
+		// Dictionary columns are always nullable, so rows index values directly here.
+		c.vals = slices.Grow(c.vals, rows)
+		for i := range rows {
+			c.vals = append(c.vals, get(i))
+		}
+		return nil
+	}
+	c.ptrs = slices.Grow(c.ptrs, rows)
+	batch := make([]T, rows)
+	for i := range rows {
+		if isNull(i) {
+			c.ptrs = append(c.ptrs, nil)
+			continue
+		}
+		batch[i] = get(index(i))
+		c.ptrs = append(c.ptrs, &batch[i])
+	}
+	return nil
 }
 
-func sqlTime(column arrow.Array, row int) time.Time {
-	column, row = sqlDictionaryValue(column, row)
-	return column.(*array.Timestamp).Value(row).ToTime(column.(*array.Timestamp).DataType().(*arrow.TimestampType).Unit).UTC()
+// nullColumn holds the NULL type, whose arrays have no validity bitmap.
+type nullColumn struct{ rows int }
+
+func (c *nullColumn) append(_ arrow.Array, rows int) error {
+	c.rows += rows
+	return nil
 }
-func sqlFloat(column arrow.Array, row int) float64 {
-	column, row = sqlDictionaryValue(column, row)
-	switch values := column.(type) {
+
+func (c *nullColumn) values() any {
+	return make([]*string, c.rows)
+}
+
+func unexpectedArray(values arrow.Array) error {
+	return fmt.Errorf("unexpected %s array", values.DataType())
+}
+
+func timeValues(values arrow.Array) (func(int) time.Time, error) {
+	switch values := values.(type) {
+	case *array.Timestamp:
+		unit := values.DataType().(*arrow.TimestampType).Unit
+		return func(i int) time.Time { return values.Value(i).ToTime(unit).UTC() }, nil
+	case *array.Date32:
+		return func(i int) time.Time { return values.Value(i).ToTime() }, nil
+	case *array.Date64:
+		return func(i int) time.Time { return values.Value(i).ToTime() }, nil
+	}
+	return nil, unexpectedArray(values)
+}
+
+func floatValues(values arrow.Array) (func(int) float64, error) {
+	switch values := values.(type) {
 	case *array.Float64:
-		return values.Value(row)
+		return values.Value, nil
 	case *array.Float32:
-		return float64(values.Value(row))
-	default:
-		panic("unexpected SQL float column")
+		return func(i int) float64 { return float64(values.Value(i)) }, nil
+	case *array.Float16:
+		return func(i int) float64 { return float64(values.Value(i).Float32()) }, nil
+	case *array.Decimal32:
+		scale := values.DataType().(arrow.DecimalType).GetScale()
+		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
+	case *array.Decimal64:
+		scale := values.DataType().(arrow.DecimalType).GetScale()
+		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
+	case *array.Decimal128:
+		scale := values.DataType().(arrow.DecimalType).GetScale()
+		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
+	case *array.Decimal256:
+		scale := values.DataType().(arrow.DecimalType).GetScale()
+		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
 	}
-}
-func sqlInt(column arrow.Array, row int) int64 {
-	column, row = sqlDictionaryValue(column, row)
-	switch values := column.(type) {
-	case *array.Int64:
-		return values.Value(row)
-	case *array.Int32:
-		return int64(values.Value(row))
-	case *array.Int16:
-		return int64(values.Value(row))
-	case *array.Int8:
-		return int64(values.Value(row))
-	default:
-		panic("unexpected SQL integer column")
-	}
-}
-func sqlUint(column arrow.Array, row int) uint64 {
-	column, row = sqlDictionaryValue(column, row)
-	switch values := column.(type) {
-	case *array.Uint64:
-		return values.Value(row)
-	case *array.Uint32:
-		return uint64(values.Value(row))
-	case *array.Uint16:
-		return uint64(values.Value(row))
-	case *array.Uint8:
-		return uint64(values.Value(row))
-	default:
-		panic("unexpected SQL unsigned integer column")
-	}
-}
-func sqlBool(column arrow.Array, row int) bool {
-	column, row = sqlDictionaryValue(column, row)
-	return column.(*array.Boolean).Value(row)
-}
-func sqlString(column arrow.Array, row int) string {
-	column, row = sqlDictionaryValue(column, row)
-	switch values := column.(type) {
-	case *array.String:
-		return values.Value(row)
-	case *array.LargeString:
-		return values.Value(row)
-	case *array.Binary:
-		return string(values.Value(row))
-	case *array.LargeBinary:
-		return string(values.Value(row))
-	default:
-		return column.ValueStr(row)
-	}
+	return nil, unexpectedArray(values)
 }
 
-func shapeSqlFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.Frame, error) {
+func intValues(values arrow.Array) (func(int) int64, error) {
+	switch values := values.(type) {
+	case *array.Int64:
+		return values.Value, nil
+	case *array.Int32:
+		return func(i int) int64 { return int64(values.Value(i)) }, nil
+	case *array.Int16:
+		return func(i int) int64 { return int64(values.Value(i)) }, nil
+	case *array.Int8:
+		return func(i int) int64 { return int64(values.Value(i)) }, nil
+	}
+	return nil, unexpectedArray(values)
+}
+
+func uintValues(values arrow.Array) (func(int) uint64, error) {
+	switch values := values.(type) {
+	case *array.Uint64:
+		return values.Value, nil
+	case *array.Uint32:
+		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
+	case *array.Uint16:
+		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
+	case *array.Uint8:
+		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
+	}
+	return nil, unexpectedArray(values)
+}
+
+func boolValues(values arrow.Array) (func(int) bool, error) {
+	if values, ok := values.(*array.Boolean); ok {
+		return values.Value, nil
+	}
+	return nil, unexpectedArray(values)
+}
+
+// stringValues reads text and binary columns as strings and renders every other type, such as
+// maps, lists and durations, as Arrow's string form of the value.
+func stringValues(values arrow.Array) (func(int) string, error) {
+	switch values := values.(type) {
+	case *array.String:
+		return values.Value, nil
+	case *array.LargeString:
+		return values.Value, nil
+	case *array.StringView:
+		return values.Value, nil
+	case *array.Binary:
+		return values.ValueString, nil
+	case *array.LargeBinary:
+		return values.ValueString, nil
+	}
+	return values.ValueStr, nil
+}
+
+// shapeSQLFrame returns table results unchanged. Time series results are sorted by time and, when
+// long, converted to the wide shape Grafana panels expect, with nulls for missing samples.
+func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.Frame, error) {
 	if format == sqlutil.FormatOptionTable || frame.Rows() == 0 {
 		return frame, nil
 	}
 	schema := frame.TimeSeriesSchema()
 	if schema.Type == data.TimeSeriesTypeNot {
-		frame.AppendNotices(data.Notice{Severity: data.NoticeSeverityInfo, Text: "Result is shown as a table because a TIMESTAMP column is required for a time series."})
+		frame.AppendNotices(data.Notice{
+			Severity: data.NoticeSeverityInfo,
+			Text:     "Result is shown as a table because a time series needs a timestamp column and a numeric column.",
+		})
 		return frame, nil
 	}
-	for row := 0; row < frame.Rows(); row++ {
-		if _, present := frame.Fields[schema.TimeIndex].ConcreteAt(row); !present {
-			return nil, fmt.Errorf("time series result contains a null TIMESTAMP")
-		}
-	}
-	sorted := frame
-	if !sqlTimeFieldSorted(frame.Fields[schema.TimeIndex]) {
-		var err error
-		sorted, err = sortSqlLongFrame(frame, schema.TimeIndex)
-		if err != nil {
-			return nil, err
-		}
+	sorted, err := sortFrameByTime(frame, schema.TimeIndex)
+	if err != nil {
+		return nil, err
 	}
 	if schema.Type == data.TimeSeriesTypeWide {
 		return sorted, nil
 	}
-	// A missing sample is unknown, including for non-nullable SQL results such as COUNT.
 	wide, err := data.LongToWide(sorted, &data.FillMissing{Mode: data.FillModeNull})
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert result to time series: %w", err)
@@ -332,50 +293,34 @@ func shapeSqlFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.F
 	return wide, nil
 }
 
-func sqlTimeFieldSorted(field *data.Field) bool {
-	for i := 1; i < field.Len(); i++ {
-		left, leftOK := field.ConcreteAt(i - 1)
-		right, rightOK := field.ConcreteAt(i)
-		if !leftOK || !rightOK || left.(time.Time).After(right.(time.Time)) {
-			return false
+// sortFrameByTime returns frame ordered by its time field, keeping the order of equal timestamps.
+func sortFrameByTime(frame *data.Frame, timeIndex int) (*data.Frame, error) {
+	field := frame.Fields[timeIndex]
+	times := make([]time.Time, field.Len())
+	for i := range times {
+		t, ok := field.ConcreteAt(i)
+		if !ok {
+			return nil, errors.New("time series results cannot contain a null timestamp")
 		}
+		times[i] = t.(time.Time)
 	}
-	return true
-}
+	if slices.IsSortedFunc(times, time.Time.Compare) {
+		return frame, nil
+	}
+	order := make([]int, len(times))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return times[a].Compare(times[b]) })
 
-func sortSqlLongFrame(frame *data.Frame, timeIndex int) (*data.Frame, error) {
-	rows, err := frame.RowLen()
-	if err != nil {
-		return nil, err
-	}
-	indices := make([]int, rows)
-	for i := range indices {
-		indices[i] = i
-	}
-	var sortErr error
-	sort.SliceStable(indices, func(i, j int) bool {
-		left, leftOK := frame.Fields[timeIndex].ConcreteAt(indices[i])
-		right, rightOK := frame.Fields[timeIndex].ConcreteAt(indices[j])
-		if !leftOK || !rightOK {
-			sortErr = fmt.Errorf("time series result contains a null TIMESTAMP")
-			return false
-		}
-		return left.(time.Time).Before(right.(time.Time))
-	})
-	if sortErr != nil {
-		return nil, sortErr
-	}
-	out := data.NewFrame(frame.Name)
-	out.RefID, out.Meta = frame.RefID, frame.Meta
-	for _, field := range frame.Fields {
-		out.Fields = append(out.Fields, data.NewFieldFromFieldType(field.Type(), 0))
-		out.Fields[len(out.Fields)-1].Name, out.Fields[len(out.Fields)-1].Labels, out.Fields[len(out.Fields)-1].Config = field.Name, field.Labels, field.Config
-	}
-	out.SetRowCapacity(rows)
-	for _, index := range indices {
-		for col, field := range frame.Fields {
-			out.Fields[col].Append(field.CopyAt(index))
+	sorted := frame.EmptyCopy()
+	sorted.Meta = frame.Meta
+	sorted.Extend(len(order))
+	for col, field := range frame.Fields {
+		sorted.Fields[col].Config = field.Config
+		for i, row := range order {
+			sorted.Fields[col].Set(i, field.At(row))
 		}
 	}
-	return out, nil
+	return sorted, nil
 }
