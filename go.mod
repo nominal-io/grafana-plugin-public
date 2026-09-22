@@ -12,7 +12,7 @@ require (
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
 	github.com/palantir/pkg/uuid v1.3.0
-	google.golang.org/genproto v0.0.0-20210630183607-d20f26d13c79
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd
 	google.golang.org/grpc v1.85.0-dev.0.20260825072537-93e31b48545e
 )
 
@@ -107,6 +107,7 @@ require (
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/fsnotify/fsnotify.v1 v1.4.7 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect

@@ -21,36 +21,52 @@ import (
 
 type sqlQueryHandler func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error
 
-type fakeSqlService struct {
+type fakeSQLService struct {
 	sqlv1.UnimplementedSqlServiceServer
-	query sqlQueryHandler
+	query   sqlQueryHandler
+	catalog func(context.Context) error
 }
 
-func (f *fakeSqlService) Query(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+func (f *fakeSQLService) Query(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 	return f.query(req, stream)
 }
 
-// newFakeSqlClient serves query over an in-memory gRPC connection and returns a client bound to it.
-func newFakeSqlClient(t *testing.T, query sqlQueryHandler) *sqlClient {
+func (f *fakeSQLService) GetSqlCatalog(ctx context.Context, _ *sqlv1.GetSqlCatalogRequest) (*sqlv1.GetSqlCatalogResponse, error) {
+	if f.catalog == nil {
+		return f.UnimplementedSqlServiceServer.GetSqlCatalog(ctx, nil)
+	}
+	if err := f.catalog(ctx); err != nil {
+		return nil, err
+	}
+	return &sqlv1.GetSqlCatalogResponse{}, nil
+}
+
+// newFakeSQLClient serves service over an in-memory gRPC connection and returns a client bound to it.
+func newFakeSQLClient(t *testing.T, service *fakeSQLService) *sqlClient {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	server := grpc.NewServer()
-	sqlv1.RegisterSqlServiceServer(server, &fakeSqlService{query: query})
+	sqlv1.RegisterSqlServiceServer(server, service)
 	go func() { _ = server.Serve(listener) }()
 	conn, err := grpc.NewClient("passthrough:///bufconn",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }),
 	)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("grpc.NewClient() error = %v", err)
 	}
-	client := newSqlClientFromConn(conn)
+	client := newSQLClientFromConn(conn)
 	t.Cleanup(func() {
 		_ = client.Close()
 		server.Stop()
 		_ = listener.Close()
 	})
 	return client
+}
+
+func newFakeSQLQueryClient(t *testing.T, query sqlQueryHandler) *sqlClient {
+	t.Helper()
+	return newFakeSQLClient(t, &fakeSQLService{query: query})
 }
 
 // sqlPayloadServer streams payload as a single response message.
@@ -60,28 +76,29 @@ func sqlPayloadServer(payload []byte) sqlQueryHandler {
 	}
 }
 
-// sqlStatusError mirrors scout's SqlErrors: a generic status message plus an ErrorInfo whose
-// metadata carries sqlQueryId and, optionally, a specific detail.
-func sqlStatusError(code codes.Code, message, reason, queryId, detail string) error {
+// sqlStatusError builds an error shaped like the SQL service's: a generic status message plus an
+// ErrorInfo whose metadata carries sqlQueryId and, optionally, a specific detail.
+func sqlStatusError(t *testing.T, code codes.Code, message, reason, queryID, detail string) error {
+	t.Helper()
 	st := status.New(code, message)
-	if reason != "" {
-		md := map[string]string{"sqlQueryId": queryId}
-		if detail != "" {
-			md["detail"] = detail
-		}
-		var err error
-		st, err = st.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "nominal.sql.v1", Metadata: md})
-		if err != nil {
-			panic(err)
-		}
+	if reason == "" {
+		return st.Err()
+	}
+	md := map[string]string{"sqlQueryId": queryID}
+	if detail != "" {
+		md["detail"] = detail
+	}
+	st, err := st.WithDetails(&errdetails.ErrorInfo{Reason: reason, Domain: "nominal.sql.v1", Metadata: md})
+	if err != nil {
+		t.Fatalf("status.WithDetails() error = %v", err)
 	}
 	return st.Err()
 }
 
-func TestSqlClientQueryContract(t *testing.T) {
+func TestSQLClientQuerySendsRequest(t *testing.T) {
 	var got *sqlv1.SqlServiceQueryRequest
 	var authorization []string
-	client := newFakeSqlClient(t, func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+	client := newFakeSQLQueryClient(t, func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		got = req
 		md, _ := metadata.FromIncomingContext(stream.Context())
 		authorization = md.Get("authorization")
@@ -94,74 +111,125 @@ func TestSqlClientQueryContract(t *testing.T) {
 	})
 	r, err := client.Query(context.Background(), "token", "workspace", "SELECT 1")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Query() error = %v", err)
 	}
 	defer r.Close()
 	body, err := io.ReadAll(r)
 	if err != nil || string(body) != "stream" {
-		t.Fatalf("body=%q err=%v", body, err)
+		t.Fatalf("io.ReadAll() = %q, %v; want %q, nil", body, err, "stream")
 	}
-	if got.GetQuery() != "SELECT 1" || got.GetWorkspaceRid() != "workspace" || got.GetResultFormat() != sqlv1.SqlServiceQueryResultFormat_SQL_SERVICE_QUERY_RESULT_FORMAT_ARROW_STREAM {
-		t.Fatalf("request=%v", got)
+	if got.GetQuery() != "SELECT 1" || got.GetWorkspaceRid() != "workspace" {
+		t.Errorf("request query, workspace = %q, %q; want %q, %q", got.GetQuery(), got.GetWorkspaceRid(), "SELECT 1", "workspace")
+	}
+	if want := sqlv1.SqlServiceQueryResultFormat_SQL_SERVICE_QUERY_RESULT_FORMAT_ARROW_STREAM; got.GetResultFormat() != want {
+		t.Errorf("request result format = %v, want %v", got.GetResultFormat(), want)
 	}
 	if got.MaxRows != nil {
-		t.Fatal("max_rows sent")
+		t.Errorf("request max rows = %d, want unset", got.GetMaxRows())
 	}
 	if len(authorization) != 1 || authorization[0] != "Bearer token" {
-		t.Fatalf("authorization=%v", authorization)
+		t.Errorf("authorization metadata = %q, want [%q]", authorization, "Bearer token")
 	}
 }
 
-func TestSqlClientEndpointErrors(t *testing.T) {
+func TestSQLClientEndpointErrors(t *testing.T) {
 	for _, tc := range []struct {
-		err  error
-		want backend.Status
+		name       string
+		err        error
+		wantStatus backend.Status
+		wantMsg    string
 	}{
-		{sqlStatusError(codes.InvalidArgument, "SQL query is invalid", "SQL_ERROR_INVALID_QUERY", "q", "bad query"), backend.StatusBadRequest},
-		{sqlStatusError(codes.Internal, "boom", "", "", ""), backend.StatusInternal},
-		{sqlStatusError(codes.ResourceExhausted, "", "SQL_ERROR_RESOURCE_EXHAUSTED", "", ""), backend.StatusTooManyRequests},
-		{sqlStatusError(codes.Unauthenticated, "no", "", "", ""), backend.StatusUnauthorized},
-		{sqlStatusError(codes.PermissionDenied, "no", "", "", ""), backend.StatusForbidden},
+		{
+			name:       "detail and query ID",
+			err:        sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "SQL_ERROR_INVALID_QUERY", "q", "bad query"),
+			wantStatus: backend.StatusBadRequest,
+			wantMsg:    "bad query (sqlQueryId: q)",
+		},
+		{
+			name:       "status message only",
+			err:        sqlStatusError(t, codes.Internal, "boom", "", "", ""),
+			wantStatus: backend.StatusInternal,
+			wantMsg:    "boom",
+		},
+		{
+			name:       "reason without message",
+			err:        sqlStatusError(t, codes.ResourceExhausted, "", "SQL_ERROR_RESOURCE_EXHAUSTED", "", ""),
+			wantStatus: backend.StatusTooManyRequests,
+			wantMsg:    "SQL_ERROR_RESOURCE_EXHAUSTED",
+		},
+		{
+			name:       "no message",
+			err:        status.Error(codes.NotFound, ""),
+			wantStatus: backend.StatusNotFound,
+			wantMsg:    "SQL endpoint returned NotFound",
+		},
+		{
+			name:       "unauthenticated",
+			err:        sqlStatusError(t, codes.Unauthenticated, "no", "", "", ""),
+			wantStatus: backend.StatusUnauthorized,
+			wantMsg:    "no",
+		},
+		{
+			name:       "permission denied",
+			err:        sqlStatusError(t, codes.PermissionDenied, "no", "", "", ""),
+			wantStatus: backend.StatusForbidden,
+			wantMsg:    "no",
+		},
+		{
+			name:       "unavailable",
+			err:        sqlStatusError(t, codes.Unavailable, "throttled", "", "", ""),
+			wantStatus: backend.StatusBadGateway,
+			wantMsg:    "throttled",
+		},
 	} {
-		client := newFakeSqlClient(t, func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
-			return tc.err
+		t.Run(tc.name, func(t *testing.T) {
+			client := newFakeSQLQueryClient(t, func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+				return tc.err
+			})
+			_, err := client.Query(context.Background(), "k", "w", "select")
+			endpoint, ok := errors.AsType[*sqlEndpointError](err)
+			if !ok {
+				t.Fatalf("Query() error = %v, want *sqlEndpointError", err)
+			}
+			if got := endpoint.backendStatus(); got != tc.wantStatus {
+				t.Errorf("backendStatus() = %v, want %v", got, tc.wantStatus)
+			}
+			if got := endpoint.Error(); got != tc.wantMsg {
+				t.Errorf("Error() = %q, want %q", got, tc.wantMsg)
+			}
 		})
-		_, err := client.Query(context.Background(), "k", "w", "select")
-		var endpoint *sqlEndpointError
-		if !errors.As(err, &endpoint) || endpoint.backendStatus() != tc.want {
-			t.Fatalf("%v: %v", tc.err, err)
-		}
-		if endpoint.Code == codes.InvalidArgument && endpoint.Error() != "bad query (sqlQueryId: q)" {
-			t.Fatal(endpoint.Error())
-		}
-		if endpoint.Code == codes.ResourceExhausted && endpoint.Error() != "SQL_ERROR_RESOURCE_EXHAUSTED" {
-			t.Fatal(endpoint.Error())
-		}
 	}
 }
 
-func TestSqlClientSurfacesMidStreamErrors(t *testing.T) {
-	client := newFakeSqlClient(t, func(_ *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+func TestSQLClientSurfacesMidStreamErrors(t *testing.T) {
+	failure := sqlStatusError(t, codes.Internal, "worker died", "SQL_ERROR_EXECUTION_FAILED", "q", "")
+	client := newFakeSQLQueryClient(t, func(_ *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		if err := stream.Send(&sqlv1.SqlServiceQueryResponse{QueryId: "q", Payload: []byte("partial")}); err != nil {
 			return err
 		}
-		return sqlStatusError(codes.Internal, "worker died", "SQL_ERROR_EXECUTION_FAILED", "q", "")
+		return failure
 	})
 	r, err := client.Query(context.Background(), "k", "w", "select")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Query() error = %v", err)
 	}
 	defer r.Close()
 	body, err := io.ReadAll(r)
-	var endpoint *sqlEndpointError
-	if string(body) != "partial" || !errors.As(err, &endpoint) || endpoint.Error() != "worker died (sqlQueryId: q)" {
-		t.Fatalf("body=%q err=%v", body, err)
+	if string(body) != "partial" {
+		t.Errorf("body = %q, want %q", body, "partial")
+	}
+	const wantMsg = "worker died (sqlQueryId: q)"
+	if endpoint, ok := errors.AsType[*sqlEndpointError](err); !ok || endpoint.Error() != wantMsg {
+		t.Fatalf("io.ReadAll() error = %v, want %q", err, wantMsg)
+	}
+	if _, again := r.Read(make([]byte, 1)); !errors.Is(again, err) {
+		t.Errorf("Read() after failure = %v, want %v", again, err)
 	}
 }
 
-// blockingSqlServer never answers until release is closed, so the client side
+// blockingSQLServer never answers until release is closed, so the client side
 // decides how the call ends (cancellation or its own deadline).
-func blockingSqlServer(started chan<- struct{}, release <-chan struct{}) sqlQueryHandler {
+func blockingSQLServer(started chan<- struct{}, release <-chan struct{}) sqlQueryHandler {
 	return func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		close(started)
 		<-release
@@ -169,10 +237,10 @@ func blockingSqlServer(started chan<- struct{}, release <-chan struct{}) sqlQuer
 	}
 }
 
-func TestSqlClientCancelsRequests(t *testing.T) {
+func TestSQLClientCancelsRequests(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
-	client := newFakeSqlClient(t, blockingSqlServer(started, release))
+	client := newFakeSQLQueryClient(t, blockingSQLServer(started, release))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	result := make(chan error, 1)
@@ -186,37 +254,77 @@ func TestSqlClientCancelsRequests(t *testing.T) {
 	select {
 	case err := <-result:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected cancellation, got %v", err)
+			t.Fatalf("Query() error = %v, want context.Canceled", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("request did not cancel")
 	}
 }
 
-func TestSqlClientTimesOut(t *testing.T) {
+func TestSQLClientTimesOut(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
-	client := newFakeSqlClient(t, blockingSqlServer(started, release))
+	client := newFakeSQLQueryClient(t, blockingSQLServer(started, release))
 	client.timeout = 50 * time.Millisecond
 	_, err := client.Query(context.Background(), "key", "workspace", "SELECT 1")
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected timeout, got %v", err)
+		t.Fatalf("Query() error = %v, want context.DeadlineExceeded", err)
 	}
 }
 
-func TestSqlGrpcTarget(t *testing.T) {
-	for _, tc := range []struct{ url, target string }{
-		{"https://api.gov.nominal.io/api", "api.gov.nominal.io:443"},
-		{"https://api-staging.gov.nominal.io:8443/api/", "api-staging.gov.nominal.io:8443"},
+func TestSQLClientCheckConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		catalog func(context.Context) error
+		wantErr string
+	}{
+		{name: "reachable", catalog: func(context.Context) error { return nil }},
+		{name: "rejected key", catalog: func(context.Context) error { return status.Error(codes.Unauthenticated, "invalid token") }, wantErr: "invalid token"},
 	} {
-		target, creds, err := sqlGrpcTarget(tc.url)
-		if err != nil || target != tc.target || creds == nil {
-			t.Fatalf("%s: target=%q creds=%v err=%v", tc.url, target, creds, err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			var authorization []string
+			client := newFakeSQLClient(t, &fakeSQLService{catalog: func(ctx context.Context) error {
+				md, _ := metadata.FromIncomingContext(ctx)
+				authorization = md.Get("authorization")
+				return tc.catalog(ctx)
+			}})
+			err := client.CheckConnection(context.Background(), "token")
+			if gotErr := errorText(err); gotErr != tc.wantErr {
+				t.Errorf("CheckConnection() error = %q, want %q", gotErr, tc.wantErr)
+			}
+			if len(authorization) != 1 || authorization[0] != "Bearer token" {
+				t.Errorf("authorization metadata = %q, want [%q]", authorization, "Bearer token")
+			}
+		})
 	}
-	for _, bad := range []string{"", "api.gov.nominal.io", "ftp://api.gov.nominal.io", "http://localhost:8080/api"} {
-		if _, _, err := sqlGrpcTarget(bad); err == nil {
-			t.Fatalf("%q: expected error", bad)
-		}
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func TestGRPCTarget(t *testing.T) {
+	for _, tc := range []struct {
+		baseURL string
+		want    string
+		wantErr bool
+	}{
+		{baseURL: "https://api.gov.nominal.io/api", want: "api.gov.nominal.io:443"},
+		{baseURL: "https://api-staging.gov.nominal.io:8443/api/", want: "api-staging.gov.nominal.io:8443"},
+		{baseURL: "", wantErr: true},
+		{baseURL: "api.gov.nominal.io", wantErr: true},
+		{baseURL: "ftp://api.gov.nominal.io", wantErr: true},
+		{baseURL: "http://localhost:8080/api", wantErr: true},
+		{baseURL: "https://%zz", wantErr: true},
+	} {
+		t.Run(tc.baseURL, func(t *testing.T) {
+			got, err := grpcTarget(tc.baseURL)
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Errorf("grpcTarget(%q) = %q, %v; want %q, error %t", tc.baseURL, got, err, tc.want, tc.wantErr)
+			}
+		})
 	}
 }
