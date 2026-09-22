@@ -263,7 +263,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   return (
     <Stack direction="column" gap={1}>
-      <InlineField label="Query API" labelWidth={12} tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
+      <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           value={isSqlQuery ? 'sql' : 'compute'}
           options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
