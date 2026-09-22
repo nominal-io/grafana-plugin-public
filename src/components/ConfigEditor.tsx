@@ -125,7 +125,7 @@ export function ConfigEditor(props: Props) {
         labelWidth={26}
         interactive
         tooltip={
-          'Recommended. Limits asset search to this workspace instead of every workspace the key can access. Only search is filtered; assets from other workspaces still work in queries.'
+          'Recommended. Selects the SQL workspace and limits Compute asset search. SQL otherwise uses the API key’s default workspace.'
         }
       >
         <Input
@@ -148,6 +148,7 @@ export function ConfigEditor(props: Props) {
           <li>Create a Nominal API key and paste it in the API Key field</li>
           <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
+          <li>In a panel, choose Compute or SQL for each query using this data source</li>
         </ol>
       </div>
     </>

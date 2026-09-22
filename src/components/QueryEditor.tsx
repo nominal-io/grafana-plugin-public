@@ -2,6 +2,7 @@ import React from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
+  RadioButtonGroup,
   InlineField,
   Input,
   Stack,
@@ -10,10 +11,11 @@ import {
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import type { NominalDataSourceOptions, NominalQuery } from '../types';
+import { QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
+import { SqlQueryEditor } from './SqlQueryEditor';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -102,7 +104,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const styles = useStyles2(getStyles);
   const { state, commands } = useNominalQueryBuilder({
     query,
@@ -238,5 +240,39 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         )}
       </div>
     </div>
+  );
+}
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+
+  const onQueryAPIChange = (api: 'compute' | 'sql') => {
+    if ((api === 'sql') === isSqlQuery) {
+      return;
+    }
+    onChange(api === 'sql'
+      ? {
+        ...query,
+        computeQueryType: query.queryType === QUERY_TYPE_SQL ? query.computeQueryType : query.queryType,
+        queryType: QUERY_TYPE_SQL,
+        rawSql: query.rawSql ?? '',
+        format: query.format ?? 'timeseries',
+      }
+      : { ...query, queryType: query.computeQueryType ?? 'timeShift' });
+  };
+
+  return (
+    <Stack direction="column" gap={1}>
+      <InlineField label="Query API" labelWidth={12} tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
+        <RadioButtonGroup
+          value={isSqlQuery ? 'sql' : 'compute'}
+          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+          onChange={onQueryAPIChange}
+        />
+      </InlineField>
+      {isSqlQuery
+        ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
+        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
+    </Stack>
   );
 }
