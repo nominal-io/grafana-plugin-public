@@ -18,8 +18,11 @@ import (
 const testWorkspaceRid = "ri.security.test.workspace.11111111-1111-1111-1111-111111111111"
 
 type mockWorkspaceService struct {
-	displayName *string
-	err         error
+	displayName      *string
+	err              error
+	defaultWorkspace *workspaceapi.Workspace
+	defaultCalls     int
+	defaultFunc      func() (*workspaceapi.Workspace, error)
 }
 
 func (m *mockWorkspaceService) GetWorkspace(_ context.Context, _ bearertoken.Token, workspaceRid rids.WorkspaceRid) (workspaceapi.Workspace, error) {
@@ -32,7 +35,11 @@ func (m *mockWorkspaceService) UpdateWorkspace(context.Context, bearertoken.Toke
 	return workspaceapi.Workspace{}, nil
 }
 func (m *mockWorkspaceService) GetDefaultWorkspace(context.Context, bearertoken.Token) (*workspaceapi.Workspace, error) {
-	return nil, nil
+	m.defaultCalls++
+	if m.defaultFunc != nil {
+		return m.defaultFunc()
+	}
+	return m.defaultWorkspace, m.err
 }
 
 func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *mockWorkspaceService) *Datasource {
@@ -56,7 +63,7 @@ func TestCheckHealthWorkspace(t *testing.T) {
 		wantStatus         backend.HealthStatus
 		wantMessage        string
 	}{
-		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "Successfully connected to Nominal API"},
+		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "SQL queries will use the API key's default workspace; set Workspace RID to pin one"},
 		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
 		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
 		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "Workspace not found or not accessible with this API key"},
