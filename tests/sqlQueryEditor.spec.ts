@@ -93,15 +93,17 @@ test('mixes Compute and SQL on one datasource and keeps SQL edits per query', as
     expect(dashboardResponse.ok()).toBeTruthy();
     const dashboard = await dashboardResponse.json();
     dashboardUid = dashboard.uid;
-    const panelEditPage = await gotoPanelEditPage({ dashboard: { uid: dashboard.uid }, id: '1' });
+    await gotoPanelEditPage({ dashboard: { uid: dashboard.uid }, id: '1' });
     const dialog = page.getByRole('dialog', { name: /what's new in grafana/i });
     if (await dialog.isVisible().catch(() => false)) {
       await dialog.getByRole('button', { name: /^close$/i }).click();
       await expect(dialog).toBeHidden({ timeout: 10000 });
     }
 
-    const rowA = panelEditPage.getQueryEditorRow('A');
-    const editor = rowA.getByTestId('sql-code-editor').locator('textarea');
+    // Queries render in order, so query A owns the first SQL editor and the first API switch.
+    const sqlEditors = page.getByTestId('sql-code-editor');
+    const editor = sqlEditors.first().locator('textarea');
+    const apiA = page.getByRole('radiogroup', { name: 'Query API' }).first();
     await editor.click();
     await editor.press('Control+A');
     await editor.pressSequentially('SELECT 42 AS value');
@@ -116,10 +118,10 @@ test('mixes Compute and SQL on one datasource and keeps SQL edits per query', as
     // Leave an uncommitted edit in Monaco before switching APIs.
     await editor.press('Control+A');
     await editor.pressSequentially('SELECT 43 AS value');
-    await rowA.getByRole('radio', { name: /^Compute$/ }).click();
-    await expect(rowA.getByTestId('sql-code-editor')).toHaveCount(0);
-    await rowA.getByRole('radio', { name: /^SQL$/ }).click();
-    await expect(rowA.getByTestId('sql-code-editor')).toContainText('SELECT 43 AS value');
+    await apiA.getByRole('radio', { name: /^Compute$/ }).click();
+    await expect(sqlEditors).toHaveCount(1);
+    await apiA.getByRole('radio', { name: /^SQL$/ }).click();
+    await expect(sqlEditors.first()).toContainText('SELECT 43 AS value');
     const count = executed.length;
     await editor.press('Control+Enter');
     await expect.poll(() => executed.length).toBeGreaterThan(count);
