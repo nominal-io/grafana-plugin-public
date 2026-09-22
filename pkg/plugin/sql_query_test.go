@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -20,9 +21,11 @@ import (
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	"github.com/palantir/pkg/bearertoken"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
@@ -43,6 +46,21 @@ func sqlTestExecution(t *testing.T, service sqlv1.SqlServiceClient) *NominalQuer
 func sqlQueryService(t *testing.T, query sqlQueryHandler) sqlv1.SqlServiceClient {
 	t.Helper()
 	return newFakeSQLService(t, &fakeSQLService{query: query})
+}
+
+// sqlStatusError builds an error shaped like the SQL service's: a generic status message plus an
+// ErrorInfo whose metadata carries the query ID and a specific detail.
+func sqlStatusError(t *testing.T, code codes.Code, message, queryID, detail string) error {
+	t.Helper()
+	st, err := status.New(code, message).WithDetails(&errdetails.ErrorInfo{
+		Reason:   "SQL_ERROR",
+		Domain:   "nominal.sql.v1",
+		Metadata: map[string]string{"sqlQueryId": queryID, "detail": detail},
+	})
+	if err != nil {
+		t.Fatalf("status.WithDetails() error = %v", err)
+	}
+	return st.Err()
 }
 
 // sqlPayloadServer streams payload as a single response message.
@@ -140,20 +158,6 @@ func TestResolveSQLWorkspace(t *testing.T) {
 		}
 		if got, err := ds.resolveSQLWorkspace(context.Background(), "k"); err != nil || got != testWorkspaceRid {
 			t.Errorf("resolveSQLWorkspace() after a failure = %q, %v; want %q", got, err, testWorkspaceRid)
-		}
-	})
-	t.Run("stops waiting when the caller is cancelled", func(t *testing.T) {
-		release := make(chan struct{})
-		defer close(release)
-		service := &mockWorkspaceService{defaultFunc: func() (*workspaceapi.Workspace, error) {
-			<-release
-			return nil, errors.New("unavailable")
-		}}
-		ds := &Datasource{workspaceService: service}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-		defer cancel()
-		if _, err := ds.resolveSQLWorkspace(ctx, "k"); !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("resolveSQLWorkspace() error = %v, want context.DeadlineExceeded", err)
 		}
 	})
 }
@@ -272,6 +276,40 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			}
 			if len(response.Frames) != 1 || response.Frames[0].Meta.ExecutedQueryString == "" {
 				t.Errorf("frames = %v, want one frame with the expanded SQL for the query inspector", response.Frames)
+			}
+		})
+	}
+}
+
+func TestSQLErrorResponse(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
+	defer cancelExpired()
+	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-2", "Column 'x' not found")
+	for _, tc := range []struct {
+		name       string
+		ctx        context.Context
+		err        error
+		wantStatus backend.Status
+		wantSource backend.ErrorSource
+		wantMsg    string
+	}{
+		{name: "cancelled by Grafana", ctx: cancelled, err: status.Error(codes.Canceled, "canceled"), wantStatus: backend.StatusInternal, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query was cancelled"},
+		{name: "Grafana deadline", ctx: expired, err: status.Error(codes.DeadlineExceeded, "deadline"), wantStatus: backend.StatusTimeout, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query timed out"},
+		{name: "rejected query", ctx: context.Background(), err: invalid, wantStatus: backend.StatusBadRequest, wantSource: backend.ErrorSourceDownstream, wantMsg: "Column 'x' not found (sqlQueryId: q-2)"},
+		{name: "rejected mid-stream", ctx: context.Background(), err: fmt.Errorf("failed to read Arrow stream: %w", invalid), wantStatus: backend.StatusBadRequest, wantSource: backend.ErrorSourceDownstream, wantMsg: "Column 'x' not found (sqlQueryId: q-2)"},
+		{name: "server time limit", ctx: context.Background(), err: sqlStatusError(t, codes.DeadlineExceeded, "SQL query timed out", "q-3", ""), wantStatus: backend.StatusTimeout, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query timed out (sqlQueryId: q-3)"},
+		{name: "status without details", ctx: context.Background(), err: status.Error(codes.Unauthenticated, ""), wantStatus: backend.StatusUnauthorized, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL endpoint returned Unauthenticated"},
+		{name: "plugin error", ctx: context.Background(), err: errors.New("SQL response was empty"), wantStatus: backend.StatusInternal, wantMsg: "SQL response was empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := sqlErrorResponse(tc.ctx, tc.err)
+			if response.Status != tc.wantStatus || response.ErrorSource != tc.wantSource {
+				t.Errorf("status, source = %v, %q; want %v, %q", response.Status, response.ErrorSource, tc.wantStatus, tc.wantSource)
+			}
+			if response.Error == nil || response.Error.Error() != tc.wantMsg {
+				t.Errorf("error = %v, want %q", response.Error, tc.wantMsg)
 			}
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -25,6 +26,7 @@ import (
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
@@ -128,8 +130,9 @@ type Datasource struct {
 	sqlService   sqlv1.SqlServiceClient
 	sqlConn      *grpc.ClientConn
 	// sqlErr explains why sqlService is nil, for example a plain http base URL.
-	sqlErr       error
-	sqlWorkspace sqlWorkspaceCache
+	sqlErr error
+	// defaultSQLWorkspace caches the API key's default workspace when no Workspace RID is set.
+	defaultSQLWorkspace atomic.Pointer[string]
 
 	resourceHTTPClient *http.Client
 
@@ -293,7 +296,7 @@ func (d *Datasource) checkSQL(ctx context.Context, token bearertoken.Token) erro
 		return d.sqlErr
 	}
 	if _, err := d.sqlService.GetSqlCatalog(withBearerToken(ctx, token), &sqlv1.GetSqlCatalogRequest{}); err != nil {
-		return sqlQueryError(ctx, err)
+		return errors.New(sqlErrorMessage(status.Convert(err)))
 	}
 	_, err := d.resolveSQLWorkspace(ctx, token)
 	return err

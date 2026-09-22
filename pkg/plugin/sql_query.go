@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
-	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -14,82 +13,42 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	"github.com/palantir/pkg/bearertoken"
-	"golang.org/x/sync/singleflight"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
 	// defaultSQLRowLimit matches the default of Grafana's [sql] row_limit, used when Grafana sends none.
 	defaultSQLRowLimit = 1_000_000
 	// sqlServiceTimeLimit is how long the SQL service lets a query run.
-	sqlServiceTimeLimit    = 2 * time.Minute
-	workspaceLookupTimeout = 30 * time.Second
+	sqlServiceTimeLimit = 2 * time.Minute
 )
 
 var errNoSQLWorkspace = errors.New("set Workspace RID in the data source settings: SQL queries need a workspace and this API key has no default workspace")
 
-// sqlWorkspaceError reports a failed lookup of the API key's default workspace.
-type sqlWorkspaceError struct{ err error }
-
-func (e *sqlWorkspaceError) Error() string {
-	return formatUserError("failed to resolve the API key's default workspace", e.err)
-}
-
-func (e *sqlWorkspaceError) Unwrap() error { return e.err }
-
-// sqlWorkspaceCache remembers the API key's default workspace once a lookup succeeds.
-type sqlWorkspaceCache struct {
-	mu     sync.Mutex
-	rid    string
-	lookup singleflight.Group
-}
-
-func (c *sqlWorkspaceCache) get() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.rid
-}
-
-func (c *sqlWorkspaceCache) set(rid string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.rid = rid
-}
-
-// resolveSQLWorkspace returns the configured workspace, or else the API key's default workspace.
-// Concurrent queries share one lookup, and a failed lookup is retried by the next query.
+// resolveSQLWorkspace returns the configured workspace, or else the API key's default workspace,
+// which is cached once a lookup succeeds.
 func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.Token) (string, error) {
 	if d.workspaceRid != nil {
 		return d.workspaceRid.String(), nil
 	}
-	if rid := d.sqlWorkspace.get(); rid != "" {
-		return rid, nil
+	if rid := d.defaultSQLWorkspace.Load(); rid != nil {
+		return *rid, nil
 	}
 	if d.workspaceService == nil {
 		return "", errNoSQLWorkspace
 	}
-	lookup := d.sqlWorkspace.lookup.DoChan("", func() (any, error) {
-		// Other queries may be waiting on this lookup, so one caller's cancellation must not end it.
-		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceLookupTimeout)
-		defer cancel()
-		workspace, err := d.workspaceService.GetDefaultWorkspace(lookupCtx, token)
-		if err != nil {
-			return "", &sqlWorkspaceError{err: err}
-		}
-		if workspace == nil {
-			return "", errNoSQLWorkspace
-		}
-		d.sqlWorkspace.set(workspace.Rid.String())
-		return workspace.Rid.String(), nil
-	})
-	select {
-	case result := <-lookup:
-		if result.Err != nil {
-			return "", result.Err
-		}
-		return result.Val.(string), nil
-	case <-ctx.Done():
-		return "", ctx.Err()
+	workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
+	if err != nil {
+		return "", errors.New(formatUserError("failed to resolve the API key's default workspace", err))
 	}
+	if workspace == nil {
+		return "", errNoSQLWorkspace
+	}
+	rid := workspace.Rid.String()
+	d.defaultSQLWorkspace.Store(&rid)
+	return rid, nil
 }
 
 // executeSQLQuery expands macros, runs the query and shapes the result for its format.
@@ -103,7 +62,7 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		return backend.ErrDataResponse(backend.StatusBadRequest, message)
 	}
 	query := prepared.SQL
-	expanded, err := interpolateSQLMacros(query)
+	expanded, err := sqlutil.Interpolate(query, sqlMacros)
 	if err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "Macro expansion failed: "+err.Error())
 	}
@@ -145,9 +104,9 @@ func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql stri
 		ResultFormat: sqlv1.SqlServiceQueryResultFormat_SQL_SERVICE_QUERY_RESULT_FORMAT_ARROW_STREAM,
 	})
 	if err != nil {
-		return nil, sqlQueryError(ctx, err)
+		return nil, err
 	}
-	return frameFromArrowStream(newSQLStreamReader(ctx, stream), refID, sqlRowLimit(ctx))
+	return frameFromArrowStream(&sqlStreamReader{stream: stream}, refID, sqlRowLimit(ctx))
 }
 
 // sqlRowLimit returns the row limit Grafana applies to its own SQL data sources.
@@ -160,29 +119,71 @@ func sqlRowLimit(ctx context.Context) int64 {
 	return defaultSQLRowLimit
 }
 
-// sqlErrorResponse maps a failed SQL query to a response. Errors reported by Nominal, timeouts
-// and cancellations are downstream errors, so Grafana does not count them against the plugin.
+// sqlErrorResponse maps a failed SQL query to a response. Errors reported by the SQL service,
+// timeouts and cancellations are downstream errors, so Grafana does not count them against the plugin.
 func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
-	logger := log.DefaultLogger.FromContext(ctx)
-	if endpoint, ok := errors.AsType[*sqlEndpointError](err); ok {
-		logger.Warn("SQL query rejected", "code", endpoint.Code.String(), "reason", endpoint.Reason, "sqlQueryId", endpoint.QueryID)
-		return backend.ErrDataResponseWithSource(endpoint.backendStatus(), backend.ErrorSourceDownstream, endpoint.Error())
-	}
 	switch {
-	case errors.Is(err, context.Canceled):
+	case errors.Is(ctx.Err(), context.Canceled):
 		return backend.ErrDataResponseWithSource(backend.StatusInternal, backend.ErrorSourceDownstream, "SQL query was cancelled")
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, "SQL query timed out")
 	case errors.Is(err, errNoSQLWorkspace):
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}
-	if lookup, ok := errors.AsType[*sqlWorkspaceError](err); ok {
-		logErrorWithConjureFields("Default workspace lookup failed", lookup.err)
-		_, status := classifyConnectionError(lookup.err)
-		return backend.ErrDataResponseWithSource(backend.Status(status), backend.ErrorSourceDownstream, lookup.Error())
+	logger := log.DefaultLogger.FromContext(ctx)
+	// status.FromError would also find a wrapped status, but it replaces the message with the whole
+	// error text, including the wrapping.
+	var grpcErr interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &grpcErr) {
+		st := grpcErr.GRPCStatus()
+		message := sqlErrorMessage(st)
+		logger.Warn("SQL query rejected", "code", st.Code().String(), "error", message)
+		return backend.ErrDataResponseWithSource(grafanaStatus(st.Code()), backend.ErrorSourceDownstream, message)
 	}
 	logger.Error("SQL query failed", "error", err)
 	return backend.ErrDataResponse(backend.StatusInternal, err.Error())
+}
+
+// sqlErrorMessage prefers the specific detail the SQL service attaches to a status over the
+// status's generic message, and appends the service's query ID.
+func sqlErrorMessage(st *status.Status) string {
+	message, queryID := st.Message(), ""
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.ErrorInfo); ok {
+			if specific := info.GetMetadata()["detail"]; specific != "" {
+				message = specific
+			}
+			queryID = info.GetMetadata()["sqlQueryId"]
+		}
+	}
+	if message == "" {
+		message = "SQL endpoint returned " + st.Code().String()
+	}
+	if queryID != "" {
+		message += " (sqlQueryId: " + queryID + ")"
+	}
+	return message
+}
+
+func grafanaStatus(code codes.Code) backend.Status {
+	switch code {
+	case codes.InvalidArgument, codes.FailedPrecondition, codes.OutOfRange:
+		return backend.StatusBadRequest
+	case codes.NotFound:
+		return backend.StatusNotFound
+	case codes.Unauthenticated:
+		return backend.StatusUnauthorized
+	case codes.PermissionDenied:
+		return backend.StatusForbidden
+	case codes.ResourceExhausted:
+		return backend.StatusTooManyRequests
+	case codes.DeadlineExceeded:
+		return backend.StatusTimeout
+	case codes.Unavailable:
+		return backend.StatusBadGateway
+	default:
+		return backend.StatusInternal
+	}
 }
 
 // recoverSQLQuery turns a panic into an error response. SQL queries run on their own goroutines,
