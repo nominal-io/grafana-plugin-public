@@ -204,7 +204,7 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 	assertLiveNominalNumericResponse(t, response, target.channel)
 }
 
-func TestLiveNominalSqlQueryIntegration(t *testing.T) {
+func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 	settings := liveNominalSettings(t)
 	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.
 	target := createLiveNominalQueryTarget(t, settings)
@@ -217,12 +217,12 @@ func TestLiveNominalSqlQueryIntegration(t *testing.T) {
 	end := time.Date(2024, 9, 5, 18, 2, 0, 500000000, time.UTC)
 	queries := []backend.DataQuery{
 		{RefID: "A", TimeRange: backend.TimeRange{From: start, To: end}, Interval: time.Minute, JSON: mustMarshal(NominalQueryModel{
-			QueryType: QueryTypeSql, Format: "table",
-			RawSql: fmt.Sprintf("SELECT ts, value FROM points_double WHERE dataset_rid = '%s' AND channel = 'temperature' AND $__timeFilter(ts) ORDER BY ts", target.datasetRid),
+			QueryType: queryTypeSQL, Format: "table",
+			RawSQL: fmt.Sprintf("SELECT ts, value FROM points_double WHERE dataset_rid = '%s' AND channel = 'temperature' AND $__timeFilter(ts) ORDER BY ts", target.datasetRid),
 		})},
 		{RefID: "B", TimeRange: backend.TimeRange{From: start, To: end}, Interval: time.Minute, JSON: mustMarshal(NominalQueryModel{
-			QueryType: QueryTypeSql, Format: "timeseries",
-			RawSql: fmt.Sprintf("SELECT $__timeGroup(ts) AS \"time\", channel, AVG(value) AS \"value\" FROM points_double WHERE dataset_rid = '%s' AND channel IN ('temperature') AND $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1", target.datasetRid),
+			QueryType: queryTypeSQL, Format: "timeseries",
+			RawSQL: fmt.Sprintf("SELECT $__timeGroup(ts) AS \"time\", channel, AVG(value) AS \"value\" FROM points_double WHERE dataset_rid = '%s' AND channel IN ('temperature') AND $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1", target.datasetRid),
 		})},
 	}
 	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: queries})

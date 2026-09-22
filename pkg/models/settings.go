@@ -11,7 +11,8 @@ import (
 type PluginSettings struct {
 	BaseUrl string `json:"baseUrl"`
 	Path    string `json:"path"` // Legacy field
-	// WorkspaceRid limits asset search to one workspace; empty means all.
+	// WorkspaceRid is the workspace SQL queries run in and asset search is limited to. When empty,
+	// SQL uses the API key's default workspace and asset search covers every workspace.
 	WorkspaceRid string                `json:"workspaceRid"`
 	Secrets      *SecretPluginSettings `json:"-"`
 }

@@ -9,11 +9,12 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
 // NominalQueryModel represents a query to the Nominal API
 type NominalQueryModel struct {
-	RawSql string `json:"rawSql,omitempty"`
+	RawSQL string `json:"rawSql,omitempty"`
 	Format string `json:"format,omitempty"`
 	// Asset information
 	AssetRid        string `json:"assetRid"`
@@ -51,7 +52,8 @@ const (
 	ChannelDataTypeLog     = "log"
 )
 
-const QueryTypeSql = "sql"
+// queryTypeSQL marks a query that runs SQL instead of a Compute request.
+const queryTypeSQL = "sql"
 
 type preparedQueryKind int
 
@@ -59,13 +61,15 @@ const (
 	preparedQueryConnectionTest preparedQueryKind = iota
 	preparedQueryLegacy
 	preparedQueryBatchable
-	preparedQuerySql
+	preparedQuerySQL
 )
 
 type preparedQuery struct {
 	Query backend.DataQuery
 	Model NominalQueryModel
 	Kind  preparedQueryKind
+	// SQL is set for preparedQuerySQL queries.
+	SQL *sqlutil.Query
 }
 
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
@@ -84,12 +88,20 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 	if qm.QueryType == "connectionTest" {
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryConnectionTest}, nil
 	}
-	if qm.QueryType == QueryTypeSql {
-		if strings.TrimSpace(qm.RawSql) == "" {
+	if qm.QueryType == queryTypeSQL {
+		if strings.TrimSpace(qm.RawSQL) == "" {
 			response := backend.ErrDataResponse(backend.StatusBadRequest, "SQL query is empty")
 			return preparedQuery{}, &response
 		}
-		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySql}, nil
+		sql := &sqlutil.Query{
+			RawSQL:        qm.RawSQL,
+			Format:        sqlFormat(qm.Format),
+			RefID:         q.RefID,
+			Interval:      q.Interval,
+			TimeRange:     q.TimeRange,
+			MaxDataPoints: q.MaxDataPoints,
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySQL, SQL: sql}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {

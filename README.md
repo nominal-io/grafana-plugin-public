@@ -91,7 +91,7 @@ set +a
 
 NOMINAL_LIVE_TESTS=1 \
 NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
-go test -count=1 ./pkg/plugin -run 'TestLiveNominal(QueryData|SqlQuery)Integration' -v
+go test -count=1 ./pkg/plugin -run 'TestLiveNominal(QueryData|SQLQuery)Integration' -v
 ```
 
 Optional query controls:

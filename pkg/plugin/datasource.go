@@ -88,9 +88,10 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 
 	// A base URL the SQL transport cannot use (for example plain http) must not break the
 	// Conjure-backed features, so the error is surfaced per SQL query instead.
-	sqlClient, sqlClientErr := newSqlClient(baseURL)
+	userAgent := formatUserAgent(userAgentComponentsFromPluginContext(backend.PluginConfigFromContext(ctx)))
+	sqlClient, sqlClientErr := newSQLClient(baseURL, userAgent)
 	if sqlClientErr != nil {
-		log.DefaultLogger.Warn("SQL queries are unavailable for this data source", "error", sqlClientErr)
+		log.DefaultLogger.FromContext(ctx).Warn("SQL queries are unavailable for this data source", "error", sqlClientErr)
 	}
 
 	ds := &Datasource{
@@ -159,7 +160,8 @@ func (d *Datasource) Dispose() {
 		d.resourceHTTPClient.CloseIdleConnections()
 	}
 	if d.sqlClient != nil {
-		_ = d.sqlClient.Close()
+		// Let SQL queries still running on this replaced instance finish.
+		time.AfterFunc(sqlQueryTimeout, func() { _ = d.sqlClient.Close() })
 	}
 }
 
@@ -268,10 +270,26 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
 		}
 		message += ". Workspace: " + name
-	} else {
-		message += ". SQL queries will use the API key's default workspace; set Workspace RID to pin one"
+	}
+	if err := d.checkSQL(ctxWithTimeout, bearerToken); err != nil {
+		return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: message + ", but SQL queries will fail: " + err.Error()}, nil
+	}
+	if d.workspaceRid == nil {
+		message += ". SQL queries use the API key's default workspace"
 	}
 	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
+}
+
+// checkSQL confirms that the SQL service accepts the API key and that SQL queries have a workspace.
+func (d *Datasource) checkSQL(ctx context.Context, token bearertoken.Token) error {
+	if d.sqlClient == nil {
+		return d.sqlClientErr
+	}
+	if err := d.sqlClient.CheckConnection(ctx, token); err != nil {
+		return err
+	}
+	_, err := d.resolveSQLWorkspace(ctx, token)
+	return err
 }
 
 // workspaceName resolves a workspace RID to its display name, or the RID when unnamed.
