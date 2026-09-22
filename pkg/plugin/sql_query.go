@@ -5,18 +5,25 @@ import (
 	"errors"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	sdkconfig "github.com/grafana/grafana-plugin-sdk-go/config"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
+	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	"github.com/palantir/pkg/bearertoken"
 	"golang.org/x/sync/singleflight"
 )
 
-// defaultSQLRowLimit matches the default of Grafana's [sql] row_limit, used when Grafana sends none.
-const defaultSQLRowLimit = 1_000_000
+const (
+	// defaultSQLRowLimit matches the default of Grafana's [sql] row_limit, used when Grafana sends none.
+	defaultSQLRowLimit = 1_000_000
+	// sqlServiceTimeLimit is how long the SQL service lets a query run.
+	sqlServiceTimeLimit    = 2 * time.Minute
+	workspaceLookupTimeout = 30 * time.Second
+)
 
 var errNoSQLWorkspace = errors.New("set Workspace RID in the data source settings: SQL queries need a workspace and this API key has no default workspace")
 
@@ -62,7 +69,7 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 	}
 	lookup := d.sqlWorkspace.lookup.DoChan("", func() (any, error) {
 		// Other queries may be waiting on this lookup, so one caller's cancellation must not end it.
-		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sqlConnectionTimeout)
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), workspaceLookupTimeout)
 		defer cancel()
 		workspace, err := d.workspaceService.GetDefaultWorkspace(lookupCtx, token)
 		if err != nil {
@@ -88,10 +95,10 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 // executeSQLQuery expands macros, runs the query and shapes the result for its format.
 func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared preparedQuery) (response backend.DataResponse) {
 	defer recoverSQLQuery(ctx, &response)
-	if e.datasource.sqlClient == nil {
+	if e.datasource.sqlService == nil {
 		message := "SQL queries are not configured for this data source"
-		if e.datasource.sqlClientErr != nil {
-			message = e.datasource.sqlClientErr.Error()
+		if e.datasource.sqlErr != nil {
+			message = e.datasource.sqlErr.Error()
 		}
 		return backend.ErrDataResponse(backend.StatusBadRequest, message)
 	}
@@ -129,12 +136,18 @@ func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql stri
 	if err != nil {
 		return nil, err
 	}
-	body, err := e.datasource.sqlClient.Query(ctx, token, workspace, sql)
+	// Cancelling ends the stream if the row limit stops reading early.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := e.datasource.sqlService.Query(withBearerToken(ctx, token), &sqlv1.SqlServiceQueryRequest{
+		Query:        sql,
+		WorkspaceRid: workspace,
+		ResultFormat: sqlv1.SqlServiceQueryResultFormat_SQL_SERVICE_QUERY_RESULT_FORMAT_ARROW_STREAM,
+	})
 	if err != nil {
-		return nil, err
+		return nil, sqlQueryError(ctx, err)
 	}
-	defer body.Close()
-	return frameFromArrowStream(body, refID, sqlRowLimit(ctx))
+	return frameFromArrowStream(newSQLStreamReader(ctx, stream), refID, sqlRowLimit(ctx))
 }
 
 // sqlRowLimit returns the row limit Grafana applies to its own SQL data sources.
@@ -159,7 +172,7 @@ func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
 	case errors.Is(err, context.Canceled):
 		return backend.ErrDataResponseWithSource(backend.StatusInternal, backend.ErrorSourceDownstream, "SQL query was cancelled")
 	case errors.Is(err, context.DeadlineExceeded):
-		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, err.Error())
+		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, "SQL query timed out")
 	case errors.Is(err, errNoSQLWorkspace):
 		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
 	}

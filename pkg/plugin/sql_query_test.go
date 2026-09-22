@@ -22,6 +22,7 @@ import (
 	"github.com/palantir/pkg/bearertoken"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 )
 
 func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
@@ -33,10 +34,22 @@ func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
 	return *workspace
 }
 
-func sqlTestExecution(t *testing.T, client *sqlClient) *NominalQueryExecution {
+func sqlTestExecution(t *testing.T, service sqlv1.SqlServiceClient) *NominalQueryExecution {
 	t.Helper()
 	workspace := sqlTestWorkspaceRid(t)
-	return newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClient: client}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	return newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlService: service}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+}
+
+func sqlQueryService(t *testing.T, query sqlQueryHandler) sqlv1.SqlServiceClient {
+	t.Helper()
+	return newFakeSQLService(t, &fakeSQLService{query: query})
+}
+
+// sqlPayloadServer streams payload as a single response message.
+func sqlPayloadServer(payload []byte) sqlQueryHandler {
+	return func(_ *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		return stream.Send(&sqlv1.SqlServiceQueryResponse{QueryId: "q", Payload: payload})
+	}
 }
 
 func sqlValueStream(t *testing.T, value float64) []byte {
@@ -146,7 +159,14 @@ func TestResolveSQLWorkspace(t *testing.T) {
 }
 
 func TestExecuteSQLQuery(t *testing.T) {
-	e := sqlTestExecution(t, newFakeSQLQueryClient(t, sqlPayloadServer(sqlValueStream(t, 42))))
+	var request *sqlv1.SqlServiceQueryRequest
+	var authorization []string
+	e := sqlTestExecution(t, sqlQueryService(t, func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		request = req
+		md, _ := metadata.FromIncomingContext(stream.Context())
+		authorization = md.Get("authorization")
+		return sqlPayloadServer(sqlValueStream(t, 42))(req, stream)
+	}))
 	for _, tc := range []struct {
 		format  string
 		wantVis data.VisType
@@ -165,12 +185,21 @@ func TestExecuteSQLQuery(t *testing.T) {
 			}
 		})
 	}
+	if request.GetQuery() != "SELECT 42" || request.GetWorkspaceRid() != testWorkspaceRid || request.MaxRows != nil {
+		t.Errorf("request = %v, want SELECT 42 in %s without a row cap", request, testWorkspaceRid)
+	}
+	if want := sqlv1.SqlServiceQueryResultFormat_SQL_SERVICE_QUERY_RESULT_FORMAT_ARROW_STREAM; request.GetResultFormat() != want {
+		t.Errorf("request result format = %v, want %v", request.GetResultFormat(), want)
+	}
+	if len(authorization) != 1 || authorization[0] != "Bearer k" {
+		t.Errorf("authorization metadata = %q, want [%q]", authorization, "Bearer k")
+	}
 }
 
 func TestExecuteSQLQueryAppliesGrafanaRowLimit(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil) })
-	e := sqlTestExecution(t, newFakeSQLQueryClient(t, sqlPayloadServer(stream)))
+	e := sqlTestExecution(t, sqlQueryService(t, sqlPayloadServer(stream)))
 	ctx := sdkconfig.WithGrafanaConfig(context.Background(), sdkconfig.NewGrafanaCfg(map[string]string{
 		sdkconfig.SQLRowLimit:                      "2",
 		sdkconfig.SQLMaxOpenConnsDefault:           "100",
@@ -187,8 +216,8 @@ func TestExecuteSQLQueryAppliesGrafanaRowLimit(t *testing.T) {
 }
 
 func TestExecuteSQLQueryErrors(t *testing.T) {
-	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "SQL_ERROR_INVALID_QUERY", "q-1", "bad query")
-	throttled := sqlStatusError(t, codes.ResourceExhausted, "throttled", "SQL_ERROR_RATE_LIMITED", "q-2", "")
+	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-1", "bad query")
+	throttled := sqlStatusError(t, codes.ResourceExhausted, "throttled", "q-2", "")
 	for _, tc := range []struct {
 		name       string
 		handler    sqlQueryHandler
@@ -217,22 +246,24 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			wantMsg:    "throttled (sqlQueryId: q-2)",
 		},
 		{
-			name: "client timeout",
+			name: "Grafana deadline",
 			handler: func(_ *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 				<-stream.Context().Done()
 				return stream.Context().Err()
 			},
 			timeout:    50 * time.Millisecond,
 			wantStatus: backend.StatusTimeout,
-			wantMsg:    "SQL query timed out: context deadline exceeded",
+			wantMsg:    "SQL query timed out",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client := newFakeSQLQueryClient(t, tc.handler)
+			ctx := context.Background()
 			if tc.timeout > 0 {
-				client.timeout = tc.timeout
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
+				defer cancel()
 			}
-			response := executeTestSQLQuery(t, context.Background(), sqlTestExecution(t, client), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)"}`)
+			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
 				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
 			}
@@ -247,20 +278,20 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 }
 
 func TestExecuteSQLQueryReportsUnusableBaseURL(t *testing.T) {
-	_, sqlClientErr := newSQLClient("http://example/api", "test")
-	if sqlClientErr == nil {
-		t.Fatal("newSQLClient(http URL) error = nil, want an error")
+	_, sqlErr := dialSQL("http://example/api", "test")
+	if sqlErr == nil {
+		t.Fatal("dialSQL(http URL) error = nil, want an error")
 	}
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlClientErr: sqlClientErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlErr: sqlErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
-	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != sqlClientErr.Error() {
-		t.Errorf("executeSQLQuery() = %v, %v; want %v, %q", response.Status, response.Error, backend.StatusBadRequest, sqlClientErr)
+	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != sqlErr.Error() {
+		t.Errorf("executeSQLQuery() = %v, %v; want %v, %q", response.Status, response.Error, backend.StatusBadRequest, sqlErr)
 	}
 }
 
 func TestExecuteSQLQueryRecoversPanics(t *testing.T) {
-	e := sqlTestExecution(t, newFakeSQLQueryClient(t, sqlPayloadServer(nil)))
+	e := sqlTestExecution(t, sqlQueryService(t, sqlPayloadServer(nil)))
 	response := e.executeSQLQuery(context.Background(), preparedQuery{Kind: preparedQuerySQL})
 	if response.Status != backend.StatusInternal || response.Error == nil {
 		t.Errorf("executeSQLQuery(nil query) = %v, %v; want an internal error instead of a panic", response.Status, response.Error)
@@ -269,7 +300,7 @@ func TestExecuteSQLQueryRecoversPanics(t *testing.T) {
 
 func TestQueryDataMixesSQLAndCompute(t *testing.T) {
 	var calls atomic.Int32
-	client := newFakeSQLQueryClient(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+	client := sqlQueryService(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		calls.Add(1)
 		return sqlPayloadServer(sqlValueStream(t, 42))(req, s)
 	})
@@ -277,7 +308,7 @@ func TestQueryDataMixesSQLAndCompute(t *testing.T) {
 	compute := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{7})},
 	}}
-	ds := &Datasource{workspaceRid: &workspace, sqlClient: client, computeService: compute}
+	ds := &Datasource{workspaceRid: &workspace, sqlService: client, computeService: compute}
 	req := newQueryRequest([]backend.DataQuery{
 		{RefID: "SQL", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)},
 		{RefID: "Compute", JSON: []byte(`{"queryType":"timeShift","assetRid":"ri.nominal.asset.1","channel":"temp","dataScopeName":"default","buckets":100}`), TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)}},
@@ -303,7 +334,7 @@ func TestQueryDataMixesSQLAndCompute(t *testing.T) {
 func TestSQLQueriesRunInParallelWithinTheLimit(t *testing.T) {
 	var active, peak, total atomic.Int32
 	stream := sqlValueStream(t, 1)
-	client := newFakeSQLQueryClient(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+	client := sqlQueryService(t, func(req *sqlv1.SqlServiceQueryRequest, s grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
 		current := active.Add(1)
 		defer active.Add(-1)
 		total.Add(1)
@@ -331,10 +362,10 @@ func TestSQLQueriesRunInParallelWithinTheLimit(t *testing.T) {
 }
 
 func TestCheckSQLReportsServiceErrors(t *testing.T) {
-	denied := sqlStatusError(t, codes.PermissionDenied, "SQL is not enabled for this key", "", "", "")
-	client := newFakeSQLClient(t, &fakeSQLService{catalog: func(context.Context) error { return denied }})
+	denied := sqlStatusError(t, codes.PermissionDenied, "SQL is not enabled for this key", "", "")
+	client := newFakeSQLService(t, &fakeSQLService{catalog: func(context.Context) error { return denied }})
 	workspace := sqlTestWorkspaceRid(t)
-	ds := &Datasource{workspaceRid: &workspace, sqlClient: client}
+	ds := &Datasource{workspaceRid: &workspace, sqlService: client}
 	if err := ds.checkSQL(context.Background(), bearertoken.Token("k")); err == nil || err.Error() != "SQL is not enabled for this key" {
 		t.Errorf("checkSQL() error = %v, want the SQL service's error", err)
 	}

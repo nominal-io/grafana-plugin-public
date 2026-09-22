@@ -19,10 +19,12 @@ import (
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
+	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/uuid"
+	"google.golang.org/grpc"
 )
 
 // Make sure Datasource implements required interfaces. This is important to do
@@ -89,9 +91,9 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	// A base URL the SQL transport cannot use (for example plain http) must not break the
 	// Conjure-backed features, so the error is surfaced per SQL query instead.
 	userAgent := formatUserAgent(userAgentComponentsFromPluginContext(backend.PluginConfigFromContext(ctx)))
-	sqlClient, sqlClientErr := newSQLClient(baseURL, userAgent)
-	if sqlClientErr != nil {
-		log.DefaultLogger.FromContext(ctx).Warn("SQL queries are unavailable for this data source", "error", sqlClientErr)
+	sqlConn, sqlErr := dialSQL(baseURL, userAgent)
+	if sqlErr != nil {
+		log.DefaultLogger.FromContext(ctx).Warn("SQL queries are unavailable for this data source", "error", sqlErr)
 	}
 
 	ds := &Datasource{
@@ -102,8 +104,11 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:       workspaceRid,
-		sqlClient:          sqlClient,
-		sqlClientErr:       sqlClientErr,
+		sqlConn:            sqlConn,
+		sqlErr:             sqlErr,
+	}
+	if sqlConn != nil {
+		ds.sqlService = sqlv1.NewSqlServiceClient(sqlConn)
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -120,8 +125,10 @@ type Datasource struct {
 	workspaceService  workspaceapi.WorkspaceServiceClient
 
 	workspaceRid *rids.WorkspaceRid
-	sqlClient    *sqlClient
-	sqlClientErr error
+	sqlService   sqlv1.SqlServiceClient
+	sqlConn      *grpc.ClientConn
+	// sqlErr explains why sqlService is nil, for example a plain http base URL.
+	sqlErr       error
 	sqlWorkspace sqlWorkspaceCache
 
 	resourceHTTPClient *http.Client
@@ -159,9 +166,9 @@ func (d *Datasource) Dispose() {
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
 	}
-	if d.sqlClient != nil {
+	if d.sqlConn != nil {
 		// Let SQL queries still running on this replaced instance finish.
-		time.AfterFunc(sqlQueryTimeout, func() { _ = d.sqlClient.Close() })
+		time.AfterFunc(sqlServiceTimeLimit, func() { _ = d.sqlConn.Close() })
 	}
 }
 
@@ -282,11 +289,11 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 
 // checkSQL confirms that the SQL service accepts the API key and that SQL queries have a workspace.
 func (d *Datasource) checkSQL(ctx context.Context, token bearertoken.Token) error {
-	if d.sqlClient == nil {
-		return d.sqlClientErr
+	if d.sqlService == nil {
+		return d.sqlErr
 	}
-	if err := d.sqlClient.CheckConnection(ctx, token); err != nil {
-		return err
+	if _, err := d.sqlService.GetSqlCatalog(withBearerToken(ctx, token), &sqlv1.GetSqlCatalogRequest{}); err != nil {
+		return sqlQueryError(ctx, err)
 	}
 	_, err := d.resolveSQLWorkspace(ctx, token)
 	return err
