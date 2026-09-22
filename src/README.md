@@ -16,20 +16,37 @@ The Base URL, API key, and Workspace RID can all be copied from **Settings > API
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
 4. Create a Nominal API key and paste it in **API Key**.
-5. Recommended: set **Workspace RID** to limit asset search to one workspace. Empty searches every workspace the key can access.
+5. Recommended: set **Workspace RID**. It limits asset search to one workspace and selects the workspace SQL queries run in. Empty searches every workspace the key can access, and SQL uses the key's default workspace.
 6. Select **Save & test**.
 
 Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key. With a Workspace RID set, it also confirms the key can see that workspace and shows its name.
 
 ## Query basics
 
-The query editor follows a three-step pattern:
+Each query uses either **Compute** or **SQL**, chosen with **Query API** in the query editor. One panel can mix both.
+
+Compute queries follow a three-step pattern:
 
 1. Search for an asset by name, or paste a Nominal resource identifier (RID).
 2. Pick a data scope from the asset.
 3. Pick a channel from the data scope.
 
 Queries can be used in any Grafana panel or in Explore.
+
+## SQL queries
+
+SQL queries run Nominal SQL in the data source's workspace. They need an `https` Base URL, and telemetry tables such as `points_double` must filter on `dataset_rid`:
+
+```sql
+SELECT $__timeGroup(ts) AS "time", channel, AVG(value) AS "value"
+FROM points_double
+WHERE dataset_rid = '<dataset-rid>'
+  AND $__timeFilter(ts)
+GROUP BY 1, 2
+ORDER BY 1
+```
+
+`$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Multi-value variables expand to quoted lists, so write `channel IN ($channels)`.
 
 ## Channel types
 

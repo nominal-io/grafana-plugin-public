@@ -146,7 +146,7 @@ export function ConfigEditor(props: Props) {
         <ol className={styles.quickSetupList}>
           <li>Paste the Base URL, including the /api path (e.g. https://api.gov.nominal.io/api)</li>
           <li>Create a Nominal API key and paste it in the API Key field</li>
-          <li>Recommended: paste a Workspace RID to limit asset search to one workspace</li>
+          <li>Recommended: paste a Workspace RID to choose the SQL workspace and limit asset search</li>
           <li>Click &quot;Save &amp; Test&quot; to verify and save the configuration</li>
           <li>In a panel, choose Compute or SQL for each query using this data source</li>
         </ol>

@@ -79,7 +79,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
   return (
     <div className={styles.root}>
       <p className={styles.intro}>
-        Build Nominal queries by choosing an asset, data scope, and channel. Dashboard variables can be used in each field.
+        Compute queries choose an asset, data scope, and channel; SQL queries run Nominal SQL. Dashboard variables work in both.
       </p>
 
       <div className={styles.section}>
@@ -115,14 +115,12 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
             <tr><td>$__timeFrom()</td><td>Panel start timestamp</td></tr>
             <tr><td>$__timeTo()</td><td>Panel end timestamp</td></tr>
             <tr><td>$__timeGroup(col[, interval])</td><td>Timestamp bucket using the panel or supplied interval</td></tr>
-            <tr><td>$__interval</td><td>Grafana’s calculated panel interval</td></tr>
           </tbody>
         </table>
         <code className={styles.codeBlock}>{DEFAULT_SQL}</code>
         <ul className={styles.text}>
           <li>Telemetry tables (points_double, points_int, points_string, points_struct, logs, channels) require a dataset_rid filter.</li>
-          <li>Order by the time column for time series.</li>
-          <li>Multi-value variables expand to {'\'a\',\'b\''}, so write channel IN ($channels) and single values as {'\'$channel\''}.</li>
+          <li>Multi-value and Include All variables expand to {'\'a\',\'b\''}, so write channel IN ($channels). Write other variables as {'\'$channel\''}.</li>
         </ul>
       </div>
     </div>
