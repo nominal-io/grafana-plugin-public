@@ -6,13 +6,13 @@ require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/grafana/grafana-plugin-sdk-go v0.296.5
 	github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf
-	github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922171429-78dad6870a8d
+	github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
 	github.com/palantir/pkg/uuid v1.3.0
-	google.golang.org/grpc v1.85.0-dev.0.20260825072537-93e31b48545e
+	google.golang.org/grpc v1.83.2
 )
 
 require (
