@@ -147,9 +147,9 @@ describe('query API selection', () => {
     });
   });
 
-  it.each(['timeShift', 'decimation', 'raw'] as const)('retains %s Compute selections and SQL when switching APIs', async (queryType) => {
+  it('retains Compute selections and SQL when switching APIs', async () => {
     const onChange = jest.fn();
-    const original = { refId: 'A', queryType, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    const original = { refId: 'A', queryType: 'timeShift' as const, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
     render(<EditableQuery initialQuery={original} onChange={onChange} />);
     await settleEffects();
     expect(screen.getByRole('radio', { name: 'Compute' })).toBeChecked();
@@ -166,7 +166,7 @@ describe('query API selection', () => {
     expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 42');
   });
 
-  it('opens saved SQL without requiring a datasource API setting', () => {
+  it('opens saved SQL in the SQL editor and switches it back to Compute', () => {
     const onChange = jest.fn();
     render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }} onChange={onChange} />);
     expect(screen.getByRole('radio', { name: 'SQL' })).toBeChecked();

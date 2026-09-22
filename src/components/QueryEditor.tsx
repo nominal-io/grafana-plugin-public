@@ -11,7 +11,7 @@ import {
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import { QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
+import { DEFAULT_QUERY, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
@@ -251,20 +251,15 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     onChange(api === 'sql'
-      ? {
-        ...query,
-        computeQueryType: query.queryType === QUERY_TYPE_SQL ? query.computeQueryType : query.queryType,
-        queryType: QUERY_TYPE_SQL,
-        rawSql: query.rawSql ?? '',
-        format: query.format ?? 'timeseries',
-      }
-      : { ...query, queryType: query.computeQueryType ?? 'timeShift' });
+      ? { ...query, queryType: QUERY_TYPE_SQL, rawSql: query.rawSql ?? '', format: query.format ?? 'timeseries' }
+      : { ...query, queryType: DEFAULT_QUERY.queryType });
   };
 
   return (
     <Stack direction="column" gap={1}>
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
+          aria-label="Query API"
           value={isSqlQuery ? 'sql' : 'compute'}
           options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
           onChange={onQueryAPIChange}

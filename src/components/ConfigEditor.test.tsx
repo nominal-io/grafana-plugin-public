@@ -6,7 +6,7 @@ describe('ConfigEditor', () => {
   it('configures one connection for both query APIs', () => {
     render(
       <ConfigEditor
-        options={{ jsonData: { queryApi: 'sql' }, secureJsonData: {}, secureJsonFields: {} } as any}
+        options={{ jsonData: {}, secureJsonData: {}, secureJsonFields: {} } as any}
         onOptionsChange={jest.fn()}
       />
     );

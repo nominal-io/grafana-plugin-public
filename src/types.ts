@@ -20,8 +20,6 @@ export interface NominalQuery extends DataQuery {
   // Query parameters
   buckets?: number;
   queryType?: ComputeQueryType | typeof QUERY_TYPE_SQL;
-  // Retain the Compute mode when switching this query to SQL and back.
-  computeQueryType?: ComputeQueryType;
   rawSql?: string;
   format?: SqlFormat;
 
