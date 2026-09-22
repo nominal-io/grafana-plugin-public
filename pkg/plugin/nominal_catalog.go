@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-inc/nominal-ds/pkg/models"
@@ -402,11 +401,14 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 	return allChannelResults, nil
 }
 
-// The similarity score only sees letters and digits. A name without any scores
-// 0 everywhere, and a non-empty search text drops zero-score rows, so send "".
+// Scout scores this endpoint with PostgreSQL trigram similarity, whose word-character
+// classification is database-locale-dependent. Restrict this ranking hint to portable
+// ASCII letters and digits so the minimum-score filter cannot remove the exact row.
 func fuzzySearchTextFor(channel string) string {
-	if strings.ContainsFunc(channel, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
-		return channel
+	for _, r := range channel {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return channel
+		}
 	}
 	return ""
 }

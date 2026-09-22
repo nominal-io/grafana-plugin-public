@@ -461,6 +461,9 @@ func TestFuzzySearchTextFor(t *testing.T) {
 		"a-b_1": "a-b_1",
 		"---":   "",
 		"___":   "",
+		"é":     "",
+		"温度":    "",
+		"温度-1":  "温度-1",
 	}
 	for channel, want := range cases {
 		if got := fuzzySearchTextFor(channel); got != want {
