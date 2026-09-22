@@ -6,14 +6,18 @@ require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/grafana/grafana-plugin-sdk-go v0.296.5
 	github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf
+	github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922171429-78dad6870a8d
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
 	github.com/palantir/pkg/bearertoken v1.2.0
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
 	github.com/palantir/pkg/uuid v1.3.0
+	google.golang.org/genproto v0.0.0-20210630183607-d20f26d13c79
+	google.golang.org/grpc v1.85.0-dev.0.20260825072537-93e31b48545e
 )
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -103,8 +107,6 @@ require (
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	google.golang.org/genproto v0.0.0-20210630183607-d20f26d13c79 // indirect
-	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/fsnotify/fsnotify.v1 v1.4.7 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
