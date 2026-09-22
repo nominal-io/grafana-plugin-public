@@ -36,6 +36,7 @@ func TestInterpolateSQLMacros(t *testing.T) {
 		{name: "panel interval", sql: "$__timeGroup(ts)", interval: 500 * time.Millisecond, want: "DATE_BIN(INTERVAL '0.5' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "missing panel interval", sql: "$__timeGroup(ts)", want: "DATE_BIN(INTERVAL '1' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "fixed interval", sql: "$__timeGroup(ts, 1m)", want: "DATE_BIN(INTERVAL '60' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
+		{name: "fractional interval", sql: "$__timeGroup(ts)", interval: 1140 * time.Millisecond, want: "DATE_BIN(INTERVAL '1.14' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "quoted interval", sql: "$__timeGroup(ts, '500ms')", want: "DATE_BIN(INTERVAL '0.5' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "interval variable", sql: "$__timeGroup(ts, $__interval)", interval: 2 * time.Minute, want: "DATE_BIN(INTERVAL '120' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "quoted interval variable", sql: "$__timeGroup(ts, '$__interval')", interval: 2 * time.Minute, want: "DATE_BIN(INTERVAL '120' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},

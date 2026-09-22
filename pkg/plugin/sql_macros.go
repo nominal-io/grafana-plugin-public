@@ -50,11 +50,13 @@ var sqlMacros = sqlutil.Macros{
 				interval = d
 			}
 		}
-		seconds := interval.Seconds()
-		if seconds <= 0 {
-			seconds = 1
+		// Whole microseconds keep the literal within the six fractional digits SQL accepts.
+		micros := interval.Microseconds()
+		if micros <= 0 {
+			micros = time.Second.Microseconds()
 		}
-		return fmt.Sprintf("DATE_BIN(INTERVAL '%s' SECOND, %s, %s)", strconv.FormatFloat(seconds, 'f', -1, 64), args[0], sqlEpochLiteral), nil
+		seconds := strconv.FormatFloat(float64(micros)/1e6, 'f', -1, 64)
+		return fmt.Sprintf("DATE_BIN(INTERVAL '%s' SECOND, %s, %s)", seconds, args[0], sqlEpochLiteral), nil
 	},
 }
 
