@@ -78,26 +78,41 @@ type sqlColumn interface {
 }
 
 func newSQLColumn(field arrow.Field) sqlColumn {
-	valueType, nullable := field.Type, field.Nullable
-	if dictionary, ok := valueType.(*arrow.DictionaryType); ok {
-		// A dictionary entry can be null even when the index is not.
-		valueType, nullable = dictionary.ValueType, true
-	}
-	switch valueType.ID() {
+	nullable := field.Nullable
+	switch field.Type.ID() {
 	case arrow.NULL:
 		return &nullColumn{}
+	case arrow.INT8:
+		return newTypedColumn(nullable, valuesOf[int8, *array.Int8])
+	case arrow.INT16:
+		return newTypedColumn(nullable, valuesOf[int16, *array.Int16])
+	case arrow.INT32:
+		return newTypedColumn(nullable, valuesOf[int32, *array.Int32])
+	case arrow.INT64:
+		return newTypedColumn(nullable, valuesOf[int64, *array.Int64])
+	case arrow.UINT8:
+		return newTypedColumn(nullable, valuesOf[uint8, *array.Uint8])
+	case arrow.UINT16:
+		return newTypedColumn(nullable, valuesOf[uint16, *array.Uint16])
+	case arrow.UINT32:
+		return newTypedColumn(nullable, valuesOf[uint32, *array.Uint32])
+	case arrow.UINT64:
+		return newTypedColumn(nullable, valuesOf[uint64, *array.Uint64])
+	case arrow.FLOAT32:
+		return newTypedColumn(nullable, valuesOf[float32, *array.Float32])
+	case arrow.FLOAT64:
+		return newTypedColumn(nullable, valuesOf[float64, *array.Float64])
+	case arrow.BOOL:
+		return newTypedColumn(nullable, valuesOf[bool, *array.Boolean])
+	case arrow.STRING:
+		return newTypedColumn(nullable, valuesOf[string, *array.String])
 	case arrow.TIMESTAMP, arrow.DATE32, arrow.DATE64:
 		return newTypedColumn(nullable, timeValues)
-	case arrow.FLOAT16, arrow.FLOAT32, arrow.FLOAT64, arrow.DECIMAL32, arrow.DECIMAL64, arrow.DECIMAL128, arrow.DECIMAL256:
-		return newTypedColumn(nullable, floatValues)
-	case arrow.INT8, arrow.INT16, arrow.INT32, arrow.INT64:
-		return newTypedColumn(nullable, intValues)
-	case arrow.UINT8, arrow.UINT16, arrow.UINT32, arrow.UINT64:
-		return newTypedColumn(nullable, uintValues)
-	case arrow.BOOL:
-		return newTypedColumn(nullable, boolValues)
+	case arrow.DECIMAL128, arrow.DECIMAL256:
+		return newTypedColumn(nullable, decimalValues)
 	default:
-		return newTypedColumn(nullable, stringValues)
+		// Maps such as the tags column, lists, and other types without a Grafana field type.
+		return newTypedColumn(nullable, func(values arrow.Array) (func(int) string, error) { return values.ValueStr, nil })
 	}
 }
 
@@ -123,22 +138,11 @@ func (c *typedColumn[T]) values() any {
 }
 
 func (c *typedColumn[T]) append(column arrow.Array, rows int) error {
-	values, index, isNull := column, func(i int) int { return i }, column.IsNull
-	if dictionary, ok := column.(*array.Dictionary); ok {
-		values, index = dictionary.Dictionary(), dictionary.GetValueIndex
-		for i := range rows {
-			if j := index(i); !dictionary.IsNull(i) && (j < 0 || j >= values.Len()) {
-				return fmt.Errorf("dictionary index %d is out of range", j)
-			}
-		}
-		isNull = func(i int) bool { return dictionary.IsNull(i) || values.IsNull(index(i)) }
-	}
-	get, err := c.read(values)
+	get, err := c.read(column)
 	if err != nil {
 		return err
 	}
 	if !c.nullable {
-		// Dictionary columns are always nullable, so rows index values directly here.
 		c.vals = slices.Grow(c.vals, rows)
 		for i := range rows {
 			c.vals = append(c.vals, get(i))
@@ -148,11 +152,11 @@ func (c *typedColumn[T]) append(column arrow.Array, rows int) error {
 	c.ptrs = slices.Grow(c.ptrs, rows)
 	batch := make([]T, rows)
 	for i := range rows {
-		if isNull(i) {
+		if column.IsNull(i) {
 			c.ptrs = append(c.ptrs, nil)
 			continue
 		}
-		batch[i] = get(index(i))
+		batch[i] = get(i)
 		c.ptrs = append(c.ptrs, &batch[i])
 	}
 	return nil
@@ -174,6 +178,14 @@ func unexpectedArray(values arrow.Array) error {
 	return fmt.Errorf("unexpected %s array", values.DataType())
 }
 
+// valuesOf reads Arrow arrays whose values need no conversion for a Grafana field.
+func valuesOf[T any, A interface{ Value(int) T }](values arrow.Array) (func(int) T, error) {
+	if typed, ok := values.(A); ok {
+		return typed.Value, nil
+	}
+	return nil, unexpectedArray(values)
+}
+
 func timeValues(values arrow.Array) (func(int) time.Time, error) {
 	switch values := values.(type) {
 	case *array.Timestamp:
@@ -187,81 +199,16 @@ func timeValues(values arrow.Array) (func(int) time.Time, error) {
 	return nil, unexpectedArray(values)
 }
 
-func floatValues(values arrow.Array) (func(int) float64, error) {
+func decimalValues(values arrow.Array) (func(int) float64, error) {
 	switch values := values.(type) {
-	case *array.Float64:
-		return values.Value, nil
-	case *array.Float32:
-		return func(i int) float64 { return float64(values.Value(i)) }, nil
-	case *array.Float16:
-		return func(i int) float64 { return float64(values.Value(i).Float32()) }, nil
-	case *array.Decimal32:
-		scale := values.DataType().(arrow.DecimalType).GetScale()
-		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
-	case *array.Decimal64:
-		scale := values.DataType().(arrow.DecimalType).GetScale()
-		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
 	case *array.Decimal128:
-		scale := values.DataType().(arrow.DecimalType).GetScale()
+		scale := values.DataType().(*arrow.Decimal128Type).Scale
 		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
 	case *array.Decimal256:
-		scale := values.DataType().(arrow.DecimalType).GetScale()
+		scale := values.DataType().(*arrow.Decimal256Type).Scale
 		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
 	}
 	return nil, unexpectedArray(values)
-}
-
-func intValues(values arrow.Array) (func(int) int64, error) {
-	switch values := values.(type) {
-	case *array.Int64:
-		return values.Value, nil
-	case *array.Int32:
-		return func(i int) int64 { return int64(values.Value(i)) }, nil
-	case *array.Int16:
-		return func(i int) int64 { return int64(values.Value(i)) }, nil
-	case *array.Int8:
-		return func(i int) int64 { return int64(values.Value(i)) }, nil
-	}
-	return nil, unexpectedArray(values)
-}
-
-func uintValues(values arrow.Array) (func(int) uint64, error) {
-	switch values := values.(type) {
-	case *array.Uint64:
-		return values.Value, nil
-	case *array.Uint32:
-		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
-	case *array.Uint16:
-		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
-	case *array.Uint8:
-		return func(i int) uint64 { return uint64(values.Value(i)) }, nil
-	}
-	return nil, unexpectedArray(values)
-}
-
-func boolValues(values arrow.Array) (func(int) bool, error) {
-	if values, ok := values.(*array.Boolean); ok {
-		return values.Value, nil
-	}
-	return nil, unexpectedArray(values)
-}
-
-// stringValues reads text and binary columns as strings and renders every other type, such as
-// maps, lists and durations, as Arrow's string form of the value.
-func stringValues(values arrow.Array) (func(int) string, error) {
-	switch values := values.(type) {
-	case *array.String:
-		return values.Value, nil
-	case *array.LargeString:
-		return values.Value, nil
-	case *array.StringView:
-		return values.Value, nil
-	case *array.Binary:
-		return values.ValueString, nil
-	case *array.LargeBinary:
-		return values.ValueString, nil
-	}
-	return values.ValueStr, nil
 }
 
 // shapeSQLFrame returns table results unchanged. Time series results are sorted by time and, when

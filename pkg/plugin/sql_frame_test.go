@@ -75,7 +75,6 @@ func fieldValues(field *data.Field) []any {
 }
 
 func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
-	stringDictionary := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int8, ValueType: arrow.BinaryTypes.String}
 	for _, tc := range []struct {
 		name     string
 		field    arrow.Field
@@ -114,15 +113,8 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			name:     "nullable float",
 			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float32, Nullable: true},
 			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float32, `[1.5, null]`) },
-			wantType: data.FieldTypeNullableFloat64,
-			want:     []any{1.5, nil},
-		},
-		{
-			name:     "half float",
-			field:    arrow.Field{Name: "c", Type: arrow.FixedWidthTypes.Float16},
-			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.FixedWidthTypes.Float16, `[2.5]`) },
-			wantType: data.FieldTypeFloat64,
-			want:     []any{2.5},
+			wantType: data.FieldTypeNullableFloat32,
+			want:     []any{float32(1.5), nil},
 		},
 		{
 			name:  "decimal",
@@ -146,8 +138,8 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			name:     "signed integer",
 			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Int32},
 			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Int32, `[-7]`) },
-			wantType: data.FieldTypeInt64,
-			want:     []any{int64(-7)},
+			wantType: data.FieldTypeInt32,
+			want:     []any{int32(-7)},
 		},
 		{
 			name:  "unsigned integer",
@@ -170,7 +162,7 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			field:    arrow.Field{Name: "c", Type: arrow.BinaryTypes.Binary, Nullable: true},
 			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.BinaryTypes.Binary, `["YQ==", null]`) },
 			wantType: data.FieldTypeNullableString,
-			want:     []any{"a", nil},
+			want:     []any{"YQ==", nil},
 		},
 		{
 			name:  "map",
@@ -187,15 +179,6 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			column:   func(t *testing.T) arrow.Array { return array.NewNull(2) },
 			wantType: data.FieldTypeNullableString,
 			want:     []any{nil, nil},
-		},
-		{
-			name:  "dictionary with a null entry",
-			field: arrow.Field{Name: "channel", Type: stringDictionary},
-			column: func(t *testing.T) arrow.Array {
-				return array.NewDictionaryArray(stringDictionary, arrowArray(t, arrow.PrimitiveTypes.Int8, `[1, 0, null]`), arrowArray(t, arrow.BinaryTypes.String, `["a", null]`))
-			},
-			wantType: data.FieldTypeNullableString,
-			want:     []any{nil, "a", nil},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -231,15 +214,6 @@ func equalValues(got, want []any) bool {
 		}
 	}
 	return true
-}
-
-func TestFrameFromArrowStreamRejectsBadDictionaryIndex(t *testing.T) {
-	dictionary := &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.PrimitiveTypes.Float64}
-	column := array.NewDictionaryArray(dictionary, arrowArray(t, arrow.PrimitiveTypes.Int32, `[0, 5]`), arrowArray(t, arrow.PrimitiveTypes.Float64, `[1]`))
-	stream := arrowColumnStream(t, arrow.Field{Name: "v", Type: dictionary}, column)
-	if _, err := frameFromArrowStream(bytes.NewReader(stream), "A", testRowLimit); err == nil {
-		t.Fatal("frameFromArrowStream() error = nil, want an out-of-range dictionary index error")
-	}
 }
 
 func TestFrameFromArrowStreamConcatenatesBatches(t *testing.T) {
