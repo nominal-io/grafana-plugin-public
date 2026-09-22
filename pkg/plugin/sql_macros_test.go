@@ -43,9 +43,9 @@ func TestInterpolateSQLMacros(t *testing.T) {
 		{name: "SDK interval", sql: "$__interval", interval: 500 * time.Millisecond, want: "500ms"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := interpolateSQLMacros(sqlMacroTestQuery(tc.interval).WithSQL(tc.sql))
+			got, err := sqlutil.Interpolate(sqlMacroTestQuery(tc.interval).WithSQL(tc.sql), sqlMacros)
 			if err != nil || got != tc.want {
-				t.Errorf("interpolateSQLMacros(%q) = %q, %v; want %q", tc.sql, got, err, tc.want)
+				t.Errorf("Interpolate(%q) = %q, %v; want %q", tc.sql, got, err, tc.want)
 			}
 		})
 	}
@@ -65,8 +65,8 @@ func TestInterpolateSQLMacrosRejectsBadArguments(t *testing.T) {
 		"$__timeGroup(ts, 1m, 0)",
 	} {
 		t.Run(sql, func(t *testing.T) {
-			if got, err := interpolateSQLMacros(sqlMacroTestQuery(time.Second).WithSQL(sql)); err == nil {
-				t.Errorf("interpolateSQLMacros(%q) = %q, want an error", sql, got)
+			if got, err := sqlutil.Interpolate(sqlMacroTestQuery(time.Second).WithSQL(sql), sqlMacros); err == nil {
+				t.Errorf("Interpolate(%q) = %q, want an error", sql, got)
 			}
 		})
 	}

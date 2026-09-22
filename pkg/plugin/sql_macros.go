@@ -60,11 +60,6 @@ var sqlMacros = sqlutil.Macros{
 	},
 }
 
-// interpolateSQLMacros expands Grafana's time macros in query.RawSQL.
-func interpolateSQLMacros(query *sqlutil.Query) (string, error) {
-	return sqlutil.Interpolate(query, sqlMacros)
-}
-
 // noMacroArguments reports whether a macro was written as $__name or $__name().
 func noMacroArguments(args []string) bool {
 	return len(args) == 0 || (len(args) == 1 && args[0] == "")
