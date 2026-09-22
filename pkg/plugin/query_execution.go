@@ -32,7 +32,7 @@ func newNominalQueryExecution(datasource *Datasource, config *models.PluginSetti
 func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.DataQuery) *backend.QueryDataResponse {
 	response := backend.NewQueryDataResponse()
 
-	var batchable []preparedQuery
+	var batchable, sqlQueries []preparedQuery
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
@@ -45,14 +45,39 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			response.Responses[q.RefID] = e.handleConnectionTestQuery(ctx)
 		case preparedQueryBatchable:
 			batchable = append(batchable, prepared)
+		case preparedQuerySql:
+			sqlQueries = append(sqlQueries, prepared)
 		case preparedQueryLegacy:
 			response.Responses[q.RefID] = e.handleLegacyQuery(prepared.Model, q.TimeRange)
 		}
 	}
 
-	for refID, res := range e.executePreparedBatches(ctx, batchable) {
-		response.Responses[refID] = res
+	var sqlWG sync.WaitGroup
+	var responseMu sync.Mutex
+	// Bound parallel requests even when a dashboard contains many SQL targets.
+	jobs := make(chan preparedQuery, len(sqlQueries))
+	for _, prepared := range sqlQueries {
+		jobs <- prepared
 	}
+	close(jobs)
+	for range min(8, len(sqlQueries)) {
+		sqlWG.Add(1)
+		go func() {
+			defer sqlWG.Done()
+			for p := range jobs {
+				result := e.executeSqlQuery(ctx, p)
+				responseMu.Lock()
+				response.Responses[p.Query.RefID] = result
+				responseMu.Unlock()
+			}
+		}()
+	}
+	for refID, res := range e.executePreparedBatches(ctx, batchable) {
+		responseMu.Lock()
+		response.Responses[refID] = res
+		responseMu.Unlock()
+	}
+	sqlWG.Wait()
 
 	return response
 }

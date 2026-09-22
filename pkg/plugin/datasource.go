@@ -86,6 +86,13 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
 	}
 
+	// A base URL the SQL transport cannot use (for example plain http) must not break the
+	// Conjure-backed features, so the error is surfaced per SQL query instead.
+	sqlClient, sqlClientErr := newSqlClient(baseURL)
+	if sqlClientErr != nil {
+		log.DefaultLogger.Warn("SQL queries are unavailable for this data source", "error", sqlClientErr)
+	}
+
 	ds := &Datasource{
 		settings:           settings,
 		resourceHTTPClient: resourceHTTPClient,
@@ -94,6 +101,8 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:       workspaceRid,
+		sqlClient:          sqlClient,
+		sqlClientErr:       sqlClientErr,
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -110,6 +119,9 @@ type Datasource struct {
 	workspaceService  workspaceapi.WorkspaceServiceClient
 
 	workspaceRid *rids.WorkspaceRid
+	sqlClient    *sqlClient
+	sqlClientErr error
+	sqlWorkspace sqlWorkspaceCache
 
 	resourceHTTPClient *http.Client
 
@@ -145,6 +157,9 @@ func (d *Datasource) enqueueKill(id uuid.UUID, target killTarget) {
 func (d *Datasource) Dispose() {
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
+	}
+	if d.sqlClient != nil {
+		_ = d.sqlClient.Close()
 	}
 }
 
@@ -253,6 +268,8 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 			return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: err.Error()}, nil
 		}
 		message += ". Workspace: " + name
+	} else {
+		message += ". SQL queries will use the API key's default workspace; set Workspace RID to pin one"
 	}
 	return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message}, nil
 }

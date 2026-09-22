@@ -13,6 +13,8 @@ import (
 
 // NominalQueryModel represents a query to the Nominal API
 type NominalQueryModel struct {
+	RawSql string `json:"rawSql,omitempty"`
+	Format string `json:"format,omitempty"`
 	// Asset information
 	AssetRid        string `json:"assetRid"`
 	Channel         string `json:"channel"`
@@ -49,12 +51,15 @@ const (
 	ChannelDataTypeLog     = "log"
 )
 
+const QueryTypeSql = "sql"
+
 type preparedQueryKind int
 
 const (
 	preparedQueryConnectionTest preparedQueryKind = iota
 	preparedQueryLegacy
 	preparedQueryBatchable
+	preparedQuerySql
 )
 
 type preparedQuery struct {
@@ -78,6 +83,13 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 
 	if qm.QueryType == "connectionTest" {
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryConnectionTest}, nil
+	}
+	if qm.QueryType == QueryTypeSql {
+		if strings.TrimSpace(qm.RawSql) == "" {
+			response := backend.ErrDataResponse(backend.StatusBadRequest, "SQL query is empty")
+			return preparedQuery{}, &response
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySql}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {
