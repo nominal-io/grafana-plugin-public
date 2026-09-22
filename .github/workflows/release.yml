@@ -12,8 +12,6 @@ on:
         tags:
             - "nominal-grafana-plugin@*" # Run on release-please tags, e.g. nominal-grafana-plugin@0.0.14
     pull_request:
-        branches:
-            - main
 
 permissions:
     contents: read
