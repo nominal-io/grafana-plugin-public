@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -30,24 +33,24 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 	defer reader.Release()
 
 	fields := reader.Schema().Fields()
-	columns := make([]sqlColumn, len(fields))
-	for i, field := range fields {
-		columns[i] = newSQLColumn(field)
-	}
+	// Batches are kept until the stream ends so that each column is allocated once at its final size.
+	var batches []arrow.RecordBatch
+	defer func() {
+		for _, batch := range batches {
+			batch.Release()
+		}
+	}()
 	var rows int64
 	truncated := false
 	for !truncated && reader.Next() {
-		record := reader.RecordBatch()
-		n := record.NumRows()
-		if rows+n > rowLimit {
-			n, truncated = rowLimit-rows, true
+		batch := reader.RecordBatch()
+		if rows+batch.NumRows() > rowLimit {
+			batch, truncated = batch.NewSlice(0, rowLimit-rows), true
+		} else {
+			batch.Retain()
 		}
-		for i, column := range columns {
-			if err := column.append(record.Column(i), int(n)); err != nil {
-				return nil, fmt.Errorf("failed to read column %q: %w", fields[i].Name, err)
-			}
-		}
-		rows += n
+		batches = append(batches, batch)
+		rows += batch.NumRows()
 	}
 	if err := reader.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read Arrow stream: %w", err)
@@ -59,8 +62,16 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 	}
 
 	frame := data.NewFrame(name)
-	for i, column := range columns {
-		frame.Fields = append(frame.Fields, data.NewField(fields[i].Name, nil, column.values()))
+	chunks := make([]arrow.Array, len(batches))
+	for i, field := range fields {
+		for b, batch := range batches {
+			chunks[b] = batch.Column(i)
+		}
+		values, err := newSQLColumn(field)(chunks, int(rows))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
+		}
+		frame.Fields = append(frame.Fields, data.NewField(field.Name, nil, values))
 	}
 	if truncated {
 		frame.AppendNotices(data.Notice{
@@ -71,107 +82,85 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 	return frame, nil
 }
 
-// sqlColumn collects one Arrow column across record batches.
-type sqlColumn interface {
-	append(column arrow.Array, rows int) error
-	values() any
-}
+// sqlColumn converts one Arrow column, split across record batches, to the values of a Grafana
+// field.
+type sqlColumn func(chunks []arrow.Array, rows int) (any, error)
 
 func newSQLColumn(field arrow.Field) sqlColumn {
 	nullable := field.Nullable
 	switch field.Type.ID() {
 	case arrow.NULL:
-		return &nullColumn{}
+		// NULL arrays have no validity bitmap, and every value is null.
+		return func(_ []arrow.Array, rows int) (any, error) { return make([]*string, rows), nil }
 	case arrow.INT8:
-		return newTypedColumn(nullable, reader((*array.Int8).Value))
+		return typedColumn(nullable, reader((*array.Int8).Value))
 	case arrow.INT16:
-		return newTypedColumn(nullable, reader((*array.Int16).Value))
+		return typedColumn(nullable, reader((*array.Int16).Value))
 	case arrow.INT32:
-		return newTypedColumn(nullable, reader((*array.Int32).Value))
+		return typedColumn(nullable, reader((*array.Int32).Value))
 	case arrow.INT64:
-		return newTypedColumn(nullable, reader((*array.Int64).Value))
+		return typedColumn(nullable, reader((*array.Int64).Value))
 	case arrow.UINT8:
-		return newTypedColumn(nullable, reader((*array.Uint8).Value))
+		return typedColumn(nullable, reader((*array.Uint8).Value))
 	case arrow.UINT16:
-		return newTypedColumn(nullable, reader((*array.Uint16).Value))
+		return typedColumn(nullable, reader((*array.Uint16).Value))
 	case arrow.UINT32:
-		return newTypedColumn(nullable, reader((*array.Uint32).Value))
+		return typedColumn(nullable, reader((*array.Uint32).Value))
 	case arrow.UINT64:
-		return newTypedColumn(nullable, reader((*array.Uint64).Value))
+		return typedColumn(nullable, reader((*array.Uint64).Value))
 	case arrow.FLOAT32:
-		return newTypedColumn(nullable, reader((*array.Float32).Value))
+		return typedColumn(nullable, reader((*array.Float32).Value))
 	case arrow.FLOAT64:
-		return newTypedColumn(nullable, reader((*array.Float64).Value))
+		return typedColumn(nullable, reader((*array.Float64).Value))
 	case arrow.BOOL:
-		return newTypedColumn(nullable, reader((*array.Boolean).Value))
+		return typedColumn(nullable, reader((*array.Boolean).Value))
 	case arrow.STRING:
-		return newTypedColumn(nullable, reader((*array.String).Value))
+		return typedColumn(nullable, reader((*array.String).Value))
 	case arrow.TIMESTAMP, arrow.DATE32, arrow.DATE64:
-		return newTypedColumn(nullable, timeValues)
+		return typedColumn(nullable, timeValues)
 	case arrow.DECIMAL128, arrow.DECIMAL256:
-		return newTypedColumn(nullable, decimalValues)
+		return typedColumn(nullable, decimalValues)
+	case arrow.MAP:
+		return typedColumn(nullable, mapValues)
 	default:
-		// Maps such as the tags column, lists, and other types without a Grafana field type.
-		return newTypedColumn(nullable, func(values arrow.Array) (func(int) string, error) { return values.ValueStr, nil })
+		// Lists and other types without a Grafana field type.
+		return typedColumn(nullable, func(values arrow.Array) (func(int) string, error) { return values.ValueStr, nil })
 	}
 }
 
 // valueReader returns a function that reads row i of an Arrow array as T.
 type valueReader[T any] func(values arrow.Array) (func(i int) T, error)
 
-type typedColumn[T any] struct {
-	read     valueReader[T]
-	nullable bool
-	vals     []T
-	ptrs     []*T
-}
-
-func newTypedColumn[T any](nullable bool, read valueReader[T]) *typedColumn[T] {
-	return &typedColumn[T]{read: read, nullable: nullable, vals: []T{}, ptrs: []*T{}}
-}
-
-func (c *typedColumn[T]) values() any {
-	if c.nullable {
-		return c.ptrs
-	}
-	return c.vals
-}
-
-func (c *typedColumn[T]) append(column arrow.Array, rows int) error {
-	get, err := c.read(column)
-	if err != nil {
-		return err
-	}
-	if !c.nullable {
-		c.vals = slices.Grow(c.vals, rows)
-		for i := range rows {
-			c.vals = append(c.vals, get(i))
+// typedColumn reads a column into a []T or, when it is nullable, a []*T with nil for nulls.
+func typedColumn[T any](nullable bool, read valueReader[T]) sqlColumn {
+	return func(chunks []arrow.Array, rows int) (any, error) {
+		vals := make([]T, rows)
+		var ptrs []*T
+		if nullable {
+			ptrs = make([]*T, rows)
 		}
-		return nil
-	}
-	c.ptrs = slices.Grow(c.ptrs, rows)
-	batch := make([]T, rows)
-	for i := range rows {
-		if column.IsNull(i) {
-			c.ptrs = append(c.ptrs, nil)
-			continue
+		row := 0
+		for _, chunk := range chunks {
+			get, err := read(chunk)
+			if err != nil {
+				return nil, err
+			}
+			for i := range chunk.Len() {
+				switch {
+				case !nullable:
+					vals[row] = get(i)
+				case chunk.IsValid(i):
+					vals[row] = get(i)
+					ptrs[row] = &vals[row]
+				}
+				row++
+			}
 		}
-		batch[i] = get(i)
-		c.ptrs = append(c.ptrs, &batch[i])
+		if nullable {
+			return ptrs, nil
+		}
+		return vals, nil
 	}
-	return nil
-}
-
-// nullColumn holds the NULL type, whose arrays have no validity bitmap.
-type nullColumn struct{ rows int }
-
-func (c *nullColumn) append(_ arrow.Array, rows int) error {
-	c.rows += rows
-	return nil
-}
-
-func (c *nullColumn) values() any {
-	return make([]*string, c.rows)
 }
 
 func unexpectedArray(values arrow.Array) error {
@@ -202,6 +191,29 @@ func timeValues(values arrow.Array) (func(int) time.Time, error) {
 	return nil, unexpectedArray(values)
 }
 
+// mapValues formats maps such as the tags column as key=value pairs, reading the entries in place.
+func mapValues(values arrow.Array) (func(int) string, error) {
+	m, ok := values.(*array.Map)
+	if !ok {
+		return nil, unexpectedArray(values)
+	}
+	keys, items := m.Keys(), m.Items()
+	var buf []byte
+	return func(i int) string {
+		start, end := m.ValueOffsets(i)
+		buf = buf[:0]
+		for j := int(start); j < int(end); j++ {
+			if j > int(start) {
+				buf = append(buf, ", "...)
+			}
+			buf = append(buf, keys.ValueStr(j)...)
+			buf = append(buf, '=')
+			buf = append(buf, items.ValueStr(j)...)
+		}
+		return string(buf)
+	}, nil
+}
+
 func decimalValues(values arrow.Array) (func(int) float64, error) {
 	switch values := values.(type) {
 	case *array.Decimal128:
@@ -228,41 +240,60 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.F
 		})
 		return frame, nil
 	}
-	sorted, err := sortFrameByTime(frame, schema.TimeIndex)
+	times, err := fieldTimes(frame.Fields[schema.TimeIndex])
 	if err != nil {
 		return nil, err
 	}
-	if schema.Type == data.TimeSeriesTypeWide {
-		return sorted, nil
+	order := timeOrder(times)
+	if schema.Type == data.TimeSeriesTypeLong {
+		wide, err := longToWide(frame, schema, times, order)
+		if err != nil {
+			return nil, err
+		}
+		wide.RefID = frame.RefID
+		return wide, nil
 	}
-	wide, err := data.LongToWide(sorted, &data.FillMissing{Mode: data.FillModeNull})
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert result to time series: %w", err)
+	if order == nil {
+		return frame, nil
 	}
-	wide.RefID = frame.RefID
-	return wide, nil
+	return reorderRows(frame, order), nil
 }
 
-// sortFrameByTime returns frame ordered by its time field, keeping the order of equal timestamps.
-func sortFrameByTime(frame *data.Frame, timeIndex int) (*data.Frame, error) {
-	field := frame.Fields[timeIndex]
+// fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
+func fieldTimes(field *data.Field) ([]time.Time, error) {
 	times := make([]time.Time, field.Len())
 	for i := range times {
-		t, ok := field.ConcreteAt(i)
-		if !ok {
+		var t *time.Time
+		switch p := field.PointerAt(i).(type) {
+		case *time.Time:
+			t = p
+		case **time.Time:
+			t = *p
+		}
+		if t == nil {
 			return nil, errors.New("time series results cannot contain a null timestamp")
 		}
-		times[i] = t.(time.Time)
+		times[i] = *t
 	}
+	return times, nil
+}
+
+// timeOrder returns the row order that sorts times, keeping equal times in their order, or nil when
+// times are already sorted.
+func timeOrder(times []time.Time) []int {
 	if slices.IsSortedFunc(times, time.Time.Compare) {
-		return frame, nil
+		return nil
 	}
 	order := make([]int, len(times))
 	for i := range order {
 		order[i] = i
 	}
 	slices.SortStableFunc(order, func(a, b int) int { return times[a].Compare(times[b]) })
+	return order
+}
 
+// reorderRows returns a copy of frame with its rows in order.
+func reorderRows(frame *data.Frame, order []int) *data.Frame {
 	sorted := frame.EmptyCopy()
 	sorted.Meta = frame.Meta
 	sorted.Extend(len(order))
@@ -272,5 +303,123 @@ func sortFrameByTime(frame *data.Frame, timeIndex int) (*data.Frame, error) {
 			sorted.Fields[col].Set(i, field.At(row))
 		}
 	}
-	return sorted, nil
+	return sorted
+}
+
+// longToWide converts a long time series to the wide shape, as data.LongToWide does with
+// FillModeNull, visiting rows in order when it is not nil. Wide cells point at the long frame's
+// values, so unlike data.LongToWide it allocates per series rather than per row.
+func longToWide(long *data.Frame, schema data.TimeSeriesSchema, times []time.Time, order []int) (*data.Frame, error) {
+	rows := len(times)
+	wideRow := make([]int, rows)
+	series := make([]int, rows)
+	var wideTimes []time.Time
+	var labels []data.Labels
+	seriesIDs := make(map[string]int)
+	var key []byte
+	for i := range rows {
+		row := i
+		if order != nil {
+			row = order[i]
+		}
+		if t := times[row]; len(wideTimes) == 0 || t.After(wideTimes[len(wideTimes)-1]) {
+			wideTimes = append(wideTimes, t)
+		}
+		wideRow[row] = len(wideTimes) - 1
+		key = key[:0]
+		for _, f := range schema.FactorIndices {
+			value, err := labelValue(long.Fields[f], row)
+			if err != nil {
+				return nil, err
+			}
+			key = append(binary.AppendUvarint(key, uint64(len(value))), value...)
+		}
+		id, ok := seriesIDs[string(key)]
+		if !ok {
+			seriesLabels, err := rowLabels(long, schema.FactorIndices, row)
+			if err != nil {
+				return nil, err
+			}
+			id = len(labels)
+			seriesIDs[string(key)] = id
+			labels = append(labels, seriesLabels)
+		}
+		series[row] = id
+	}
+
+	values := schema.ValueIndices
+	fields := make([]*data.Field, len(labels)*len(values))
+	for id, seriesLabels := range labels {
+		for v, index := range values {
+			field := data.NewFieldFromFieldType(long.Fields[index].Type().NullableType(), len(wideTimes))
+			field.Name, field.Labels = long.Fields[index].Name, seriesLabels
+			fields[id*len(values)+v] = field
+		}
+	}
+	for v, index := range values {
+		// Both return a *T for these field types: PointerAt into a []T, At from a []*T.
+		valueAt := long.Fields[index].PointerAt
+		if long.Fields[index].Nullable() {
+			valueAt = long.Fields[index].At
+		}
+		for row := range rows {
+			fields[series[row]*len(values)+v].Set(wideRow[row], valueAt(row))
+		}
+	}
+	labelKeys := make([]string, len(schema.FactorIndices))
+	for i, f := range schema.FactorIndices {
+		labelKeys[i] = long.Fields[f].Name
+	}
+	slices.SortStableFunc(fields, func(a, b *data.Field) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		for _, k := range labelKeys {
+			if c := strings.Compare(a.Labels[k], b.Labels[k]); c != 0 {
+				return c
+			}
+		}
+		return 0
+	})
+
+	wide := data.NewFrame(long.Name, data.NewField(long.Fields[schema.TimeIndex].Name, nil, wideTimes))
+	wide.Fields = append(wide.Fields, fields...)
+	wide.Meta = long.Meta
+	if wide.Meta == nil {
+		wide.Meta = &data.FrameMeta{}
+	}
+	wide.Meta.Type = data.FrameTypeTimeSeriesWide
+	wide.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
+	return wide, nil
+}
+
+func rowLabels(frame *data.Frame, factors []int, row int) (data.Labels, error) {
+	labels := make(data.Labels, len(factors))
+	for _, f := range factors {
+		field := frame.Fields[f]
+		if _, ok := labels[field.Name]; ok {
+			return nil, fmt.Errorf("time series results cannot have two label columns named %q", field.Name)
+		}
+		labels[field.Name], _ = labelValue(field, row)
+	}
+	return labels, nil
+}
+
+// labelValue reads a string or bool label column without allocating.
+func labelValue(field *data.Field, i int) (string, error) {
+	switch v := field.PointerAt(i).(type) {
+	case *string:
+		return *v, nil
+	case **string:
+		if *v != nil {
+			return **v, nil
+		}
+	case *bool:
+		return strconv.FormatBool(*v), nil
+	case **bool:
+		if *v != nil {
+			return strconv.FormatBool(**v), nil
+		}
+	}
+	return "", fmt.Errorf("time series label column %q cannot contain nulls", field.Name)
 }

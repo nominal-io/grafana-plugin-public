@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -166,12 +168,13 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 		},
 		{
 			name:  "map",
-			field: arrow.Field{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
+			field: arrow.Field{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String), Nullable: true},
 			column: func(t *testing.T) arrow.Array {
-				return arrowArray(t, arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String), `[[{"key": "unit", "value": "C"}]]`)
+				return arrowArray(t, arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String),
+					`[[{"key": "unit", "value": "C"}, {"key": "sensor", "value": "imu"}], [], null]`)
 			},
-			wantType: data.FieldTypeString,
-			want:     []any{`[{"key":"unit","value":"C"}]`},
+			wantType: data.FieldTypeNullableString,
+			want:     []any{"unit=C, sensor=imu", "", nil},
 		},
 		{
 			name:     "null type",
@@ -217,11 +220,20 @@ func equalValues(got, want []any) bool {
 }
 
 func TestFrameFromArrowStreamConcatenatesBatches(t *testing.T) {
-	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
-	stream := sqlArrowStream(t, schema, 3, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).Append(1) })
+	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64, Nullable: true}}, nil)
+	values := [][]int64{{1, 2}, {3}, {4, 5}}
+	valid := [][]bool{{true, false}, {true}, {false, true}}
+	batch := 0
+	stream := sqlArrowStream(t, schema, len(values), func(b *array.RecordBuilder) {
+		b.Field(0).(*array.Int64Builder).AppendValues(values[batch], valid[batch])
+		batch++
+	})
 	frame, err := frameFromArrowStream(bytes.NewReader(stream), "A", testRowLimit)
-	if err != nil || frame.Rows() != 3 {
-		t.Fatalf("frameFromArrowStream() = %d rows, %v; want 3 rows", frame.Rows(), err)
+	if err != nil {
+		t.Fatalf("frameFromArrowStream() error = %v", err)
+	}
+	if got, want := fieldValues(frame.Fields[0]), []any{int64(1), nil, int64(3), nil, int64(5)}; !equalValues(got, want) {
+		t.Errorf("values = %v, want %v", got, want)
 	}
 	if frame.Meta != nil {
 		t.Errorf("frame notices = %+v, want none", frame.Meta.Notices)
@@ -230,13 +242,35 @@ func TestFrameFromArrowStreamConcatenatesBatches(t *testing.T) {
 
 func TestFrameFromArrowStreamLimitsRows(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
-	stream := sqlArrowStream(t, schema, 3, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2}, nil) })
-	frame, err := frameFromArrowStream(bytes.NewReader(stream), "A", 3)
-	if err != nil || frame.Rows() != 3 {
-		t.Fatalf("frameFromArrowStream() = %d rows, %v; want 3 rows", frame.Rows(), err)
-	}
-	if frame.Meta == nil || len(frame.Meta.Notices) != 1 || frame.Meta.Notices[0].Severity != data.NoticeSeverityWarning {
-		t.Errorf("frame meta = %+v, want one row-limit warning", frame.Meta)
+	next := int64(0)
+	stream := sqlArrowStream(t, schema, 3, func(b *array.RecordBuilder) {
+		b.Field(0).(*array.Int64Builder).AppendValues([]int64{next + 1, next + 2}, nil)
+		next += 2
+	})
+	for _, tc := range []struct {
+		name      string
+		limit     int64
+		want      []any
+		truncated bool
+	}{
+		{name: "within a batch", limit: 3, want: []any{int64(1), int64(2), int64(3)}, truncated: true},
+		{name: "at a batch boundary", limit: 4, want: []any{int64(1), int64(2), int64(3), int64(4)}, truncated: true},
+		{name: "whole stream", limit: 6, want: []any{int64(1), int64(2), int64(3), int64(4), int64(5), int64(6)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, err := frameFromArrowStream(bytes.NewReader(stream), "A", tc.limit)
+			if err != nil {
+				t.Fatalf("frameFromArrowStream() error = %v", err)
+			}
+			if got := fieldValues(frame.Fields[0]); !equalValues(got, tc.want) {
+				t.Errorf("values = %v, want %v", got, tc.want)
+			}
+			notice := fmt.Sprintf("Results have been limited to %d rows", tc.limit)
+			truncated := frame.Meta != nil && len(frame.Meta.Notices) == 1 && strings.HasPrefix(frame.Meta.Notices[0].Text, notice)
+			if truncated != tc.truncated {
+				t.Errorf("frame meta = %+v, want row-limit notice %v", frame.Meta, tc.truncated)
+			}
+		})
 	}
 }
 
@@ -293,16 +327,112 @@ func TestShapeSQLFrameLongToWide(t *testing.T) {
 	}
 }
 
-func TestShapeSQLFrameSortsByTime(t *testing.T) {
-	ts := time.Unix(1700000000, 0)
-	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts.Add(time.Second), ts}), data.NewField("value", nil, []float64{2, 1}))
-	frame.RefID = "A"
-	out, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
-	if err != nil {
-		t.Fatalf("shapeSQLFrame() error = %v", err)
+func ref[T any](v T) *T { return &v }
+
+func TestShapeSQLFrameMatchesSDKLongToWide(t *testing.T) {
+	at := func(s int) time.Time { return time.Unix(1700000000+int64(s), 0).UTC() }
+	oneLabel := func(rows ...int) *data.Frame {
+		times := []time.Time{at(0), at(0), at(1), at(2)}
+		channels := []string{"b", "a", "a", "b"}
+		values := []float64{1, 2, 3, 4}
+		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
+		for _, row := range rows {
+			frame.AppendRow(times[row], channels[row], values[row])
+		}
+		return frame
 	}
-	if got := fieldValues(out.Fields[1]); !equalValues(got, []any{1.0, 2.0}) || out.RefID != "A" {
-		t.Errorf("sorted values, RefID = %v, %q; want [1 2], %q", got, out.RefID, "A")
+	for _, tc := range []struct {
+		name         string
+		long, sorted func() *data.Frame
+	}{
+		{
+			name:   "one label with missing samples",
+			long:   func() *data.Frame { return oneLabel(0, 1, 2, 3) },
+			sorted: func() *data.Frame { return oneLabel(0, 1, 2, 3) },
+		},
+		{
+			name:   "unsorted rows",
+			long:   func() *data.Frame { return oneLabel(3, 2, 0, 1) },
+			sorted: func() *data.Frame { return oneLabel(0, 1, 2, 3) },
+		},
+		{
+			name: "two labels and values, nulls and a repeated sample",
+			long: func() *data.Frame {
+				return data.NewFrame("A",
+					data.NewField("time", nil, []*time.Time{ref(at(0)), ref(at(0)), ref(at(1)), ref(at(1))}),
+					data.NewField("channel", nil, []*string{ref("a"), ref("b"), ref("a"), ref("a")}),
+					data.NewField("ok", nil, []bool{true, false, true, true}),
+					data.NewField("avg", nil, []*float64{ref(1.0), nil, ref(3.0), ref(4.0)}),
+					data.NewField("max", nil, []int64{10, 20, 30, 40}),
+				)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sorted == nil {
+				tc.sorted = tc.long
+			}
+			long, sorted := tc.long(), tc.sorted()
+			long.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
+			sorted.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
+			got, err := shapeSQLFrame(long, sqlutil.FormatOptionTimeSeries)
+			if err != nil {
+				t.Fatalf("shapeSQLFrame() error = %v", err)
+			}
+			want, err := data.LongToWide(sorted, &data.FillMissing{Mode: data.FillModeNull})
+			if err != nil {
+				t.Fatalf("data.LongToWide() error = %v", err)
+			}
+			gotJSON, err := json.Marshal(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantJSON, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("shapeSQLFrame() =\n%s\nwant data.LongToWide() =\n%s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
+func TestShapeSQLFrameRejectsNullLabels(t *testing.T) {
+	frame := data.NewFrame("A",
+		data.NewField("time", nil, []time.Time{time.Unix(0, 0)}),
+		data.NewField("channel", nil, []*string{nil}),
+		data.NewField("value", nil, []float64{1}),
+	)
+	if _, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries); err == nil || !strings.Contains(err.Error(), `"channel"`) {
+		t.Errorf("shapeSQLFrame() error = %v, want an error naming the null label column", err)
+	}
+}
+
+func TestShapeSQLFrameSortsByTime(t *testing.T) {
+	early := time.Unix(1700000000, 0).UTC()
+	late := early.Add(time.Second)
+	for name, times := range map[string]any{
+		"time":          []time.Time{late, early, late},
+		"nullable time": []*time.Time{&late, &early, &late},
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("value", nil, []float64{2, 1, 3}))
+			frame.RefID = "A"
+			out, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+			if err != nil {
+				t.Fatalf("shapeSQLFrame() error = %v", err)
+			}
+			if got, want := fieldValues(out.Fields[0]), []any{early, late, late}; !equalValues(got, want) {
+				t.Errorf("times = %v, want %v", got, want)
+			}
+			if got, want := fieldValues(out.Fields[1]), []any{1.0, 2.0, 3.0}; !equalValues(got, want) {
+				t.Errorf("values = %v, want %v with rows at equal times kept in order", got, want)
+			}
+			if out.RefID != "A" {
+				t.Errorf("RefID = %q, want %q", out.RefID, "A")
+			}
+		})
 	}
 }
 
@@ -341,16 +471,29 @@ func TestShapeSQLFrameRejectsNullTime(t *testing.T) {
 }
 
 func BenchmarkFrameFromArrowStream(b *testing.B) {
-	const rows = 1_000_000
-	schema := arrow.NewSchema([]arrow.Field{{Name: "ts", Type: &arrow.TimestampType{Unit: arrow.Nanosecond}}, {Name: "channel", Type: arrow.BinaryTypes.String}, {Name: "value", Type: arrow.PrimitiveTypes.Float64, Nullable: true}}, nil)
-	stream := sqlArrowStream(b, schema, 1, func(rb *array.RecordBuilder) {
+	// 1M rows in batches about the size ClickHouse sends.
+	const batches, batchRows = 16, 62_500
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "ts", Type: &arrow.TimestampType{Unit: arrow.Nanosecond}},
+		{Name: "channel", Type: arrow.BinaryTypes.String},
+		{Name: "value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
+	}, nil)
+	row := 0
+	stream := sqlArrowStream(b, schema, batches, func(rb *array.RecordBuilder) {
 		ts := rb.Field(0).(*array.TimestampBuilder)
 		channel := rb.Field(1).(*array.StringBuilder)
 		value := rb.Field(2).(*array.Float64Builder)
-		for i := range rows {
-			ts.Append(arrow.Timestamp(1700000000000000000 + int64(i)))
+		tags := rb.Field(3).(*array.MapBuilder)
+		keys, items := tags.KeyBuilder().(*array.StringBuilder), tags.ItemBuilder().(*array.StringBuilder)
+		for range batchRows {
+			ts.Append(arrow.Timestamp(1700000000000000000 + int64(row)))
 			channel.Append("x")
-			value.Append(float64(i))
+			value.Append(float64(row))
+			tags.Append(true)
+			keys.AppendValues([]string{"vehicle", "env"}, nil)
+			items.AppendValues([]string{"car-1", "prod"}, nil)
+			row++
 		}
 	})
 	b.ReportAllocs()
