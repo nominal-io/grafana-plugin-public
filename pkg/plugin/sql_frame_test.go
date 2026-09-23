@@ -22,7 +22,7 @@ const testRowLimit = 1_000_000
 func sqlArrowStream(t testing.TB, schema *arrow.Schema, batches int, build func(*array.RecordBuilder)) []byte {
 	t.Helper()
 	var out bytes.Buffer
-	writer := ipc.NewWriter(&out, ipc.WithSchema(schema))
+	writer := ipc.NewWriter(&out, ipc.WithSchema(schema), ipc.WithZstd())
 	for range batches {
 		builder := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 		build(builder)
@@ -46,7 +46,7 @@ func arrowColumnStream(t *testing.T, field arrow.Field, column arrow.Array) []by
 	record := array.NewRecordBatch(schema, []arrow.Array{column}, int64(column.Len()))
 	defer record.Release()
 	var out bytes.Buffer
-	writer := ipc.NewWriter(&out, ipc.WithSchema(schema))
+	writer := ipc.NewWriter(&out, ipc.WithSchema(schema), ipc.WithZstd())
 	if err := writer.Write(record); err != nil {
 		t.Fatalf("writing Arrow batch: %v", err)
 	}
@@ -150,6 +150,13 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			},
 			wantType: data.FieldTypeNullableUint64,
 			want:     []any{uint64(18446744073709551615), nil},
+		},
+		{
+			name:     "nullable string",
+			field:    arrow.Field{Name: "c", Type: arrow.BinaryTypes.String, Nullable: true},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.BinaryTypes.String, `["a", null]`) },
+			wantType: data.FieldTypeNullableString,
+			want:     []any{"a", nil},
 		},
 		{
 			name:     "bool",
@@ -286,6 +293,9 @@ func TestFrameFromArrowStreamSchemaOnly(t *testing.T) {
 	if err != nil || frame.Rows() != 0 || len(frame.Fields) != 1 {
 		t.Fatalf("frameFromArrowStream() = %d fields, %d rows, %v; want 1 field, 0 rows", len(frame.Fields), frame.Rows(), err)
 	}
+	if field := frame.Fields[0]; field.Name != "v" || field.Type() != data.FieldTypeFloat64 {
+		t.Errorf("field = %s %s, want v %s", field.Name, field.Type(), data.FieldTypeFloat64)
+	}
 }
 
 type failingReader struct{ err error }
@@ -302,14 +312,12 @@ func TestFrameFromArrowStreamReportsErrorAfterLastBatch(t *testing.T) {
 	}
 }
 
-func ref[T any](v T) *T { return &v }
-
 func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 	at := func(s int) time.Time { return time.Unix(1700000000+int64(s), 0).UTC() }
 	frame := data.NewFrame("A",
 		data.NewField("time", nil, []time.Time{at(1), at(0), at(2), at(0)}),
 		data.NewField("channel", nil, []string{"b", "a", "a", "b"}),
-		data.NewField("avg", nil, []*float64{ref(2.0), ref(1.0), nil, ref(4.0)}),
+		data.NewField("avg", nil, []*float64{new(2.0), new(1.0), nil, new(4.0)}),
 		data.NewField("max", nil, []int64{20, 10, 30, 40}),
 	)
 	frame.RefID = "A"
@@ -450,6 +458,26 @@ func BenchmarkFrameFromArrowStream(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		if _, err := frameFromArrowStream(bytes.NewReader(stream), "A", testRowLimit); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkShapeSQLFrame(b *testing.B) {
+	// 1M rows from 10 channels that each sample at their own times, as raw telemetry does.
+	const rows, channels = 1_000_000, 10
+	times := make([]time.Time, rows)
+	names := make([]string, rows)
+	values := make([]*float64, rows)
+	for i := range rows {
+		times[i] = time.Unix(1700000000, int64(i)*1000).UTC()
+		names[i] = fmt.Sprintf("channel_%d", i%channels)
+		values[i] = new(float64(i))
+	}
+	frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("channel", nil, names), data.NewField("value", nil, values))
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries); err != nil {
 			b.Fatal(err)
 		}
 	}

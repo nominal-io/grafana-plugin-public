@@ -13,7 +13,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
@@ -23,7 +22,7 @@ import (
 // map<string,string> tags column and assumes nanosecond timestamps. When the whole stream fits,
 // it also reads r to EOF, so a stream that fails after its last batch reports that error.
 func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame, error) {
-	reader, err := ipc.NewReader(r, ipc.WithAllocator(memory.DefaultAllocator))
+	reader, err := ipc.NewReader(r)
 	if errors.Is(err, io.EOF) {
 		return nil, errors.New("SQL response was empty")
 	}
@@ -67,7 +66,7 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 		for b, batch := range batches {
 			chunks[b] = batch.Column(i)
 		}
-		values, err := newSQLColumn(field)(chunks, int(rows))
+		values, err := columnValues(field, chunks, int(rows))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
 		}
@@ -82,148 +81,103 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 	return frame, nil
 }
 
-// sqlColumn converts one Arrow column, split across record batches, to the values of a Grafana
-// field.
-type sqlColumn func(chunks []arrow.Array, rows int) (any, error)
-
-func newSQLColumn(field arrow.Field) sqlColumn {
-	nullable := field.Nullable
-	switch field.Type.ID() {
-	case arrow.NULL:
+// columnValues converts one Arrow column, split across record batches, to the values of a Grafana
+// field: a []T, or a []*T with nil for nulls when the column is nullable.
+func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error) {
+	n := field.Nullable
+	switch t := field.Type.(type) {
+	case *arrow.NullType:
 		// NULL arrays have no validity bitmap, and every value is null.
-		return func(_ []arrow.Array, rows int) (any, error) { return make([]*string, rows), nil }
-	case arrow.INT8:
-		return typedColumn(nullable, reader((*array.Int8).Value))
-	case arrow.INT16:
-		return typedColumn(nullable, reader((*array.Int16).Value))
-	case arrow.INT32:
-		return typedColumn(nullable, reader((*array.Int32).Value))
-	case arrow.INT64:
-		return typedColumn(nullable, reader((*array.Int64).Value))
-	case arrow.UINT8:
-		return typedColumn(nullable, reader((*array.Uint8).Value))
-	case arrow.UINT16:
-		return typedColumn(nullable, reader((*array.Uint16).Value))
-	case arrow.UINT32:
-		return typedColumn(nullable, reader((*array.Uint32).Value))
-	case arrow.UINT64:
-		return typedColumn(nullable, reader((*array.Uint64).Value))
-	case arrow.FLOAT32:
-		return typedColumn(nullable, reader((*array.Float32).Value))
-	case arrow.FLOAT64:
-		return typedColumn(nullable, reader((*array.Float64).Value))
-	case arrow.BOOL:
-		return typedColumn(nullable, reader((*array.Boolean).Value))
-	case arrow.STRING:
-		return typedColumn(nullable, reader((*array.String).Value))
-	case arrow.TIMESTAMP, arrow.DATE32, arrow.DATE64:
-		return typedColumn(nullable, timeValues)
-	case arrow.DECIMAL128, arrow.DECIMAL256:
-		return typedColumn(nullable, decimalValues)
-	case arrow.MAP:
-		return typedColumn(nullable, mapValues)
+		return make([]*string, rows), nil
+	case *arrow.Int8Type:
+		return column(chunks, rows, n, (*array.Int8).Value)
+	case *arrow.Int16Type:
+		return column(chunks, rows, n, (*array.Int16).Value)
+	case *arrow.Int32Type:
+		return column(chunks, rows, n, (*array.Int32).Value)
+	case *arrow.Int64Type:
+		return column(chunks, rows, n, (*array.Int64).Value)
+	case *arrow.Uint8Type:
+		return column(chunks, rows, n, (*array.Uint8).Value)
+	case *arrow.Uint16Type:
+		return column(chunks, rows, n, (*array.Uint16).Value)
+	case *arrow.Uint32Type:
+		return column(chunks, rows, n, (*array.Uint32).Value)
+	case *arrow.Uint64Type:
+		return column(chunks, rows, n, (*array.Uint64).Value)
+	case *arrow.Float32Type:
+		return column(chunks, rows, n, (*array.Float32).Value)
+	case *arrow.Float64Type:
+		return column(chunks, rows, n, (*array.Float64).Value)
+	case *arrow.BooleanType:
+		return column(chunks, rows, n, (*array.Boolean).Value)
+	case *arrow.StringType:
+		return column(chunks, rows, n, (*array.String).Value)
+	case *arrow.TimestampType:
+		return column(chunks, rows, n, func(a *array.Timestamp, i int) time.Time { return a.Value(i).ToTime(t.Unit) })
+	case *arrow.Date32Type:
+		return column(chunks, rows, n, func(a *array.Date32, i int) time.Time { return a.Value(i).ToTime() })
+	case *arrow.Date64Type:
+		return column(chunks, rows, n, func(a *array.Date64, i int) time.Time { return a.Value(i).ToTime() })
+	case *arrow.Decimal128Type:
+		return column(chunks, rows, n, func(a *array.Decimal128, i int) float64 { return a.Value(i).ToFloat64(t.Scale) })
+	case *arrow.Decimal256Type:
+		return column(chunks, rows, n, func(a *array.Decimal256, i int) float64 { return a.Value(i).ToFloat64(t.Scale) })
+	case *arrow.MapType:
+		var buf []byte
+		return column(chunks, rows, n, func(a *array.Map, i int) string {
+			buf = appendMap(buf[:0], a, i)
+			return string(buf)
+		})
 	default:
 		// Lists and other types without a Grafana field type.
-		return typedColumn(nullable, func(values arrow.Array) (func(int) string, error) { return values.ValueStr, nil })
+		return column(chunks, rows, n, arrow.Array.ValueStr)
 	}
 }
 
-// valueReader returns a function that reads row i of an Arrow array as T.
-type valueReader[T any] func(values arrow.Array) (func(i int) T, error)
-
-// typedColumn reads a column into a []T or, when it is nullable, a []*T with nil for nulls.
-func typedColumn[T any](nullable bool, read valueReader[T]) sqlColumn {
-	return func(chunks []arrow.Array, rows int) (any, error) {
-		vals := make([]T, rows)
-		var ptrs []*T
-		if nullable {
-			ptrs = make([]*T, rows)
-		}
-		row := 0
-		for _, chunk := range chunks {
-			get, err := read(chunk)
-			if err != nil {
-				return nil, err
-			}
-			for i := range chunk.Len() {
-				switch {
-				case !nullable:
-					vals[row] = get(i)
-				case chunk.IsValid(i):
-					vals[row] = get(i)
-					ptrs[row] = &vals[row]
-				}
-				row++
-			}
-		}
-		if nullable {
-			return ptrs, nil
-		}
-		return vals, nil
+// column reads chunks, which must be arrays of type A, through value.
+func column[A arrow.Array, T any](chunks []arrow.Array, rows int, nullable bool, value func(A, int) T) (any, error) {
+	vals := make([]T, rows)
+	var ptrs []*T
+	if nullable {
+		ptrs = make([]*T, rows)
 	}
-}
-
-func unexpectedArray(values arrow.Array) error {
-	return fmt.Errorf("unexpected %s array", values.DataType())
-}
-
-// reader reads arrays of type A, whose values need no conversion for a Grafana field, with value.
-func reader[A arrow.Array, T any](value func(A, int) T) valueReader[T] {
-	return func(values arrow.Array) (func(int) T, error) {
-		typed, ok := values.(A)
+	row := 0
+	for _, chunk := range chunks {
+		typed, ok := chunk.(A)
 		if !ok {
-			return nil, unexpectedArray(values)
+			return nil, fmt.Errorf("unexpected %s array", chunk.DataType())
 		}
-		return func(i int) T { return value(typed, i) }, nil
-	}
-}
-
-func timeValues(values arrow.Array) (func(int) time.Time, error) {
-	switch values := values.(type) {
-	case *array.Timestamp:
-		unit := values.DataType().(*arrow.TimestampType).Unit
-		return func(i int) time.Time { return values.Value(i).ToTime(unit).UTC() }, nil
-	case *array.Date32:
-		return func(i int) time.Time { return values.Value(i).ToTime() }, nil
-	case *array.Date64:
-		return func(i int) time.Time { return values.Value(i).ToTime() }, nil
-	}
-	return nil, unexpectedArray(values)
-}
-
-// mapValues formats maps such as the tags column as key=value pairs, reading the entries in place.
-func mapValues(values arrow.Array) (func(int) string, error) {
-	m, ok := values.(*array.Map)
-	if !ok {
-		return nil, unexpectedArray(values)
-	}
-	keys, items := m.Keys(), m.Items()
-	var buf []byte
-	return func(i int) string {
-		start, end := m.ValueOffsets(i)
-		buf = buf[:0]
-		for j := int(start); j < int(end); j++ {
-			if j > int(start) {
-				buf = append(buf, ", "...)
+		for i := range chunk.Len() {
+			switch {
+			case !nullable:
+				vals[row] = value(typed, i)
+			case chunk.IsValid(i):
+				vals[row] = value(typed, i)
+				ptrs[row] = &vals[row]
 			}
-			buf = append(buf, keys.ValueStr(j)...)
-			buf = append(buf, '=')
-			buf = append(buf, items.ValueStr(j)...)
+			row++
 		}
-		return string(buf)
-	}, nil
+	}
+	if nullable {
+		return ptrs, nil
+	}
+	return vals, nil
 }
 
-func decimalValues(values arrow.Array) (func(int) float64, error) {
-	switch values := values.(type) {
-	case *array.Decimal128:
-		scale := values.DataType().(*arrow.Decimal128Type).Scale
-		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
-	case *array.Decimal256:
-		scale := values.DataType().(*arrow.Decimal256Type).Scale
-		return func(i int) float64 { return values.Value(i).ToFloat64(scale) }, nil
+// appendMap appends row i of a map, such as the tags column, as key=value pairs.
+func appendMap(buf []byte, m *array.Map, i int) []byte {
+	keys, items := m.Keys(), m.Items()
+	start, end := m.ValueOffsets(i)
+	for j := int(start); j < int(end); j++ {
+		if j > int(start) {
+			buf = append(buf, ", "...)
+		}
+		buf = append(buf, keys.ValueStr(j)...)
+		buf = append(buf, '=')
+		buf = append(buf, items.ValueStr(j)...)
 	}
-	return nil, unexpectedArray(values)
+	return buf
 }
 
 // shapeSQLFrame returns table results unchanged. A time series result becomes one frame per value
