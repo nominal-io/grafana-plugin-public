@@ -226,11 +226,11 @@ func decimalValues(values arrow.Array) (func(int) float64, error) {
 	return nil, unexpectedArray(values)
 }
 
-// shapeSQLFrame returns table results unchanged. Time series results are sorted by time and, when
-// long, converted to the wide shape Grafana panels expect, with nulls for missing samples.
-func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.Frame, error) {
+// shapeSQLFrame returns table results unchanged. A time series result becomes one frame per value
+// column and label set, sorted by time, where the result's string and bool columns are the labels.
+func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Frames, error) {
 	if format == sqlutil.FormatOptionTable || frame.Rows() == 0 {
-		return frame, nil
+		return data.Frames{frame}, nil
 	}
 	schema := frame.TimeSeriesSchema()
 	if schema.Type == data.TimeSeriesTypeNot {
@@ -238,25 +238,13 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (*data.F
 			Severity: data.NoticeSeverityInfo,
 			Text:     "Result is shown as a table because a time series needs a timestamp column and a numeric column.",
 		})
-		return frame, nil
+		return data.Frames{frame}, nil
 	}
 	times, err := fieldTimes(frame.Fields[schema.TimeIndex])
 	if err != nil {
 		return nil, err
 	}
-	order := timeOrder(times)
-	if schema.Type == data.TimeSeriesTypeLong {
-		wide, err := longToWide(frame, schema, times, order)
-		if err != nil {
-			return nil, err
-		}
-		wide.RefID = frame.RefID
-		return wide, nil
-	}
-	if order == nil {
-		return frame, nil
-	}
-	return reorderRows(frame, order), nil
+	return splitSeries(frame, schema, times, timeOrder(times))
 }
 
 // fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
@@ -292,117 +280,80 @@ func timeOrder(times []time.Time) []int {
 	return order
 }
 
-// reorderRows returns a copy of frame with its rows in order.
-func reorderRows(frame *data.Frame, order []int) *data.Frame {
-	sorted := frame.EmptyCopy()
-	sorted.Meta = frame.Meta
-	sorted.Extend(len(order))
-	for col, field := range frame.Fields {
-		sorted.Fields[col].Config = field.Config
-		for i, row := range order {
-			sorted.Fields[col].Set(i, field.At(row))
-		}
-	}
-	return sorted
-}
-
-// longToWide converts a long time series to the wide shape, as data.LongToWide does with
-// FillModeNull, visiting rows in order when it is not nil. Wide cells point at the long frame's
-// values, so unlike data.LongToWide it allocates per series rather than per row.
-func longToWide(long *data.Frame, schema data.TimeSeriesSchema, times []time.Time, order []int) (*data.Frame, error) {
-	rows := len(times)
-	wideRow := make([]int, rows)
-	series := make([]int, rows)
-	var wideTimes []time.Time
-	var labels []data.Labels
+// splitSeries returns one frame per value column and label set, ordered by column and then labels,
+// visiting rows in order when it is not nil. Value fields point at frame's values, so it allocates
+// per series rather than per row.
+func splitSeries(frame *data.Frame, schema data.TimeSeriesSchema, times []time.Time, order []int) (data.Frames, error) {
+	factors := schema.FactorIndices
+	labelValues := make([]string, len(factors))
 	seriesIDs := make(map[string]int)
+	var seriesLabels []data.Labels
+	var seriesRows [][]int
 	var key []byte
-	for i := range rows {
+	for i := range times {
 		row := i
 		if order != nil {
 			row = order[i]
 		}
-		if t := times[row]; len(wideTimes) == 0 || t.After(wideTimes[len(wideTimes)-1]) {
-			wideTimes = append(wideTimes, t)
-		}
-		wideRow[row] = len(wideTimes) - 1
 		key = key[:0]
-		for _, f := range schema.FactorIndices {
-			value, err := labelValue(long.Fields[f], row)
+		for j, f := range factors {
+			value, err := labelValue(frame.Fields[f], row)
 			if err != nil {
 				return nil, err
 			}
+			labelValues[j] = value
 			key = append(binary.AppendUvarint(key, uint64(len(value))), value...)
 		}
 		id, ok := seriesIDs[string(key)]
 		if !ok {
-			seriesLabels, err := rowLabels(long, schema.FactorIndices, row)
-			if err != nil {
-				return nil, err
+			labels := make(data.Labels, len(factors))
+			for j, f := range factors {
+				labels[frame.Fields[f].Name] = labelValues[j]
 			}
-			id = len(labels)
+			id = len(seriesLabels)
 			seriesIDs[string(key)] = id
-			labels = append(labels, seriesLabels)
+			seriesLabels = append(seriesLabels, labels)
+			seriesRows = append(seriesRows, nil)
 		}
-		series[row] = id
+		seriesRows[id] = append(seriesRows[id], row)
 	}
 
-	values := schema.ValueIndices
-	fields := make([]*data.Field, len(labels)*len(values))
-	for id, seriesLabels := range labels {
-		for v, index := range values {
-			field := data.NewFieldFromFieldType(long.Fields[index].Type().NullableType(), len(wideTimes))
-			field.Name, field.Labels = long.Fields[index].Name, seriesLabels
-			fields[id*len(values)+v] = field
-		}
+	ids := make([]int, len(seriesRows))
+	labelKeys := make([]string, len(seriesRows))
+	for id := range ids {
+		ids[id], labelKeys[id] = id, seriesLabels[id].String()
 	}
-	for v, index := range values {
-		// Both return a *T for these field types: PointerAt into a []T, At from a []*T.
-		valueAt := long.Fields[index].PointerAt
-		if long.Fields[index].Nullable() {
-			valueAt = long.Fields[index].At
-		}
-		for row := range rows {
-			fields[series[row]*len(values)+v].Set(wideRow[row], valueAt(row))
-		}
+	slices.SortFunc(ids, func(a, b int) int { return strings.Compare(labelKeys[a], labelKeys[b]) })
+
+	meta := frame.Meta
+	if meta == nil {
+		meta = &data.FrameMeta{}
 	}
-	labelKeys := make([]string, len(schema.FactorIndices))
-	for i, f := range schema.FactorIndices {
-		labelKeys[i] = long.Fields[f].Name
-	}
-	slices.SortStableFunc(fields, func(a, b *data.Field) int {
-		if c := strings.Compare(a.Name, b.Name); c != 0 {
-			return c
+	meta.Type, meta.TypeVersion = data.FrameTypeTimeSeriesMulti, data.FrameTypeVersion{0, 1}
+	timeName := frame.Fields[schema.TimeIndex].Name
+	var frames data.Frames
+	for _, index := range schema.ValueIndices {
+		values := frame.Fields[index]
+		// Both return a *T for these fields: PointerAt into a []T, and At from a []*T.
+		valueAt := values.PointerAt
+		if values.Nullable() {
+			valueAt = values.At
 		}
-		for _, k := range labelKeys {
-			if c := strings.Compare(a.Labels[k], b.Labels[k]); c != 0 {
-				return c
+		for _, id := range ids {
+			rows := seriesRows[id]
+			seriesTimes := make([]time.Time, len(rows))
+			field := data.NewFieldFromFieldType(values.Type().NullableType(), len(rows))
+			field.Name, field.Labels = values.Name, seriesLabels[id]
+			for i, row := range rows {
+				seriesTimes[i] = times[row]
+				field.Set(i, valueAt(row))
 			}
+			series := data.NewFrame(frame.Name, data.NewField(timeName, nil, seriesTimes), field)
+			series.RefID, series.Meta = frame.RefID, meta
+			frames = append(frames, series)
 		}
-		return 0
-	})
-
-	wide := data.NewFrame(long.Name, data.NewField(long.Fields[schema.TimeIndex].Name, nil, wideTimes))
-	wide.Fields = append(wide.Fields, fields...)
-	wide.Meta = long.Meta
-	if wide.Meta == nil {
-		wide.Meta = &data.FrameMeta{}
 	}
-	wide.Meta.Type = data.FrameTypeTimeSeriesWide
-	wide.Meta.TypeVersion = data.FrameTypeVersion{0, 1}
-	return wide, nil
-}
-
-func rowLabels(frame *data.Frame, factors []int, row int) (data.Labels, error) {
-	labels := make(data.Labels, len(factors))
-	for _, f := range factors {
-		field := frame.Fields[f]
-		if _, ok := labels[field.Name]; ok {
-			return nil, fmt.Errorf("time series results cannot have two label columns named %q", field.Name)
-		}
-		labels[field.Name], _ = labelValue(field, row)
-	}
-	return labels, nil
+	return frames, nil
 }
 
 // labelValue reads a string or bool label column without allocating.
