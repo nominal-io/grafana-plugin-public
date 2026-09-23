@@ -33,11 +33,14 @@ ORDER BY 1
 ```
 
 Queries on `points_double`, `points_int`, `points_string`, `points_struct`,
-`logs` and `channels` must filter on `dataset_rid`.
+`logs` and `channels` must filter on `dataset_rid`. `time` and `timestamp` are
+reserved words, so quote them as column names, as in `AS "time"`.
 
 **Time series** needs a timestamp column and at least one numeric column. String
-columns become series labels, rows are sorted by time, and missing samples stay
-null. **Table** returns rows and columns as the query produced them.
+and boolean columns become series labels, and each series is returned with only
+its own samples, sorted by time. A result without both columns is shown as a
+table with a notice, so use a Table, Stat or Bar chart panel for it. **Table**
+returns rows and columns as the query produced them.
 
 ## Macros
 
@@ -62,9 +65,11 @@ variables.
 
 ## Limits
 
-Each SQL query times out after 30 seconds. Results are not row-limited, so
-aggregate with `$__timeGroup` instead of returning every point over a long time
-range. The Nominal API also rate-limits SQL requests.
+The SQL service stops a query after 2 minutes. Results stop at Grafana's SQL
+row limit, `row_limit` in the `[dataproxy]` section of the Grafana
+configuration (1,000,000 rows by default), with a warning. Aggregate with
+`$__timeGroup` instead of returning every point over a long time range. The
+Nominal API also rate-limits SQL requests.
 
 ## Testing
 
