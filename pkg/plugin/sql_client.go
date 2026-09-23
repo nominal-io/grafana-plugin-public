@@ -12,6 +12,10 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// sqlWindowSize is where grpc-go's flow-control tuning stops. Starting there instead of at 64 KiB
+// keeps the first large result on a new connection from waiting on window updates.
+const sqlWindowSize = 16 << 20
+
 // dialSQL connects to the SQL service on the host of the API base URL. gRPC dials a host rather
 // than a URL and defaults to port 443.
 func dialSQL(baseURL, userAgent string) (*grpc.ClientConn, error) {
@@ -19,7 +23,12 @@ func dialSQL(baseURL, userAgent string) (*grpc.ClientConn, error) {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return nil, errors.New("SQL queries need an https Nominal API base URL")
 	}
-	return grpc.NewClient(parsed.Host, grpc.WithTransportCredentials(credentials.NewTLS(nil)), grpc.WithUserAgent(userAgent))
+	return grpc.NewClient(parsed.Host,
+		grpc.WithTransportCredentials(credentials.NewTLS(nil)),
+		grpc.WithUserAgent(userAgent),
+		grpc.WithInitialWindowSize(sqlWindowSize),
+		grpc.WithInitialConnWindowSize(sqlWindowSize),
+	)
 }
 
 // withBearerToken attaches the API key to a SQL service call.
