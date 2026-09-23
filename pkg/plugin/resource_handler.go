@@ -148,7 +148,7 @@ func (h *NominalResourceHandler) handleAssetsByRid(ctx context.Context, req *bac
 // key and returns the upstream JSON body unchanged. Upstream error statuses
 // are passed through, with the errorInstanceId appended to the message.
 func (h *NominalResourceHandler) nominalPostResponse(ctx context.Context, sender backend.CallResourceResponseSender, config *models.PluginSettings, upstreamPath string, body any) error {
-	responseBody, err := h.datasource.catalog().postNominalJSON(ctx, config, upstreamPath, body)
+	responseBody, err := h.datasource.nominalCatalog.postNominalJSON(ctx, config, upstreamPath, body)
 	if err != nil {
 		logErrorWithConjureFields("Nominal API request failed", err, "path", upstreamPath)
 		status := http.StatusBadGateway

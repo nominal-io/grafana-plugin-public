@@ -185,7 +185,7 @@ func TestLogLabelEncoderZeroValue(t *testing.T) {
 }
 
 func TestLogPagedTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("transforms paged log entries into log frame", func(t *testing.T) {
 		messages := []string{"error: disk full", "warn: high memory", "info: started"}
@@ -364,7 +364,7 @@ func TestCompareLogEntriesNewestFirst(t *testing.T) {
 }
 
 func TestLogPointTransformation(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	t.Run("transforms single log point", func(t *testing.T) {
 		result := createMockLogPointResult("single entry", map[string]string{"host": "srv-1"})
@@ -410,7 +410,7 @@ func TestLogPointTransformation(t *testing.T) {
 }
 
 func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
-	ds := &Datasource{}
+	ds := withCatalog(&Datasource{})
 
 	channelLabel := func(t *testing.T, channel string) string {
 		t.Helper()

@@ -63,9 +63,9 @@ func TestPartitionPreparedQueriesKeepsQueryModelPairs(t *testing.T) {
 }
 
 func TestQueryDataRoutesQueriesByType(t *testing.T) {
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings: testDatasourceSettings(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -200,10 +200,10 @@ func TestBatchQueryExecution(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -274,10 +274,10 @@ func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
 
@@ -344,11 +344,11 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -456,11 +456,11 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -545,10 +545,10 @@ func TestBatchQueryChunkTransportErrorOnlyFailsThatChunk(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
 
@@ -589,10 +589,10 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -651,10 +651,10 @@ func TestBatchQueryError(t *testing.T) {
 		batchComputeError: fmt.Errorf("API error: service unavailable"),
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -707,10 +707,10 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -789,10 +789,10 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -864,10 +864,10 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -946,10 +946,10 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		settings:       testDatasourceSettings(),
 		computeService: mockService,
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -1028,7 +1028,7 @@ func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
 	}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 	defer ds.Dispose()
 
 	req := newBatchQueryRequest(3)
@@ -1096,7 +1096,7 @@ func TestBatchQueryKillPolicy(t *testing.T) {
 					return makeBatchComputeWithUnitsResponse(len(request.Requests)), nil
 				},
 			}
-			ds := &Datasource{computeService: mockService}
+			ds := withCatalog(&Datasource{computeService: mockService})
 
 			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1141,7 +1141,7 @@ func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
 		cancel() // cancelled mid-flight during the first chunk
 		return makeBatchComputeWithUnitsResponse(len(requestArg.Requests)), nil
 	}
-	ds := &Datasource{computeService: mockService}
+	ds := withCatalog(&Datasource{computeService: mockService})
 
 	resp, err := ds.QueryData(ctx, newBatchQueryRequest(maxBatchComputeSubrequests+1))
 	if err != nil {

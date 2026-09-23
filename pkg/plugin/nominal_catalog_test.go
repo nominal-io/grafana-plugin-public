@@ -523,11 +523,11 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
+	ds := withCatalog(&Datasource{
 		computeService:     mockCompute,
 		datasourceService:  mockDS,
 		resourceHTTPClient: server.Client(),
-	}
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -591,10 +591,11 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -605,8 +606,6 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
 		})
 	}
-
-	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached asset.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
@@ -657,10 +656,11 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 		},
 	}
 
-	ds := &Datasource{
-		computeService:    mockCompute,
-		datasourceService: mockDS,
-	}
+	ds := withCatalog(&Datasource{
+		computeService:     mockCompute,
+		datasourceService:  mockDS,
+		resourceHTTPClient: server.Client(),
+	})
 
 	timeRange := backend.TimeRange{
 		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -671,8 +671,6 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
 		})
 	}
-
-	ds.resourceHTTPClient = server.Client()
 
 	// Two separate QueryData calls should reuse the cached channel type.
 	if _, err := ds.QueryData(context.Background(), makeReq()); err != nil {
