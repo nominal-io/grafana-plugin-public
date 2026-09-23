@@ -239,8 +239,8 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 	if prepared.Model.ChannelDataType != "string" {
 		t.Fatalf("ChannelDataType = %q, want string", prepared.Model.ChannelDataType)
 	}
-	if mockDS.searchChannelsCalls != 1 {
-		t.Fatalf("expected one channel lookup, got %d", mockDS.searchChannelsCalls)
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("expected one channel lookup, got %d", got)
 	}
 }
 
@@ -386,8 +386,8 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			if prep2.Model.ChannelUnit != tt.wantUnit {
 				t.Errorf("cache-hit ChannelUnit = %q, want %q", prep2.Model.ChannelUnit, tt.wantUnit)
 			}
-			if mockDS.searchChannelsCalls != 1 {
-				t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", mockDS.searchChannelsCalls)
+			if got := mockDS.searchChannelsCallCount(); got != 1 {
+				t.Errorf("expected 1 SearchChannels call (cache hit on second), got %d", got)
 			}
 		})
 	}

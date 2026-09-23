@@ -12,6 +12,7 @@ require (
 	github.com/palantir/pkg/rid v1.2.0
 	github.com/palantir/pkg/safelong v1.3.0
 	github.com/palantir/pkg/uuid v1.3.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/grpc v1.83.2
 )
 
