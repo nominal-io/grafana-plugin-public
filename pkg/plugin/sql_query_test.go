@@ -395,7 +395,7 @@ func TestQueryDataMixesSQLAndCompute(t *testing.T) {
 	compute := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 		Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{7})},
 	}}
-	ds := &Datasource{workspaceRid: &workspace, sqlService: client, computeService: compute}
+	ds := withCatalog(&Datasource{workspaceRid: &workspace, sqlService: client, computeService: compute})
 	req := newQueryRequest([]backend.DataQuery{
 		{RefID: "SQL", JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)},
 		{RefID: "Compute", JSON: []byte(`{"queryType":"timeShift","assetRid":"ri.nominal.asset.1","channel":"temp","dataScopeName":"default","buckets":100}`), TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)}},
