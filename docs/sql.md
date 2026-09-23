@@ -12,9 +12,10 @@ use `https`, because SQL runs over gRPC on the same host. Queries run in the
 configured Workspace RID, or in the API key's default workspace when it is
 empty, and the key needs read access to that workspace's data.
 
-**Save & test** checks the API key and, when a Workspace RID is set, access to
-that workspace. It does not run SQL, so check SQL access by running
-`SELECT 1 AS value` with the **Table** format.
+**Save & test** checks the API key, access to the Workspace RID when one is set,
+and that the SQL service accepts the key and has a workspace to query. A SQL
+problem is reported in the result message without failing the check, because
+Compute queries still work.
 
 ## Writing queries
 
