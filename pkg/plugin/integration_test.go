@@ -48,6 +48,7 @@ const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity
 `
 
 type liveNominalQueryTarget struct {
+	datasetRid    string
 	assetRid      string
 	channel       string
 	dataScopeName string
@@ -56,12 +57,13 @@ type liveNominalQueryTarget struct {
 }
 
 type liveNominalAPIClients struct {
-	baseURL string
-	http    *http.Client
-	token   bearertoken.Token
-	asset   assetservice.AssetServiceClient
-	ingest  ingestapi.IngestServiceClient
-	upload  uploadapi.UploadServiceClient
+	workspace *rids.WorkspaceRid
+	baseURL   string
+	http      *http.Client
+	token     bearertoken.Token
+	asset     assetservice.AssetServiceClient
+	ingest    ingestapi.IngestServiceClient
+	upload    uploadapi.UploadServiceClient
 }
 
 type liveNominalDataset struct {
@@ -99,7 +101,7 @@ func liveNominalSettings(t *testing.T) backend.DataSourceInstanceSettings {
 		baseURL = defaultAPIBaseURL
 	}
 
-	jsonData, err := json.Marshal(map[string]string{"baseUrl": baseURL})
+	jsonData, err := json.Marshal(map[string]any{"baseUrl": baseURL, "workspaceRid": os.Getenv("NOMINAL_WORKSPACE_RID")})
 	if err != nil {
 		t.Fatalf("failed to marshal datasource JSON: %v", err)
 	}
@@ -202,6 +204,45 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 	assertLiveNominalNumericResponse(t, response, target.channel)
 }
 
+func TestLiveNominalSQLQueryIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.
+	target := createLiveNominalQueryTarget(t, settings)
+	ds := liveNominalDatasource(t, settings)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The first point at 18:00 must be excluded, and 18:02 must be included.
+	// Rounding either bound to seconds makes the row-count assertion fail.
+	start := time.Date(2024, 9, 5, 18, 0, 0, 500000000, time.UTC)
+	end := time.Date(2024, 9, 5, 18, 2, 0, 500000000, time.UTC)
+	queries := []backend.DataQuery{
+		{RefID: "A", TimeRange: backend.TimeRange{From: start, To: end}, Interval: time.Minute, JSON: mustMarshal(map[string]string{
+			"queryType": queryTypeSQL, "format": "table",
+			"rawSql": fmt.Sprintf("SELECT ts, value FROM points_double WHERE dataset_rid = '%s' AND channel = 'temperature' AND $__timeFilter(ts) ORDER BY ts", target.datasetRid),
+		})},
+		{RefID: "B", TimeRange: backend.TimeRange{From: start, To: end}, Interval: time.Minute, JSON: mustMarshal(map[string]string{
+			"queryType": queryTypeSQL, "format": "timeseries",
+			"rawSql": fmt.Sprintf("SELECT $__timeGroup(ts) AS \"time\", channel, AVG(value) AS \"value\" FROM points_double WHERE dataset_rid = '%s' AND channel IN ('temperature') AND $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1", target.datasetRid),
+		})},
+	}
+	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: queries})
+	if err != nil {
+		t.Fatalf("unexpected QueryData error: %v", err)
+	}
+	for _, ref := range []string{"A", "B"} {
+		response := resp.Responses[ref]
+		if response.Error != nil || len(response.Frames) != 1 || response.Frames[0].Rows() != 2 || response.Frames[0].RefID != ref {
+			t.Fatalf("expected exactly two SQL points inside fractional bounds for %s: %+v", ref, response)
+		}
+		for i, want := range []float64{21, 22} {
+			got, valid := response.Frames[0].Fields[1].ConcreteAt(i)
+			if !valid || got != want {
+				t.Fatalf("%s row %d: got %v, want %v", ref, i, got, want)
+			}
+		}
+	}
+}
+
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
 	t.Helper()
 
@@ -283,7 +324,8 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	})
 
 	asset, err := clients.asset.CreateAsset(ctx, clients.token, assetapi.CreateAssetRequest{
-		Title: name,
+		Title:     name,
+		Workspace: clients.workspace,
 	})
 	if err != nil {
 		t.Fatalf("failed to create live Nominal asset: %v", err)
@@ -314,6 +356,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 
 	from, to := liveNominalCSVTimeRange()
 	return liveNominalQueryTarget{
+		datasetRid:    dataset.Rid.String(),
 		assetRid:      asset.Rid.String(),
 		channel:       liveNominalChannelName,
 		dataScopeName: liveNominalDataScopeName,
@@ -334,14 +377,16 @@ func responseRefs(resp *backend.QueryDataResponse) []string {
 func liveNominalBaseURLFromSettings(t *testing.T, settings backend.DataSourceInstanceSettings) string {
 	t.Helper()
 
-	var jsonData map[string]string
+	var jsonData struct {
+		BaseURL string `json:"baseUrl"`
+	}
 	if len(settings.JSONData) > 0 {
 		if err := json.Unmarshal(settings.JSONData, &jsonData); err != nil {
 			t.Fatalf("failed to unmarshal datasource JSONData: %v", err)
 		}
 	}
 
-	baseURL := jsonData["baseUrl"]
+	baseURL := jsonData.BaseURL
 	if baseURL == "" {
 		baseURL = defaultAPIBaseURL
 	}
@@ -363,19 +408,30 @@ func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceS
 		t.Fatalf("failed to create live Nominal API client: %v", err)
 	}
 
+	var config struct {
+		WorkspaceRid string `json:"workspaceRid"`
+	}
+	if err := json.Unmarshal(settings.JSONData, &config); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := parseWorkspaceRid(config.WorkspaceRid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return liveNominalAPIClients{
-		baseURL: liveNominalBaseURLFromSettings(t, settings),
-		http:    &http.Client{Timeout: 30 * time.Second},
-		token:   bearertoken.Token(apiKey),
-		asset:   assetservice.NewAssetServiceClient(conjureClient),
-		ingest:  ingestapi.NewIngestServiceClient(conjureClient),
-		upload:  uploadapi.NewUploadServiceClient(conjureClient),
+		workspace: workspace,
+		baseURL:   liveNominalBaseURLFromSettings(t, settings),
+		http:      &http.Client{Timeout: 30 * time.Second},
+		token:     bearertoken.Token(apiKey),
+		asset:     assetservice.NewAssetServiceClient(conjureClient),
+		ingest:    ingestapi.NewIngestServiceClient(conjureClient),
+		upload:    uploadapi.NewUploadServiceClient(conjureClient),
 	}
 }
 
 func (c liveNominalAPIClients) createDataset(ctx context.Context, name string, isV2Dataset bool) (liveNominalDataset, error) {
 	var dataset liveNominalDataset
-	err := c.doJSON(ctx, http.MethodPost, "/catalog/v1/datasets", map[string]any{
+	request := map[string]any{
 		"name":           name,
 		"metadata":       map[string]string{},
 		"originMetadata": map[string]any{},
@@ -383,7 +439,11 @@ func (c liveNominalAPIClients) createDataset(ctx context.Context, name string, i
 		"properties":     map[string]string{},
 		"markingRids":    []string{},
 		"isV2Dataset":    isV2Dataset,
-	}, &dataset)
+	}
+	if c.workspace != nil {
+		request["workspace"] = c.workspace.String()
+	}
+	err := c.doJSON(ctx, http.MethodPost, "/catalog/v1/datasets", request, &dataset)
 	return dataset, err
 }
 
@@ -453,7 +513,7 @@ func ingestLiveNominalCSV(t *testing.T, ctx context.Context, clients liveNominal
 		clients.token,
 		"grafana-plugin-live.csv",
 		&csvSize,
-		nil,
+		clients.workspace,
 		conjurehttpclient.RequestBodyInMemory(reader),
 	)
 	if err != nil {

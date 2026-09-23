@@ -13,13 +13,17 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	"github.com/palantir/pkg/bearertoken"
+	"google.golang.org/grpc/codes"
 )
 
 const testWorkspaceRid = "ri.security.test.workspace.11111111-1111-1111-1111-111111111111"
 
 type mockWorkspaceService struct {
-	displayName *string
-	err         error
+	displayName      *string
+	err              error
+	defaultWorkspace *workspaceapi.Workspace
+	defaultCalls     int
+	defaultFunc      func() (*workspaceapi.Workspace, error)
 }
 
 func (m *mockWorkspaceService) GetWorkspace(_ context.Context, _ bearertoken.Token, workspaceRid rids.WorkspaceRid) (workspaceapi.Workspace, error) {
@@ -32,7 +36,11 @@ func (m *mockWorkspaceService) UpdateWorkspace(context.Context, bearertoken.Toke
 	return workspaceapi.Workspace{}, nil
 }
 func (m *mockWorkspaceService) GetDefaultWorkspace(context.Context, bearertoken.Token) (*workspaceapi.Workspace, error) {
-	return nil, nil
+	m.defaultCalls++
+	if m.defaultFunc != nil {
+		return m.defaultFunc()
+	}
+	return m.defaultWorkspace, m.err
 }
 
 func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *mockWorkspaceService) *Datasource {
@@ -50,21 +58,27 @@ func newWorkspaceTestDatasource(t *testing.T, baseURL, workspaceRid string, ws *
 
 func TestCheckHealthWorkspace(t *testing.T) {
 	name := "ITAR"
+	denied := sqlStatusError(t, codes.PermissionDenied, "SQL is not enabled for this key", "", "")
+	defaultWorkspace := &mockWorkspaceService{defaultWorkspace: &workspaceapi.Workspace{Rid: sqlTestWorkspaceRid(t)}}
 	cases := []struct {
 		name, workspaceRid string
 		ws                 *mockWorkspaceService
+		sqlErr             error
 		wantStatus         backend.HealthStatus
 		wantMessage        string
 	}{
-		{"no workspace", "", &mockWorkspaceService{}, backend.HealthStatusOk, "Successfully connected to Nominal API"},
-		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, backend.HealthStatusOk, "Workspace: ITAR"},
-		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
-		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, backend.HealthStatusError, "Workspace not found or not accessible with this API key"},
-		{"workspace lookup timeout", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, backend.HealthStatusError, "Connection timeout - unable to reach Nominal API"},
+		{"default workspace", "", defaultWorkspace, nil, backend.HealthStatusOk, "SQL queries use the API key's default workspace"},
+		{"no default workspace", "", &mockWorkspaceService{}, nil, backend.HealthStatusOk, "SQL queries will fail: " + errNoSQLWorkspace.Error()},
+		{"SQL rejects the key", testWorkspaceRid, &mockWorkspaceService{}, denied, backend.HealthStatusOk, "SQL queries will fail: SQL is not enabled for this key"},
+		{"named workspace", testWorkspaceRid, &mockWorkspaceService{displayName: &name}, nil, backend.HealthStatusOk, "Workspace: ITAR"},
+		{"unnamed workspace", testWorkspaceRid, &mockWorkspaceService{}, nil, backend.HealthStatusOk, "Workspace: " + testWorkspaceRid},
+		{"inaccessible workspace", testWorkspaceRid, &mockWorkspaceService{err: &apiError{Status: http.StatusForbidden}}, nil, backend.HealthStatusError, "Workspace not found or not accessible with this API key"},
+		{"workspace lookup timeout", testWorkspaceRid, &mockWorkspaceService{err: context.DeadlineExceeded}, nil, backend.HealthStatusError, "Connection timeout - unable to reach Nominal API"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := newWorkspaceTestDatasource(t, "http://example", tc.workspaceRid, tc.ws)
+			ds.sqlService = newFakeSQLService(t, &fakeSQLService{catalog: func(context.Context) error { return tc.sqlErr }})
 			result, err := ds.CheckHealth(context.Background(), &backend.CheckHealthRequest{
 				PluginContext: backend.PluginContext{DataSourceInstanceSettings: &ds.settings},
 			})

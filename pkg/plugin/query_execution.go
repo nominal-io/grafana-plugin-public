@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
 type NominalQueryExecution struct {
@@ -32,7 +34,7 @@ func newNominalQueryExecution(datasource *Datasource, config *models.PluginSetti
 func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.DataQuery) *backend.QueryDataResponse {
 	response := backend.NewQueryDataResponse()
 
-	var batchable []preparedQuery
+	var batchable, sqlQueries []preparedQuery
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
@@ -45,16 +47,42 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			response.Responses[q.RefID] = e.handleConnectionTestQuery(ctx)
 		case preparedQueryBatchable:
 			batchable = append(batchable, prepared)
+		case preparedQuerySQL:
+			sqlQueries = append(sqlQueries, prepared)
 		case preparedQueryLegacy:
 			response.Responses[q.RefID] = e.handleLegacyQuery(prepared.Model, q.TimeRange)
 		}
 	}
 
-	for refID, res := range e.executePreparedBatches(ctx, batchable) {
-		response.Responses[refID] = res
-	}
+	var sqlResponses map[string]backend.DataResponse
+	var wg sync.WaitGroup
+	wg.Go(func() { sqlResponses = e.executeSQLQueries(ctx, sqlQueries) })
+	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
+	wg.Wait()
+	maps.Copy(response.Responses, sqlResponses)
 
 	return response
+}
+
+// maxConcurrentSQLQueries bounds the SQL requests that one Grafana request runs at a time.
+const maxConcurrentSQLQueries = 8
+
+func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
+	results := make([]backend.DataResponse, len(queries))
+	var g errgroup.Group
+	g.SetLimit(maxConcurrentSQLQueries)
+	for i, query := range queries {
+		g.Go(func() error {
+			results[i] = e.executeSQLQuery(ctx, query)
+			return nil
+		})
+	}
+	_ = g.Wait()
+	responses := make(map[string]backend.DataResponse, len(queries))
+	for i, query := range queries {
+		responses[query.Query.RefID] = results[i]
+	}
+	return responses
 }
 
 type queryBatch struct {

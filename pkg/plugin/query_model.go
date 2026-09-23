@@ -3,12 +3,14 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
 // NominalQueryModel represents a query to the Nominal API
@@ -49,18 +51,24 @@ const (
 	ChannelDataTypeLog     = "log"
 )
 
+// queryTypeSQL marks a query that runs SQL instead of a Compute request.
+const queryTypeSQL = "sql"
+
 type preparedQueryKind int
 
 const (
 	preparedQueryConnectionTest preparedQueryKind = iota
 	preparedQueryLegacy
 	preparedQueryBatchable
+	preparedQuerySQL
 )
 
 type preparedQuery struct {
 	Query backend.DataQuery
 	Model NominalQueryModel
 	Kind  preparedQueryKind
+	// SQL is set for preparedQuerySQL queries.
+	SQL *sqlutil.Query
 }
 
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
@@ -78,6 +86,17 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 
 	if qm.QueryType == "connectionTest" {
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryConnectionTest}, nil
+	}
+	if qm.QueryType == queryTypeSQL {
+		sql, err := sqlutil.GetQuery(q)
+		if err == nil && strings.TrimSpace(sql.RawSQL) == "" {
+			err = errors.New("SQL query is empty")
+		}
+		if err != nil {
+			response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
+			return preparedQuery{}, &response
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySQL, SQL: sql}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {
