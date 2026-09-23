@@ -77,15 +77,16 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		frame.Meta = &data.FrameMeta{}
 	}
 	frame.Meta.ExecutedQueryString = expanded
-	frame.Meta.PreferredVisualization = data.VisTypeGraph
-	if query.Format == sqlutil.FormatOptionTable {
-		frame.Meta.PreferredVisualization = data.VisTypeTable
+	// Explore shows frames that prefer a graph only as a graph, so only time series prefer one.
+	frame.Meta.PreferredVisualization = data.VisTypeTable
+	if query.Format != sqlutil.FormatOptionTable && frame.TimeSeriesSchema().Type != data.TimeSeriesTypeNot {
+		frame.Meta.PreferredVisualization = data.VisTypeGraph
 	}
-	shaped, err := shapeSQLFrame(frame, query.Format)
+	frames, err := shapeSQLFrame(frame, query.Format)
 	if err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	}
-	return backend.DataResponse{Frames: data.Frames{shaped}}
+	return backend.DataResponse{Frames: frames}
 }
 
 // runSQLQuery runs sql in the data source's workspace and decodes the Arrow result.

@@ -171,23 +171,12 @@ func TestExecuteSQLQuery(t *testing.T) {
 		authorization = md.Get("authorization")
 		return sqlPayloadServer(sqlValueStream(t, 42))(req, stream)
 	}))
-	for _, tc := range []struct {
-		format  string
-		wantVis data.VisType
-	}{
-		{format: "table", wantVis: data.VisTypeTable},
-		{format: "timeseries", wantVis: data.VisTypeGraph},
-	} {
-		t.Run(tc.format, func(t *testing.T) {
-			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 42","format":"`+tc.format+`"}`)
-			if response.Error != nil || len(response.Frames) != 1 {
-				t.Fatalf("executeSQLQuery() = %v, %d frames; want one frame", response.Error, len(response.Frames))
-			}
-			frame := response.Frames[0]
-			if frame.RefID != "A" || frame.Meta.ExecutedQueryString != "SELECT 42" || frame.Meta.PreferredVisualization != tc.wantVis {
-				t.Errorf("frame RefID, meta = %q, %+v; want A with SELECT 42 and %s", frame.RefID, frame.Meta, tc.wantVis)
-			}
-		})
+	response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 42","format":"table"}`)
+	if response.Error != nil || len(response.Frames) != 1 {
+		t.Fatalf("executeSQLQuery() = %v, %d frames; want one frame", response.Error, len(response.Frames))
+	}
+	if frame := response.Frames[0]; frame.RefID != "A" || frame.Meta.ExecutedQueryString != "SELECT 42" {
+		t.Errorf("frame RefID, meta = %q, %+v; want A with SELECT 42", frame.RefID, frame.Meta)
 	}
 	if request.GetQuery() != "SELECT 42" || request.GetWorkspaceRid() != testWorkspaceRid || request.MaxRows != nil {
 		t.Errorf("request = %v, want SELECT 42 in %s without a row cap", request, testWorkspaceRid)
@@ -197,6 +186,43 @@ func TestExecuteSQLQuery(t *testing.T) {
 	}
 	if len(authorization) != 1 || authorization[0] != "Bearer k" {
 		t.Errorf("authorization metadata = %q, want [%q]", authorization, "Bearer k")
+	}
+}
+
+func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
+	seriesSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "time", Type: &arrow.TimestampType{Unit: arrow.Second, TimeZone: "UTC"}},
+		{Name: "channel", Type: arrow.BinaryTypes.String},
+		{Name: "value", Type: arrow.PrimitiveTypes.Float64},
+	}, nil)
+	series := sqlArrowStream(t, seriesSchema, 1, func(b *array.RecordBuilder) {
+		b.Field(0).(*array.TimestampBuilder).AppendValues([]arrow.Timestamp{1, 1}, nil)
+		b.Field(1).(*array.StringBuilder).AppendValues([]string{"a", "b"}, nil)
+		b.Field(2).(*array.Float64Builder).AppendValues([]float64{1, 2}, nil)
+	})
+	for _, tc := range []struct {
+		name       string
+		payload    []byte
+		format     string
+		wantFrames int
+		wantVis    data.VisType
+	}{
+		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable},
+		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph},
+		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := sqlTestExecution(t, sqlQueryService(t, sqlPayloadServer(tc.payload)))
+			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1","format":"`+tc.format+`"}`)
+			if response.Error != nil || len(response.Frames) != tc.wantFrames {
+				t.Fatalf("executeSQLQuery() = %v, %d frames; want %d frames", response.Error, len(response.Frames), tc.wantFrames)
+			}
+			for i, frame := range response.Frames {
+				if frame.RefID != "A" || frame.Meta.ExecutedQueryString != "SELECT 1" || frame.Meta.PreferredVisualization != tc.wantVis {
+					t.Errorf("frame %d RefID, meta = %q, %+v; want A with SELECT 1 and %s", i, frame.RefID, frame.Meta, tc.wantVis)
+				}
+			}
+		})
 	}
 }
 
