@@ -68,20 +68,20 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 const maxConcurrentSQLQueries = 8
 
 func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
-	responses := make(map[string]backend.DataResponse, len(queries))
-	var mu sync.Mutex
+	results := make([]backend.DataResponse, len(queries))
 	var g errgroup.Group
 	g.SetLimit(maxConcurrentSQLQueries)
-	for _, query := range queries {
+	for i, query := range queries {
 		g.Go(func() error {
-			response := e.executeSQLQuery(ctx, query)
-			mu.Lock()
-			defer mu.Unlock()
-			responses[query.Query.RefID] = response
+			results[i] = e.executeSQLQuery(ctx, query)
 			return nil
 		})
 	}
 	_ = g.Wait()
+	responses := make(map[string]backend.DataResponse, len(queries))
+	for i, query := range queries {
+		responses[query.Query.RefID] = results[i]
+	}
 	return responses
 }
 

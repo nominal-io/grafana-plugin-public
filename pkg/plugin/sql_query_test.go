@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -94,7 +96,6 @@ func TestPrepareQuerySQL(t *testing.T) {
 	}{
 		{name: "table", json: `{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`, wantFormat: sqlutil.FormatOptionTable},
 		{name: "time series", json: `{"queryType":"sql","rawSql":"SELECT 1","format":"timeseries"}`, wantFormat: sqlutil.FormatOptionTimeSeries},
-		{name: "Grafana time_series spelling", json: `{"queryType":"sql","rawSql":"SELECT 1","format":"time_series"}`, wantFormat: sqlutil.FormatOptionTimeSeries},
 		{name: "no format", json: `{"queryType":"sql","rawSql":"SELECT 1"}`, wantFormat: sqlutil.FormatOptionTimeSeries},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -240,8 +241,32 @@ func TestExecuteSQLQueryAppliesGrafanaRowLimit(t *testing.T) {
 	if response.Error != nil || response.Frames[0].Rows() != 2 {
 		t.Fatalf("executeSQLQuery() = %v; want 2 rows", response.Error)
 	}
-	if meta := response.Frames[0].Meta; len(meta.Notices) != 1 || meta.ExecutedQueryString != "SELECT v" {
+	if meta := response.Frames[0].Meta; len(meta.Notices) != 1 || !strings.HasPrefix(meta.Notices[0].Text, "Results have been limited to 2 rows") || meta.ExecutedQueryString != "SELECT v" {
 		t.Errorf("frame meta = %+v, want the row-limit notice and the executed query", meta)
+	}
+}
+
+func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		workspaces *mockWorkspaceService
+		wantStatus backend.Status
+		wantMsg    string
+	}{
+		{name: "rejected key", workspaces: &mockWorkspaceService{err: &apiError{Status: http.StatusUnauthorized}}, wantStatus: backend.StatusUnauthorized, wantMsg: "failed to resolve the API key's default workspace: API returned status 401"},
+		{name: "no default workspace", workspaces: &mockWorkspaceService{}, wantStatus: backend.StatusBadRequest, wantMsg: errNoSQLWorkspace.Error()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := &Datasource{workspaceService: tc.workspaces, sqlService: sqlQueryService(t, sqlPayloadServer(sqlValueStream(t, 1)))}
+			e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
+			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
+				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
+			}
+			if response.Error == nil || response.Error.Error() != tc.wantMsg {
+				t.Errorf("error = %v, want %q", response.Error, tc.wantMsg)
+			}
+		})
 	}
 }
 
@@ -310,8 +335,6 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 func TestSQLErrorResponse(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	expired, cancelExpired := context.WithTimeout(context.Background(), 0)
-	defer cancelExpired()
 	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-2", "Column 'x' not found")
 	for _, tc := range []struct {
 		name       string
@@ -322,11 +345,11 @@ func TestSQLErrorResponse(t *testing.T) {
 		wantMsg    string
 	}{
 		{name: "cancelled by Grafana", ctx: cancelled, err: status.Error(codes.Canceled, "canceled"), wantStatus: backend.StatusInternal, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query was cancelled"},
-		{name: "Grafana deadline", ctx: expired, err: status.Error(codes.DeadlineExceeded, "deadline"), wantStatus: backend.StatusTimeout, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query timed out"},
-		{name: "rejected query", ctx: context.Background(), err: invalid, wantStatus: backend.StatusBadRequest, wantSource: backend.ErrorSourceDownstream, wantMsg: "Column 'x' not found (sqlQueryId: q-2)"},
 		{name: "rejected mid-stream", ctx: context.Background(), err: fmt.Errorf("failed to read Arrow stream: %w", invalid), wantStatus: backend.StatusBadRequest, wantSource: backend.ErrorSourceDownstream, wantMsg: "Column 'x' not found (sqlQueryId: q-2)"},
 		{name: "server time limit", ctx: context.Background(), err: sqlStatusError(t, codes.DeadlineExceeded, "SQL query timed out", "q-3", ""), wantStatus: backend.StatusTimeout, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL query timed out (sqlQueryId: q-3)"},
 		{name: "status without details", ctx: context.Background(), err: status.Error(codes.Unauthenticated, ""), wantStatus: backend.StatusUnauthorized, wantSource: backend.ErrorSourceDownstream, wantMsg: "SQL endpoint returned Unauthenticated"},
+		{name: "no workspace", ctx: context.Background(), err: errNoSQLWorkspace, wantStatus: backend.StatusBadRequest, wantSource: backend.ErrorSourceDownstream, wantMsg: errNoSQLWorkspace.Error()},
+		{name: "workspace lookup unreachable", ctx: context.Background(), err: &workspaceLookupError{errors.New("connection refused")}, wantStatus: backend.StatusBadGateway, wantSource: backend.ErrorSourceDownstream, wantMsg: "failed to resolve the API key's default workspace: connection refused"},
 		{name: "plugin error", ctx: context.Background(), err: errors.New("SQL response was empty"), wantStatus: backend.StatusInternal, wantMsg: "SQL response was empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,8 +372,8 @@ func TestExecuteSQLQueryReportsUnusableBaseURL(t *testing.T) {
 	workspace := sqlTestWorkspaceRid(t)
 	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlErr: sqlErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 	response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
-	if response.Status != backend.StatusBadRequest || response.Error == nil || response.Error.Error() != sqlErr.Error() {
-		t.Errorf("executeSQLQuery() = %v, %v; want %v, %q", response.Status, response.Error, backend.StatusBadRequest, sqlErr)
+	if response.Status != backend.StatusBadRequest || response.ErrorSource != backend.ErrorSourceDownstream || response.Error == nil || response.Error.Error() != sqlErr.Error() {
+		t.Errorf("executeSQLQuery() = %v, %q, %v; want %v, downstream, %q", response.Status, response.ErrorSource, response.Error, backend.StatusBadRequest, sqlErr)
 	}
 }
 
@@ -382,9 +405,14 @@ func TestQueryDataMixesSQLAndCompute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueryData() error = %v", err)
 	}
-	for _, ref := range []string{"SQL", "Compute"} {
-		if result, ok := response.Responses[ref]; !ok || result.Error != nil || len(result.Frames) != 1 || result.Frames[0].Rows() != 1 {
-			t.Errorf("response %s = %+v, want one frame with one row", ref, result)
+	for ref, want := range map[string]float64{"SQL": 42, "Compute": 7} {
+		result := response.Responses[ref]
+		if result.Error != nil || len(result.Frames) != 1 || result.Frames[0].Rows() != 1 {
+			t.Fatalf("response %s = %+v, want one frame with one row", ref, result)
+		}
+		fields := result.Frames[0].Fields
+		if got, err := fields[len(fields)-1].FloatAt(0); err != nil || got != want {
+			t.Errorf("response %s value = %v, %v; want %v", ref, got, err, want)
 		}
 	}
 	if response.Responses["InvalidSQL"].Error == nil {

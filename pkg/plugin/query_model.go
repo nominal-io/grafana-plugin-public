@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -14,8 +15,6 @@ import (
 
 // NominalQueryModel represents a query to the Nominal API
 type NominalQueryModel struct {
-	RawSQL string `json:"rawSql,omitempty"`
-	Format string `json:"format,omitempty"`
 	// Asset information
 	AssetRid        string `json:"assetRid"`
 	Channel         string `json:"channel"`
@@ -89,17 +88,13 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryConnectionTest}, nil
 	}
 	if qm.QueryType == queryTypeSQL {
-		if strings.TrimSpace(qm.RawSQL) == "" {
-			response := backend.ErrDataResponse(backend.StatusBadRequest, "SQL query is empty")
-			return preparedQuery{}, &response
+		sql, err := sqlutil.GetQuery(q)
+		if err == nil && strings.TrimSpace(sql.RawSQL) == "" {
+			err = errors.New("SQL query is empty")
 		}
-		sql := &sqlutil.Query{
-			RawSQL:        qm.RawSQL,
-			Format:        sqlFormat(qm.Format),
-			RefID:         q.RefID,
-			Interval:      q.Interval,
-			TimeRange:     q.TimeRange,
-			MaxDataPoints: q.MaxDataPoints,
+		if err != nil {
+			response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
+			return preparedQuery{}, &response
 		}
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySQL, SQL: sql}, nil
 	}

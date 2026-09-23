@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	// defaultSQLRowLimit matches the default of Grafana's [sql] row_limit, used when Grafana sends none.
+	// defaultSQLRowLimit matches the default of Grafana's [dataproxy] row_limit, used when Grafana sends none.
 	defaultSQLRowLimit = 1_000_000
 	// sqlServiceTimeLimit is how long the SQL service lets a query run.
 	sqlServiceTimeLimit = 2 * time.Minute
@@ -36,12 +36,9 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 	if rid := d.defaultSQLWorkspace.Load(); rid != nil {
 		return *rid, nil
 	}
-	if d.workspaceService == nil {
-		return "", errNoSQLWorkspace
-	}
 	workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
 	if err != nil {
-		return "", errors.New(formatUserError("failed to resolve the API key's default workspace", err))
+		return "", &workspaceLookupError{err}
 	}
 	if workspace == nil {
 		return "", errNoSQLWorkspace
@@ -51,15 +48,20 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 	return rid, nil
 }
 
+// workspaceLookupError is a failed lookup of the API key's default workspace.
+type workspaceLookupError struct{ err error }
+
+func (e *workspaceLookupError) Error() string {
+	return formatUserError("failed to resolve the API key's default workspace", e.err)
+}
+
+func (e *workspaceLookupError) Unwrap() error { return e.err }
+
 // executeSQLQuery expands macros, runs the query and shapes the result for its format.
 func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared preparedQuery) (response backend.DataResponse) {
 	defer recoverSQLQuery(ctx, &response)
-	if e.datasource.sqlService == nil {
-		message := "SQL queries are not configured for this data source"
-		if e.datasource.sqlErr != nil {
-			message = e.datasource.sqlErr.Error()
-		}
-		return backend.ErrDataResponse(backend.StatusBadRequest, message)
+	if err := e.datasource.sqlErr; err != nil {
+		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	}
 	query := prepared.SQL
 	expanded, err := sqlutil.Interpolate(query, sqlMacros)
@@ -123,13 +125,20 @@ func sqlRowLimit(ctx context.Context) int64 {
 // sqlErrorResponse maps a failed SQL query to a response. Errors reported by the SQL service,
 // timeouts and cancellations are downstream errors, so Grafana does not count them against the plugin.
 func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
+	var lookupErr *workspaceLookupError
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return backend.ErrDataResponseWithSource(backend.StatusInternal, backend.ErrorSourceDownstream, "SQL query was cancelled")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, "SQL query timed out")
 	case errors.Is(err, errNoSQLWorkspace):
-		return backend.ErrDataResponse(backend.StatusBadRequest, err.Error())
+		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
+	case errors.As(err, &lookupErr):
+		status := backend.StatusBadGateway
+		if s := extractErrorDetails(err).Status; s != 0 {
+			status = backend.Status(s)
+		}
+		return backend.ErrDataResponseWithSource(status, backend.ErrorSourceDownstream, err.Error())
 	}
 	logger := log.DefaultLogger.FromContext(ctx)
 	// status.FromError would also find a wrapped status, but it replaces the message with the whole
@@ -194,11 +203,4 @@ func recoverSQLQuery(ctx context.Context, response *backend.DataResponse) {
 		log.DefaultLogger.FromContext(ctx).Error("SQL query panicked", "panic", r, "stack", string(debug.Stack()))
 		*response = backend.ErrDataResponse(backend.StatusInternal, "SQL query failed unexpectedly")
 	}
-}
-
-func sqlFormat(format string) sqlutil.FormatQueryOption {
-	if format == "table" {
-		return sqlutil.FormatOptionTable
-	}
-	return sqlutil.FormatOptionTimeSeries
 }

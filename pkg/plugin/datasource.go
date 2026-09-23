@@ -282,7 +282,8 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		message += ". Workspace: " + name
 	}
 	if err := d.checkSQL(ctxWithTimeout, bearerToken); err != nil {
-		return &backend.CheckHealthResult{Status: backend.HealthStatusError, Message: message + ", but SQL queries will fail: " + err.Error()}, nil
+		// Compute queries still work, so a SQL problem is reported without failing the check.
+		return &backend.CheckHealthResult{Status: backend.HealthStatusOk, Message: message + ". SQL queries will fail: " + err.Error()}, nil
 	}
 	if d.workspaceRid == nil {
 		message += ". SQL queries use the API key's default workspace"
