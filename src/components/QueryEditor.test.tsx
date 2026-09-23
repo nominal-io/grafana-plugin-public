@@ -429,7 +429,7 @@ describe('channel data type inference effect', () => {
     expect(channelInput).toHaveAttribute('data-min-width', '30');
     expect(channelInput).toHaveAttribute('data-max-width', '100');
     expect(aggregationInput).toHaveAttribute('data-width', 'auto');
-    expect(aggregationInput).toHaveAttribute('data-min-width', '40');
+    expect(aggregationInput).toHaveAttribute('data-min-width', '26');
     expect(aggregationInput).toHaveAttribute('data-max-width', '100');
 
     const lastProps = mockComboboxProps.mock.calls.at(-1)?.[0];
