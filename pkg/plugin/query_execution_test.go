@@ -1176,17 +1176,6 @@ func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
 	}
 }
 
-func preparedNumericQueries(refIDs ...string) []preparedQuery {
-	prepared := make([]preparedQuery, len(refIDs))
-	for i, refID := range refIDs {
-		prepared[i] = preparedQuery{
-			Query: backend.DataQuery{RefID: refID},
-			Model: NominalQueryModel{Channel: "chan-" + refID, ChannelDataType: ChannelDataTypeNumeric},
-		}
-	}
-	return prepared
-}
-
 func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	realDecode := decodeArrowBucketedNumeric
 	decodeArrowBucketedNumeric = func(computeapi.ArrowBucketedNumericPlot, []aggColumnSpec) ([]AggregationSeries, error) {
@@ -1208,8 +1197,16 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 			},
 		},
 	}
-	prepared := preparedNumericQueries("panics", "healthy")
-	prepared[0].Model.Aggregations = []string{AggMean}
+	prepared := []preparedQuery{
+		{
+			Query: backend.DataQuery{RefID: "panics"},
+			Model: NominalQueryModel{Channel: "chan-panics", ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggMean}},
+		},
+		{
+			Query: backend.DataQuery{RefID: "healthy"},
+			Model: NominalQueryModel{Channel: "chan-healthy", ChannelDataType: ChannelDataTypeNumeric},
+		},
+	}
 	e := newTestQueryExecution(&Datasource{computeService: mock}, nil)
 
 	results := e.executePreparedBatches(context.Background(), prepared)
