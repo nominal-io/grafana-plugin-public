@@ -71,6 +71,11 @@ jest.mock('@grafana/ui', () => {
         readOnly: true,
       });
     },
+    CodeEditor: (props: Record<string, any>) => React.createElement('textarea', {
+      value: props.value,
+      onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => props.onChange?.(event.target.value),
+      onBlur: (event: React.FocusEvent<HTMLTextAreaElement>) => props.onBlur?.(event.target.value),
+    }),
   };
 });
 
@@ -125,6 +130,52 @@ async function settleEffects(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
+
+describe('query API selection', () => {
+  const mockDatasource = { url: DATASOURCE_URL } as DataSource;
+
+  function EditableQuery({ initialQuery, onChange = jest.fn() }: { initialQuery: NominalQuery; onChange?: jest.Mock }) {
+    const [query, setQuery] = React.useState(initialQuery);
+    return <QueryEditor query={query} onChange={(next) => { setQuery(next); onChange(next); }} onRunQuery={jest.fn()} datasource={mockDatasource} />;
+  }
+
+  beforeEach(() => {
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/assets-by-rid')) { return { [ASSET_RID]: ASSET }; }
+      if (url.endsWith('/channels')) { return { channels: [{ name: 'app.logs', dataType: 'log' }] }; }
+      return { results: [] };
+    });
+  });
+
+  it('retains Compute selections and SQL when switching APIs', async () => {
+    const onChange = jest.fn();
+    const original = { refId: 'A', queryType: 'timeShift' as const, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    render(<EditableQuery initialQuery={original} onChange={onChange} />);
+    await settleEffects();
+    expect(screen.getByRole('radio', { name: 'Compute' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
+    expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
+    const editor = screen.getByTestId('sql-code-editor').querySelector('textarea')!;
+    fireEvent.change(editor, { target: { value: 'SELECT 42' } });
+    fireEvent.blur(editor);
+    fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
+    await settleEffects();
+    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ ...original, rawSql: 'SELECT 42' });
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 42');
+  });
+
+  it('opens saved SQL in the SQL editor and switches it back to Compute', () => {
+    const onChange = jest.fn();
+    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }} onChange={onChange} />);
+    expect(screen.getByRole('radio', { name: 'SQL' })).toBeChecked();
+    expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 1');
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ queryType: 'timeShift', rawSql: 'SELECT 1' }));
+  });
+});
 
 describe('channel data type inference effect', () => {
   // Per-test overrides for the /channels response routed below.

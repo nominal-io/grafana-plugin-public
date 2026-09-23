@@ -3,7 +3,7 @@ import { css } from '@emotion/css';
 import { Button, Stack, useStyles2 } from '@grafana/ui';
 import { GrafanaTheme2, QueryEditorHelpProps } from '@grafana/data';
 
-import { NominalQuery, DEFAULT_AGGREGATIONS } from '../types';
+import { DEFAULT_AGGREGATIONS, DEFAULT_SQL, NominalQuery } from '../types';
 
 const getStyles = (theme: GrafanaTheme2) => ({
   root: css({
@@ -36,6 +36,31 @@ const getStyles = (theme: GrafanaTheme2) => ({
     marginTop: theme.spacing(1),
     padding: theme.spacing(0.5, 1),
   }),
+  codeBlock: css({
+    background: theme.colors.background.secondary,
+    border: `1px solid ${theme.colors.border.weak}`,
+    borderRadius: theme.shape.radius.default,
+    color: theme.colors.text.primary,
+    display: 'block',
+    fontFamily: theme.typography.fontFamilyMonospace,
+    marginTop: theme.spacing(1),
+    padding: theme.spacing(1),
+    whiteSpace: 'pre-wrap',
+  }),
+  table: css({
+    borderCollapse: 'collapse',
+    color: theme.colors.text.secondary,
+    marginTop: theme.spacing(1),
+    width: '100%',
+    '& th, & td': {
+      border: `1px solid ${theme.colors.border.weak}`,
+      padding: theme.spacing(0.5, 1),
+      textAlign: 'left',
+    },
+    '& th': {
+      color: theme.colors.text.primary,
+    },
+  }),
 });
 
 const timeSeriesExample: NominalQuery = {
@@ -54,7 +79,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
   return (
     <div className={styles.root}>
       <p className={styles.intro}>
-        Build Nominal queries by choosing an asset, data scope, and channel. Dashboard variables can be used in each field.
+        Compute queries choose an asset, data scope, and channel; SQL queries run Nominal SQL. Dashboard variables work in both.
       </p>
 
       <div className={styles.section}>
@@ -76,6 +101,27 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
         <code className={styles.code}>{'datascopes(${asset})'}</code>
         <br />
         <code className={styles.code}>{'channels(${asset}, ${datascope})'}</code>
+      </div>
+
+      <div className={styles.section}>
+        <h3 className={styles.title}>SQL queries</h3>
+        <p className={styles.text}>Choose Query API: SQL for a query in the panel editor. Compute and SQL queries can share one data source and panel. Write SQL directly in the editor, then choose Time series or Table for the result format.</p>
+        <table className={styles.table}>
+          <thead>
+            <tr><th>Macro</th><th>Expands to</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>$__timeFilter(col)</td><td>Panel time-range filter for a timestamp column</td></tr>
+            <tr><td>$__timeFrom()</td><td>Panel start timestamp</td></tr>
+            <tr><td>$__timeTo()</td><td>Panel end timestamp</td></tr>
+            <tr><td>$__timeGroup(col[, interval])</td><td>Timestamp bucket using the panel or supplied interval</td></tr>
+          </tbody>
+        </table>
+        <code className={styles.codeBlock}>{DEFAULT_SQL}</code>
+        <ul className={styles.text}>
+          <li>Telemetry tables (points_double, points_int, points_string, points_struct, logs, channels) require a dataset_rid filter.</li>
+          <li>Multi-value and Include All variables expand to {'\'a\',\'b\''}, so write channel IN ($channels). Write other variables as {'\'$channel\''}.</li>
+        </ul>
       </div>
     </div>
   );
