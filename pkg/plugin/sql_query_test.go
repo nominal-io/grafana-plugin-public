@@ -17,7 +17,7 @@ import (
 	sdkconfig "github.com/grafana/grafana-plugin-sdk-go/config"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"

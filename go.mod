@@ -1,4 +1,4 @@
-module github.com/nominal-inc/nominal-ds
+module github.com/nominal-io/grafana-plugin-public
 
 go 1.26.6
 
