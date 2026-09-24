@@ -244,9 +244,10 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 			JSONData:                []byte(fmt.Sprintf(`{"baseUrl": "%s"}`, baseURL)),
 			DecryptedSecureJSONData: map[string]string{"apiKey": "test-api-key"},
 		},
-		authService:        authSvc,
-		datasourceService:  dsSvc,
-		resourceHTTPClient: &http.Client{},
+		authService:         authSvc,
+		datasourceService:   dsSvc,
+		resourceHTTPClient:  &http.Client{},
+		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
 	})
 }
 

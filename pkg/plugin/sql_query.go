@@ -27,25 +27,22 @@ const (
 
 var errNoSQLWorkspace = errors.New("set Workspace RID in the data source settings: SQL queries need a workspace and this API key has no default workspace")
 
-// resolveSQLWorkspace returns the configured workspace, or else the API key's default workspace,
-// which is cached once a lookup succeeds.
+// resolveSQLWorkspace returns the configured workspace, or else the API key's default workspace.
+// Concurrent queries share one lookup of the default workspace, and a found one is cached.
 func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.Token) (string, error) {
 	if d.workspaceRid != nil {
 		return d.workspaceRid.String(), nil
 	}
-	if rid := d.defaultSQLWorkspace.Load(); rid != nil {
-		return *rid, nil
-	}
-	workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
-	if err != nil {
-		return "", &workspaceLookupError{err}
-	}
-	if workspace == nil {
-		return "", errNoSQLWorkspace
-	}
-	rid := workspace.Rid.String()
-	d.defaultSQLWorkspace.Store(&rid)
-	return rid, nil
+	return d.defaultSQLWorkspace.get(ctx, "", func(ctx context.Context) (string, error) {
+		workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
+		if err != nil {
+			return "", &workspaceLookupError{err}
+		}
+		if workspace == nil {
+			return "", errNoSQLWorkspace
+		}
+		return workspace.Rid.String(), nil
+	})
 }
 
 // workspaceLookupError is a failed lookup of the API key's default workspace.
@@ -79,10 +76,9 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		frame.Meta = &data.FrameMeta{}
 	}
 	frame.Meta.ExecutedQueryString = expanded
-	// Explore shows frames that prefer a graph only as a graph, so only time series prefer one.
-	frame.Meta.PreferredVisualization = data.VisTypeTable
-	if query.Format != sqlutil.FormatOptionTable && frame.TimeSeriesSchema().Type != data.TimeSeriesTypeNot {
-		frame.Meta.PreferredVisualization = data.VisTypeGraph
+	frame.Meta.PreferredVisualization = data.VisTypeGraph
+	if query.Format == sqlutil.FormatOptionTable {
+		frame.Meta.PreferredVisualization = data.VisTypeTable
 	}
 	frames, err := shapeSQLFrame(frame, query.Format)
 	if err != nil {

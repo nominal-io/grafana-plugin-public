@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,7 +123,7 @@ func TestPrepareQuerySQL(t *testing.T) {
 func TestResolveSQLWorkspace(t *testing.T) {
 	t.Run("caches the default workspace", func(t *testing.T) {
 		service := &mockWorkspaceService{defaultWorkspace: &workspaceapi.Workspace{Rid: sqlTestWorkspaceRid(t)}}
-		ds := &Datasource{workspaceService: service}
+		ds := &Datasource{workspaceService: service, defaultSQLWorkspace: newTTLCache[string](time.Minute)}
 		for range 2 {
 			if got, err := ds.resolveSQLWorkspace(context.Background(), "k"); err != nil || got != testWorkspaceRid {
 				t.Fatalf("resolveSQLWorkspace() = %q, %v; want %q", got, err, testWorkspaceRid)
@@ -140,7 +142,7 @@ func TestResolveSQLWorkspace(t *testing.T) {
 		}
 	})
 	t.Run("reports a missing default workspace", func(t *testing.T) {
-		ds := &Datasource{workspaceService: &mockWorkspaceService{}}
+		ds := &Datasource{workspaceService: &mockWorkspaceService{}, defaultSQLWorkspace: newTTLCache[string](time.Minute)}
 		if _, err := ds.resolveSQLWorkspace(context.Background(), "k"); !errors.Is(err, errNoSQLWorkspace) {
 			t.Errorf("resolveSQLWorkspace() error = %v, want errNoSQLWorkspace", err)
 		}
@@ -153,7 +155,7 @@ func TestResolveSQLWorkspace(t *testing.T) {
 			}
 			return &workspaceapi.Workspace{Rid: sqlTestWorkspaceRid(t)}, nil
 		}
-		ds := &Datasource{workspaceService: service}
+		ds := &Datasource{workspaceService: service, defaultSQLWorkspace: newTTLCache[string](time.Minute)}
 		if _, err := ds.resolveSQLWorkspace(context.Background(), "k"); err == nil {
 			t.Fatal("resolveSQLWorkspace() error = nil on the failed lookup")
 		}
@@ -161,6 +163,35 @@ func TestResolveSQLWorkspace(t *testing.T) {
 			t.Errorf("resolveSQLWorkspace() after a failure = %q, %v; want %q", got, err, testWorkspaceRid)
 		}
 	})
+	t.Run("shares one lookup between concurrent queries", func(t *testing.T) {
+		service := &blockingWorkspaceService{release: make(chan struct{})}
+		service.defaultWorkspace = &workspaceapi.Workspace{Rid: sqlTestWorkspaceRid(t)}
+		ds := &Datasource{workspaceService: service, defaultSQLWorkspace: newTTLCache[string](time.Minute)}
+		results := make([]string, 8)
+		var wg sync.WaitGroup
+		for i := range results {
+			wg.Go(func() { results[i], _ = ds.resolveSQLWorkspace(context.Background(), "k") })
+		}
+		time.Sleep(20 * time.Millisecond)
+		close(service.release)
+		wg.Wait()
+		if calls := service.calls.Load(); calls != 1 || slices.ContainsFunc(results, func(rid string) bool { return rid != testWorkspaceRid }) {
+			t.Errorf("GetDefaultWorkspace calls, results = %d, %v; want 1 lookup and %s for every query", calls, results, testWorkspaceRid)
+		}
+	})
+}
+
+// blockingWorkspaceService holds default workspace lookups until release is closed.
+type blockingWorkspaceService struct {
+	mockWorkspaceService
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (s *blockingWorkspaceService) GetDefaultWorkspace(context.Context, bearertoken.Token) (*workspaceapi.Workspace, error) {
+	s.calls.Add(1)
+	<-s.release
+	return s.defaultWorkspace, nil
 }
 
 func TestExecuteSQLQuery(t *testing.T) {
@@ -257,7 +288,7 @@ func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
 		{name: "no default workspace", workspaces: &mockWorkspaceService{}, wantStatus: backend.StatusBadRequest, wantMsg: errNoSQLWorkspace.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ds := &Datasource{workspaceService: tc.workspaces, sqlService: sqlQueryService(t, sqlPayloadServer(sqlValueStream(t, 1)))}
+			ds := &Datasource{workspaceService: tc.workspaces, defaultSQLWorkspace: newTTLCache[string](time.Minute), sqlService: sqlQueryService(t, sqlPayloadServer(sqlValueStream(t, 1)))}
 			e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
 			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {

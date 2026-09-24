@@ -165,7 +165,8 @@ func column[A arrow.Array, T any](chunks []arrow.Array, rows int, nullable bool,
 	return vals, nil
 }
 
-// appendMap appends row i of a map, such as the tags column, as key=value pairs.
+// appendMap appends row i of a map, such as the tags column, as key="value" pairs. Values are
+// always quoted, and keys when they contain a separator, so distinct maps never format the same.
 func appendMap(buf []byte, m *array.Map, i int) []byte {
 	keys, items := m.Keys(), m.Items()
 	start, end := m.ValueOffsets(i)
@@ -173,32 +174,69 @@ func appendMap(buf []byte, m *array.Map, i int) []byte {
 		if j > int(start) {
 			buf = append(buf, ", "...)
 		}
-		buf = append(buf, keys.ValueStr(j)...)
+		if key := keys.ValueStr(j); key != "" && !strings.ContainsAny(key, `=", `) {
+			buf = append(buf, key...)
+		} else {
+			buf = strconv.AppendQuote(buf, key)
+		}
 		buf = append(buf, '=')
-		buf = append(buf, items.ValueStr(j)...)
+		if items.IsNull(j) {
+			buf = append(buf, "null"...)
+		} else {
+			buf = strconv.AppendQuote(buf, items.ValueStr(j))
+		}
 	}
 	return buf
 }
 
-// shapeSQLFrame returns table results unchanged. A time series result becomes one frame per value
+// shapeSQLFrame returns table results unchanged. A time series result becomes one frame per numeric
 // column and label set, sorted by time, where the result's string and bool columns are the labels.
+// A result without a timestamp and a numeric column is shown as a table with a notice.
 func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Frames, error) {
-	if format == sqlutil.FormatOptionTable || frame.Rows() == 0 {
+	if format == sqlutil.FormatOptionTable {
 		return data.Frames{frame}, nil
 	}
 	schema := frame.TimeSeriesSchema()
-	if schema.Type == data.TimeSeriesTypeNot {
+	var values []int
+	var skipped []string
+	for _, i := range schema.ValueIndices {
+		if frame.Fields[i].Type().Numeric() {
+			values = append(values, i)
+		} else {
+			skipped = append(skipped, frame.Fields[i].Name)
+		}
+	}
+	if schema.Type == data.TimeSeriesTypeNot || len(values) == 0 {
 		frame.AppendNotices(data.Notice{
 			Severity: data.NoticeSeverityInfo,
 			Text:     "Result is shown as a table because a time series needs a timestamp column and a numeric column.",
 		})
+		// Explore shows frames that prefer a graph only as a graph.
+		frame.Meta.PreferredVisualization = data.VisTypeTable
 		return data.Frames{frame}, nil
+	}
+	if len(skipped) > 0 {
+		frame.AppendNotices(data.Notice{
+			Severity: data.NoticeSeverityInfo,
+			Text:     "The time series leaves out columns that are neither numbers nor labels: " + strings.Join(skipped, ", "),
+		})
+	}
+	if frame.Meta == nil {
+		frame.Meta = &data.FrameMeta{}
+	}
+	frame.Meta.Type, frame.Meta.TypeVersion = data.FrameTypeTimeSeriesMulti, data.FrameTypeVersion{0, 1}
+	if frame.Rows() == 0 {
+		// A typed frame without fields is the dataplane's no-data response, which alerting evaluates
+		// as no data.
+		empty := data.NewFrame(frame.Name)
+		empty.RefID, empty.Meta = frame.RefID, frame.Meta
+		return data.Frames{empty}, nil
 	}
 	times, err := fieldTimes(frame.Fields[schema.TimeIndex])
 	if err != nil {
 		return nil, err
 	}
-	return splitSeries(frame, schema, times, timeOrder(times))
+	return splitSeries(frame, schema.TimeIndex, schema.FactorIndices, values, times, timeOrder(times))
 }
 
 // fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
@@ -237,11 +275,11 @@ func timeOrder(times []time.Time) []int {
 // splitSeries returns one frame per value column and label set, ordered by column and then labels,
 // visiting rows in order when it is not nil. Value fields point at frame's values, so it allocates
 // per series rather than per row.
-func splitSeries(frame *data.Frame, schema data.TimeSeriesSchema, times []time.Time, order []int) (data.Frames, error) {
-	factors := schema.FactorIndices
+func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int) (data.Frames, error) {
 	labelValues := make([]string, len(factors))
 	seriesIDs := make(map[string]int)
 	var seriesLabels []data.Labels
+	var seriesNames []string
 	var seriesRows [][]int
 	var key []byte
 	for i := range times {
@@ -267,6 +305,7 @@ func splitSeries(frame *data.Frame, schema data.TimeSeriesSchema, times []time.T
 			id = len(seriesLabels)
 			seriesIDs[string(key)] = id
 			seriesLabels = append(seriesLabels, labels)
+			seriesNames = append(seriesNames, strings.Join(labelValues, " "))
 			seriesRows = append(seriesRows, nil)
 		}
 		seriesRows[id] = append(seriesRows[id], row)
@@ -279,35 +318,48 @@ func splitSeries(frame *data.Frame, schema data.TimeSeriesSchema, times []time.T
 	}
 	slices.SortFunc(ids, func(a, b int) int { return strings.Compare(labelKeys[a], labelKeys[b]) })
 
-	meta := frame.Meta
-	if meta == nil {
-		meta = &data.FrameMeta{}
-	}
-	meta.Type, meta.TypeVersion = data.FrameTypeTimeSeriesMulti, data.FrameTypeVersion{0, 1}
-	timeName := frame.Fields[schema.TimeIndex].Name
+	timeName := frame.Fields[timeIndex].Name
 	var frames data.Frames
-	for _, index := range schema.ValueIndices {
-		values := frame.Fields[index]
+	for _, index := range values {
+		column := frame.Fields[index]
 		// Both return a *T for these fields: PointerAt into a []T, and At from a []*T.
-		valueAt := values.PointerAt
-		if values.Nullable() {
-			valueAt = values.At
+		valueAt := column.PointerAt
+		if column.Nullable() {
+			valueAt = column.At
 		}
 		for _, id := range ids {
 			rows := seriesRows[id]
 			seriesTimes := make([]time.Time, len(rows))
-			field := data.NewFieldFromFieldType(values.Type().NullableType(), len(rows))
-			field.Name, field.Labels = values.Name, seriesLabels[id]
+			field := data.NewFieldFromFieldType(column.Type().NullableType(), len(rows))
+			field.Name, field.Labels = column.Name, seriesLabels[id]
+			if len(values) > 1 {
+				// Alerting identifies a series by its labels alone, so the column goes in a label. The
+				// display name stays what Grafana shows without it.
+				field.Labels = withColumnLabel(seriesLabels[id], column.Name)
+				field.Config = &data.FieldConfig{DisplayNameFromDS: strings.TrimSpace(column.Name + " " + seriesNames[id])}
+			}
 			for i, row := range rows {
 				seriesTimes[i] = times[row]
 				field.Set(i, valueAt(row))
 			}
 			series := data.NewFrame(frame.Name, data.NewField(timeName, nil, seriesTimes), field)
-			series.RefID, series.Meta = frame.RefID, meta
+			series.RefID, series.Meta = frame.RefID, frame.Meta
 			frames = append(frames, series)
 		}
 	}
 	return frames, nil
+}
+
+// seriesColumnLabel is the label that tells apart the series of a result's value columns.
+const seriesColumnLabel = "column"
+
+func withColumnLabel(labels data.Labels, column string) data.Labels {
+	if _, taken := labels[seriesColumnLabel]; taken {
+		return labels
+	}
+	labels = labels.Copy()
+	labels[seriesColumnLabel] = column
+	return labels
 }
 
 // labelValue reads a string or bool label column without allocating.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -99,15 +98,16 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	}
 
 	ds := &Datasource{
-		settings:           settings,
-		resourceHTTPClient: resourceHTTPClient,
-		authService:        authapi.NewAuthenticationServiceV2Client(conjureClient),
-		computeService:     computeapi1.NewComputeServiceClient(conjureClient),
-		datasourceService:  datasourceservice.NewDataSourceServiceClient(conjureClient),
-		workspaceService:   workspaceapi.NewWorkspaceServiceClient(conjureClient),
-		workspaceRid:       workspaceRid,
-		sqlConn:            sqlConn,
-		sqlErr:             sqlErr,
+		settings:            settings,
+		resourceHTTPClient:  resourceHTTPClient,
+		authService:         authapi.NewAuthenticationServiceV2Client(conjureClient),
+		computeService:      computeapi1.NewComputeServiceClient(conjureClient),
+		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
+		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
+		workspaceRid:        workspaceRid,
+		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
+		sqlConn:             sqlConn,
+		sqlErr:              sqlErr,
 	}
 	if sqlConn != nil {
 		ds.sqlService = sqlv1.NewSqlServiceClient(sqlConn)
@@ -132,7 +132,7 @@ type Datasource struct {
 	// sqlErr explains why sqlService is nil, for example a plain http base URL.
 	sqlErr error
 	// defaultSQLWorkspace caches the API key's default workspace when no Workspace RID is set.
-	defaultSQLWorkspace atomic.Pointer[string]
+	defaultSQLWorkspace *ttlCache[string]
 
 	resourceHTTPClient *http.Client
 
