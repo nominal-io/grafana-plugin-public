@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"

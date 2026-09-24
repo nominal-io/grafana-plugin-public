@@ -10,7 +10,7 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"

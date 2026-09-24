@@ -17,7 +17,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"

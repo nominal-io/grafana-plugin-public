@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/palantir/pkg/bearertoken"
 )
 

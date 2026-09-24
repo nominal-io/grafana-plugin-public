@@ -13,7 +13,7 @@ import (
 	sdkhttpclient "github.com/grafana/grafana-plugin-sdk-go/backend/httpclient"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
-	"github.com/nominal-inc/nominal-ds/pkg/models"
+	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
