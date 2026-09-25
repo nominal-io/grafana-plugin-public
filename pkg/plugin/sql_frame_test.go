@@ -183,6 +183,16 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			want:     []any{"unit=C, sensor=imu", "", nil},
 		},
 		{
+			name:  "map with separators in its entries",
+			field: arrow.Field{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
+			column: func(t *testing.T) arrow.Array {
+				return arrowArray(t, arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String),
+					`[[{"key": "a", "value": "b, c=d"}], [{"key": "a", "value": "b"}, {"key": "c", "value": "d"}], [{"key": "a=b", "value": "c"}], [{"key": "a", "value": null}], [{"key": "a", "value": "null"}], [{"key": "a", "value": ""}]]`)
+			},
+			wantType: data.FieldTypeString,
+			want:     []any{`a="b, c=d"`, "a=b, c=d", `"a=b"=c`, "a=null", `a="null"`, `a=""`},
+		},
+		{
 			name:     "null type",
 			field:    arrow.Field{Name: "c", Type: arrow.Null, Nullable: true},
 			column:   func(t *testing.T) arrow.Array { return array.NewNull(2) },
@@ -327,14 +337,14 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		t.Fatalf("shapeSQLFrame() error = %v", err)
 	}
 	want := []struct {
-		name, channel string
-		times         []any
-		values        []any
+		name, channel, display string
+		times                  []any
+		values                 []any
 	}{
-		{"avg", "a", []any{at(0), at(2)}, []any{1.0, nil}},
-		{"avg", "b", []any{at(0), at(1)}, []any{4.0, 2.0}},
-		{"max", "a", []any{at(0), at(2)}, []any{int64(10), int64(30)}},
-		{"max", "b", []any{at(0), at(1)}, []any{int64(40), int64(20)}},
+		{"avg", "a", "avg a", []any{at(0), at(2)}, []any{1.0, nil}},
+		{"avg", "b", "avg b", []any{at(0), at(1)}, []any{4.0, 2.0}},
+		{"max", "a", "max a", []any{at(0), at(2)}, []any{int64(10), int64(30)}},
+		{"max", "b", "max b", []any{at(0), at(1)}, []any{int64(40), int64(20)}},
 	}
 	if len(frames) != len(want) {
 		t.Fatalf("got %d frames, want %d", len(frames), len(want))
@@ -345,8 +355,11 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 			t.Errorf("frame %d RefID, meta = %q, %+v; want A, a multi-frame series with the input's query", i, f.RefID, f.Meta)
 		}
 		value := f.Fields[1]
-		if value.Name != w.name || value.Labels["channel"] != w.channel {
-			t.Errorf("frame %d = %s%v, want %s{channel=%s}", i, value.Name, value.Labels, w.name, w.channel)
+		if value.Name != w.name || value.Labels["channel"] != w.channel || value.Labels["column"] != w.name {
+			t.Errorf("frame %d = %s%v, want %s{channel=%s, column=%s}", i, value.Name, value.Labels, w.name, w.channel, w.name)
+		}
+		if value.Config == nil || value.Config.DisplayNameFromDS != w.display {
+			t.Errorf("frame %d display name = %+v, want %q", i, value.Config, w.display)
 		}
 		if got := fieldValues(f.Fields[0]); !equalValues(got, w.times) {
 			t.Errorf("frame %d times = %v, want %v", i, got, w.times)
@@ -389,6 +402,63 @@ func TestShapeSQLFrameWithoutTimeSeriesColumns(t *testing.T) {
 	if frame.Meta == nil || len(frame.Meta.Notices) != 1 || !strings.Contains(frame.Meta.Notices[0].Text, "numeric column") {
 		t.Errorf("frame meta = %+v, want a notice that a numeric column is needed", frame.Meta)
 	}
+	if frame.Meta.PreferredVisualization != data.VisTypeTable {
+		t.Errorf("preferred visualization = %q, want %q", frame.Meta.PreferredVisualization, data.VisTypeTable)
+	}
+}
+
+func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
+	ts := time.Unix(1700000000, 0).UTC()
+	t.Run("with a numeric column", func(t *testing.T) {
+		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}), data.NewField("value", nil, []float64{1}))
+		frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+		if err != nil || len(frames) != 1 || frames[0].Fields[1].Name != "value" {
+			t.Fatalf("shapeSQLFrame() = %v, %v; want one value series", frames, err)
+		}
+		if notices := frames[0].Meta.Notices; len(notices) != 1 || !strings.HasSuffix(notices[0].Text, "neither numbers nor labels: first_ts") {
+			t.Errorf("notices = %+v, want one naming first_ts", notices)
+		}
+		if _, ok := frames[0].Fields[1].Labels["column"]; ok {
+			t.Errorf("labels = %v, want no column label for a single value column", frames[0].Fields[1].Labels)
+		}
+	})
+	t.Run("without one", func(t *testing.T) {
+		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}))
+		frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+		if err != nil || len(frames) != 1 || frames[0] != frame || frame.Meta.PreferredVisualization != data.VisTypeTable {
+			t.Errorf("shapeSQLFrame() = %v, %v; want the input frame as a table", frames, err)
+		}
+	})
+}
+
+func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
+	ts := time.Unix(1700000000, 0).UTC()
+	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("min", nil, []float64{1}), data.NewField("max", nil, []float64{2}))
+	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil || len(frames) != 2 {
+		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
+	}
+	for i, want := range []string{"min", "max"} {
+		value := frames[i].Fields[1]
+		if value.Labels.String() != "column="+want || value.Config.DisplayNameFromDS != want {
+			t.Errorf("frame %d labels, display name = %v, %q; want column=%s, %q", i, value.Labels, value.Config.DisplayNameFromDS, want, want)
+		}
+	}
+}
+
+func TestShapeSQLFrameReturnsNoDataForEmptyTimeSeries(t *testing.T) {
+	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
+	frame.RefID = "A"
+	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
+	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil || len(frames) != 1 {
+		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
+	}
+	// The dataplane's no-data response: a single typed frame without fields.
+	empty := frames[0]
+	if len(empty.Fields) != 0 || empty.RefID != "A" || empty.Meta.Type != data.FrameTypeTimeSeriesMulti || empty.Meta.TypeVersion != (data.FrameTypeVersion{0, 1}) || empty.Meta.ExecutedQueryString != "SELECT ..." {
+		t.Errorf("frame = %d fields, RefID %q, meta %+v; want no fields and a typed meta with the query", len(empty.Fields), empty.RefID, empty.Meta)
+	}
 }
 
 func TestShapeSQLFramePassesThrough(t *testing.T) {
@@ -396,8 +466,8 @@ func TestShapeSQLFramePassesThrough(t *testing.T) {
 		frame  *data.Frame
 		format sqlutil.FormatQueryOption
 	}{
-		"table":             {data.NewFrame("A", data.NewField("value", nil, []float64{1})), sqlutil.FormatOptionTable},
-		"empty time series": {data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("value", nil, []float64{})), sqlutil.FormatOptionTimeSeries},
+		"table":       {data.NewFrame("A", data.NewField("value", nil, []float64{1})), sqlutil.FormatOptionTable},
+		"empty table": {data.NewFrame("A", data.NewField("value", nil, []float64{})), sqlutil.FormatOptionTable},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if frames, err := shapeSQLFrame(tc.frame, tc.format); err != nil || len(frames) != 1 || frames[0] != tc.frame {
