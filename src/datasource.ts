@@ -8,6 +8,7 @@ import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/r
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
+import { NominalVariableSupport } from './variables';
 import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -19,6 +20,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
+    this.variables = new NominalVariableSupport(this);
   }
 
 
@@ -64,7 +66,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   /**
-   * Used by Grafana to populate template variables.
+   * Resolves catalog variable queries; the variable support also routes SQL.
    * Supports query types:
    * - "assets", "assets()", or empty: Returns all assets with text=title, value=rid
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text

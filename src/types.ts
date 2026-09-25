@@ -121,3 +121,8 @@ export function toVariableQuery(
     query: query.query ?? '',
   };
 }
+
+export const VARIABLE_SQL_EXAMPLE = `SELECT DISTINCT channel
+FROM channels
+WHERE dataset_rid = '<dataset-rid>'
+ORDER BY 1`;

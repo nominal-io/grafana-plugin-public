@@ -1,4 +1,19 @@
-import { DataFrame, Field, FieldType, MetricFindValue } from '@grafana/data';
+import { from, map, Observable, of } from 'rxjs';
+import {
+  AppEvents,
+  CustomVariableSupport,
+  DataFrame,
+  DataQueryRequest,
+  DataQueryResponse,
+  Field,
+  FieldType,
+  MetricFindValue,
+  QueryResultMetaNotice,
+} from '@grafana/data';
+import { getAppEvents } from '@grafana/runtime';
+import type { DataSource } from './datasource';
+import { VariableQueryEditor } from './components/VariableQueryEditor';
+import { NominalVariableQuery, QUERY_TYPE_SQL, toVariableQuery } from './types';
 
 const COLUMN_CONTRACT = 'Variable SQL must return one column, or columns named __text and __value.';
 
@@ -37,4 +52,54 @@ export function framesToVariableOptions(frames: DataFrame[]): MetricFindValue[] 
     options.push({ text: String(text.values[row] ?? rowValue), value: String(rowValue) });
   }
   return options;
+}
+
+function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>, target: NominalVariableQuery) {
+  // The backend rejects blank SQL with "SQL query is empty", and switching mode to SQL
+  // clears the text, so a fresh SQL variable should show an empty list, not an error.
+  if (!target.query.trim()) {
+    return of({ data: [] });
+  }
+  return ds
+    .query({
+      ...request,
+      targets: [{ refId: target.refId, queryType: QUERY_TYPE_SQL, rawSql: target.query, format: 'table' }],
+    })
+    .pipe(
+      map((response) => {
+        // eslint-disable-next-line @typescript-eslint/no-deprecated -- a non-200 HTTP failure sets only response.error
+        const error = response.errors?.[0] ?? response.error;
+        if (error) {
+          throw new Error(error.message ?? 'The variable SQL query failed.');
+        }
+        const limited = response.data[0]?.meta?.notices?.find(
+          (notice: QueryResultMetaNotice) => notice.severity === 'warning'
+        );
+        if (limited) {
+          getAppEvents().publish({
+            type: AppEvents.alertWarning.name,
+            payload: [`Variable options: ${limited.text}. Add LIMIT to the variable query.`],
+          });
+        }
+        return { data: framesToVariableOptions(response.data) };
+      })
+    );
+}
+
+export class NominalVariableSupport extends CustomVariableSupport<DataSource, NominalVariableQuery> {
+  editor = VariableQueryEditor;
+
+  constructor(private readonly datasource: DataSource) {
+    super();
+  }
+
+  query(request: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+    const target = toVariableQuery(request.targets[0]);
+    if (target.mode === 'sql') {
+      return runSql(this.datasource, request, target);
+    }
+    return from(this.datasource.metricFindQuery(target.query, { scopedVars: request.scopedVars })).pipe(
+      map((data) => ({ data }))
+    );
+  }
 }
