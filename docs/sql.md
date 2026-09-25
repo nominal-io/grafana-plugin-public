@@ -47,8 +47,9 @@ result without both columns is shown as a table with a notice, so use a Table,
 Stat or Bar chart panel for it. **Table** returns rows and columns as the query
 produced them.
 
-Map columns such as `tags` are shown as `key="value"` pairs, for example
-`satellite="GOCE-1"`.
+Map columns such as `tags` are shown as `key=value` pairs, for example
+`satellite=GOCE-1`. Keys and values that contain `=`, `,`, `"` or a space are
+quoted, so different maps never look the same.
 
 ## Macros
 

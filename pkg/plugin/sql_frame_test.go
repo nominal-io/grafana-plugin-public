@@ -180,17 +180,17 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 					`[[{"key": "unit", "value": "C"}, {"key": "sensor", "value": "imu"}], [], null]`)
 			},
 			wantType: data.FieldTypeNullableString,
-			want:     []any{`unit="C", sensor="imu"`, "", nil},
+			want:     []any{"unit=C, sensor=imu", "", nil},
 		},
 		{
 			name:  "map with separators in its entries",
 			field: arrow.Field{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
 			column: func(t *testing.T) arrow.Array {
 				return arrowArray(t, arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String),
-					`[[{"key": "a", "value": "b, c=d"}], [{"key": "a", "value": "b"}, {"key": "c", "value": "d"}], [{"key": "a=b", "value": "c"}], [{"key": "a", "value": null}]]`)
+					`[[{"key": "a", "value": "b, c=d"}], [{"key": "a", "value": "b"}, {"key": "c", "value": "d"}], [{"key": "a=b", "value": "c"}], [{"key": "a", "value": null}], [{"key": "a", "value": "null"}], [{"key": "a", "value": ""}]]`)
 			},
 			wantType: data.FieldTypeString,
-			want:     []any{`a="b, c=d"`, `a="b", c="d"`, `"a=b"="c"`, `a=null`},
+			want:     []any{`a="b, c=d"`, "a=b, c=d", `"a=b"=c`, "a=null", `a="null"`, `a=""`},
 		},
 		{
 			name:     "null type",

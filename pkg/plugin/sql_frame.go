@@ -165,8 +165,8 @@ func column[A arrow.Array, T any](chunks []arrow.Array, rows int, nullable bool,
 	return vals, nil
 }
 
-// appendMap appends row i of a map, such as the tags column, as key="value" pairs. Values are
-// always quoted, and keys when they contain a separator, so distinct maps never format the same.
+// appendMap appends row i of a map, such as the tags column, as key=value pairs. Keys and values
+// that could be misread are quoted, so distinct maps never format the same.
 func appendMap(buf []byte, m *array.Map, i int) []byte {
 	keys, items := m.Keys(), m.Items()
 	start, end := m.ValueOffsets(i)
@@ -174,19 +174,27 @@ func appendMap(buf []byte, m *array.Map, i int) []byte {
 		if j > int(start) {
 			buf = append(buf, ", "...)
 		}
-		if key := keys.ValueStr(j); key != "" && !strings.ContainsAny(key, `=", `) {
-			buf = append(buf, key...)
-		} else {
-			buf = strconv.AppendQuote(buf, key)
-		}
+		buf = appendMapToken(buf, keys.ValueStr(j))
 		buf = append(buf, '=')
 		if items.IsNull(j) {
 			buf = append(buf, "null"...)
 		} else {
-			buf = strconv.AppendQuote(buf, items.ValueStr(j))
+			buf = appendMapToken(buf, items.ValueStr(j))
 		}
 	}
 	return buf
+}
+
+// appendMapToken quotes s when it is empty, reads as a null, or contains a separator.
+func appendMapToken(buf []byte, s string) []byte {
+	if s == "" || s == "null" || strings.ContainsFunc(s, isMapSeparator) {
+		return strconv.AppendQuote(buf, s)
+	}
+	return append(buf, s...)
+}
+
+func isMapSeparator(r rune) bool {
+	return r == '=' || r == ',' || r == ' ' || r == '"'
 }
 
 // shapeSQLFrame returns table results unchanged. A time series result becomes one frame per numeric
