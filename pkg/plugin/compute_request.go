@@ -139,7 +139,6 @@ func zeroDurationConstant() computeapi1.DurationConstant {
 	return computeapi1.NewDurationConstantFromLiteral(runapi.Duration{
 		Seconds: safelong.SafeLong(0),
 		Nanos:   safelong.SafeLong(0),
-		Picos:   nil,
 	})
 }
 
@@ -147,6 +146,5 @@ func timestampFromTime(value time.Time) api.Timestamp {
 	return api.Timestamp{
 		Seconds: safelong.SafeLong(value.Unix()),
 		Nanos:   safelong.SafeLong(value.Nanosecond()),
-		Picos:   nil,
 	}
 }

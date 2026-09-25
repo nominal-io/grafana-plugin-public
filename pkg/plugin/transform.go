@@ -274,9 +274,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		},
 		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
 		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
-		unsupportedComputeResponse[computeapi.ArrowNumericPlot]("arrowNumeric"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowNumeric"),
 		// arrowBucketedNumericFunc: one AggregationSeries per requested aggregation field.
-		func(arrowBucketed computeapi.ArrowBucketedNumericPlot) error {
+		func(arrowBucketed computeapi.ArrowPlot) error {
 			var specs []aggColumnSpec
 			for _, agg := range qm.Aggregations {
 				specs = append(specs, aggColumnSpecFromEnum(agg))
@@ -327,8 +327,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = true
 			return nil
 		},
-		unsupportedComputeResponse[computeapi.ArrowEnumPlot]("arrowEnum"),
-		unsupportedComputeResponse[computeapi.ArrowBucketedEnumPlot]("arrowBucketedEnum"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowEnum"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowBucketedEnum"),
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
 			if len(paged.Timestamps) != len(paged.Values) {
@@ -367,6 +367,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsLog = true
 			return nil
 		},
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowLog"),
 		unsupportedComputeResponse[computeapi.CartesianPlot]("cartesian"),
 		unsupportedComputeResponse[computeapi.BucketedCartesianPlot]("bucketedCartesian"),
 		unsupportedComputeResponse[computeapi.BucketedCartesian3dPlot]("bucketedCartesian3d"),
@@ -376,11 +377,13 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[computeapi.NumericHistogramPlot]("numericHistogram"),
 		unsupportedComputeResponse[computeapi.EnumHistogramPlot]("enumHistogram"),
 		unsupportedComputeResponse[computeapi.CurveFitResult]("curveFit"),
+		unsupportedComputeResponse[computeapi.CurveFitResultV2]("curveFitV2"),
 		unsupportedComputeResponse[computeapi.GroupedComputeNodeResponses]("grouped"),
 		unsupportedComputeResponse[computeapi.ArrowArrayPlot]("array"),
-		unsupportedComputeResponse[computeapi.ArrowBucketedStructPlot]("bucketedStruct"),
-		unsupportedComputeResponse[computeapi.ArrowFullResolutionPlot]("fullResolution"),
-		unsupportedComputeResponse[computeapi.ArrowBucketedMultivariatePlot]("arrowBucketedMultivariate"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("bucketedStruct"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowStruct"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("fullResolution"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowBucketedMultivariate"),
 		unsupportedComputeResponse[computeapi.BucketedMultivariatePlot]("multivariate"),
 		unsupportedComputeResponseError,
 	)
@@ -422,8 +425,7 @@ func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computea
 		nanos := int64(timestamp.Nanos)
 		timePoints = append(timePoints, time.Unix(seconds, nanos))
 
-		mean := bucket.Mean
-		values = append(values, &mean)
+		values = append(values, bucket.Mean)
 	}
 
 	log.DefaultLogger.Debug("Extracted bucketed data from conjure", "timePoints", len(timePoints), "values", len(values))

@@ -84,7 +84,7 @@ func BenchmarkExtractArrowBucketedNumericSeries(b *testing.B) {
 		tc := tc
 		b.Run(tc.name, func(b *testing.B) {
 			arrowBytes := createBenchmarkArrowBucketedNumeric(b, tc.rows, tc.specs, tc.pattern)
-			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+			arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -109,7 +109,7 @@ func BenchmarkExtractArrowBucketedNumericSeriesFirstLast(b *testing.B) {
 		rows := rows
 		b.Run("rows_"+strconv.Itoa(rows)+"_aggs_2_dense", func(b *testing.B) {
 			arrowBytes := createFirstLastArrow(b, rows, 0)
-			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+			arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -123,7 +123,7 @@ func BenchmarkExtractArrowBucketedNumericSeriesFirstLast(b *testing.B) {
 		})
 		b.Run("rows_"+strconv.Itoa(rows)+"_aggs_2_sparse_timestamps", func(b *testing.B) {
 			arrowBytes := createFirstLastArrow(b, rows, 10)
-			arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+			arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 
 			b.ReportAllocs()
 			b.ResetTimer()

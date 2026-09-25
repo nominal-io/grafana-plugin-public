@@ -17,18 +17,15 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/nominal-io/nominal-api-go/api/rids"
-	ingestapi "github.com/nominal-io/nominal-api-go/ingest/api"
 	nominalapi "github.com/nominal-io/nominal-api-go/io/nominal/api"
 	nominaldatasource "github.com/nominal-io/nominal-api-go/io/nominal/datasource"
 	scoutapi "github.com/nominal-io/nominal-api-go/scout/api"
 	assetapi "github.com/nominal-io/nominal-api-go/scout/asset/api"
 	assetservice "github.com/nominal-io/nominal-api-go/scout/assets"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
-	uploadapi "github.com/nominal-io/nominal-api-go/upload/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
-	"github.com/palantir/pkg/safelong"
 )
 
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
@@ -62,8 +59,6 @@ type liveNominalAPIClients struct {
 	http      *http.Client
 	token     bearertoken.Token
 	asset     assetservice.AssetServiceClient
-	ingest    ingestapi.IngestServiceClient
-	upload    uploadapi.UploadServiceClient
 }
 
 type liveNominalDataset struct {
@@ -424,8 +419,6 @@ func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceS
 		http:      &http.Client{Timeout: 30 * time.Second},
 		token:     bearertoken.Token(apiKey),
 		asset:     assetservice.NewAssetServiceClient(conjureClient),
-		ingest:    ingestapi.NewIngestServiceClient(conjureClient),
-		upload:    uploadapi.NewUploadServiceClient(conjureClient),
 	}
 }
 
@@ -506,73 +499,58 @@ func ingestLiveNominalCSV(t *testing.T, ctx context.Context, clients liveNominal
 	t.Helper()
 
 	csvBytes := []byte(liveNominalCSV)
-	csvSize := safelong.SafeLong(len(csvBytes))
-	reader := bytes.NewReader(csvBytes)
-	s3Path, err := clients.upload.UploadFile(
-		ctx,
-		clients.token,
-		"grafana-plugin-live.csv",
-		&csvSize,
-		clients.workspace,
-		conjurehttpclient.RequestBodyInMemory(reader),
-	)
+	query := url.Values{}
+	query.Set("fileName", "grafana-plugin-live.csv")
+	query.Set("sizeBytes", strconv.Itoa(len(csvBytes)))
+	if clients.workspace != nil {
+		query.Set("workspace", clients.workspace.String())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, clients.baseURL+"/upload/v1/upload-file?"+query.Encode(), bytes.NewReader(csvBytes))
+	if err != nil {
+		t.Fatalf("failed to create live Nominal CSV upload request: %v", err)
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", clients.token))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := clients.http.Do(req)
 	if err != nil {
 		t.Fatalf("failed to upload live Nominal CSV: %v", err)
 	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		t.Fatalf("failed to upload live Nominal CSV: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var s3Path string
+	if err := json.NewDecoder(resp.Body).Decode(&s3Path); err != nil {
+		t.Fatalf("failed to decode live Nominal CSV upload response: %v", err)
+	}
 
-	response, err := clients.ingest.Ingest(ctx, clients.token, ingestapi.IngestRequest{
-		Options: ingestapi.NewIngestOptionsFromCsv(ingestapi.CsvOpts{
-			Source: ingestapi.NewIngestSourceFromS3(ingestapi.S3IngestSource{
-				Path: string(s3Path),
-			}),
-			Target: ingestapi.NewDatasetIngestTargetFromExisting(ingestapi.ExistingDatasetIngestDestination{
-				DatasetRid: datasetRid,
-			}),
-			TimestampMetadata: ingestapi.TimestampMetadata{
-				SeriesName: "timestamp",
-				TimestampType: ingestapi.NewTimestampTypeFromAbsolute(
-					ingestapi.NewAbsoluteTimestampFromIso8601(ingestapi.Iso8601Timestamp{}),
-				),
-			},
-			ExcludeColumns: []nominalapi.ColumnName{},
-		}),
-	})
-	if err != nil {
+	request := map[string]any{"options": map[string]any{
+		"type": "csv",
+		"csv": map[string]any{
+			"source":               map[string]any{"type": "s3", "s3": map[string]any{"path": s3Path}},
+			"target":               map[string]any{"type": "existing", "existing": map[string]any{"datasetRid": datasetRid}},
+			"timestampMetadata":    map[string]any{"seriesName": "timestamp", "timestampType": map[string]any{"type": "absolute", "absolute": map[string]any{"type": "iso8601", "iso8601": map[string]any{}}}},
+			"channelPrefix":        nil,
+			"channelNameOverrides": map[string]string{},
+			"excludeColumns":       []string{},
+		},
+	}}
+	var response struct {
+		Details struct {
+			Type    string `json:"type"`
+			Dataset struct {
+				DatasetFileID *nominaldatasource.DatasetFileId `json:"datasetFileId"`
+			} `json:"dataset"`
+		} `json:"details"`
+	}
+	if err := clients.doJSON(ctx, http.MethodPost, "/ingest/v1/ingest", request, &response); err != nil {
 		t.Fatalf("failed to ingest live Nominal CSV: %v", err)
 	}
-
-	fileID, err := liveNominalDatasetFileID(response)
-	if err != nil {
-		t.Fatalf("failed to read live Nominal ingest response: %v", err)
+	if response.Details.Type != "dataset" || response.Details.Dataset.DatasetFileID == nil {
+		t.Fatalf("expected dataset file id in ingest response, got details type %q", response.Details.Type)
 	}
-	return fileID
-}
-
-func liveNominalDatasetFileID(response ingestapi.IngestResponse) (nominaldatasource.DatasetFileId, error) {
-	var fileID nominaldatasource.DatasetFileId
-	details := response.Details
-	err := (&details).Accept(liveNominalIngestDetailsVisitor{fileID: &fileID})
-	return fileID, err
-}
-
-type liveNominalIngestDetailsVisitor struct {
-	fileID *nominaldatasource.DatasetFileId
-}
-
-func (v liveNominalIngestDetailsVisitor) VisitDataset(details ingestapi.IngestDatasetFileDetails) error {
-	if details.DatasetFileId == nil {
-		return fmt.Errorf("dataset ingest response did not include a dataset file id")
-	}
-	*v.fileID = nominaldatasource.DatasetFileId(*details.DatasetFileId)
-	return nil
-}
-
-func (v liveNominalIngestDetailsVisitor) VisitVideo(ingestapi.IngestVideoFileDetails) error {
-	return fmt.Errorf("expected dataset ingest details, got video ingest details")
-}
-
-func (v liveNominalIngestDetailsVisitor) VisitUnknown(typeName string) error {
-	return fmt.Errorf("unknown ingest details type %q", typeName)
+	return *response.Details.Dataset.DatasetFileID
 }
 
 func waitForLiveNominalIngest(t *testing.T, ctx context.Context, clients liveNominalAPIClients, datasetRid rid.ResourceIdentifier, fileID nominaldatasource.DatasetFileId) {

@@ -24,12 +24,12 @@ func seriesKind(t *testing.T, s computeapi1.Series) string {
 	var kind string
 	err := s.AcceptFuncs(
 		func(computeapi.Reference) error { kind = "raw"; return nil },
-		func(computeapi1.BooleanSeries) error { kind = "boolean"; return nil },
 		func(computeapi1.EnumSeries) error { kind = "enum"; return nil },
 		func(computeapi1.NumericSeries) error { kind = "numeric"; return nil },
 		func(computeapi1.LogSeries) error { kind = "log"; return nil },
 		func(computeapi1.ArraySeries) error { kind = "array"; return nil },
 		func(computeapi1.StructSeries) error { kind = "struct"; return nil },
+		func(computeapi.Reference) error { kind = "video"; return nil },
 		func(string) error { return fmt.Errorf("unknown series type") },
 	)
 	if err != nil {
@@ -57,6 +57,7 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
+		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
 				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
@@ -94,6 +95,7 @@ func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) comp
 		func(computeapi1.FrequencyDomain) error { return fmt.Errorf("expected series node, got frequency") },
 		func(computeapi1.FrequencyDomainV2) error { return fmt.Errorf("expected series node, got frequencyV2") },
 		func(computeapi1.Histogram) error { return fmt.Errorf("expected series node, got histogram") },
+		func(computeapi1.CurveFitV2) error { return fmt.Errorf("expected series node, got curveV2") },
 		func(computeapi1.CurveFit) error { return fmt.Errorf("expected series node, got curve") },
 		func(computeapi1.SummarizeMultivariate) error {
 			return fmt.Errorf("expected series node, got multivariate")

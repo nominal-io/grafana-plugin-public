@@ -20,7 +20,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		means := []float64{0.71, -0.40, 0.53}
 		arrowBytes := createTestArrowBucketedNumeric(timestamps, means, nil)
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -54,7 +54,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		nullMask := []bool{false, true, false}
 		arrowBytes := createTestArrowBucketedNumeric(timestamps, means, nullMask)
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -80,7 +80,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 	t.Run("empty response returns empty series", func(t *testing.T) {
 		arrowBytes := createTestArrowBucketedNumeric(nil, nil, nil)
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -103,7 +103,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 			nil,
 		)
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -142,7 +142,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		writer.Write(rec)
 		writer.Close()
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		_, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err == nil {
 			t.Fatal("expected error for missing mean column, got nil")
@@ -178,7 +178,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		writer.Write(rec)
 		writer.Close()
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		_, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err == nil {
 			t.Fatal("expected error for wrong column type, got nil")
@@ -220,7 +220,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 			t.Fatalf("close mismatched Arrow writer: %v", err)
 		}
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("expected column length error, got panic: %v", r)
@@ -275,7 +275,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		}
 
 		series, err := extractArrowBucketedNumericSeries(
-			computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()},
+			computeapi.ArrowPlot{ArrowBinary: buf.Bytes()},
 			[]aggColumnSpec{{Name: "mean", ValueCol: "mean"}},
 		)
 		if err != nil {
@@ -359,7 +359,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		}
 
 		series, err := extractArrowBucketedNumericSeries(
-			computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()},
+			computeapi.ArrowPlot{ArrowBinary: buf.Bytes()},
 			[]aggColumnSpec{
 				aggColumnSpecFromEnum(AggFirstPoint),
 				aggColumnSpecFromEnum(AggLastPoint),
@@ -414,7 +414,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		writer.Write(rec)
 		writer.Close()
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "count", ValueCol: "count"}})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -462,7 +462,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		writer.Write(rec)
 		writer.Close()
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{{Name: "mean", ValueCol: "mean"}})
 		if err != nil {
 			t.Fatalf("unexpected error with ZSTD compressed Arrow: %v", err)
@@ -533,7 +533,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 			t.Fatalf("close multi-batch writer: %v", err)
 		}
 
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{
 			{Name: "mean", ValueCol: "mean"},
 			{Name: "count", ValueCol: "count"},
@@ -589,7 +589,7 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 func TestExtractArrowBucketedNumericSeriesFullyMaskedFirstPointRowsYieldEmptyValues(t *testing.T) {
 	arrowBytes := createFirstLastArrow(t, 3, 1)
 	series, err := extractArrowBucketedNumericSeries(
-		computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes},
+		computeapi.ArrowPlot{ArrowBinary: arrowBytes},
 		[]aggColumnSpec{{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}},
 	)
 	if err != nil {
@@ -736,7 +736,7 @@ func measureFirstLastAllocations(t *testing.T, rows int, wantRows int, nullTimes
 		aggColumnSpecFromEnum(AggLastPoint),
 	}
 	arrowBytes := createFirstLastArrow(t, rows, nullTimestampEvery)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	return testing.AllocsPerRun(100, func() {
 		series, err := extractArrowBucketedNumericSeries(arrowPlot, specs)
 		if err != nil {
@@ -831,7 +831,7 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 	}
 
 	series, err := extractArrowBucketedNumericSeries(
-		computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()},
+		computeapi.ArrowPlot{ArrowBinary: buf.Bytes()},
 		[]aggColumnSpec{{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"}},
 	)
 	if err != nil {
@@ -951,7 +951,7 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	}
 	writer.Close()
 
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 	series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{
 		{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
 		{Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
@@ -1095,7 +1095,7 @@ func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
 	}
 	writer.Close()
 
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 	series, err := extractArrowBucketedNumericSeries(arrowPlot, []aggColumnSpec{
 		{Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp"},
 		{Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp"},
@@ -1240,7 +1240,7 @@ func TestAggregationSeriesCarriesChannelUnitPropagation(t *testing.T) {
 		"variance": {1.5, 2.5},
 	}
 	arrowBytes := createTestArrowMultiAgg(ts, columns)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 
 	specs := []aggColumnSpec{
 		aggColumnSpecFromEnum(AggMean),

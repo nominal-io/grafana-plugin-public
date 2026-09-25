@@ -445,7 +445,7 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 		[]int64{1000000000000, 2000000000000},
 		map[string][]float64{"mean": {10.0, 20.0}, "min": {5.0, 15.0}},
 	)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
@@ -1178,7 +1178,7 @@ func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
 
 func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	realDecode := decodeArrowBucketedNumeric
-	decodeArrowBucketedNumeric = func(computeapi.ArrowBucketedNumericPlot, []aggColumnSpec) ([]AggregationSeries, error) {
+	decodeArrowBucketedNumeric = func(computeapi.ArrowPlot, []aggColumnSpec) ([]AggregationSeries, error) {
 		panic("arrow decode exploded")
 	}
 	t.Cleanup(func() { decodeArrowBucketedNumeric = realDecode })
@@ -1191,7 +1191,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 			Results: []computeapi.ComputeWithUnitsResult{
 				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
-						computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrow}),
+						computeapi.ArrowPlot{ArrowBinary: arrow}),
 				)},
 				createMockComputeResult(nil),
 			},
