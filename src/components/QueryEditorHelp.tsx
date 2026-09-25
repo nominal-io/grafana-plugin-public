@@ -101,6 +101,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
         <code className={styles.code}>{'datascopes(${asset})'}</code>
         <br />
         <code className={styles.code}>{'channels(${asset}, ${datascope})'}</code>
+        <p className={styles.text}>Choose SQL mode in the variable editor to fill a variable from SQL. Return one column, or columns named __text and __value.</p>
       </div>
 
       <div className={styles.section}>

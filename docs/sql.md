@@ -64,6 +64,30 @@ quotes doubled, so write `channel = '$channel'`. Grafana's variable formats,
 such as `${channel:raw}`, override this. Alert rules cannot use dashboard
 variables.
 
+A dashboard variable can also run a SQL query. Return one column to use each
+row as both label and value, or return columns named `__text` and `__value`
+for a separate label. Rows with a null value are skipped, and numbers become
+text.
+
+```sql
+SELECT DISTINCT channel
+FROM channels
+WHERE dataset_rid = '<dataset-rid>'
+ORDER BY 1
+```
+
+SQL variables can reference other variables and the time macros, like panel
+SQL. A variable that uses `$__timeFilter` or another time macro needs its
+Refresh setting set to **On time range change** to rerun when the dashboard
+time range changes. When the SQL row limit is reached, the dropdown keeps
+the rows returned and Grafana shows a warning. Add `LIMIT` to keep the
+dropdown short.
+
+Editing a variable saves it as an object instead of a plain string. A plugin
+version without SQL variables cannot read that object, so an edited variable
+stops loading after a downgrade to an earlier version. A variable you never
+edited stays saved as a plain string and keeps working after a downgrade.
+
 ## Limits
 
 The SQL service stops a query after 2 minutes. Results stop at Grafana's SQL

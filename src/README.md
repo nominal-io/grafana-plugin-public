@@ -88,7 +88,7 @@ Nominal supports Grafana dashboard variables for assets, data scopes, and channe
 2. Select **New variable**.
 3. Set **Type** to **Query**.
 4. Set **Data source** to your Nominal data source.
-5. In the **Query** field, enter one of the strings below (for example, `assets`).
+5. Leave **Mode** on **Catalog** and enter one of the strings below (for example, `assets`), or choose **SQL** to write a Nominal SQL query.
 6. Click **Run query** to preview, then **Apply**.
 
 Chain variables by referencing earlier ones with `${var}`. For example, define `asset` first, then a `datascope` variable whose query is `datascopes(${asset})`. Grafana re-runs the child query whenever the parent changes.
@@ -100,6 +100,21 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
 - `channels(${asset})` returns the union of channel names across **all** data scopes on the selected asset, deduplicated by name. Most useful when your asset has a single primary data scope, or when your fleet uses a consistent scope name that you can pin as a literal in each panel's data scope field. If channels with the same name exist in multiple scopes, the variable shows the name once — the actual data returned depends on which scope is set in each panel.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
+
+### SQL variable queries
+
+Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to use each row as both label and value, or return columns named `__text` and `__value` for a separate label. Rows with a null value are skipped, and numbers become text.
+
+```sql
+SELECT DISTINCT channel
+FROM channels
+WHERE dataset_rid = '<dataset-rid>'
+ORDER BY 1
+```
+
+SQL variables can reference other variables and the time macros, like panel SQL. A variable that uses `$__timeFilter` or another time macro needs its Refresh setting set to **On time range change** to rerun when the dashboard time range changes. When the SQL row limit is reached, the dropdown keeps the rows returned and Grafana shows a warning. Add `LIMIT` to keep the dropdown short.
+
+Editing a variable saves it as an object instead of a plain string. A plugin version without SQL variables cannot read that object, so an edited variable stops loading after a downgrade to an earlier version. A variable you never edited stays saved as a plain string and keeps working after a downgrade.
 
 ### Common patterns
 
