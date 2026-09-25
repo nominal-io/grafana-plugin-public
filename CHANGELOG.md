@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.15.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.14.0...nominal-grafana-plugin@0.15.0) (2026-09-25)
+
+
+### Features
+
+* add a gRPC client for Nominal SQL ([#158](https://github.com/nominal-io/grafana-plugin-public/issues/158)) ([08eb1c9](https://github.com/nominal-io/grafana-plugin-public/commit/08eb1c9a41bf9793ac673cfe84fc32649009afcc))
+* add a SQL query editor ([#156](https://github.com/nominal-io/grafana-plugin-public/issues/156)) ([bc32e83](https://github.com/nominal-io/grafana-plugin-public/commit/bc32e83f6a4529f04ec7181e8e977855017b3feb))
+* coalesce concurrent catalog lookups with singleflight ([#150](https://github.com/nominal-io/grafana-plugin-public/issues/150)) ([fa76d57](https://github.com/nominal-io/grafana-plugin-public/commit/fa76d57e3713637c6726c2f8fcf46b9a9b148381))
+* convert SQL Arrow results into Grafana frames ([#160](https://github.com/nominal-io/grafana-plugin-public/issues/160)) ([c78918d](https://github.com/nominal-io/grafana-plugin-public/commit/c78918d9170c07a79e2ac510767efb59cc45c7d4))
+* execute SQL queries through the API ([2dd72a9](https://github.com/nominal-io/grafana-plugin-public/commit/2dd72a9748dd997278ed377dd38dd88ed5957182))
+* expand Grafana time macros in SQL queries ([#159](https://github.com/nominal-io/grafana-plugin-public/issues/159)) ([5b31cab](https://github.com/nominal-io/grafana-plugin-public/commit/5b31cabd2bbc813951ad598b054044bdf4c2bc2b))
+
+
+### Bug Fixes
+
+* add optional workspace RID to data source settings ([#132](https://github.com/nominal-io/grafana-plugin-public/issues/132)) ([de10b81](https://github.com/nominal-io/grafana-plugin-public/commit/de10b8144f79b64f22ba62092b809b0fe0ced529))
+* **deps:** update module github.com/apache/arrow-go/v18 to v18.8.0 ([#133](https://github.com/nominal-io/grafana-plugin-public/issues/133)) ([7804fdd](https://github.com/nominal-io/grafana-plugin-public/commit/7804fdd7e542b6395ee3e5b290bc84be158cd7ae))
+* **deps:** update module github.com/grafana/grafana-plugin-sdk-go to v0.296.5 ([#141](https://github.com/nominal-io/grafana-plugin-public/issues/141)) ([1ac5ccd](https://github.com/nominal-io/grafana-plugin-public/commit/1ac5ccdea88fa55aa24e655781eb00b5f2019ddc))
+* make SQL time series results safe for alert rules ([8c8ce82](https://github.com/nominal-io/grafana-plugin-public/commit/8c8ce8236f7f6549257ba30e5a44fc63397282c3))
+* replace the resource forwarder with explicit handlers ([#144](https://github.com/nominal-io/grafana-plugin-public/issues/144)) ([bd09097](https://github.com/nominal-io/grafana-plugin-public/commit/bd0909725984315e94a9373c8cb63849d16a0b47))
+* skip batch kill when the server returned an HTTP error ([#136](https://github.com/nominal-io/grafana-plugin-public/issues/136)) ([71e3aef](https://github.com/nominal-io/grafana-plugin-public/commit/71e3aeffa771b6e2c7b6e6729ac6f5aecbf79c6c))
+* sort SDK metric channels after customer channels ([#140](https://github.com/nominal-io/grafana-plugin-public/issues/140)) ([8c9a3a7](https://github.com/nominal-io/grafana-plugin-public/commit/8c9a3a7424e2004cd9b73d564a05050619f89634))
+* tolerate unexpected compute response shapes ([#129](https://github.com/nominal-io/grafana-plugin-public/issues/129)) ([82feae8](https://github.com/nominal-io/grafana-plugin-public/commit/82feae8313330d57ec54b7304e6590828a215e3f))
+
+
+### Chores
+
+* **deps:** bump google.golang.org/grpc from 1.83.0 to 1.83.1 ([#125](https://github.com/nominal-io/grafana-plugin-public/issues/125)) ([1ce9f09](https://github.com/nominal-io/grafana-plugin-public/commit/1ce9f0911ab674ea7381f62e147a8a59f8c6a350))
+* **deps:** re-pin fast-uri and js-yaml for high severity CVEs ([#128](https://github.com/nominal-io/grafana-plugin-public/issues/128)) ([36f6c75](https://github.com/nominal-io/grafana-plugin-public/commit/36f6c755ed3f3195611ad1aaa39ca9576e73fae8))
+* **deps:** update github.com/nominal-io/nominal-api-go digest to cfbd3ba ([#167](https://github.com/nominal-io/grafana-plugin-public/issues/167)) ([6b3ec58](https://github.com/nominal-io/grafana-plugin-public/commit/6b3ec582bb61cd54127fa6908a20a9e59a46dfe7))
+* update Go toolchain to 1.26.6 ([#121](https://github.com/nominal-io/grafana-plugin-public/issues/121)) ([1d6ed9d](https://github.com/nominal-io/grafana-plugin-public/commit/1d6ed9df8341dc6c512c70196637d86b648daaad))
+
 ## [0.14.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.13.0...nominal-grafana-plugin@0.14.0) (2026-09-01)
 
 
