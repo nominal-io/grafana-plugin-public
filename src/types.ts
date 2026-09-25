@@ -97,3 +97,27 @@ export interface NominalSecureJsonData {
 export type MyQuery = NominalQuery;
 export type MyDataSourceOptions = NominalDataSourceOptions;
 export type MySecureJsonData = NominalSecureJsonData;
+
+export type VariableQueryMode = 'catalog' | 'sql';
+
+export interface NominalVariableQuery extends DataQuery {
+  mode: VariableQueryMode;
+  // Catalog text such as datascopes(${asset}), or SQL. Grafana shows this field as the variable definition.
+  query: string;
+}
+
+// Dashboards saved before SQL variables store the catalog query as a plain string. Provisioned or
+// hand-edited JSON can also hold null or an object missing fields.
+export function toVariableQuery(
+  query: Partial<NominalVariableQuery> | string | null | undefined
+): NominalVariableQuery {
+  if (typeof query === 'string' || query == null) {
+    return { refId: 'variable', mode: 'catalog', query: query ?? '' };
+  }
+  return {
+    ...query,
+    refId: query.refId ?? 'variable',
+    mode: query.mode === 'sql' ? 'sql' : 'catalog',
+    query: query.query ?? '',
+  };
+}
