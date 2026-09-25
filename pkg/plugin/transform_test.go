@@ -372,7 +372,7 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 		[]float64{1.5, 2.5, 3.5},
 		nil,
 	)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
 	ds := &Datasource{}
@@ -413,7 +413,7 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 		"max":  {2.0, 3.0, 4.0},
 	}
 	arrowBytes := createTestArrowMultiAgg(ts, columns)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
 	ds := &Datasource{}
@@ -463,7 +463,7 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	lastTimestamps := []int64{999000000000, 1999000000000, 2999000000000}
 
 	arrowBytes := createTestArrowFirstLast(t, endBucketTs, firstValues, firstTimestamps, lastValues, lastTimestamps)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
 	ds := &Datasource{}
@@ -568,7 +568,7 @@ func TestTransformArrowMixedAggWithFirstPoint(t *testing.T) {
 	}
 	writer.Close()
 
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: buf.Bytes()}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: buf.Bytes()}
 	response := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 
 	ds := &Datasource{}
@@ -833,7 +833,7 @@ func TestFieldConfigUnit(t *testing.T) {
 			"variance": {1.5, 2.5},
 		}
 		arrowBytes := createTestArrowMultiAgg(ts, columns)
-		arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+		arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 		result := computeapi.ComputeWithUnitsResult{
 			ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
 				computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot),

@@ -310,7 +310,7 @@ func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32
 // end_bucket_timestamp column. FIRST_POINT/LAST_POINT use their own timestamp
 // columns (first_timestamp, last_timestamp) so each series can have independent time axes.
 func extractArrowBucketedNumericSeries(
-	arrowPlot computeapi.ArrowBucketedNumericPlot,
+	arrowPlot computeapi.ArrowPlot,
 	specs []aggColumnSpec,
 ) ([]AggregationSeries, error) {
 	buf := bytes.NewReader(arrowPlot.ArrowBinary)

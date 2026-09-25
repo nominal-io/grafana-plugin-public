@@ -31,6 +31,7 @@ import (
 )
 
 type mockAuthService struct {
+	authapi.AuthenticationServiceV2Client
 	getMyProfileResponse authapi.UserV2
 	getMyProfileError    error
 }
@@ -71,10 +72,6 @@ func (m *mockAuthService) GetUser(ctx context.Context, authHeader bearertoken.To
 	return authapi.UserV2{}, nil
 }
 
-func (m *mockAuthService) DismissMyCoachmark(ctx context.Context, authHeader bearertoken.Token, requestArg authapi.DismissCoachmarkRequest) (authapi.CoachmarkDismissal, error) {
-	return authapi.CoachmarkDismissal{}, nil
-}
-
 func (m *mockAuthService) IsMyCoachmarkDismissed(ctx context.Context, authHeader bearertoken.Token, coachmarkIdArg string) (bool, error) {
 	return false, nil
 }
@@ -87,15 +84,12 @@ func (m *mockAuthService) GenerateMediaMtxToken(ctx context.Context, authHeader 
 	return authapi.GenerateMediaMtxTokenResponse{}, nil
 }
 
-func (m *mockAuthService) GetMyCoachmarkDismissals(ctx context.Context, authHeader bearertoken.Token, requestArg authapi.GetCoachmarkDismissalsRequest) (authapi.GetCoachmarkDismissalsResponse, error) {
-	return authapi.GetCoachmarkDismissalsResponse{}, nil
-}
-
 func (m *mockAuthService) ResetMyCoachmarkDismissal(ctx context.Context, authHeader bearertoken.Token, coachmarkIdArg string) error {
 	return nil
 }
 
 type mockDatasourceService struct {
+	datasourceservice.DataSourceServiceClient
 	mu                     sync.Mutex // guards searchChannelsCalls and searchChannelsRequest
 	searchChannelsResponse datasourceapi.SearchChannelsResponse
 	searchChannelsError    error
@@ -276,6 +270,7 @@ func mustMarshal(v interface{}) []byte {
 }
 
 type mockComputeService struct {
+	computeapi1.ComputeServiceClient
 	mu                    sync.Mutex
 	batchComputeCalls     int
 	lastBatchRequest      computeapi1.BatchComputeWithUnitsRequest
@@ -731,7 +726,7 @@ func createMockArrowComputeResult(values []float64) computeapi.ComputeWithUnitsR
 		timestamps[i] = baseTime + int64(i*60)*1_000_000_000
 	}
 	arrowBytes := createTestArrowBucketedNumeric(timestamps, values, nil)
-	arrowPlot := computeapi.ArrowBucketedNumericPlot{ArrowBinary: arrowBytes}
+	arrowPlot := computeapi.ArrowPlot{ArrowBinary: arrowBytes}
 	computeResponse := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot)
 	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
 	return computeapi.ComputeWithUnitsResult{

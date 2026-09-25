@@ -135,8 +135,8 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/nmiyake/pkg/dirs v1.1.0 h1:qyTzK3bTqAJfekQcU6vlydM/YRxhHsv6MiRFEwTkJcw=
 github.com/nmiyake/pkg/dirs v1.1.0/go.mod h1:lGSUDZPexhLt+aWYfPHXsqnt+HFr2l/+lbEMWUhdZ/U=
-github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf h1:I/GjCLAljBWp6rSCOESEg7/ZwaXovY75O6+brO6gbAo=
-github.com/nominal-io/nominal-api-go v0.0.0-20260520144242-f11d34f06baf/go.mod h1:IPK8FcQ/30GN7rwy1roN/3FyeKbTL4Hl6BzgwPfqtqY=
+github.com/nominal-io/nominal-api-go v0.0.0-20260924223320-cfbd3ba72831 h1:Ooh+2VehUmznMkmtHkB9/BK+6pSDO1BJ1mBoXX/KSOw=
+github.com/nominal-io/nominal-api-go v0.0.0-20260924223320-cfbd3ba72831/go.mod h1:IPK8FcQ/30GN7rwy1roN/3FyeKbTL4Hl6BzgwPfqtqY=
 github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978 h1:nzpmgqIi6kyzo5Zcl9lM5/qgPcr8H0Ok2yQyllX4Ouc=
 github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978/go.mod h1:qvUjcme464pYt3YU/qSH//fvUXtq6/9JcaegDUTSoEs=
 github.com/oasdiff/yaml v0.1.1 h1:6nHx+pn9gBRM6YpBlFZFQGCCd1nuvqOBtTD3KKTgGxY=

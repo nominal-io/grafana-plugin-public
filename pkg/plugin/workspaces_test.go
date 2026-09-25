@@ -29,7 +29,7 @@ type mockWorkspaceService struct {
 func (m *mockWorkspaceService) GetWorkspace(_ context.Context, _ bearertoken.Token, workspaceRid rids.WorkspaceRid) (workspaceapi.Workspace, error) {
 	return workspaceapi.Workspace{Rid: workspaceRid, DisplayName: m.displayName}, m.err
 }
-func (m *mockWorkspaceService) GetWorkspaces(context.Context, bearertoken.Token) ([]workspaceapi.Workspace, error) {
+func (m *mockWorkspaceService) GetWorkspaces(context.Context, bearertoken.Token, *bool, *bool) ([]workspaceapi.Workspace, error) {
 	return nil, nil
 }
 func (m *mockWorkspaceService) UpdateWorkspace(context.Context, bearertoken.Token, rids.WorkspaceRid, workspaceapi.UpdateWorkspaceRequest) (workspaceapi.Workspace, error) {
