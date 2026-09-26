@@ -110,6 +110,13 @@ describe('queryMutations', () => {
     );
   });
 
+  it.each([
+    { current: [AggregationType.Mean], selected: [AggregationType.Mean, AggregationType.Lttb], want: [AggregationType.Lttb] },
+    { current: [AggregationType.Lttb], selected: [AggregationType.Lttb, AggregationType.Min], want: [AggregationType.Min] },
+  ])('keeps LTTB exclusive when selection changes from $current to $selected', ({ current, selected, want }) => {
+    expect(changeAggregationsQuery({ ...baseQuery, aggregations: current }, selected).aggregations).toEqual(want);
+  });
+
   it('updates inferred channel data type without changing other query fields', () => {
     expect(inferChannelDataTypeQuery(baseQuery, 'string')).toEqual(
       expect.objectContaining({ assetRid: 'asset-a', channel: 'temp', channelDataType: 'string' })

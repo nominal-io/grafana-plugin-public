@@ -12,9 +12,8 @@ export interface NominalQuery extends DataQuery {
   dataScopeName?: string;
   channelDataType?: string;
 
-  // Aggregation functions to request for numeric channels.
-  // Options: "MEAN", "MIN", "MAX", "COUNT", "VARIANCE", "FIRST_POINT", "LAST_POINT". Empty/missing defaults to ["MEAN"].
-  // For enum/string channels, this field is ignored — the backend uses Mode.
+  // Numeric output: bucket aggregations or exclusive raw-point LTTB. Empty defaults to MEAN.
+  // String and log channels ignore this field.
   aggregations?: string[];
 
   // Query parameters
@@ -40,6 +39,7 @@ export const AggregationType = {
   Variance: 'VARIANCE',
   FirstPoint: 'FIRST_POINT',
   LastPoint: 'LAST_POINT',
+  Lttb: 'LTTB',
 } as const;
 
 export type AggregationTypeValue = (typeof AggregationType)[keyof typeof AggregationType];

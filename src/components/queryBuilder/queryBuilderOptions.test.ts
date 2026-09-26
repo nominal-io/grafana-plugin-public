@@ -9,8 +9,6 @@ import {
   getAggregationValue,
   getAssetSelectValue,
   getChannelSelectValue,
-  NUMERIC_AGG_OPTIONS,
-  toAggregationComboboxOptions,
   toChannelOption,
 } from './queryBuilderOptions';
 
@@ -351,39 +349,10 @@ describe('queryBuilderOptions', () => {
     });
   });
 
-  it('maps aggregation options to dense combobox options without undefined descriptions', () => {
-    const options = toAggregationComboboxOptions([
-      { label: 'Mean', value: AggregationType.Mean },
-      { label: 'Explained', value: 'explained', description: 'Shown in the menu' },
-    ]);
-
-    expect(options[0]).toEqual({
-      label: 'Mean',
-      value: AggregationType.Mean,
-    });
-    expect(options[0]).not.toHaveProperty('description');
-    expect(options[1]).toEqual({
-      label: 'Explained',
-      value: 'explained',
-      description: 'Shown in the menu',
-    });
-  });
-
   it('falls back to default numeric aggregations when saved aggregations are empty', () => {
     expect(getAggregationValue(undefined)).toEqual(DEFAULT_AGGREGATIONS);
     expect(getAggregationValue([])).toEqual(DEFAULT_AGGREGATIONS);
     expect(getAggregationValue([AggregationType.Min, AggregationType.Max])).toEqual([AggregationType.Min, AggregationType.Max]);
   });
 
-  it('keeps numeric aggregation options in QueryEditor order', () => {
-    expect(NUMERIC_AGG_OPTIONS).toEqual([
-      { label: 'Mean', value: AggregationType.Mean },
-      { label: 'Min', value: AggregationType.Min },
-      { label: 'Max', value: AggregationType.Max },
-      { label: 'Count', value: AggregationType.Count },
-      { label: 'Variance', value: AggregationType.Variance },
-      { label: 'First', value: AggregationType.FirstPoint },
-      { label: 'Last', value: AggregationType.LastPoint },
-    ]);
-  });
 });

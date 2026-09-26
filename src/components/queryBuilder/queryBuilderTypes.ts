@@ -10,7 +10,7 @@ export type ChannelOptionsLoader = (searchText: string) => Promise<ChannelOption
 export type AssetOptionsLoader = (searchText: string) => Promise<AssetOption[]>;
 
 export type AggregationDisplayKind = 'string' | 'log' | 'numeric';
-export type AggregationOption = SelectableValue<string> & { value: string };
+export type AggregationOption = SelectableValue<string> & { value: string; group?: string };
 
 export interface AggregationState {
   kind: AggregationDisplayKind;

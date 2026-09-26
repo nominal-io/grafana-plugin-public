@@ -5,13 +5,19 @@ import { templateDisplayLabel, type TemplateValueResolution } from './templateRe
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
 export const NUMERIC_AGG_OPTIONS = [
-  { label: 'Mean', value: AggregationType.Mean },
-  { label: 'Min', value: AggregationType.Min },
-  { label: 'Max', value: AggregationType.Max },
-  { label: 'Count', value: AggregationType.Count },
-  { label: 'Variance', value: AggregationType.Variance },
-  { label: 'First', value: AggregationType.FirstPoint },
-  { label: 'Last', value: AggregationType.LastPoint },
+  {
+    label: 'LTTB',
+    value: AggregationType.Lttb,
+    description: 'Select representative raw points',
+    group: 'Raw points',
+  },
+  { label: 'Mean', value: AggregationType.Mean, group: 'Bucket aggregations' },
+  { label: 'Min', value: AggregationType.Min, group: 'Bucket aggregations' },
+  { label: 'Max', value: AggregationType.Max, group: 'Bucket aggregations' },
+  { label: 'Count', value: AggregationType.Count, group: 'Bucket aggregations' },
+  { label: 'Variance', value: AggregationType.Variance, group: 'Bucket aggregations' },
+  { label: 'First', value: AggregationType.FirstPoint, group: 'Bucket aggregations' },
+  { label: 'Last', value: AggregationType.LastPoint, group: 'Bucket aggregations' },
 ];
 
 function assetToOption(asset: Asset): AssetOption {
@@ -196,6 +202,7 @@ export function toAggregationComboboxOptions(options: AggregationOption[]): Pick
     label: option.label,
     value: option.value,
     ...(option.description ? { description: option.description } : {}),
+    ...(option.group ? { group: option.group } : {}),
   }));
 }
 

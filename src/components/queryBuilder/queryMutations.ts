@@ -1,4 +1,4 @@
-import { DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
+import { AggregationType, DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
 
 const QUERY_BUILDER_EXECUTION_DEFAULTS = {
   queryType: 'decimation' as const,
@@ -52,8 +52,15 @@ export function inferChannelDataTypeQuery(query: NominalQuery, channelDataType: 
 }
 
 export function changeAggregationsQuery(query: NominalQuery, aggregations: string[]): NominalQuery {
+  let selected = aggregations;
+  if (aggregations.includes(AggregationType.Lttb)) {
+    selected =
+      aggregations.length > 1 && query.aggregations?.includes(AggregationType.Lttb)
+        ? aggregations.filter((aggregation) => aggregation !== AggregationType.Lttb)
+        : [AggregationType.Lttb];
+  }
   return {
     ...normalizeLegacyQuery(query),
-    aggregations: aggregations.length > 0 ? aggregations : [...DEFAULT_AGGREGATIONS],
+    aggregations: selected.length > 0 ? selected : [...DEFAULT_AGGREGATIONS],
   };
 }
