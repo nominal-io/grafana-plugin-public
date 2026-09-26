@@ -65,6 +65,18 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		}
 
 	default:
+		if len(qm.Aggregations) == 1 && qm.Aggregations[0] == AggLTTB {
+			numericSeries := computeapi1.NewNumericSeriesFromChannel(channelSeries)
+			series := computeapi1.NewSeriesFromNumeric(numericSeries)
+			points := effectiveLTTBPointCount(qm, maxDataPoints)
+			strategy := computeapi.NewSummarizationStrategyFromLargestTriangleThreeBuckets(computeapi.LttbStrategy{
+				MaxPointsPerGroup: points,
+			})
+			return computeapi1.SummarizeSeries{
+				Input:                 series,
+				SummarizationStrategy: &strategy,
+			}
+		}
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),
@@ -82,6 +94,20 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 			NumericOutputFields: &outputFields,
 		}
 	}
+}
+
+func effectiveLTTBPointCount(qm NominalQueryModel, maxDataPoints int64) int {
+	points := qm.Buckets
+	if maxDataPoints > 0 && (points <= 0 || maxDataPoints < int64(points)) {
+		points = int(min(maxDataPoints, 10000))
+	}
+	if points <= 0 {
+		points = 1000
+	}
+	if points > 10000 {
+		points = 10000
+	}
+	return points
 }
 
 // buildAssetChannel constructs the asset-bound AssetChannel shared by every channel kind.

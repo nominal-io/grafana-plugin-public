@@ -199,6 +199,67 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 	assertLiveNominalNumericResponse(t, response, target.channel)
 }
 
+func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	target := createLiveNominalQueryTarget(t, settings)
+	ds := liveNominalDatasource(t, settings)
+	query := NominalQueryModel{
+		AssetRid: target.assetRid, Channel: target.channel, DataScopeName: target.dataScopeName,
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 4,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	request := &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
+		Queries: []backend.DataQuery{{
+			RefID: "A", JSON: mustMarshal(query),
+			TimeRange: backend.TimeRange{From: target.from, To: target.to}, MaxDataPoints: 4,
+		}},
+	}
+	var response backend.DataResponse
+	for {
+		resp, err := ds.QueryData(ctx, request)
+		if err != nil {
+			t.Fatalf("LTTB QueryData failed: %v", err)
+		}
+		var ok bool
+		response, ok = resp.Responses["A"]
+		if !ok || response.Error != nil {
+			t.Fatalf("LTTB response missing or failed: %v", response.Error)
+		}
+		if len(response.Frames) > 0 && len(response.Frames[0].Fields) > 1 && response.Frames[0].Fields[1].Len() > 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("LTTB returned no points after ingest became complete: %v", ctx.Err())
+		case <-time.After(2 * time.Second):
+		}
+	}
+	assertLiveNominalNumericResponse(t, response, target.channel)
+	frame := response.Frames[0]
+	if frame.Fields[1].Len() > 4 {
+		t.Fatalf("LTTB returned %d points, want at most 4", frame.Fields[1].Len())
+	}
+	firstPoint := time.Date(2024, 9, 5, 18, 0, 0, 0, time.UTC)
+	for i := 0; i < frame.Fields[1].Len(); i++ {
+		pointTime := frame.Fields[0].At(i).(time.Time)
+		want := 20 + pointTime.Sub(firstPoint).Minutes()
+		switch value := frame.Fields[1].At(i).(type) {
+		case float64:
+			if value != want {
+				t.Fatalf("LTTB returned %v at %v, want raw CSV value %v", value, pointTime, want)
+			}
+		case *float64:
+			if value == nil || *value != want {
+				t.Fatalf("LTTB returned %v at %v, want raw CSV value %v", value, pointTime, want)
+			}
+		default:
+			t.Fatalf("LTTB returned non-numeric value %T", value)
+		}
+	}
+}
+
 func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 	settings := liveNominalSettings(t)
 	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.

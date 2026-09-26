@@ -101,6 +101,16 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			wantErr: "unsupported aggregation \"BOGUS\"",
 		},
 		{
+			name:             "LTTB is accepted as a raw numeric selection",
+			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}, Buckets: 100},
+			wantAggregations: []string{AggLTTB}, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name:    "LTTB cannot be combined with bucket aggregation",
+			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggMean, AggLTTB}, Buckets: 100},
+			wantErr: "LTTB cannot be combined",
+		},
+		{
 			name: "string channels skip numeric aggregation validation",
 			model: NominalQueryModel{
 				AssetRid:        "ri.scout.main.asset.1",

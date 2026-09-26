@@ -1,7 +1,9 @@
 package plugin
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -479,6 +481,48 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			t.Errorf("numericOutputFields = %v, want nil for enum path", plan.NumericOutputFields)
 		}
 	})
+}
+
+func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	qm := NominalQueryModel{
+		AssetRid: "ri.nominal.asset.test", Channel: "temperature", DataScopeName: "default",
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 12000,
+	}
+	plan := qe.buildSeriesPlan(qm, 500)
+	if got := seriesKind(t, plan.Input); got != "numeric" {
+		t.Fatalf("series kind = %q, want numeric", got)
+	}
+	if plan.Buckets != nil || plan.OutputFormat != nil || plan.NumericOutputFields != nil {
+		t.Fatalf("LTTB must not request bucket aggregation or Arrow fields: %+v", plan)
+	}
+	if plan.SummarizationStrategy == nil {
+		t.Fatal("LTTB strategy is missing")
+	}
+	points := 0
+	err := plan.SummarizationStrategy.AcceptFuncs(
+		func(computeapi.DecimateStrategy) error { return fmt.Errorf("unexpected decimate strategy") },
+		func(strategy computeapi.LttbStrategy) error { points = strategy.MaxPointsPerGroup; return nil },
+		func(computeapi.PageStrategy) error { return fmt.Errorf("unexpected page strategy") },
+		func(computeapi.TruncateStrategy) error { return fmt.Errorf("unexpected truncate strategy") },
+		func(kind string) error { return fmt.Errorf("unknown strategy %s", kind) },
+	)
+	if err != nil || points != 500 {
+		t.Fatalf("LTTB strategy points = %d, error = %v; want 500", points, err)
+	}
+	encoded, err := json.Marshal(plan.Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "timeShift") || !strings.Contains(string(encoded), `"type":"channel"`) {
+		t.Fatalf("LTTB input must be the raw channel series: %s", encoded)
+	}
+	if got := qe.buildSeriesPlan(qm, 0); got.SummarizationStrategy == nil {
+		t.Fatal("LTTB strategy missing without Grafana maxDataPoints")
+	}
+	if got := effectiveLTTBPointCount(qm, 0); got != 10000 {
+		t.Errorf("LTTB point limit = %d, want 10000", got)
+	}
 }
 
 func TestBuildSeriesPlanLogPath(t *testing.T) {

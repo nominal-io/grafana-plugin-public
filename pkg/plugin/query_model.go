@@ -21,8 +21,8 @@ type NominalQueryModel struct {
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
 
-	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
-	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
+	// Numeric output: bucket aggregations or exclusive raw-point LTTB.
+	// Empty defaults to MEAN; ignored for string and log channels.
 	Aggregations         []string `json:"aggregations,omitempty"`
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
@@ -130,12 +130,21 @@ func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 		qm.Aggregations = []string{AggMean}
 		return nil
 	}
+	if len(qm.Aggregations) == 1 && qm.Aggregations[0] == AggLTTB {
+		return nil
+	}
+	for _, agg := range qm.Aggregations {
+		if agg == AggLTTB {
+			response := backend.ErrDataResponse(backend.StatusBadRequest, "LTTB cannot be combined with bucket aggregations")
+			return &response
+		}
+	}
 
 	deduped, badAgg := validateAndDedup(qm.Aggregations)
 	if badAgg != "" {
 		response := backend.ErrDataResponse(
 			backend.StatusBadRequest,
-			fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
+			fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT, LTTB", badAgg),
 		)
 		return &response
 	}

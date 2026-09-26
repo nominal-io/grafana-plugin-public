@@ -23,6 +23,7 @@ const (
 	AggVariance   = "VARIANCE"
 	AggFirstPoint = "FIRST_POINT"
 	AggLastPoint  = "LAST_POINT"
+	AggLTTB       = "LTTB"
 )
 
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
