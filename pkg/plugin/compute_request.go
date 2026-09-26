@@ -66,6 +66,11 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		}
 
 	default:
+		if qm.RawLTTB {
+			series := computeapi1.NewSeriesFromNumeric(computeapi1.NewNumericSeriesFromChannel(channelSeries))
+			strategy := computeapi.NewSummarizationStrategyFromLargestTriangleThreeBuckets(computeapi.LttbStrategy{MaxPointsPerGroup: qm.Points.Count})
+			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy}
+		}
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),

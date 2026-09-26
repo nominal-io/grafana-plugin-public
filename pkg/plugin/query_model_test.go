@@ -73,6 +73,7 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 		wantAggregations      []string
 		wantExplicit          bool
 		wantPreparedQueryKind preparedQueryKind
+		wantRawLTTB           bool
 	}{
 		{
 			name: "explicit numeric aggregations are deduped in order",
@@ -98,14 +99,28 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				Aggregations:    []string{"BOGUS"},
 				Buckets:         100,
 			},
-			wantErr: "unsupported aggregation \"BOGUS\"",
+			wantErr: "unsupported aggregation \"BOGUS\"; valid options are COUNT, FIRST_POINT, LAST_POINT, MAX, MEAN, MIN, VARIANCE, LTTB",
 		},
 		{
 			name:    "buckets above the API limit are rejected",
 			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Buckets: 10001},
 			wantErr: "buckets must be at most 10000, got 10001",
 		},
-
+		{
+			name:        "LTTB is accepted as a raw numeric selection",
+			model:       NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}, Buckets: 100},
+			wantRawLTTB: true, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name:        "repeated LTTB is accepted",
+			model:       NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB, AggLTTB}, Buckets: 100},
+			wantRawLTTB: true, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
+			name:    "LTTB cannot be combined with bucket aggregation",
+			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggMean, AggLTTB}, Buckets: 100},
+			wantErr: "LTTB cannot be combined",
+		},
 		{
 			name: "string channels skip numeric aggregation validation",
 			model: NominalQueryModel{
@@ -185,6 +200,9 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			}
 			if prepared.Model.ExplicitAggregations != tt.wantExplicit {
 				t.Errorf("ExplicitAggregations = %v, want %v", prepared.Model.ExplicitAggregations, tt.wantExplicit)
+			}
+			if prepared.Model.RawLTTB != tt.wantRawLTTB {
+				t.Errorf("RawLTTB = %v, want %v", prepared.Model.RawLTTB, tt.wantRawLTTB)
 			}
 			if fmt.Sprint(prepared.Model.Aggregations) != fmt.Sprint(tt.wantAggregations) {
 				t.Errorf("Aggregations = %v, want %v", prepared.Model.Aggregations, tt.wantAggregations)
