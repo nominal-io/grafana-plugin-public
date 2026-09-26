@@ -55,8 +55,7 @@ export function framesToVariableOptions(frames: DataFrame[]): MetricFindValue[] 
 }
 
 function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>, target: NominalVariableQuery) {
-  // The backend rejects blank SQL with "SQL query is empty", and switching mode to SQL
-  // clears the text, so a fresh SQL variable should show an empty list, not an error.
+  // A fresh SQL variable is blank; avoid a backend validation error until it is configured.
   if (!target.query.trim()) {
     return of({ data: [] });
   }

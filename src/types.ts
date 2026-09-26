@@ -102,12 +102,10 @@ export type VariableQueryMode = 'catalog' | 'sql';
 
 export interface NominalVariableQuery extends DataQuery {
   mode: VariableQueryMode;
-  // Catalog text such as datascopes(${asset}), or SQL. Grafana shows this field as the variable definition.
   query: string;
 }
 
-// Dashboards saved before SQL variables store the catalog query as a plain string. Provisioned or
-// hand-edited JSON can also hold null or an object missing fields.
+// Older dashboards store catalog queries as strings; provisioned queries may omit fields.
 export function toVariableQuery(
   query: Partial<NominalVariableQuery> | string | null | undefined
 ): NominalVariableQuery {

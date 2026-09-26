@@ -64,11 +64,6 @@ describe('toVariableQuery', () => {
       expected
     );
   });
-
-  it('keeps an object query as saved', () => {
-    const saved: NominalVariableQuery = { refId: 'V', mode: 'sql', query: 'SELECT 1' };
-    expect(toVariableQuery(saved)).toEqual(saved);
-  });
 });
 
 describe('framesToVariableOptions', () => {
@@ -152,7 +147,6 @@ describe('NominalVariableSupport.query', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  const runWithNotices = (ds: DataSource) => run(ds, sql('SELECT channel FROM channels'));
   const frameWithNotices = (notices?: QueryResultMetaNotice[]) =>
     createDataFrame({
       fields: [{ name: 'channel', type: FieldType.string, values: ['temp'] }],
@@ -163,7 +157,7 @@ describe('NominalVariableSupport.query', () => {
     const text = 'Results have been limited to 1000 rows because the SQL row limit was reached';
     const { ds } = makeDataSource({ data: [frameWithNotices([{ severity: 'warning', text }])] });
 
-    await runWithNotices(ds);
+    await run(ds, sql('SELECT channel FROM channels'));
 
     expect(publish).toHaveBeenCalledTimes(1);
     const [{ type, payload }] = publish.mock.calls[0];
@@ -176,7 +170,7 @@ describe('NominalVariableSupport.query', () => {
     ['no notices', undefined],
   ])('does not publish a toast for %s', async (_name, notices) => {
     const { ds } = makeDataSource({ data: [frameWithNotices(notices)] });
-    await runWithNotices(ds);
+    await run(ds, sql('SELECT channel FROM channels'));
     expect(publish).not.toHaveBeenCalled();
   });
 

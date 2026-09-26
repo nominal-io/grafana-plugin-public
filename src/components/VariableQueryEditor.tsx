@@ -20,7 +20,6 @@ const modes = [
 ];
 
 export function VariableQueryEditor({ query, onChange }: Props) {
-  // A dashboard saved before SQL variables passes a plain string.
   const current = toVariableQuery(query as NominalVariableQuery | string);
   const [draft, setDraft] = useState(current.query);
 
