@@ -185,9 +185,8 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </InlineField>
               )}
 
-              {/* Aggregation selector - shown when a channel is selected */}
               {query?.channel && (
-                <InlineField label="Aggregation(s)" tooltip={state.aggregationState.tooltip}>
+                <InlineField label="Output" tooltip={state.aggregationState.tooltip}>
                   {state.aggregationState.kind === 'string' ? (
                     <Input value={state.aggregationState.value[0]} disabled readOnly width={10} />
                   ) : state.aggregationState.kind === 'log' ? (
@@ -197,7 +196,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                       options={aggregationOptions}
                       value={state.aggregationState.value}
                       onChange={commands.changeAggregations}
-                      placeholder="Select aggregations..."
+                      placeholder="Select output..."
                       width="auto"
                       minWidth={40}
                       maxWidth={100}
