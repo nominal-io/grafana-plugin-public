@@ -180,28 +180,48 @@ func TestBuildComputeContext(t *testing.T) {
 	}
 }
 
-func TestEffectiveBucketCount(t *testing.T) {
+func TestResolvePointBudget(t *testing.T) {
 	tests := []struct {
 		name          string
-		buckets       int
+		qm            NominalQueryModel
 		maxDataPoints int64
-		want          int
+		wantCount     int
+		wantNotice    bool
+		wantErr       string
 	}{
-		{"maxDataPoints caps buckets when smaller", 1000, 500, 500},
-		{"maxDataPoints does not increase buckets", 500, 1000, 500},
-		{"maxDataPoints used when buckets is zero", 0, 800, 800},
-		{"maxDataPoints used when buckets is negative", -10, 300, 300},
-		{"zero maxDataPoints uses saved buckets", 1000, 0, 1000},
-		{"negative maxDataPoints uses saved buckets", 1000, -1, 1000},
-		{"zero buckets and zero maxDataPoints stays zero", 0, 0, 0},
+		{"maxDataPoints lowers saved buckets", NominalQueryModel{Buckets: 1000}, 500, 500, false, ""},
+		{"maxDataPoints does not raise saved buckets", NominalQueryModel{Buckets: 500}, 1000, 500, false, ""},
+		{"zero maxDataPoints keeps saved buckets", NominalQueryModel{Buckets: 1000}, 0, 1000, false, ""},
+		{"saved buckets at the API limit are kept", NominalQueryModel{Buckets: 10000}, 0, 10000, false, ""},
+		{"saved buckets above the API limit are rejected", NominalQueryModel{Buckets: 10001}, 0, 0, false, "buckets must be at most 10000, got 10001"},
+		{"maxDataPoints lowers saved buckets above the API limit", NominalQueryModel{Buckets: 20000}, 1200, 1200, false, ""},
+		{"saved buckets above the API limit are rejected when maxDataPoints is too", NominalQueryModel{Buckets: 20000}, 15000, 0, false, "buckets must be at most 10000, got 20000"},
+		{"negative buckets are rejected", NominalQueryModel{Buckets: -10}, 300, 0, false, "buckets must be non-negative, got -10"},
+		{"maxDataPoints used when buckets is unset", NominalQueryModel{}, 2000, 2000, false, ""},
+		{"maxDataPoints at the API limit is not capped", NominalQueryModel{}, 10000, 10000, false, ""},
+		{"maxDataPoints above the API limit is capped with a notice", NominalQueryModel{}, 43200, 10000, true, ""},
+		{"both unset falls back to the default", NominalQueryModel{}, 0, 1000, false, ""},
+		{"string channels use the same rules", NominalQueryModel{ChannelDataType: ChannelDataTypeString}, 43200, 10000, true, ""},
+		{"log channels get no budget", NominalQueryModel{ChannelDataType: ChannelDataTypeLog, Buckets: 10001}, 43200, 0, false, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			qm := NominalQueryModel{Buckets: tt.buckets}
-			got := effectiveBucketCount(qm, tt.maxDataPoints)
-			if got != tt.want {
-				t.Errorf("effectiveBucketCount(Buckets=%d, maxDataPoints=%d) = %d, want %d", tt.buckets, tt.maxDataPoints, got, tt.want)
+			got, err := resolvePointBudget(tt.qm, tt.maxDataPoints)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.Count != tt.wantCount {
+				t.Errorf("Count = %d, want %d", got.Count, tt.wantCount)
+			}
+			if (got.Notice != "") != tt.wantNotice {
+				t.Errorf("Notice = %q, want notice %v", got.Notice, tt.wantNotice)
 			}
 		})
 	}
@@ -277,7 +297,7 @@ func TestBuildComputeRequest(t *testing.T) {
 		To:   time.Unix(1704067200, 900_000_000), // 2024-01-01 00:00:00.900 UTC
 	}
 
-	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange, 0)
+	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange)
 
 	if int64(req.Start.Seconds) != 1704067200 {
 		t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, 1704067200)
@@ -366,7 +386,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := baseQM
 			qm.ChannelDataType = tt.dataType
-			plan := qe.buildSeriesPlan(qm, 0)
+			plan := qe.buildSeriesPlan(qm)
 			if got := seriesKind(t, plan.Input); got != tt.wantKind {
 				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
 			}
@@ -379,49 +399,30 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		numericQM := baseQM
 		numericQM.ChannelDataType = ChannelDataTypeNumeric
 
-		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM, 0).Input)
-		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM, 0).Input)
+		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM).Input)
+		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM).Input)
 		if stringKind == numericKind {
 			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
 	})
 }
 
-func TestBuildSeriesPlanBuckets(t *testing.T) {
-	ds := withCatalog(&Datasource{})
-	qe := newTestQueryExecution(ds, nil)
-
-	wantBuckets := func(t *testing.T, plan computeapi1.SummarizeSeries, want int) {
-		t.Helper()
-		if plan.Buckets == nil {
-			t.Fatalf("buckets = nil, want %d", want)
-		}
-		if *plan.Buckets != want {
-			t.Errorf("buckets = %d, want %d", *plan.Buckets, want)
-		}
-	}
-
-	tests := []struct {
-		name          string
-		buckets       int
-		maxDataPoints int64
-		want          int
-	}{
-		{"maxDataPoints caps buckets when smaller", 1000, 500, 500},
-		{"maxDataPoints does not increase buckets", 500, 1000, 500},
-		{"maxDataPoints used when buckets is zero", 0, 800, 800},
-		{"zero maxDataPoints uses saved buckets", 1000, 0, 1000},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	for _, channelDataType := range []string{ChannelDataTypeNumeric, ChannelDataTypeString} {
+		t.Run(channelDataType, func(t *testing.T) {
 			qm := NominalQueryModel{
-				AssetRid:      "ri.nominal.asset.test",
-				Channel:       "temperature",
-				DataScopeName: "default",
-				Buckets:       tt.buckets,
+				AssetRid:        "ri.nominal.asset.test",
+				Channel:         "temperature",
+				DataScopeName:   "default",
+				ChannelDataType: channelDataType,
+				Buckets:         1000,
+				Points:          pointBudget{Count: 750},
 			}
-			wantBuckets(t, qe.buildSeriesPlan(qm, tt.maxDataPoints), tt.want)
+			plan := qe.buildSeriesPlan(qm)
+			if plan.Buckets == nil || *plan.Buckets != 750 {
+				t.Errorf("buckets = %v, want 750", plan.Buckets)
+			}
 		})
 	}
 }
@@ -439,7 +440,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{AggMean},
 		}
-		plan := qe.buildSeriesPlan(qm, 0)
+		plan := qe.buildSeriesPlan(qm)
 
 		if !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
@@ -457,7 +458,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := qe.buildSeriesPlan(qm, 0); !isArrowV3(plan.OutputFormat) {
+		if plan := qe.buildSeriesPlan(qm); !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
@@ -470,7 +471,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		plan := qe.buildSeriesPlan(qm, 0)
+		plan := qe.buildSeriesPlan(qm)
 
 		if plan.OutputFormat != nil {
 			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
@@ -492,7 +493,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		DataScopeName:   "default",
 		Buckets:         1000,
 	}
-	plan := qe.buildSeriesPlan(qm, 0)
+	plan := qe.buildSeriesPlan(qm)
 
 	if got := seriesKind(t, plan.Input); got != "log" {
 		t.Errorf("series kind = %q, want \"log\"", got)

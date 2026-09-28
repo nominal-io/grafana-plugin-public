@@ -266,6 +266,45 @@ func TestBatchQueryExecution(t *testing.T) {
 	}
 }
 
+func TestBatchQueryNoticesCappedMaxDataPoints(t *testing.T) {
+	mockService := &mockComputeService{}
+	mockService.batchComputeResponse = computeapi.BatchComputeWithUnitsResponse{
+		Results: []computeapi.ComputeWithUnitsResult{
+			createMockArrowComputeResult([]float64{1.0, 2.0}),
+			createMockArrowComputeResult([]float64{3.0, 4.0}),
+		},
+	}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	queries := []backend.DataQuery{
+		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}), TimeRange: timeRange, MaxDataPoints: 43200},
+		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}), TimeRange: timeRange, MaxDataPoints: 800},
+	}
+
+	resp, err := ds.QueryData(context.Background(), newQueryRequest(queries))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := *summarizeSeriesFromNode(t, mockService.lastBatchRequest.Requests[0].Node).Buckets; got != maxPointsPerQuery {
+		t.Errorf("A buckets = %d, want %d", got, maxPointsPerQuery)
+	}
+	noticeCount := func(refID string) int {
+		if meta := resp.Responses[refID].Frames[0].Meta; meta != nil {
+			return len(meta.Notices)
+		}
+		return 0
+	}
+	if got := noticeCount("A"); got != 1 {
+		t.Errorf("A notices = %d, want 1", got)
+	}
+	if got := noticeCount("B"); got != 0 {
+		t.Errorf("B notices = %d, want 0", got)
+	}
+}
+
 func TestBatchQueryChunksAtSubrequestLimit(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponses: []computeapi.BatchComputeWithUnitsResponse{

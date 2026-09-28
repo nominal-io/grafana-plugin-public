@@ -40,6 +40,9 @@ type NominalQueryModel struct {
 	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
 	// json:"-" prevents inferred values from persisting into saved dashboards.
 	ChannelUnit string `json:"-"`
+
+	// Points is runtime-only, set by resolvePointBudget.
+	Points pointBudget `json:"-"`
 }
 
 // ChannelDataType values. These are produced by getChannelDataType (normalizing the
@@ -114,6 +117,16 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 	}
 
 	if qm.AssetRid != "" && qm.Channel != "" {
+		points, err := resolvePointBudget(qm, q.MaxDataPoints)
+		if err != nil {
+			log.DefaultLogger.Error("Query validation failed", "error", err)
+			response := backend.ErrDataResponse(
+				backend.StatusBadRequest,
+				fmt.Sprintf("Query validation failed: %v", err),
+			)
+			return preparedQuery{}, &response
+		}
+		qm.Points = points
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryBatchable}, nil
 	}
 
@@ -217,13 +230,6 @@ func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
 		// The frontend filterQuery also enforces this; this is defense-in-depth.
 		if strings.TrimSpace(qm.DataScopeName) == "" {
 			return fmt.Errorf("dataScopeName is required for asset/channel queries")
-		}
-		// Validate bucket count
-		if qm.Buckets < 0 {
-			return fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
-		}
-		if qm.Buckets > 10000 {
-			log.DefaultLogger.Warn("Large bucket count may impact performance", "buckets", qm.Buckets)
 		}
 	}
 
