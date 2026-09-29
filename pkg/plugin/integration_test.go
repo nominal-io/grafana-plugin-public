@@ -236,7 +236,7 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	assertLiveNominalNumericResponse(t, response, target.channel)
+	assertLiveNominalNumericResponse(t, response, target.channel+" (lttb)")
 	frame := response.Frames[0]
 	n := frame.Fields[1].Len()
 	if n != 4 {

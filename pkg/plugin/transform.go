@@ -152,17 +152,21 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			} else {
 				// Legacy numeric path (BucketedNumericPlot, NumericPlot)
 				frame := data.NewFrame("response")
-				frame.Name = qm.Channel
+				displayName := qm.Channel
+				if qm.RawLTTB {
+					displayName = fmt.Sprintf("%s (lttb)", qm.Channel)
+				}
+				frame.Name = displayName
 				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
 					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, result.TimePoints),
 						valueField,
 					)
 				} else {
 					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, qm.Channel)
+					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
 					frame.Fields = append(frame.Fields,
 						data.NewField("time", nil, []time.Time{}),
 						valueField,

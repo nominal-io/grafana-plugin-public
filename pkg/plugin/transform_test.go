@@ -632,6 +632,20 @@ func TestDisplayNameFromDS(t *testing.T) {
 		}
 	})
 
+	t.Run("LTTB path suffixes the display name like explicit aggregations", func(t *testing.T) {
+		result := createMockComputeResult([]float64{1.0, 2.0})
+		qm := NominalQueryModel{Channel: "temperature", AssetRid: "ri.nominal.asset.test", RawLTTB: true}
+
+		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+		if resp.Error != nil {
+			t.Fatalf("unexpected error: %v", resp.Error)
+		}
+		frame := resp.Frames[0]
+		if frame.Name != "temperature (lttb)" || frame.Fields[1].Config.DisplayNameFromDS != "temperature (lttb)" {
+			t.Errorf("frame name = %q, DisplayNameFromDS = %q, want %q", frame.Name, frame.Fields[1].Config.DisplayNameFromDS, "temperature (lttb)")
+		}
+	})
+
 	t.Run("numeric path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
 		result := createMockComputeResult([]float64{})
 		qm := NominalQueryModel{
