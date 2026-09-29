@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -21,10 +22,11 @@ type NominalQueryModel struct {
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
 
-	// Aggregation functions for numeric channels (e.g. "MEAN", "MIN", "MAX").
-	// Empty/missing defaults to ["MEAN"]. Ignored for enum channels.
+	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
+	// RawLTTB is runtime-only; normalizeAggregations sets it and clears Aggregations.
+	RawLTTB bool `json:"-"`
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -143,12 +145,21 @@ func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 		qm.Aggregations = []string{AggMean}
 		return nil
 	}
+	if slices.Contains(qm.Aggregations, AggLTTB) {
+		if slices.ContainsFunc(qm.Aggregations, func(agg string) bool { return agg != AggLTTB }) {
+			response := backend.ErrDataResponse(backend.StatusBadRequest, "LTTB cannot be combined with bucket aggregations")
+			return &response
+		}
+		qm.RawLTTB = true
+		qm.Aggregations = nil
+		return nil
+	}
 
 	deduped, badAgg := validateAndDedup(qm.Aggregations)
 	if badAgg != "" {
 		response := backend.ErrDataResponse(
 			backend.StatusBadRequest,
-			fmt.Sprintf("unsupported aggregation %q; valid options are MEAN, MIN, MAX, COUNT, VARIANCE, FIRST_POINT, LAST_POINT", badAgg),
+			fmt.Sprintf("unsupported aggregation %q; valid options are %s", badAgg, validAggregationNames()),
 		)
 		return &response
 	}

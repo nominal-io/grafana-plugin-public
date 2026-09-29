@@ -3,7 +3,9 @@ package plugin
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -23,6 +25,7 @@ const (
 	AggVariance   = "VARIANCE"
 	AggFirstPoint = "FIRST_POINT"
 	AggLastPoint  = "LAST_POINT"
+	AggLTTB       = "LTTB"
 )
 
 // AggregationSeries holds one aggregation's worth of data (e.g. "mean", "min").
@@ -66,6 +69,12 @@ var aggSpecs = map[string]aggColumnSpec{
 	AggVariance:   {Name: "variance", ValueCol: "variance"}, // unit² — channel unit would mislead
 	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp", CarriesChannelUnit: true},
 	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp", CarriesChannelUnit: true},
+}
+
+// validAggregationNames lists aggSpecs plus LTTB for error messages.
+func validAggregationNames() string {
+	names := append(slices.Sorted(maps.Keys(aggSpecs)), AggLTTB)
+	return strings.Join(names, ", ")
 }
 
 // aggColumnSpecFromEnum looks up the Arrow column spec for an aggregation enum value.
