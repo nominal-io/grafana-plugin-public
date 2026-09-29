@@ -238,10 +238,19 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 	}
 	assertLiveNominalNumericResponse(t, response, target.channel)
 	frame := response.Frames[0]
-	if frame.Fields[1].Len() > 4 {
-		t.Fatalf("LTTB returned %d points, want at most 4", frame.Fields[1].Len())
+	n := frame.Fields[1].Len()
+	if n != 4 {
+		t.Fatalf("LTTB returned %d points, want 4", n)
 	}
 	firstPoint := time.Date(2024, 9, 5, 18, 0, 0, 0, time.UTC)
+	// LTTB always keeps the first and last raw points.
+	lastPoint := firstPoint.Add(9 * time.Minute)
+	if got := frame.Fields[0].At(0).(time.Time); !got.Equal(firstPoint) {
+		t.Fatalf("LTTB first point at %v, want %v", got, firstPoint)
+	}
+	if got := frame.Fields[0].At(n - 1).(time.Time); !got.Equal(lastPoint) {
+		t.Fatalf("LTTB last point at %v, want %v", got, lastPoint)
+	}
 	for i := 0; i < frame.Fields[1].Len(); i++ {
 		pointTime := frame.Fields[0].At(i).(time.Time)
 		want := 20 + pointTime.Sub(firstPoint).Minutes()
