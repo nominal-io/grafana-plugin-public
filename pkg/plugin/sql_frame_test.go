@@ -477,23 +477,59 @@ func TestShapeSQLFramePassesThrough(t *testing.T) {
 	}
 }
 
-func TestShapeSQLFrameRejectsNulls(t *testing.T) {
+func TestShapeSQLFrameRejectsNullTimes(t *testing.T) {
+	frame := data.NewFrame("A", data.NewField("end_time", nil, []*time.Time{nil}), data.NewField("value", nil, []float64{1}))
+	if _, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries); err == nil || !strings.Contains(err.Error(), `"end_time"`) {
+		t.Errorf("shapeSQLFrame() error = %v, want an error naming end_time", err)
+	}
+}
+
+func TestShapeSQLFrameTreatsNullLabelsAsEmpty(t *testing.T) {
+	at := func(s int) time.Time { return time.Unix(1700000000+int64(s), 0).UTC() }
+	type series struct {
+		value  string // the label value the series is keyed by
+		values []any  // that series's row values, in order
+	}
 	for name, tc := range map[string]struct {
 		frame *data.Frame
-		want  string
+		label string // the label field's name
+		want  []series
 	}{
-		"time": {
-			frame: data.NewFrame("A", data.NewField("time", nil, []*time.Time{nil}), data.NewField("value", nil, []float64{1})),
-			want:  "null timestamp",
+		"string label": {
+			frame: data.NewFrame("A",
+				data.NewField("time", nil, []time.Time{at(0), at(1), at(2)}),
+				data.NewField("channel", nil, []*string{nil, new(""), new("a")}),
+				data.NewField("value", nil, []float64{1, 2, 3}),
+			),
+			label: "channel",
+			want:  []series{{"", []any{1.0, 2.0}}, {"a", []any{3.0}}},
 		},
-		"label": {
-			frame: data.NewFrame("A", data.NewField("time", nil, []time.Time{time.Unix(0, 0)}), data.NewField("channel", nil, []*string{nil}), data.NewField("value", nil, []float64{1})),
-			want:  `"channel"`,
+		"bool label": {
+			frame: data.NewFrame("A",
+				data.NewField("time", nil, []time.Time{at(0), at(1), at(2)}),
+				data.NewField("flag", nil, []*bool{nil, new(false), new(true)}),
+				data.NewField("value", nil, []float64{1, 2, 3}),
+			),
+			label: "flag",
+			want:  []series{{"false", []any{1.0, 2.0}}, {"true", []any{3.0}}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := shapeSQLFrame(tc.frame, sqlutil.FormatOptionTimeSeries); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("shapeSQLFrame() error = %v, want an error containing %s", err, tc.want)
+			frames, err := shapeSQLFrame(tc.frame, sqlutil.FormatOptionTimeSeries)
+			if err != nil {
+				t.Fatalf("shapeSQLFrame() error = %v", err)
+			}
+			if len(frames) != len(tc.want) {
+				t.Fatalf("got %d frames, want %d", len(frames), len(tc.want))
+			}
+			for i, w := range tc.want {
+				value := frames[i].Fields[1]
+				if value.Labels[tc.label] != w.value {
+					t.Errorf("frame %d label %s = %q, want %q", i, tc.label, value.Labels[tc.label], w.value)
+				}
+				if got := fieldValues(value); !equalValues(got, w.values) {
+					t.Errorf("frame %d values = %v, want %v", i, got, w.values)
+				}
 			}
 		})
 	}
