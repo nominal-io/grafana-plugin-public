@@ -101,6 +101,12 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			wantErr: "unsupported aggregation \"BOGUS\"",
 		},
 		{
+			name:    "buckets above the API limit are rejected",
+			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Buckets: 10001},
+			wantErr: "buckets must be at most 10000, got 10001",
+		},
+
+		{
 			name: "string channels skip numeric aggregation validation",
 			model: NominalQueryModel{
 				AssetRid:        "ri.scout.main.asset.1",
@@ -166,6 +172,9 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				if !strings.Contains(prepErr.Error.Error(), tt.wantErr) {
 					t.Fatalf("preparation error = %v, want containing %q", prepErr.Error, tt.wantErr)
 				}
+				if prepErr.Status != backend.StatusBadRequest {
+					t.Errorf("status = %d, want %d", prepErr.Status, backend.StatusBadRequest)
+				}
 				return
 			}
 			if prepErr != nil {
@@ -185,62 +194,76 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 }
 
 func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
-	assetRid := "ri.scout.main.asset.prepare1"
-	dataSourceRid := "ri.scout.main.data-source.ds1"
-	server := newTestAssetServer(t, map[string]SingleAssetResponse{
-		assetRid: {
-			Rid:   assetRid,
-			Title: "Test Asset",
-			DataScopes: []AssetDataScope{
-				{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
-			},
-		},
-	}, nil)
-	defer server.Close()
-
-	stringType := api.New_SeriesDataType(api.SeriesDataType_STRING)
-	mockDS := &mockDatasourceService{
-		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-			Results: []datasourceapi.ChannelMetadata{
-				{
-					Name:       api.Channel("state"),
-					DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
-					DataType:   &stringType,
+	tests := []struct {
+		name       string
+		channel    string
+		seriesType api.SeriesDataType_Value
+		buckets    int
+		want       string
+	}{
+		{"string channel saved as numeric", "state", api.SeriesDataType_STRING, 100, "string"},
+		{"log channel saved as numeric skips the buckets limit", "app.logs", api.SeriesDataType_LOG, 10001, "log"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assetRid := "ri.scout.main.asset.prepare1"
+			dataSourceRid := "ri.scout.main.data-source.ds1"
+			server := newTestAssetServer(t, map[string]SingleAssetResponse{
+				assetRid: {
+					Rid:   assetRid,
+					Title: "Test Asset",
+					DataScopes: []AssetDataScope{
+						{DataScopeName: "default", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
+					},
 				},
-			},
-		},
-	}
-	ds := withCatalog(&Datasource{
-		datasourceService:  mockDS,
-		resourceHTTPClient: server.Client(),
-	})
-	config := &models.PluginSettings{
-		BaseUrl: server.URL,
-		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
-		},
-	}
-	query := backend.DataQuery{
-		RefID: "A",
-		JSON: mustMarshal(NominalQueryModel{
-			AssetRid:        assetRid,
-			Channel:         "state",
-			DataScopeName:   "default",
-			ChannelDataType: "numeric",
-			Aggregations:    []string{AggMean},
-			Buckets:         100,
-		}),
-	}
+			}, nil)
+			defer server.Close()
 
-	prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
-	if prepErr != nil {
-		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
-	}
-	if prepared.Model.ChannelDataType != "string" {
-		t.Fatalf("ChannelDataType = %q, want string", prepared.Model.ChannelDataType)
-	}
-	if got := mockDS.searchChannelsCallCount(); got != 1 {
-		t.Fatalf("expected one channel lookup, got %d", got)
+			seriesType := api.New_SeriesDataType(tt.seriesType)
+			mockDS := &mockDatasourceService{
+				searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{
+							Name:       api.Channel(tt.channel),
+							DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1")),
+							DataType:   &seriesType,
+						},
+					},
+				},
+			}
+			ds := withCatalog(&Datasource{
+				datasourceService:  mockDS,
+				resourceHTTPClient: server.Client(),
+			})
+			config := &models.PluginSettings{
+				BaseUrl: server.URL,
+				Secrets: &models.SecretPluginSettings{
+					ApiKey: "test-key",
+				},
+			}
+			query := backend.DataQuery{
+				RefID: "A",
+				JSON: mustMarshal(NominalQueryModel{
+					AssetRid:        assetRid,
+					Channel:         tt.channel,
+					DataScopeName:   "default",
+					ChannelDataType: "numeric",
+					Aggregations:    []string{AggMean},
+					Buckets:         tt.buckets,
+				}),
+			}
+
+			prepared, prepErr := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+			if prepErr != nil {
+				t.Fatalf("unexpected preparation error: %v", prepErr.Error)
+			}
+			if prepared.Model.ChannelDataType != tt.want {
+				t.Fatalf("ChannelDataType = %q, want %s", prepared.Model.ChannelDataType, tt.want)
+			}
+			if got := mockDS.searchChannelsCallCount(); got != 1 {
+				t.Fatalf("expected one channel lookup, got %d", got)
+			}
+		})
 	}
 }
 

@@ -179,7 +179,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		chunkModels := batch.models[chunkStart:chunkEnd]
 		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
-			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, chunkQueries[i].MaxDataPoints)
+			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange)
 		}
 
 		// A shared request ID lets one kill cancel the entire batch.
@@ -231,7 +231,11 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 				continue
 			}
 
-			results[q.RefID] = e.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+			response := e.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+			if notice := chunkModels[i].Points.Notice; notice != "" && len(response.Frames) > 0 {
+				response.Frames[0].AppendNotices(data.Notice{Severity: data.NoticeSeverityInfo, Text: notice})
+			}
+			results[q.RefID] = response
 		}
 	}
 

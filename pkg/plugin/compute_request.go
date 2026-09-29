@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -19,8 +20,8 @@ const logPageSize = -250
 const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
-func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, maxDataPoints int64) computeapi1.ComputeNodeRequest {
-	seriesPlan := e.buildSeriesPlan(qm, maxDataPoints)
+func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
+	seriesPlan := e.buildSeriesPlan(qm)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
 	return computeapi1.ComputeNodeRequest{
@@ -34,7 +35,7 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 // buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
-func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoints int64) computeapi1.SummarizeSeries {
+func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi1.SummarizeSeries {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 
 	switch qm.ChannelDataType {
@@ -46,7 +47,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
 		series := computeapi1.NewSeriesFromEnum(enumSeries)
 
-		buckets := effectiveBucketCount(qm, maxDataPoints)
+		buckets := qm.Points.Count
 		return computeapi1.SummarizeSeries{
 			Input:   series,
 			Buckets: &buckets,
@@ -72,7 +73,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, maxDataPoi
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
 		series := computeapi1.NewSeriesFromNumeric(numericSeries)
 
-		buckets := effectiveBucketCount(qm, maxDataPoints)
+		buckets := qm.Points.Count
 		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
 		outputFields := numericOutputFields(qm.Aggregations)
 		return computeapi1.SummarizeSeries{
@@ -117,12 +118,46 @@ func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel) comput
 	}
 }
 
-func effectiveBucketCount(qm NominalQueryModel, maxDataPoints int64) int {
-	buckets := int(qm.Buckets)
-	if maxDataPoints > 0 && (buckets <= 0 || int(maxDataPoints) < buckets) {
-		buckets = int(maxDataPoints)
+const defaultPointCount = 1000
+
+// maxPointsPerQuery is the Nominal API's per-request point limit.
+const maxPointsPerQuery = 10000
+
+type pointBudget struct {
+	Count int
+	// Notice is set when maxDataPoints was capped.
+	Notice string
+}
+
+// resolvePointBudget caps maxDataPoints, a ceiling, at the API limit with a
+// notice, and rejects saved buckets above it. Log queries get no budget.
+func resolvePointBudget(qm NominalQueryModel, maxDataPoints int64) (pointBudget, error) {
+	if qm.ChannelDataType == ChannelDataTypeLog {
+		return pointBudget{}, nil
 	}
-	return buckets
+	if qm.Buckets < 0 {
+		return pointBudget{}, fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
+	}
+	if qm.Buckets > 0 {
+		count := qm.Buckets
+		if maxDataPoints > 0 && maxDataPoints < int64(count) {
+			count = int(maxDataPoints)
+		}
+		if count > maxPointsPerQuery {
+			return pointBudget{}, fmt.Errorf("buckets must be at most %d, got %d", maxPointsPerQuery, qm.Buckets)
+		}
+		return pointBudget{Count: count}, nil
+	}
+	if maxDataPoints > maxPointsPerQuery {
+		return pointBudget{
+			Count:  maxPointsPerQuery,
+			Notice: fmt.Sprintf("Max data points %d is above the Nominal limit, so %d points were requested", maxDataPoints, maxPointsPerQuery),
+		}, nil
+	}
+	if maxDataPoints > 0 {
+		return pointBudget{Count: int(maxDataPoints)}, nil
+	}
+	return pointBudget{Count: defaultPointCount}, nil
 }
 
 func numericOutputFields(aggregations []string) []computeapi.NumericOutputField {
