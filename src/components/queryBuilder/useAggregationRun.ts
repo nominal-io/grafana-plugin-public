@@ -86,7 +86,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
     }
     return {
       kind: 'numeric',
-      tooltip: 'Select bucket aggregations or LTTB raw points',
+      tooltip: 'Aggregation functions to apply per time bucket',
       value: getAggregationValue(query?.aggregations),
       options: NUMERIC_AGG_OPTIONS,
     };

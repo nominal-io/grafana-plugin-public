@@ -4,7 +4,7 @@ import { rankChannelOptions } from './channelRanking';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
 
-export const NUMERIC_AGG_OPTIONS = [
+const ALL_NUMERIC_AGG_OPTIONS = [
   {
     label: 'LTTB',
     value: AggregationType.Lttb,
@@ -19,6 +19,8 @@ export const NUMERIC_AGG_OPTIONS = [
   { label: 'First', value: AggregationType.FirstPoint, group: 'Bucket aggregations' },
   { label: 'Last', value: AggregationType.LastPoint, group: 'Bucket aggregations' },
 ];
+
+export const NUMERIC_AGG_OPTIONS = ALL_NUMERIC_AGG_OPTIONS.filter((option) => option.value !== AggregationType.Lttb);
 
 function assetToOption(asset: Asset): AssetOption {
   return {
