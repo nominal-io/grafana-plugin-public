@@ -185,7 +185,6 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 </InlineField>
               )}
 
-              {/* Aggregation selector - shown when a channel is selected */}
               {query?.channel && (
                 <InlineField label="Aggregation(s)" tooltip={state.aggregationState.tooltip}>
                   {state.aggregationState.kind === 'string' ? (

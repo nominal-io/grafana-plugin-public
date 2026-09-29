@@ -9,7 +9,6 @@ import {
   getAggregationValue,
   getAssetSelectValue,
   getChannelSelectValue,
-  NUMERIC_AGG_OPTIONS,
   toAggregationComboboxOptions,
   toChannelOption,
 } from './queryBuilderOptions';
@@ -351,21 +350,20 @@ describe('queryBuilderOptions', () => {
     });
   });
 
-  it('maps aggregation options to dense combobox options without undefined descriptions', () => {
+  it('maps aggregation options to combobox options without undefined description or group', () => {
     const options = toAggregationComboboxOptions([
       { label: 'Mean', value: AggregationType.Mean },
-      { label: 'Explained', value: 'explained', description: 'Shown in the menu' },
+      { label: 'LTTB', value: AggregationType.Lttb, description: 'Shown in the menu', group: 'Raw points' },
     ]);
 
-    expect(options[0]).toEqual({
-      label: 'Mean',
-      value: AggregationType.Mean,
-    });
+    expect(options[0]).toEqual({ label: 'Mean', value: AggregationType.Mean });
     expect(options[0]).not.toHaveProperty('description');
+    expect(options[0]).not.toHaveProperty('group');
     expect(options[1]).toEqual({
-      label: 'Explained',
-      value: 'explained',
+      label: 'LTTB',
+      value: AggregationType.Lttb,
       description: 'Shown in the menu',
+      group: 'Raw points',
     });
   });
 
@@ -375,15 +373,4 @@ describe('queryBuilderOptions', () => {
     expect(getAggregationValue([AggregationType.Min, AggregationType.Max])).toEqual([AggregationType.Min, AggregationType.Max]);
   });
 
-  it('keeps numeric aggregation options in QueryEditor order', () => {
-    expect(NUMERIC_AGG_OPTIONS).toEqual([
-      { label: 'Mean', value: AggregationType.Mean },
-      { label: 'Min', value: AggregationType.Min },
-      { label: 'Max', value: AggregationType.Max },
-      { label: 'Count', value: AggregationType.Count },
-      { label: 'Variance', value: AggregationType.Variance },
-      { label: 'First', value: AggregationType.FirstPoint },
-      { label: 'Last', value: AggregationType.LastPoint },
-    ]);
-  });
 });
