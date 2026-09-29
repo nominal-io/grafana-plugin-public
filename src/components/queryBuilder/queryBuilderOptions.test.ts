@@ -9,6 +9,7 @@ import {
   getAggregationValue,
   getAssetSelectValue,
   getChannelSelectValue,
+  toAggregationComboboxOptions,
   toChannelOption,
 } from './queryBuilderOptions';
 
@@ -346,6 +347,23 @@ describe('queryBuilderOptions', () => {
     expect(toChannelOption({ label: 'manual.channel', value: 'manual.channel' })).toEqual({
       label: 'manual.channel',
       value: 'manual.channel',
+    });
+  });
+
+  it('maps aggregation options to combobox options without undefined description or group', () => {
+    const options = toAggregationComboboxOptions([
+      { label: 'Mean', value: AggregationType.Mean },
+      { label: 'LTTB', value: AggregationType.Lttb, description: 'Shown in the menu', group: 'Raw points' },
+    ]);
+
+    expect(options[0]).toEqual({ label: 'Mean', value: AggregationType.Mean });
+    expect(options[0]).not.toHaveProperty('description');
+    expect(options[0]).not.toHaveProperty('group');
+    expect(options[1]).toEqual({
+      label: 'LTTB',
+      value: AggregationType.Lttb,
+      description: 'Shown in the menu',
+      group: 'Raw points',
     });
   });
 
