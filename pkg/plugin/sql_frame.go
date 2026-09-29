@@ -244,7 +244,7 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 	if err != nil {
 		return nil, err
 	}
-	return splitSeries(frame, schema.TimeIndex, schema.FactorIndices, values, times, timeOrder(times))
+	return splitSeries(frame, schema.TimeIndex, schema.FactorIndices, values, times, timeOrder(times)), nil
 }
 
 // fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
@@ -259,7 +259,7 @@ func fieldTimes(field *data.Field) ([]time.Time, error) {
 			t = *p
 		}
 		if t == nil {
-			return nil, errors.New("time series results cannot contain a null timestamp")
+			return nil, fmt.Errorf("time column %q has null values; filter out rows where it is null or put another time column first", field.Name)
 		}
 		times[i] = *t
 	}
@@ -283,7 +283,7 @@ func timeOrder(times []time.Time) []int {
 // splitSeries returns one frame per value column and label set, ordered by column and then labels,
 // visiting rows in order when it is not nil. Value fields point at frame's values, so it allocates
 // per series rather than per row.
-func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int) (data.Frames, error) {
+func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int) data.Frames {
 	labelValues := make([]string, len(factors))
 	seriesIDs := make(map[string]int)
 	var seriesLabels []data.Labels
@@ -297,10 +297,7 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 		}
 		key = key[:0]
 		for j, f := range factors {
-			value, err := labelValue(frame.Fields[f], row)
-			if err != nil {
-				return nil, err
-			}
+			value := labelValue(frame.Fields[f], row)
 			labelValues[j] = value
 			key = append(binary.AppendUvarint(key, uint64(len(value))), value...)
 		}
@@ -355,7 +352,7 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 			frames = append(frames, series)
 		}
 	}
-	return frames, nil
+	return frames
 }
 
 // seriesColumnLabel is the label that tells apart the series of a result's value columns.
@@ -370,21 +367,20 @@ func withColumnLabel(labels data.Labels, column string) data.Labels {
 	return labels
 }
 
-// labelValue reads a string or bool label column without allocating.
-func labelValue(field *data.Field, i int) (string, error) {
+// labelValue reads a string or bool label column without allocating. A null label is "" or "false", as
+// in the plugin SDK's LongToWide.
+func labelValue(field *data.Field, i int) string {
 	switch v := field.PointerAt(i).(type) {
 	case *string:
-		return *v, nil
+		return *v
 	case **string:
 		if *v != nil {
-			return **v, nil
+			return **v
 		}
 	case *bool:
-		return strconv.FormatBool(*v), nil
+		return strconv.FormatBool(*v)
 	case **bool:
-		if *v != nil {
-			return strconv.FormatBool(**v), nil
-		}
+		return strconv.FormatBool(*v != nil && **v)
 	}
-	return "", fmt.Errorf("time series label column %q cannot contain nulls", field.Name)
+	return ""
 }

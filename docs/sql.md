@@ -39,13 +39,15 @@ reserved words, so quote them as column names, as in `AS "time"`.
 
 **Time series** needs a timestamp column and at least one numeric column. String
 and boolean columns become series labels, and each series is returned with only
-its own samples, sorted by time. When a query returns more than one numeric
-column, such as `MIN(value)` and `MAX(value)`, each series also gets a `column`
-label with the column's name, because alert rules tell series apart by labels
-alone. Other columns, such as a second timestamp, are left out with a notice. A
-result without both columns is shown as a table with a notice, so use a Table,
-Stat or Bar chart panel for it. **Table** returns rows and columns as the query
-produced them.
+its own samples, sorted by time. A null label becomes an empty string, or
+`false` for a boolean column, and shares a series with that value. The first
+timestamp column is the series time, and a null value in it fails the query.
+When a query returns more than one numeric column, such as `MIN(value)` and
+`MAX(value)`, each series also gets a `column` label with the column's name,
+because alert rules tell series apart by labels alone. Other columns, such as a
+second timestamp, are left out with a notice. A result without both columns is
+shown as a table with a notice, so use a Table, Stat or Bar chart panel for it.
+**Table** returns rows and columns as the query produced them.
 
 Map columns such as `tags` are shown as `key=value` pairs, for example
 `satellite=GOCE-1`. Keys and values that contain `=`, `,`, `"` or a space are
