@@ -37,8 +37,8 @@ function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
   return { ...BASE_QUERY, ...overrides } as NominalQuery;
 }
 
-function getOutputSection() {
-  const label = screen.getByText('Output');
+function getAggregationSection() {
+  const label = screen.getByText('Aggregation(s)');
   return label.closest('label')!.parentElement!;
 }
 
@@ -81,12 +81,12 @@ describe('Aggregation widget', () => {
     );
     await settleInitialEffects();
 
-    const combobox = within(getOutputSection()).getByRole('combobox');
+    const combobox = within(getAggregationSection()).getByRole('combobox');
     fireEvent.click(combobox);
 
     expect(await screen.findByText('Raw points')).toBeInTheDocument();
     expect(screen.getByText('Bucket aggregations')).toBeInTheDocument();
-    within(getOutputSection()).getAllByText('LTTB');
+    expect(within(getAggregationSection()).getAllByText('LTTB').length).toBeGreaterThan(0);
   });
 
   it('renders disabled Mode input for string channels', async () => {
@@ -105,7 +105,7 @@ describe('Aggregation widget', () => {
     expect(modeInput).toBeInTheDocument();
     // The Grafana Input component with disabled prop renders as a visually
     // disabled field. Verify there's no combobox in the aggregation section.
-    const aggSection = getOutputSection();
+    const aggSection = getAggregationSection();
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
@@ -136,7 +136,7 @@ describe('Aggregation widget', () => {
     );
 
     // Blur the aggregation combobox (not the channel Select's)
-    const aggSection = getOutputSection();
+    const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
 
@@ -201,7 +201,7 @@ describe('Aggregation widget', () => {
     onRunQuery.mockClear();
 
     // Blur the aggregation combobox (same value as initial -> no additional onRunQuery)
-    const aggSection = getOutputSection();
+    const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
 
@@ -221,7 +221,7 @@ describe('Aggregation widget', () => {
 
     const logsInput = screen.getByDisplayValue('Logs (raw)');
     expect(logsInput).toBeInTheDocument();
-    const aggSection = getOutputSection();
+    const aggSection = getAggregationSection();
     expect(within(aggSection).queryByRole('combobox')).not.toBeInTheDocument();
   });
 
@@ -256,7 +256,7 @@ describe('Aggregation widget', () => {
       />
     );
 
-    const aggSection = getOutputSection();
+    const aggSection = getAggregationSection();
     const combobox = within(aggSection).getByRole('combobox');
     fireEvent.blur(combobox);
 
