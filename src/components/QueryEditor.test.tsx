@@ -149,7 +149,7 @@ describe('query API selection', () => {
 
   it('retains Compute selections and SQL when switching APIs', async () => {
     const onChange = jest.fn();
-    const original = { refId: 'A', queryType: 'timeShift' as const, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    const original = { refId: 'A', queryType: 'compute' as const, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
     render(<EditableQuery initialQuery={original} onChange={onChange} />);
     await settleEffects();
     expect(screen.getByRole('radio', { name: 'Compute' })).toBeChecked();
@@ -173,7 +173,7 @@ describe('query API selection', () => {
     expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 1');
     expect(onChange).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ queryType: 'timeShift', rawSql: 'SELECT 1' }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ queryType: 'compute', rawSql: 'SELECT 1' }));
   });
 });
 
@@ -189,7 +189,7 @@ describe('channel data type inference effect', () => {
       refId: 'A',
       assetRid: ASSET_RID,
       dataScopeName: 'default',
-      queryType: 'decimation',
+      queryType: 'compute',
       buckets: 1000,
       ...overrides,
     } as NominalQuery;

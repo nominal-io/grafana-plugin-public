@@ -11,7 +11,7 @@ import {
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import { DEFAULT_QUERY, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
+import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
@@ -251,7 +251,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
     onChange(api === 'sql'
       ? { ...query, queryType: QUERY_TYPE_SQL, rawSql: query.rawSql ?? '', format: query.format ?? 'timeseries' }
-      : { ...query, queryType: DEFAULT_QUERY.queryType });
+      : { ...query, queryType: QUERY_TYPE_COMPUTE });
   };
 
   return (

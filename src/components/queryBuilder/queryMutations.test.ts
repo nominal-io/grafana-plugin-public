@@ -76,7 +76,7 @@ describe('queryMutations', () => {
     expect(changeSelectedDataScopeQuery(baseQuery, 'scope-b')).toEqual(
       expect.objectContaining({
         dataScopeName: 'scope-b',
-        queryType: 'decimation',
+        queryType: 'compute',
         buckets: 1000,
       })
     );
@@ -90,7 +90,7 @@ describe('queryMutations', () => {
         channel: 'pressure',
         channelDataType: 'numeric',
         dataScopeName: 'scope-a',
-        queryType: 'decimation',
+        queryType: 'compute',
         buckets: 1000,
       })
     );

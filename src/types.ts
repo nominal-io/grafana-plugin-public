@@ -1,8 +1,8 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
-export type ComputeQueryType = 'timeShift' | 'decimation' | 'raw';
 export type SqlFormat = 'timeseries' | 'table';
+export const QUERY_TYPE_COMPUTE = 'compute' as const;
 export const QUERY_TYPE_SQL = 'sql' as const;
 
 export interface NominalQuery extends DataQuery {
@@ -17,7 +17,8 @@ export interface NominalQuery extends DataQuery {
 
   // Query parameters
   buckets?: number;
-  queryType?: ComputeQueryType | typeof QUERY_TYPE_SQL;
+  // Saved dashboards may still hold the retired 'timeShift', 'decimation' or 'raw'; treat anything but SQL as Compute.
+  queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
   rawSql?: string;
   format?: SqlFormat;
 
@@ -46,9 +47,8 @@ export type AggregationTypeValue = (typeof AggregationType)[keyof typeof Aggrega
 export const DEFAULT_AGGREGATIONS: AggregationTypeValue[] = [AggregationType.Mean];
 
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
-  queryType: 'timeShift',
+  queryType: QUERY_TYPE_COMPUTE,
   buckets: 1000,
-  constant: 6.5,
 };
 
 export const DEFAULT_SQL = `SELECT $__timeGroup(ts) AS "time", channel, AVG(value) AS "value"
