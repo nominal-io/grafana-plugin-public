@@ -29,7 +29,7 @@ const BASE_QUERY: Partial<NominalQuery> = {
   refId: 'A',
   assetRid: 'ri.scout.main.asset.abc123',
   dataScopeName: 'default',
-  queryType: 'decimation',
+  queryType: 'compute',
   buckets: 1000,
 };
 

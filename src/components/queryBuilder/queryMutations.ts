@@ -1,7 +1,7 @@
-import { AggregationType, DEFAULT_AGGREGATIONS, type NominalQuery } from '../../types';
+import { AggregationType, DEFAULT_AGGREGATIONS, QUERY_TYPE_COMPUTE, type NominalQuery } from '../../types';
 
 const QUERY_BUILDER_EXECUTION_DEFAULTS = {
-  queryType: 'decimation' as const,
+  queryType: QUERY_TYPE_COMPUTE,
   buckets: 1000,
 };
 

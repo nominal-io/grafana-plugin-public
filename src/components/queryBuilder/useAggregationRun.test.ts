@@ -9,7 +9,7 @@ function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
     assetRid: 'ri.scout.main.asset.abc',
     dataScopeName: 'default',
     channel: 'temp',
-    queryType: 'decimation',
+    queryType: 'compute',
     buckets: 1000,
     ...overrides,
   } as NominalQuery;

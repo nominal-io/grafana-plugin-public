@@ -68,7 +68,7 @@ const timeSeriesExample: NominalQuery = {
   assetRid: '${asset}',
   dataScopeName: '${datascope}',
   channel: '${channel}',
-  queryType: 'decimation',
+  queryType: 'compute',
   buckets: 1000,
   aggregations: [...DEFAULT_AGGREGATIONS],
 };
