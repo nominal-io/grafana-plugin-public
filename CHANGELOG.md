@@ -7,8 +7,6 @@
 
 * add a gRPC client for Nominal SQL ([#158](https://github.com/nominal-io/grafana-plugin-public/issues/158)) ([08eb1c9](https://github.com/nominal-io/grafana-plugin-public/commit/08eb1c9a41bf9793ac673cfe84fc32649009afcc))
 * add a SQL query editor ([#156](https://github.com/nominal-io/grafana-plugin-public/issues/156)) ([bc32e83](https://github.com/nominal-io/grafana-plugin-public/commit/bc32e83f6a4529f04ec7181e8e977855017b3feb))
-* add LTTB raw-point queries to backend ([#169](https://github.com/nominal-io/grafana-plugin-public/issues/169)) ([b867c37](https://github.com/nominal-io/grafana-plugin-public/commit/b867c371c8cf322715700690447075bafb67431d))
-* add LTTB to the query editor aggregation picker ([#170](https://github.com/nominal-io/grafana-plugin-public/issues/170)) ([3f1f192](https://github.com/nominal-io/grafana-plugin-public/commit/3f1f192b8ae1221f3f78b0ee8495ad5ddc7cf54d))
 * coalesce concurrent catalog lookups with singleflight ([#150](https://github.com/nominal-io/grafana-plugin-public/issues/150)) ([fa76d57](https://github.com/nominal-io/grafana-plugin-public/commit/fa76d57e3713637c6726c2f8fcf46b9a9b148381))
 * convert SQL Arrow results into Grafana frames ([#160](https://github.com/nominal-io/grafana-plugin-public/issues/160)) ([c78918d](https://github.com/nominal-io/grafana-plugin-public/commit/c78918d9170c07a79e2ac510767efb59cc45c7d4))
 * execute SQL queries through the API ([2dd72a9](https://github.com/nominal-io/grafana-plugin-public/commit/2dd72a9748dd997278ed377dd38dd88ed5957182))
@@ -23,7 +21,6 @@
 * **deps:** bump brace-expansion override to 5.0.11 ([#175](https://github.com/nominal-io/grafana-plugin-public/issues/175)) ([230b12e](https://github.com/nominal-io/grafana-plugin-public/commit/230b12e643e38db5893efae8db7051954968722a))
 * **deps:** update module github.com/apache/arrow-go/v18 to v18.8.0 ([#133](https://github.com/nominal-io/grafana-plugin-public/issues/133)) ([7804fdd](https://github.com/nominal-io/grafana-plugin-public/commit/7804fdd7e542b6395ee3e5b290bc84be158cd7ae))
 * **deps:** update module github.com/grafana/grafana-plugin-sdk-go to v0.296.5 ([#141](https://github.com/nominal-io/grafana-plugin-public/issues/141)) ([1ac5ccd](https://github.com/nominal-io/grafana-plugin-public/commit/1ac5ccdea88fa55aa24e655781eb00b5f2019ddc))
-* hide LTTB from the aggregation picker ([#174](https://github.com/nominal-io/grafana-plugin-public/issues/174)) ([df56fad](https://github.com/nominal-io/grafana-plugin-public/commit/df56fad4d673e9e8474159048c6b1246c4adb49b))
 * make SQL time series results safe for alert rules ([8c8ce82](https://github.com/nominal-io/grafana-plugin-public/commit/8c8ce8236f7f6549257ba30e5a44fc63397282c3))
 * replace the resource forwarder with explicit handlers ([#144](https://github.com/nominal-io/grafana-plugin-public/issues/144)) ([bd09097](https://github.com/nominal-io/grafana-plugin-public/commit/bd0909725984315e94a9373c8cb63849d16a0b47))
 * report SQL timeouts consistently when gRPC sees the deadline first ([#177](https://github.com/nominal-io/grafana-plugin-public/issues/177)) ([e422839](https://github.com/nominal-io/grafana-plugin-public/commit/e42283992fbbef6f26addd4c178c7e21460a02bf))
