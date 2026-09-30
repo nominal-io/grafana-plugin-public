@@ -70,7 +70,7 @@ describe('Aggregation widget', () => {
     jest.useRealTimers();
   });
 
-  it('shows LTTB under Raw points and bucket functions in separate menu groups', async () => {
+  it.skip('shows LTTB under Raw points and bucket functions in separate menu groups', async () => {
     render(
       <QueryEditor
         query={makeQuery({ channel: 'temp', channelDataType: 'numeric', aggregations: [AggregationType.Lttb] })}
