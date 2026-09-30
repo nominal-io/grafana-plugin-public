@@ -122,10 +122,14 @@ func sqlRowLimit(ctx context.Context) int64 {
 // timeouts and cancellations are downstream errors, so Grafana does not count them against the plugin.
 func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
 	var lookupErr *workspaceLookupError
+	deadline, hasDeadline := ctx.Deadline()
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
 		return backend.ErrDataResponseWithSource(backend.StatusInternal, backend.ErrorSourceDownstream, "SQL query was cancelled")
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+	// gRPC can report DeadlineExceeded once the deadline passes but before the context's timer
+	// sets ctx.Err.
+	case errors.Is(ctx.Err(), context.DeadlineExceeded),
+		status.Code(err) == codes.DeadlineExceeded && hasDeadline && !time.Now().Before(deadline):
 		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, "SQL query timed out")
 	case errors.Is(err, errNoSQLWorkspace):
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
