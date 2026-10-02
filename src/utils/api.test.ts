@@ -4,7 +4,6 @@ import {
   createBasicAsset,
   fetchAssetByRid,
   fetchRun,
-  formatRunWindow,
   getDataSourceRid,
   searchChannels,
   getSupportedScopeNames,
@@ -205,18 +204,5 @@ describe('fetchRun', () => {
   it('rethrows other errors', async () => {
     post.mockRejectedValue({ status: 500 });
     await expect(fetchRun(DATASOURCE_URL, 'ri.scout.main.run.x')).rejects.toEqual({ status: 500 });
-  });
-});
-
-describe('formatRunWindow', () => {
-  const run = { rid: 'r', title: 't', runNumber: 1, startMs: Date.UTC(2023, 10, 14, 22, 13, 20), assetRids: [] };
-
-  it.each([
-    [undefined, '2023-11-14 22:13:20 → now UTC'],
-    [run.startMs + 45_000, '2023-11-14 22:13:20 → 2023-11-14 22:14:05 UTC (45s)'],
-    [run.startMs + 125_000, '2023-11-14 22:13:20 → 2023-11-14 22:15:25 UTC (2m 5s)'],
-    [run.startMs + 3_723_000, '2023-11-14 22:13:20 → 2023-11-14 23:15:23 UTC (1h 2m 3s)'],
-  ])('endMs %s', (endMs, want) => {
-    expect(formatRunWindow({ ...run, endMs })).toBe(want);
   });
 });

@@ -4,12 +4,7 @@ import { DataSourceInstanceSettings } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {
-    uid: string;
-    constructor(settings: { uid: string }) {
-      this.uid = settings.uid;
-    }
-  },
+  DataSourceWithBackend: class {},
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
 }));
@@ -28,6 +23,7 @@ beforeEach(() => {
 function createDataSource(): DataSource {
   const settings = {
     uid: 'test-uid',
+    jsonData: {},
   } as DataSourceInstanceSettings<NominalDataSourceOptions>;
   return new DataSource(settings);
 }
@@ -37,27 +33,6 @@ describe('backend health check routing', () => {
     const ds = createDataSource();
 
     expect(Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(ds), 'testDatasource')).toBe(false);
-  });
-});
-
-describe('default dashboard controls', () => {
-  it('ships the hidden bounds and the link when the dashboard has a runs variable', async () => {
-    const ds = createDataSource();
-    mockTemplateSrv.getVariables.mockReturnValue([
-      { name: 'flight', type: 'query', query: 'runs()', datasource: { type: 'nominal-nominalds-datasource', uid: 'test-uid' } },
-    ]);
-
-    const vars = await ds.getDefaultVariables();
-    expect(vars.map((v) => v.spec.name)).toEqual(['run_start', 'run_end']);
-    expect(await ds.getDefaultLinks()).toHaveLength(1);
-  });
-
-  it('ships nothing when the dashboard has no run variable', async () => {
-    const ds = createDataSource();
-    mockTemplateSrv.getVariables.mockReturnValue([{ name: 'asset', type: 'query', query: 'assets()' }]);
-
-    expect(await ds.getDefaultVariables()).toEqual([]);
-    expect(await ds.getDefaultLinks()).toEqual([]);
   });
 });
 
@@ -101,14 +76,6 @@ describe('filterQuery', () => {
     })).toBe(true);
   });
 
-  it.each([
-    ['complete run query', { computeBy: 'run', runRid: 'ri.scout.main.run.1', channel: 'temp', dataScopeName: 'default' }, true],
-    ['run query without a run', { computeBy: 'run', assetRid: 'ri.scout.main.asset.1', channel: 'temp', dataScopeName: 'default' }, false],
-    ['asset query ignores a kept runRid', { computeBy: 'asset', runRid: 'ri.scout.main.run.1', channel: 'temp', dataScopeName: 'default' }, false],
-  ] as const)('%s', (_name, fields, want) => {
-    expect(ds.filterQuery({ refId: 'A', ...fields })).toBe(want);
-  });
-
   it('accepts SQL queries with text and rejects empty ones', () => {
     expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' })).toBe(true);
     expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: '  ' })).toBe(false);
@@ -130,25 +97,11 @@ describe('applyTemplateVariables', () => {
 
   it('keeps builder interpolation unchanged', () => {
     const ds = createDataSource();
-    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', runRid: '$run', channel: '$channel', dataScopeName: '$scope' }, {});
+    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', channel: '$channel', dataScopeName: '$scope' }, {});
 
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$asset', {});
-    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$run', {});
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channel', {});
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$scope', {});
-  });
-
-  it.each([
-    ['$run', { raw: '$run', name: 'run' }],
-    ['${myvar}', { raw: '${myvar}', name: 'myvar' }],
-  ])('sends the variable behind %s as a template source', (runRid, want) => {
-    const result = createDataSource().applyTemplateVariables({ refId: 'A', computeBy: 'run', runRid }, {});
-    expect(result.templateSources).toEqual({ runRid: want });
-  });
-
-  it('omits template sources for literal RIDs', () => {
-    const result = createDataSource().applyTemplateVariables({ refId: 'A', computeBy: 'run', runRid: 'ri.scout.main.run.1' }, {});
-    expect(result.templateSources).toBeUndefined();
   });
 });
 

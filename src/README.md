@@ -100,7 +100,7 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
 - `channels(${asset})` returns the union of channel names across **all** data scopes on the selected asset, deduplicated by name. Most useful when your asset has a single primary data scope, or when your fleet uses a consistent scope name that you can pin as a literal in each panel's data scope field. If channels with the same name exist in multiple scopes, the variable shows the name once — the actual data returned depends on which scope is set in each panel.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
-- `runs()` returns every unarchived run in the workspace, newest first, labelled `<title> · <start UTC>`. A run on more than one asset is labelled `<title> · <start UTC> · spans N assets`; Snap to run works for it, but Run-mode queries do not support it yet. The value is the run RID.
+- `runs()` returns every unarchived run in the workspace, newest first, labelled `<title> · <start UTC>`. A run on more than one asset is labelled `<title> · <start UTC> · spans N assets`. The value is the run RID.
 - `runs(${asset})` returns runs on the selected asset. With a multi-value asset variable it returns runs on any of the selected assets. If the asset variable has **Include All**, set its **Custom all value** to `*` so All means every run. Without it, All expands to the listed assets, which leaves out runs whose asset was created automatically and is hidden from asset search.
 - `runstart(${run})` and `runend(${run})` return the run's start and end in epoch milliseconds. `runend` returns `now` for a run that has not ended. Use them as hidden variables in a dashboard link, `${__url.path}?from=${run_start}&to=${run_end}`, to snap the time range to the run. With several runs selected they return the earliest start and the latest end. With the run variable on All they return nothing, and the link leaves the time range unchanged.
 - `datascopes(${run})` and `channels(${run}, ${datascope})` accept a run RID as well as an asset RID.
@@ -114,21 +114,6 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 **Fleet view.** One filtered asset variable (e.g. `assets(engine)`) set to multi-value, plus `channels(${asset})` for a flat channel picker. Each panel shows the same channel as multiple series, one per selected asset. This pattern assumes every asset in the fleet exposes the same channel under the same data scope name; pin that scope as a literal in each panel's **Data scope** field rather than parameterizing it.
 
 **Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope})` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset instead of one panel with multiple series.
-
-### Snap to run
-
-- In the query editor, a run query has a **Snap to run** button next to the run window. It sets the dashboard's time range to the run. It works on Grafana 12.1 and later.
-- When the time range extends past the run, the panel shades the part outside it. On Grafana 12.3 and later, hover the strip at the bottom of the plot and use its **Snap to run** link.
-
-### Run controls (Grafana 13 and later)
-
-A dashboard that has a Nominal `runs(...)` variable gets two hidden variables, `nominal_nominalds_datasource_run_start` and `nominal_nominalds_datasource_run_end`, and a **Snap to run** link in the variable bar. The link sets the time range to the selected run and keeps the dashboard's other variables. There is no setting to turn on. A dashboard without a run variable gets nothing.
-
-- The run variable is the first Nominal query variable whose query starts with `runs(`, whatever its name. If there is none, a variable named `run` is used.
-- To replace either hidden variable on one dashboard, define a variable with the same name.
-- Grafana computes the controls when the dashboard loads. A run variable added while editing shows up after you save and reload.
-- Dashboards that use this data source only inside **Mixed** panels do not get the controls.
-- On Grafana 12, build the same controls by hand: two hidden variables `run_start` and `run_end` using `runstart(${run})` and `runend(${run})`, and a dashboard link to `${__url.path}?from=${run_start}&to=${run_end}` with **Include current template variable values** on.
 
 ## Troubleshooting
 
