@@ -1298,8 +1298,8 @@ func TestRunWindowNotice(t *testing.T) {
 			if (notice != "") != tt.want {
 				t.Fatalf("notice = %q, want present = %v", notice, tt.want)
 			}
-			if tt.want && (!strings.Contains(notice, "Hot fire") || !strings.Contains(notice, "UTC")) {
-				t.Errorf("notice %q should name the run and say UTC", notice)
+			if tt.want && (!strings.Contains(notice, "Hot fire") || !strings.Contains(notice, "UTC") || !strings.Contains(notice, "Snap to run")) {
+				t.Errorf("notice %q should name the run, say UTC and name both Snap to run routes", notice)
 			}
 		})
 	}
@@ -1385,13 +1385,21 @@ func TestRunQueryOutsideRunSkipsCompute(t *testing.T) {
 		t.Errorf("A notice = %+v, want an overlap warning", n)
 	}
 
+	// The disjoint query carries the one shading frame for the run, spanning the whole range.
+	if len(gotA.Frames) != 2 || gotA.Frames[1].Meta == nil || gotA.Frames[1].Meta.DataTopic != data.DataTopicAnnotations || gotA.Frames[1].Fields[0].Len() != 1 {
+		t.Fatalf("A frames = %+v, want the warning then one single-region shading frame", gotA.Frames)
+	}
+	if from, to := gotA.Frames[1].Fields[0].At(0).(time.Time), gotA.Frames[1].Fields[1].At(0).(time.Time); !from.Equal(disjoint.From) || !to.Equal(disjoint.To) {
+		t.Errorf("shaded region = %v to %v, want %v to %v", from, to, disjoint.From, disjoint.To)
+	}
+
 	gotB := resp.Responses["B"]
 	if gotB.Error != nil || len(gotB.Frames) == 0 {
 		t.Fatalf("B = %+v, want data frames", gotB)
 	}
 	for _, f := range gotB.Frames {
-		if f.Meta != nil && len(f.Meta.Notices) > 0 {
-			t.Errorf("B frame has meta %+v, want no notices", f.Meta)
+		if f.Meta != nil && (len(f.Meta.Notices) > 0 || f.Meta.DataTopic == data.DataTopicAnnotations) {
+			t.Errorf("B frame has meta %+v, want no notices or shading", f.Meta)
 		}
 	}
 	if n := len(mockService.lastBatchRequest.Requests); n != 1 {
@@ -1457,6 +1465,172 @@ func TestEmptyRunResponseMatchesEmptyComputeResult(t *testing.T) {
 			}
 			if len(got) == 0 || tt.qm.ChannelDataType == ChannelDataTypeNumeric && tt.qm.ChannelUnit != "" && got[0].Fields[1].Config.Unit == "" {
 				t.Errorf("empty run frames %+v lost the channel unit", shapes(got))
+			}
+		})
+	}
+}
+
+func TestOutsideRunFrame(t *testing.T) {
+	t0 := time.Unix(1700000000, 0).UTC()
+	end := t0.Add(time.Hour)
+	closed := &RunResponse{Title: "Hot fire", StartTime: t0, EndTime: &end}
+	open := &RunResponse{Title: "Hot fire", StartTime: t0}
+	type region struct{ from, to time.Time }
+
+	tests := []struct {
+		name string
+		run  *RunResponse
+		from time.Time
+		to   time.Time
+		want []region
+	}{
+		{"straddles the run", closed, t0.Add(-30 * time.Minute), t0.Add(90 * time.Minute), []region{{t0.Add(-30 * time.Minute), t0}, {end, t0.Add(90 * time.Minute)}}},
+		{"starts before the run", closed, t0.Add(-30 * time.Minute), t0.Add(30 * time.Minute), []region{{t0.Add(-30 * time.Minute), t0}}},
+		{"inside the run", closed, t0.Add(10 * time.Minute), t0.Add(20 * time.Minute), nil},
+		{"entirely before the run", closed, t0.Add(-2 * time.Hour), t0.Add(-time.Hour), []region{{t0.Add(-2 * time.Hour), t0.Add(-time.Hour)}}},
+		{"entirely after the run", closed, end.Add(time.Hour), end.Add(2 * time.Hour), []region{{end.Add(time.Hour), end.Add(2 * time.Hour)}}},
+		{"open run", open, t0.Add(-30 * time.Minute), t0.Add(5 * time.Hour), []region{{t0.Add(-30 * time.Minute), t0}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := outsideRunFrame(tt.run, backend.TimeRange{From: tt.from, To: tt.to})
+			if tt.want == nil {
+				if frame != nil {
+					t.Fatalf("expected no frame, got %d regions", frame.Rows())
+				}
+				return
+			}
+			if frame == nil {
+				t.Fatal("expected a frame")
+			}
+			if frame.Meta == nil || frame.Meta.DataTopic != data.DataTopicAnnotations {
+				t.Errorf("frame meta = %+v, want annotations topic", frame.Meta)
+			}
+			if frame.Rows() != len(tt.want) {
+				t.Fatalf("regions = %d, want %d", frame.Rows(), len(tt.want))
+			}
+			if tt.name == "straddles the run" {
+				names := make([]string, len(frame.Fields))
+				for i, f := range frame.Fields {
+					names[i] = f.Name
+				}
+				if !slices.Equal(names, []string{"time", "timeEnd", "isRegion", "text", "color"}) {
+					t.Errorf("field names = %v", names)
+				}
+				if isRegion, _ := frame.Fields[2].ConcreteAt(0); isRegion != true {
+					t.Errorf("isRegion = %v, want true", isRegion)
+				}
+				if text, _ := frame.Fields[3].ConcreteAt(0); text != "Outside run Hot fire" {
+					t.Errorf("text = %v", text)
+				}
+			}
+			for i, w := range tt.want {
+				gotFrom, _ := frame.Fields[0].ConcreteAt(i)
+				gotTo, _ := frame.Fields[1].ConcreteAt(i)
+				if !gotFrom.(time.Time).Equal(w.from) || !gotTo.(time.Time).Equal(w.to) {
+					t.Errorf("region %d = [%v, %v], want [%v, %v]", i, gotFrom, gotTo, w.from, w.to)
+				}
+			}
+		})
+	}
+}
+
+func TestOutsideRunFrameSnapLink(t *testing.T) {
+	t0 := time.Unix(1700000000, 0).UTC()
+	end := t0.Add(time.Hour)
+	tests := []struct {
+		name string
+		run  *RunResponse
+		want string
+	}{
+		{"closed run", &RunResponse{Title: "Hot fire", StartTime: t0, EndTime: &end}, "${__url.path}${__url.params:exclude:from,to}&from=1700000000000&to=1700003600000"},
+		{"open run", &RunResponse{Title: "Hot fire", StartTime: t0}, "${__url.path}${__url.params:exclude:from,to}&from=1700000000000&to=now"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := outsideRunFrame(tt.run, backend.TimeRange{From: t0.Add(-time.Hour), To: t0.Add(time.Minute)})
+			links := frame.Fields[3].Config.Links
+			if len(links) != 1 || links[0].Title != "Snap to run Hot fire" || links[0].URL != tt.want {
+				t.Errorf("links = %+v, want one %q link to %q", links, "Snap to run Hot fire", tt.want)
+			}
+		})
+	}
+}
+
+func TestQueryDataOutsideRunShading(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.1"
+	// Runs span 1700000000 to 1700003600; the range starts 10 minutes earlier.
+	timeRange := backend.TimeRange{From: time.Unix(1699999400, 0), To: time.Unix(1700001000, 0)}
+	run := func(refID, runRid string) backend.DataQuery {
+		return backend.DataQuery{
+			RefID: refID, TimeRange: timeRange,
+			JSON: mustMarshal(NominalQueryModel{ComputeBy: computeByRun, RunRid: runRid, Channel: "temp", DataScopeName: "default", Buckets: 100}),
+		}
+	}
+	shadingFrames := func(resp *backend.QueryDataResponse) map[string]int {
+		counts := map[string]int{}
+		for refID, r := range resp.Responses {
+			for _, f := range r.Frames {
+				if f.Meta != nil && f.Meta.DataTopic == data.DataTopicAnnotations {
+					counts[refID]++
+				}
+			}
+		}
+		return counts
+	}
+	ok := createMockArrowComputeResult([]float64{1, 2, 3})
+	newDS := func(results ...computeapi.ComputeWithUnitsResult) *Datasource {
+		mockService := &mockComputeService{
+			batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{Results: results},
+		}
+		runs := newMockRunService(testRun("ri.scout.main.run.1", assetRid), testRun("ri.scout.main.run.2", assetRid), testRun("ri.scout.main.run.3", assetRid))
+		return withRunService(&Datasource{settings: testDatasourceSettings(), computeService: mockService}, runs)
+	}
+	disjoint := run("D", "ri.scout.main.run.3")
+	disjoint.TimeRange = backend.TimeRange{From: time.Unix(1800000000, 0), To: time.Unix(1800001000, 0)}
+	queries := []backend.DataQuery{run("A", "ri.scout.main.run.1"), run("B", "ri.scout.main.run.1"), run("C", "ri.scout.main.run.2"), disjoint}
+
+	t.Run("one frame per run on its first query", func(t *testing.T) {
+		resp, err := newDS(ok, ok, ok).QueryData(context.Background(), newQueryRequest(queries))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := shadingFrames(resp)
+		if got["A"] != 1 || got["C"] != 1 || got["D"] != 1 || len(got) != 3 {
+			t.Errorf("shading frames by RefID = %v, want one each on A, C and D", got)
+		}
+		if n := len(resp.Responses["D"].Frames); n != 2 {
+			t.Errorf("D has %d frames, want the warning plus the shading frame", n)
+		}
+	})
+
+	t.Run("moves past a failed first query", func(t *testing.T) {
+		resp, err := newDS(createMockErrorResult(404, "CHANNEL_NOT_FOUND"), ok, ok).QueryData(context.Background(), newQueryRequest(queries))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.Responses["A"].Error == nil {
+			t.Fatalf("A = %+v, want an error", resp.Responses["A"])
+		}
+		got := shadingFrames(resp)
+		if got["B"] != 1 || got["C"] != 1 || got["D"] != 1 || len(got) != 3 {
+			t.Errorf("shading frames by RefID = %v, want one each on B, C and D", got)
+		}
+	})
+
+	for name, header := range map[string]map[string]string{
+		"alert requests":      {"FromAlert": "true"},
+		"expression requests": {"http_X-Grafana-From-Expr": "true"},
+	} {
+		t.Run("none for "+name, func(t *testing.T) {
+			req := newQueryRequest(queries)
+			req.Headers = header
+			resp, err := newDS(ok, ok, ok).QueryData(context.Background(), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := shadingFrames(resp); len(got) != 0 {
+				t.Errorf("shading frames by RefID = %v, want none", got)
 			}
 		})
 	}
