@@ -106,9 +106,22 @@ const getStyles = (theme: GrafanaTheme2) => ({
 
 function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const styles = useStyles2(getStyles);
+  // Grafana's Combobox can repeat a selection the query already holds. In Explore
+  // each onChange re-renders synchronously, so the repeats loop until React aborts
+  // with error #185. Skip writes that would not change the query.
+  const latestQuery = React.useRef(query);
+  latestQuery.current = query;
+  const onChangeIfChanged = React.useCallback(
+    (next: NominalQuery) => {
+      if (JSON.stringify(next) !== JSON.stringify(latestQuery.current)) {
+        onChange(next);
+      }
+    },
+    [onChange]
+  );
   const { state, commands } = useNominalQueryBuilder({
     query,
-    onChange,
+    onChange: onChangeIfChanged,
     onRunQuery,
     datasourceUrl: datasource.url,
   });
