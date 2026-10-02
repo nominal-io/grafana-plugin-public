@@ -9,11 +9,6 @@ import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/r
 import { NominalQuery, NominalDataSourceOptions, TemplateSource, DEFAULT_QUERY, QUERY_TYPE_SQL, COMPUTE_BY_RUN } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { RunItem, fetchRun, formatRunStart, searchRuns } from './utils/api';
-import {
-  buildDefaultLinks,
-  buildDefaultVariables,
-  findRunVariable,
-} from './defaultControls';
 import resourceRoutes from './resourceRoutes.json';
 
 // Lets the backend name the variable behind a bad RID in its error message.
@@ -25,6 +20,7 @@ function source(raw: string | undefined): TemplateSource | undefined {
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
 
+
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
     super(instanceSettings);
 
@@ -32,15 +28,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
   }
 
-  // Called by Grafana 13 and later at dashboard load. Grafana 12 never calls these.
-  async getDefaultVariables() {
-    const runVariable = findRunVariable(getTemplateSrv().getVariables(), this.uid);
-    return runVariable ? buildDefaultVariables(runVariable, this.uid) : [];
-  }
 
-  async getDefaultLinks() {
-    return findRunVariable(getTemplateSrv().getVariables(), this.uid) ? buildDefaultLinks() : [];
-  }
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {
     return DEFAULT_QUERY;

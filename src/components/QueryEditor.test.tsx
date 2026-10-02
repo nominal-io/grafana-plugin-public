@@ -3,7 +3,6 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
-import { CoreApp } from '@grafana/data';
 import { DataSource } from '../datasource';
 
 const DATASOURCE_URL = '/api/datasources/uid/test/resources';
@@ -36,7 +35,6 @@ const ASSET = {
 // Component tests install a URL-routing implementation in their describe block.
 const post = jest.fn();
 const publish = jest.fn();
-const partial = jest.fn();
 const mockComboboxProps = jest.fn();
 const mockMultiComboboxProps = jest.fn();
 // Per-test overrides for template variable resolution. Lets a test simulate a
@@ -96,7 +94,6 @@ jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(() => ({ post })),
   getAppEvents: jest.fn(() => ({ publish })),
-  locationService: { partial: (...args: unknown[]) => partial(...args) },
   getTemplateSrv: jest.fn(() => ({
     getVariables: () => [],
     replace: (v: string) => {
@@ -120,7 +117,6 @@ jest.mock('@grafana/runtime', () => ({
 beforeEach(() => {
   post.mockReset();
   publish.mockReset();
-  partial.mockReset();
   mockComboboxProps.mockReset();
   mockMultiComboboxProps.mockReset();
   mockReplaceOverrides = {};
@@ -255,31 +251,6 @@ describe('query API selection', () => {
     } else {
       expect(written).not.toHaveProperty('assetRid');
     }
-  });
-
-  it.each([
-    ['closed run in the panel editor', CoreApp.PanelEditor, RUN, { from: RUN.startMs, to: RUN.endMs }],
-    ['closed run on a dashboard', CoreApp.Dashboard, RUN, { from: RUN.startMs, to: RUN.endMs }],
-    ['open-ended run', CoreApp.PanelEditor, { ...RUN, endMs: undefined }, { from: RUN.startMs, to: 'now' }],
-  ])('Snap to run moves the time range to the run: %s', async (_name, app, run, want) => {
-    post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/assets-by-rid')) { return { [RUN_ASSET_RID]: { ...ASSET, rid: RUN_ASSET_RID } }; }
-      if (url.endsWith('/run')) { return run; }
-      return { results: [] };
-    });
-    const query = { refId: 'A', queryType: 'compute' as const, computeBy: 'run' as const, runRid: RUN_RID };
-    render(<QueryEditor query={query} onChange={jest.fn()} onRunQuery={jest.fn()} datasource={mockDatasource} app={app} />);
-    await settleEffects();
-    fireEvent.click(screen.getByRole('button', { name: 'Snap to run' }));
-    expect(partial).toHaveBeenCalledWith(want);
-  });
-
-  it.each([CoreApp.Explore, CoreApp.UnifiedAlerting])('hides Snap to run in %s', async (app) => {
-    const query = { refId: 'A', queryType: 'compute' as const, computeBy: 'run' as const, runRid: RUN_RID };
-    render(<QueryEditor query={query} onChange={jest.fn()} onRunQuery={jest.fn()} datasource={mockDatasource} app={app} />);
-    await settleEffects();
-    expect(screen.getByText('Window:')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Snap to run' })).not.toBeInTheDocument();
   });
 
   it('opens saved SQL in the SQL editor and switches it back to Compute', () => {

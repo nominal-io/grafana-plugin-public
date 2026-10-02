@@ -4,12 +4,7 @@ import { DataSourceInstanceSettings } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {
-    uid: string;
-    constructor(settings: { uid: string }) {
-      this.uid = settings.uid;
-    }
-  },
+  DataSourceWithBackend: class {},
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
 }));
@@ -28,6 +23,7 @@ beforeEach(() => {
 function createDataSource(): DataSource {
   const settings = {
     uid: 'test-uid',
+    jsonData: {},
   } as DataSourceInstanceSettings<NominalDataSourceOptions>;
   return new DataSource(settings);
 }
@@ -37,27 +33,6 @@ describe('backend health check routing', () => {
     const ds = createDataSource();
 
     expect(Object.prototype.hasOwnProperty.call(Object.getPrototypeOf(ds), 'testDatasource')).toBe(false);
-  });
-});
-
-describe('default dashboard controls', () => {
-  it('ships the hidden bounds and the link when the dashboard has a runs variable', async () => {
-    const ds = createDataSource();
-    mockTemplateSrv.getVariables.mockReturnValue([
-      { name: 'flight', type: 'query', query: 'runs()', datasource: { type: 'nominal-nominalds-datasource', uid: 'test-uid' } },
-    ]);
-
-    const vars = await ds.getDefaultVariables();
-    expect(vars.map((v) => v.spec.name)).toEqual(['run_start', 'run_end']);
-    expect(await ds.getDefaultLinks()).toHaveLength(1);
-  });
-
-  it('ships nothing when the dashboard has no run variable', async () => {
-    const ds = createDataSource();
-    mockTemplateSrv.getVariables.mockReturnValue([{ name: 'asset', type: 'query', query: 'assets()' }]);
-
-    expect(await ds.getDefaultVariables()).toEqual([]);
-    expect(await ds.getDefaultLinks()).toEqual([]);
   });
 });
 

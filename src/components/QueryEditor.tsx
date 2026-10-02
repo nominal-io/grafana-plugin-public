@@ -1,7 +1,6 @@
 import React, { useRef } from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
-  Button,
   Combobox,
   RadioButtonGroup,
   InlineField,
@@ -10,8 +9,7 @@ import {
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
-import { CoreApp, type GrafanaTheme2, type QueryEditorProps } from '@grafana/data';
-import { locationService } from '@grafana/runtime';
+import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import {
   COMPUTE_BY_ASSET,
@@ -114,10 +112,7 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-// Snapping rewrites the dashboard's time range, which Explore and alerting do not have.
-const SNAP_APPS: Array<CoreApp | undefined> = [CoreApp.Dashboard, CoreApp.PanelEditor];
-
-function BuilderQueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
+function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const styles = useStyles2(getStyles);
   const { state, commands } = useNominalQueryBuilder({
     query,
@@ -251,17 +246,6 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
                 </span>
                 <span className={styles.summaryLabel}>Window:</span>
                 <span className={styles.summaryPill}>{formatRunWindow(run)}</span>
-                {SNAP_APPS.includes(app) && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() =>
-                      locationService.partial({ from: run.startMs, to: run.endMs ?? 'now' })
-                    }
-                  >
-                    Snap to run
-                  </Button>
-                )}
               </>
             )}
             <span className={styles.summaryLabel}>Asset:</span>
@@ -294,7 +278,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
   );
 }
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
   // The query has one dataScopeName, so each mode's last scope is kept here and
   // restored when the user switches back. It lasts while the editor is open.
@@ -342,7 +326,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
       </Stack>
       {isSqlQuery
         ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} app={app} />}
+        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
     </Stack>
   );
 }
