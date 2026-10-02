@@ -78,9 +78,11 @@ interface Run {
 
 // A query as sent for a Logs scroll page: the id of the line the page continues from, and whether
 // the page reads newer lines. Only request copies carry these; saved queries never do.
+// templateSources is the templated RID text before interpolation, so backend errors can name the variable.
 interface PageQuery extends NominalQuery {
   scrollId?: string;
   scrollNewer?: boolean;
+  templateSources?: { assetRid?: string };
 }
 
 const runs = new Map<string, Run>();
@@ -237,6 +239,18 @@ function interpolateCatalogSearch(rawSearchText: string, scopedVars: ScopedVars)
   return interpolations.some(({ found }) => found === false) ? undefined : searchText;
 }
 
+function source(raw: string | undefined): string | undefined {
+  return raw?.includes('$') ? raw : undefined;
+}
+
+function withTemplateSources(query: NominalQuery): PageQuery {
+  if (query.queryType === QUERY_TYPE_SQL) {
+    return query;
+  }
+  const assetRid = source(query.assetRid);
+  return assetRid ? { ...query, templateSources: { assetRid } } : query;
+}
+
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
   usesOAuth: boolean;
@@ -373,7 +387,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
     const newer = from > run.from;
     const bound = newer ? from : to;
-    const targets = request.targets.map((target): PageQuery => {
+    const targets = request.targets.map((t): PageQuery => {
+      const target = withTemplateSources(t);
       const q = run.queries.get(target.refId);
       if (run !== last || !q || q.query !== querySignature(target)) {
         return target;
