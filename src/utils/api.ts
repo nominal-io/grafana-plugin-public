@@ -1,3 +1,4 @@
+import { dateTimeFormat } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 import resourceRoutes from '../resourceRoutes.json';
 
@@ -154,4 +155,37 @@ export const searchChannels = async (
     ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
     : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
+};
+
+export interface RunItem {
+  rid: string;
+  title: string;
+  runNumber: number;
+  startMs: number;
+  endMs?: number;
+  assetRids: string[];
+}
+
+/** Formats a run start as `YYYY-MM-DD HH:mm UTC`. */
+export const formatRunStart = (ms: number): string =>
+  `${dateTimeFormat(ms, { format: 'YYYY-MM-DD HH:mm', timeZone: 'utc' })} UTC`;
+
+export const searchRuns = async (
+  datasourceUrl: string,
+  request: { assetRids?: string[]; searchText?: string }
+): Promise<RunItem[]> => {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.runs}`, request);
+  return Array.isArray(response) ? response : [];
+};
+
+/** Fetches one run by RID. Returns null when the run does not exist. */
+export const fetchRun = async (datasourceUrl: string, runRid: string): Promise<RunItem | null> => {
+  try {
+    return await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.run}`, { runRid }, { showErrorAlert: false });
+  } catch (error) {
+    if ((error as { status?: number })?.status === 404) {
+      return null;
+    }
+    throw error;
+  }
 };

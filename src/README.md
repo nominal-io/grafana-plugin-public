@@ -100,6 +100,10 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
 - `channels(${asset})` returns the union of channel names across **all** data scopes on the selected asset, deduplicated by name. Most useful when your asset has a single primary data scope, or when your fleet uses a consistent scope name that you can pin as a literal in each panel's data scope field. If channels with the same name exist in multiple scopes, the variable shows the name once — the actual data returned depends on which scope is set in each panel.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
+- `runs()` returns every unarchived run in the workspace, newest first, labelled `<title> · <start UTC>`. A run on more than one asset is labelled `<title> · <start UTC> · spans N assets`. The value is the run RID.
+- `runs(${asset})` returns runs on the selected asset. With a multi-value asset variable it returns runs on any of the selected assets. If the asset variable has **Include All**, set its **Custom all value** to `*` so All means every run. Without it, All expands to the listed assets, which leaves out runs whose asset was created automatically and is hidden from asset search.
+- `runstart(${run})` and `runend(${run})` return the run's start and end in epoch milliseconds. `runend` returns `now` for a run that has not ended. Use them as hidden variables in a dashboard link, `${__url.path}?from=${run_start}&to=${run_end}`, to snap the time range to the run. With several runs selected they return the earliest start and the latest end. With the run variable on All they return nothing, and the link leaves the time range unchanged.
+- `datascopes(${run})` and `channels(${run}, ${datascope})` accept a run RID as well as an asset RID.
 
 ### Common patterns
 

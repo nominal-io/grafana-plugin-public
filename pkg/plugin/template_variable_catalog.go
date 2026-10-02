@@ -92,11 +92,21 @@ outer:
 	return result, nil
 }
 
-// assetForVariable fetches an asset by RID for a template-variable lookup,
-// wrapping any fetch failure as a templateVariableCatalogError. A nil asset
-// with a nil error means the asset was not found; callers treat that as an
-// empty result.
-func (c *TemplateVariableCatalog) assetForVariable(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+// assetForVariable fetches the asset for a template-variable lookup. A run RID
+// resolves to the run's asset. A nil asset with a nil error means nothing was
+// found, including a run with several assets; callers return an empty list.
+func (c *TemplateVariableCatalog) assetForVariable(ctx context.Context, config *models.PluginSettings, assetOrRunRid string) (*SingleAssetResponse, error) {
+	assetRid := assetOrRunRid
+	if ridHasType(assetOrRunRid, "run") {
+		run, err := c.nominal.FetchRunByRid(ctx, config, assetOrRunRid)
+		if err != nil {
+			return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}
+		}
+		if run == nil || len(run.Assets) != 1 {
+			return nil, nil
+		}
+		assetRid = run.Assets[0]
+	}
 	asset, err := c.nominal.FetchAssetByRid(ctx, config, assetRid)
 	if err != nil {
 		return nil, &templateVariableCatalogError{kind: templateVariableAssetFetchError, err: err}

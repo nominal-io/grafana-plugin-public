@@ -3,6 +3,7 @@ import {
   DataScope,
   createBasicAsset,
   fetchAssetByRid,
+  fetchRun,
   getDataSourceRid,
   searchChannels,
   getSupportedScopeNames,
@@ -191,5 +192,17 @@ describe('searchChannels', () => {
       },
       { requestId: 'nominal-channel-options-1' }
     );
+  });
+});
+
+describe('fetchRun', () => {
+  it('returns null on a 404', async () => {
+    post.mockRejectedValue({ status: 404 });
+    expect(await fetchRun(DATASOURCE_URL, 'ri.scout.main.run.x')).toBeNull();
+  });
+
+  it('rethrows other errors', async () => {
+    post.mockRejectedValue({ status: 500 });
+    await expect(fetchRun(DATASOURCE_URL, 'ri.scout.main.run.x')).rejects.toEqual({ status: 500 });
   });
 });

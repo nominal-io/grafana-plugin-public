@@ -104,6 +104,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		computeService:      computeapi1.NewComputeServiceClient(conjureClient),
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
+		runService:          newRunAPIClient(conjureClient),
 		workspaceRid:        workspaceRid,
 		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
 		sqlConn:             sqlConn,
@@ -112,7 +113,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	if sqlConn != nil {
 		ds.sqlService = sqlv1.NewSqlServiceClient(sqlConn)
 	}
-	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService, ds.runService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
 
 	return ds, nil
@@ -125,6 +126,7 @@ type Datasource struct {
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 	workspaceService  workspaceapi.WorkspaceServiceClient
+	runService        runAPI
 
 	workspaceRid *rids.WorkspaceRid
 	sqlService   sqlv1.SqlServiceClient

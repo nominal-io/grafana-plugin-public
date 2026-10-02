@@ -8,6 +8,7 @@ import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/r
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
+import { RunItem, fetchRun, formatRunStart, searchRuns } from './utils/api';
 import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -70,12 +71,31 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
-   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
+   * - "datascopes(<assetRid | runRid>)": Returns datascopes for a specific asset or run
+   * - "runs()", "runs(<assetRid>[,<assetRid>...])": Returns runs (text=title and start, value=rid); empty or "*" means all runs
+   * - "runstart(<runRid>[,<runRid>...])", "runend(...)": Returns the earliest start or latest end in epoch ms
+   *   ("now" if a run has not ended); empty when the run variable is All
    */
   async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
     const scopedVars = options?.scopedVars;
+
+    const runsMatch = trimmedQuery.match(/^runs\(([^)]*)\)$/i);
+    if (runsMatch) {
+      const assetArg = getTemplateSrv().replace(runsMatch[1].trim(), scopedVars, joinValues);
+      return this.fetchRunVariables(assetFilter(assetArg));
+    }
+
+    const runBoundMatch = trimmedQuery.match(/^run(start|end)\(([^)]+)\)$/i);
+    if (runBoundMatch) {
+      const arg = runBoundMatch[2].trim();
+      if (isAllSelected(arg)) {
+        return [];
+      }
+      const runRids = splitRids(getTemplateSrv().replace(arg, scopedVars, joinValues));
+      return this.fetchRunBoundVariable(runRids, runBoundMatch[1].toLowerCase() === 'start' ? 'start' : 'end');
+    }
 
     // Handle channels query: channels(<assetRid>) or channels(<assetRid>, <dataScopeName>)
     const channelsMatch = trimmedQuery.match(/^channels\(([^,)]+)(?:,\s*([^)]+))?\)$/i);
@@ -134,6 +154,48 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       }
       return { text: obj.text, value: obj.value };
     });
+  }
+
+  private async fetchRunVariables(assetRids: string[]): Promise<MetricFindValue[]> {
+    let runs: RunItem[];
+    try {
+      runs = await searchRuns(this.url, { assetRids });
+    } catch {
+      throw new Error('Unable to load Nominal runs for the variable query.');
+    }
+    return runs.map((run) => {
+      const spans = run.assetRids.length > 1 ? ` · spans ${run.assetRids.length} assets` : '';
+      return { text: `${run.title} · ${formatRunStart(run.startMs)}${spans}`, value: run.rid };
+    });
+  }
+
+  // Several runs span from the earliest start to the latest end of the runs
+  // that loaded. Runs that failed or were not found are left out and logged.
+  private async fetchRunBoundVariable(runRids: string[], bound: 'start' | 'end'): Promise<MetricFindValue[]> {
+    if (runRids.length === 0) {
+      return [];
+    }
+    const results = await Promise.allSettled(runRids.map((rid) => fetchRun(this.url, rid)));
+    const loaded = results.map((r) => (r.status === 'fulfilled' ? r.value : null));
+    const runs = loaded.filter((run) => run !== null);
+    const skipped = runRids.filter((_, i) => loaded[i] === null);
+    if (runs.length === 0 && results.some((r) => r.status === 'rejected')) {
+      throw new Error('Unable to load the Nominal run for the variable query.');
+    }
+    if (runs.length === 0) {
+      return [];
+    }
+    if (skipped.length > 0) {
+      console.warn(`Nominal run${bound}: left out runs that failed to load or were not found`, skipped);
+    }
+    const ends = runs.flatMap((run) => (run.endMs === undefined ? [] : [run.endMs]));
+    const value =
+      bound === 'start'
+        ? String(Math.min(...runs.map((run) => run.startMs)))
+        : ends.length < runs.length
+          ? 'now'
+          : String(Math.max(...ends));
+    return [{ text: value, value }];
   }
 
   private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
@@ -203,4 +265,28 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   // No custom query method - let DataSourceWithBackend handle routing to Go backend
+}
+
+const joinValues = (value: string | string[]) => (Array.isArray(value) ? value.join(',') : value);
+
+// Empty text or an unresolved variable gives no RIDs.
+const splitRids = (arg: string) =>
+  arg.includes('$')
+    ? []
+    : arg
+        .split(',')
+        .map((rid) => rid.trim())
+        .filter(Boolean);
+
+// A run variable set to All expands to every listed run, which is no window to snap to.
+function isAllSelected(arg: string): boolean {
+  const name = arg.match(/^\$\{?(\w+)/)?.[1];
+  const variable = getTemplateSrv().getVariables().find((v) => v.name === name);
+  const value = variable && 'current' in variable ? variable.current.value : undefined;
+  return value === '$__all' || (Array.isArray(value) && value.includes('$__all'));
+}
+
+// Empty, '*' (the custom All value) or an unresolved variable means no asset filter.
+function assetFilter(arg: string): string[] {
+  return arg === '*' ? [] : splitRids(arg);
 }

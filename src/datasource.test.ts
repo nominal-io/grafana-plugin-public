@@ -9,7 +9,7 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: jest.fn(),
 }));
 
-const mockTemplateSrv = { replace: jest.fn((v: string) => v) };
+const mockTemplateSrv = { replace: jest.fn((v: string) => v), getVariables: jest.fn(() => [] as Array<Record<string, unknown>>) };
 const mockBackendSrv = { post: jest.fn() };
 
 beforeEach(() => {
@@ -17,6 +17,7 @@ beforeEach(() => {
   (getTemplateSrv as jest.Mock).mockReturnValue(mockTemplateSrv);
   (getBackendSrv as jest.Mock).mockReturnValue(mockBackendSrv);
   mockTemplateSrv.replace.mockImplementation((v: string) => v);
+  mockTemplateSrv.getVariables.mockReturnValue([]);
 });
 
 function createDataSource(): DataSource {
@@ -303,5 +304,119 @@ describe('validateMetricFindResponse', () => {
     mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
 
     await expect(ds.metricFindQuery('assets')).rejects.toThrow('Unable to load Nominal assets');
+  });
+});
+
+describe('run variable queries', () => {
+  let ds: DataSource;
+  const run = { rid: 'ri.scout.main.run.r1', title: 'Hot fire', runNumber: 7, startMs: 1700000000000, assetRids: [] };
+
+  beforeEach(() => {
+    ds = createDataSource();
+    mockBackendSrv.post.mockResolvedValue([run]);
+  });
+
+  it.each([
+    ['runs()', '', []],
+    ['runs(*)', '*', []],
+    ['runs($asset)', 'ri.scout.main.asset.a', ['ri.scout.main.asset.a']],
+    ['runs($asset)', ['a', 'b'], ['a', 'b']],
+    ['runs($asset)', '$asset', []],
+  ])('%s with replacement %j sends assetRids %j', async (query, replaced, want) => {
+    mockTemplateSrv.replace.mockImplementation((_v: string, _s?: unknown, format?: any) =>
+      Array.isArray(replaced) ? format(replaced) : replaced
+    );
+    await ds.metricFindQuery(query);
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/runs'),
+      { assetRids: want }
+    );
+  });
+
+  it('labels run options with title and UTC start, valued by RID, and marks multi-asset runs', async () => {
+    const multi = { ...run, rid: 'ri.scout.main.run.r2', title: 'Two stage', assetRids: ['a', 'b'] };
+    mockBackendSrv.post.mockResolvedValue([run, multi]);
+    expect(await ds.metricFindQuery('runs()')).toEqual([
+      { text: 'Hot fire · 2023-11-14 22:13 UTC', value: run.rid },
+      { text: 'Two stage · 2023-11-14 22:13 UTC · spans 2 assets', value: multi.rid },
+    ]);
+  });
+
+  it('runstart returns the start in ms', async () => {
+    mockBackendSrv.post.mockResolvedValue(run);
+    expect(await ds.metricFindQuery(`runstart(${run.rid})`)).toEqual([{ text: '1700000000000', value: '1700000000000' }]);
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(expect.stringMatching(/\/run$/), { runRid: run.rid }, expect.anything());
+  });
+
+  it('runend returns the end in ms, or now for a run that has not ended', async () => {
+    mockBackendSrv.post.mockResolvedValue({ ...run, endMs: 1700000100000 });
+    expect(await ds.metricFindQuery(`runend(${run.rid})`)).toEqual([{ text: '1700000100000', value: '1700000100000' }]);
+    mockBackendSrv.post.mockResolvedValue(run);
+    expect(await ds.metricFindQuery(`runend(${run.rid})`)).toEqual([{ text: 'now', value: 'now' }]);
+  });
+
+  describe('several runs', () => {
+    const early = { ...run, rid: 'ri.scout.main.run.early', startMs: 1000, endMs: 2000 };
+    const late = { ...run, rid: 'ri.scout.main.run.late', startMs: 3000, endMs: 4000 };
+    const open = { ...run, rid: 'ri.scout.main.run.open', startMs: 5000 };
+    const byRid: Record<string, unknown> = { [early.rid]: early, [late.rid]: late, [open.rid]: open };
+
+    beforeEach(() => {
+      mockBackendSrv.post.mockImplementation(
+        async (_url: string, body: { runRid: string }) => byRid[body.runRid] ?? null
+      );
+    });
+
+    it.each([
+      ['runstart', [late.rid, early.rid], '1000'],
+      ['runend', [late.rid, early.rid], '4000'],
+      ['runend', [early.rid, open.rid], 'now'],
+      ['runend', [early.rid, 'ri.scout.main.run.deleted'], '2000'],
+    ])('%s($run) over %j is %s', async (fn, rids, want) => {
+      mockTemplateSrv.replace.mockImplementation((_v: string, _s?: unknown, format?: any) => format(rids));
+      expect(await ds.metricFindQuery(`${fn}($run)`)).toEqual([{ text: want, value: want }]);
+    });
+
+    it('spans the runs that loaded and logs the ones that failed', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockBackendSrv.post.mockImplementation(async (_url: string, body: { runRid: string }) => {
+        if (body.runRid === 'ri.scout.main.run.broken') {
+          throw { status: 500 };
+        }
+        return byRid[body.runRid] ?? null;
+      });
+      mockTemplateSrv.replace.mockImplementation((_v: string, _s?: unknown, format?: any) =>
+        format([early.rid, 'ri.scout.main.run.broken', late.rid])
+      );
+      expect(await ds.metricFindQuery('runend($run)')).toEqual([{ text: '4000', value: '4000' }]);
+      expect(warn).toHaveBeenCalledWith(expect.any(String), ['ri.scout.main.run.broken']);
+    });
+
+    it('throws a user-safe error when every run fails to load', async () => {
+      mockBackendSrv.post.mockRejectedValue({ status: 500 });
+      mockTemplateSrv.replace.mockImplementation((_v: string, _s?: unknown, format?: any) => format([early.rid]));
+      await expect(ds.metricFindQuery('runstart($run)')).rejects.toThrow(
+        'Unable to load the Nominal run for the variable query.'
+      );
+    });
+
+    it.each(['$__all', ['$__all']])('returns empty without a request when the run variable is All (%j)', async (v) => {
+      mockTemplateSrv.getVariables.mockReturnValue([{ name: 'run', current: { value: v } }]);
+      mockTemplateSrv.replace.mockImplementation((_v: string, _s?: unknown, format?: any) =>
+        format([early.rid, late.rid])
+      );
+      expect(await ds.metricFindQuery('runstart(${run})')).toEqual([]);
+      expect(mockBackendSrv.post).not.toHaveBeenCalled();
+    });
+  });
+
+  it('runend with an unresolved variable returns empty without a request', async () => {
+    expect(await ds.metricFindQuery('runend($run)')).toEqual([]);
+    expect(mockBackendSrv.post).not.toHaveBeenCalled();
+  });
+
+  it('throws a user-safe error when the runs request fails', async () => {
+    mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
+    await expect(ds.metricFindQuery('runs()')).rejects.toThrow('Unable to load Nominal runs for the variable query.');
   });
 });
