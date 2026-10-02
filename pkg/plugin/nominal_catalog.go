@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,9 @@ import (
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	scoutrids "github.com/nominal-io/nominal-api-go/scout/rids/api"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	runapi1 "github.com/nominal-io/nominal-api-go/scout/run/api1"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 	"golang.org/x/sync/singleflight"
@@ -25,6 +29,9 @@ import (
 
 // catalogCacheTTL controls how long fetched assets and channel metadata are cached.
 const catalogCacheTTL = 5 * time.Minute
+
+// openRunCacheTTL is shorter so a run that ends is seen as ended soon after.
+const openRunCacheTTL = time.Minute
 
 // A cache-miss load runs detached from its caller, so this is the only bound on
 // that work. For a metadata lookup it covers the asset fetch plus the channel
@@ -39,17 +46,17 @@ type channelMetadataCacheEntry struct {
 	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
 }
 
-// ttlCacheEntry pairs a cached value with the time it was stored.
+// ttlCacheEntry pairs a cached value with the time it expires.
 type ttlCacheEntry[V any] struct {
 	value     V
-	fetchedAt time.Time
+	expiresAt time.Time
 }
 
-// ttlCache is a mutex-guarded cache whose entries expire ttl after they are
-// stored. Concurrent cache misses for the same key coalesce into one detached
-// backend load.
+// ttlCache is a mutex-guarded cache whose entries expire ttlFor(value) after
+// they are stored. Concurrent cache misses for the same key coalesce into one
+// detached backend load.
 type ttlCache[V any] struct {
-	ttl time.Duration
+	ttlFor func(V) time.Duration
 
 	mu      sync.Mutex
 	entries map[string]ttlCacheEntry[V] // guarded by mu
@@ -57,8 +64,12 @@ type ttlCache[V any] struct {
 }
 
 func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
+	return newTTLCacheFunc(func(V) time.Duration { return ttl })
+}
+
+func newTTLCacheFunc[V any](ttlFor func(V) time.Duration) *ttlCache[V] {
 	return &ttlCache[V]{
-		ttl:     ttl,
+		ttlFor:  ttlFor,
 		entries: make(map[string]ttlCacheEntry[V]),
 	}
 }
@@ -68,7 +79,7 @@ func (c *ttlCache[V]) lookup(key string) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || time.Since(entry.fetchedAt) >= c.ttl {
+	if !ok || !time.Now().Before(entry.expiresAt) {
 		var zero V
 		return zero, false
 	}
@@ -78,7 +89,7 @@ func (c *ttlCache[V]) lookup(key string) (V, bool) {
 func (c *ttlCache[V]) store(key string, value V) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = ttlCacheEntry[V]{value: value, fetchedAt: time.Now()}
+	c.entries[key] = ttlCacheEntry[V]{value: value, expiresAt: time.Now().Add(c.ttlFor(value))}
 }
 
 // get returns the cached value for key, coalescing concurrent misses for the
@@ -123,16 +134,20 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
+	runService         runAPI
 
 	assetCache           *ttlCache[*SingleAssetResponse]
+	runCache             *ttlCache[*RunResponse]
 	channelMetadataCache *ttlCache[channelMetadataCacheEntry]
 }
 
-func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
+func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient, runService runAPI) *NominalCatalog {
 	return &NominalCatalog{
 		resourceHTTPClient:   resourceHTTPClient,
 		datasourceService:    datasourceService,
+		runService:           runService,
 		assetCache:           newTTLCache[*SingleAssetResponse](catalogCacheTTL),
+		runCache:             newTTLCacheFunc(runCacheTTL),
 		channelMetadataCache: newTTLCache[channelMetadataCacheEntry](catalogCacheTTL),
 	}
 }
@@ -363,6 +378,139 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	}
 
 	return allResults, nil
+}
+
+// maxRunResults caps one run search, which is also the size of one page.
+const maxRunResults = 500
+
+// RunResponse holds the run fields the plugin reads.
+type RunResponse struct {
+	Rid       string
+	RunNumber int64
+	Title     string
+	StartTime time.Time
+	EndTime   *time.Time
+	Assets    []string
+}
+
+func runFromAPI(run runapi1.Run) RunResponse {
+	out := RunResponse{
+		Rid:       run.Rid.String(),
+		RunNumber: int64(run.RunNumber),
+		Title:     run.Title,
+		StartTime: utcTime(run.StartTime),
+		Assets:    make([]string, len(run.Assets)),
+	}
+	for i, assetRid := range run.Assets {
+		out.Assets[i] = assetRid.String()
+	}
+	if run.EndTime != nil {
+		end := utcTime(*run.EndTime)
+		out.EndTime = &end
+	}
+	return out
+}
+
+func utcTime(ts runapi.UtcTimestamp) time.Time {
+	var nanos int64
+	if ts.OffsetNanoseconds != nil {
+		nanos = int64(*ts.OffsetNanoseconds)
+	}
+	return time.Unix(int64(ts.SecondsSinceEpoch), nanos).UTC()
+}
+
+func (r *RunResponse) clone() *RunResponse {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.Assets = slices.Clone(r.Assets)
+	if r.EndTime != nil {
+		end := *r.EndTime
+		out.EndTime = &end
+	}
+	return &out
+}
+
+// ridHasType reports whether value parses as a RID of the given type, such as "run" or "asset".
+func ridHasType(value, ridType string) bool {
+	parsed, err := rid.ParseRID(value)
+	return err == nil && parsed.Type == ridType
+}
+
+func runCacheTTL(run *RunResponse) time.Duration {
+	if run != nil && run.EndTime == nil {
+		return openRunCacheTTL
+	}
+	return catalogCacheTTL
+}
+
+// FetchRunByRid fetches one run, cached like assets, or briefly while it has no
+// end. A not-found run is cached and returned as nil.
+func (c *NominalCatalog) FetchRunByRid(ctx context.Context, config *models.PluginSettings, runRid string) (*RunResponse, error) {
+	parsed, err := rid.ParseRID(runRid)
+	if err != nil {
+		return nil, fmt.Errorf("invalid run RID %q: %w", runRid, err)
+	}
+	key := runapi.RunRid(parsed)
+	run, err := c.runCache.get(ctx, runRid, func(fetchCtx context.Context) (*RunResponse, error) {
+		runs, err := c.runService.GetRuns(fetchCtx, bearertoken.Token(config.Secrets.ApiKey), []runapi.RunRid{key})
+		if err != nil {
+			return nil, err
+		}
+		found, ok := runs[key]
+		if !ok {
+			return nil, nil
+		}
+		out := runFromAPI(found)
+		return &out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return run.clone(), nil
+}
+
+// SearchRuns returns unarchived runs, newest first. A non-empty assetRids keeps
+// runs on any of those assets.
+func (c *NominalCatalog) SearchRuns(ctx context.Context, config *models.PluginSettings, assetRids []string, searchText string) ([]RunResponse, error) {
+	clauses := []runapi.SearchQuery{runapi.NewSearchQueryFromArchived(false)}
+	if len(assetRids) > 0 {
+		anyAsset := make([]runapi.SearchQuery, len(assetRids))
+		for i, assetRid := range assetRids {
+			parsed, err := rid.ParseRID(assetRid)
+			if err != nil {
+				return nil, fmt.Errorf("invalid asset RID %q: %w", assetRid, err)
+			}
+			anyAsset[i] = runapi.NewSearchQueryFromAsset(scoutrids.AssetRid(parsed))
+		}
+		clauses = append(clauses, runapi.NewSearchQueryFromOr(anyAsset))
+	}
+	if searchText != "" {
+		clauses = append(clauses, runapi.NewSearchQueryFromSearchText(searchText))
+	}
+	workspaceRid, err := parseWorkspaceRid(config.WorkspaceRid)
+	if err != nil {
+		return nil, err
+	}
+	if workspaceRid != nil {
+		clauses = append(clauses, runapi.NewSearchQueryFromWorkspace(*workspaceRid))
+	}
+
+	sortKey := runapi.NewSortKeyFromField(runapi.New_SortField(runapi.SortField_START_TIME))
+	resp, err := c.runService.SearchRuns(ctx, bearertoken.Token(config.Secrets.ApiKey), runapi.SearchRunsRequest{
+		Query:    runapi.NewSearchQueryFromAnd(clauses),
+		Sort:     runapi.SortOptions{IsDescending: true, SortKey: &sortKey},
+		PageSize: maxRunResults,
+	})
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]RunResponse, len(resp.Results))
+	for i, run := range resp.Results {
+		runs[i] = runFromAPI(run)
+	}
+	return runs, nil
 }
 
 // InferChannelMetadata verifies (or backfills) channel metadata — both data type

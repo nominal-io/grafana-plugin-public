@@ -1,3 +1,4 @@
+import { dateTimeFormat } from '@grafana/data';
 import { getBackendSrv } from '@grafana/runtime';
 import resourceRoutes from '../resourceRoutes.json';
 
@@ -154,4 +155,53 @@ export const searchChannels = async (
     ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
     : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
+};
+
+export interface RunItem {
+  rid: string;
+  title: string;
+  runNumber: number;
+  startMs: number;
+  endMs?: number;
+  assetRids: string[];
+}
+
+/** Formats a run start as `YYYY-MM-DD HH:mm UTC`. */
+export const formatRunStart = (ms: number): string =>
+  `${dateTimeFormat(ms, { format: 'YYYY-MM-DD HH:mm', timeZone: 'utc' })} UTC`;
+
+const toDuration = (ms: number): string => {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const [h, m, sec] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
+  return [h > 0 && `${h}h`, (h > 0 || m > 0) && `${m}m`, `${sec}s`].filter(Boolean).join(' ');
+};
+
+/** `start → end UTC (duration)`, or `start → now UTC` for a run that has not ended. */
+export const formatRunWindow = (run: RunItem): string => {
+  const format = (ms: number) => dateTimeFormat(ms, { format: 'YYYY-MM-DD HH:mm:ss', timeZone: 'utc' });
+  const start = format(run.startMs);
+  if (run.endMs === undefined) {
+    return `${start} → now UTC`;
+  }
+  return `${start} → ${format(run.endMs)} UTC (${toDuration(run.endMs - run.startMs)})`;
+};
+
+export const searchRuns = async (
+  datasourceUrl: string,
+  request: { assetRids?: string[]; searchText?: string }
+): Promise<RunItem[]> => {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.runs}`, request);
+  return Array.isArray(response) ? response : [];
+};
+
+/** Fetches one run by RID. Returns null when the run does not exist. */
+export const fetchRun = async (datasourceUrl: string, runRid: string): Promise<RunItem | null> => {
+  try {
+    return await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.run}`, { runRid }, { showErrorAlert: false });
+  } catch (error) {
+    if ((error as { status?: number })?.status === 404) {
+      return null;
+    }
+    throw error;
+  }
 };

@@ -34,6 +34,10 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
 		return h.handleChannelVariables(ctx, req, sender)
+	case "runs":
+		return h.handleRuns(ctx, req, sender)
+	case "run":
+		return h.handleRun(ctx, req, sender)
 	// Old names kept for browser tabs holding a stale bundle.
 	case "search-assets", "scout/v1/search-assets":
 		return h.handleSearchAssets(ctx, req, sender)

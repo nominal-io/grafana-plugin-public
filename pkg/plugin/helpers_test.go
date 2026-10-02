@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,7 +26,11 @@ import (
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	scoutrids "github.com/nominal-io/nominal-api-go/scout/rids/api"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	runapi1 "github.com/nominal-io/nominal-api-go/scout/run/api1"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
 	"github.com/palantir/pkg/safelong"
 	"github.com/palantir/pkg/uuid"
 )
@@ -247,7 +252,7 @@ func newTestDatasource(baseURL string, authSvc authapi.AuthenticationServiceV2Cl
 
 // withCatalog wires a test Datasource to a catalog the way NewDatasource does.
 func withCatalog(ds *Datasource) *Datasource {
-	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
+	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService, ds.runService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
 	return ds
 }
@@ -784,4 +789,87 @@ func createMockLogPointResult(message string, args map[string]string) computeapi
 	return computeapi.ComputeWithUnitsResult{
 		ComputeResult: computeResult,
 	}
+}
+
+// mockRunService serves the given runs and records run searches.
+type mockRunService struct {
+	runs     []runapi1.Run
+	fetches  atomic.Int64
+	mu       sync.Mutex
+	searches []runapi.SearchRunsRequest
+}
+
+var _ runAPI = (*mockRunService)(nil)
+
+func newMockRunService(runs ...runapi1.Run) *mockRunService {
+	return &mockRunService{runs: runs}
+}
+
+func (m *mockRunService) GetRuns(_ context.Context, _ bearertoken.Token, runRids []runapi.RunRid) (map[runapi.RunRid]runapi1.Run, error) {
+	m.fetches.Add(1)
+	found := map[runapi.RunRid]runapi1.Run{}
+	for _, run := range m.runs {
+		if slices.Contains(runRids, run.Rid) {
+			found[run.Rid] = run
+		}
+	}
+	return found, nil
+}
+
+func (m *mockRunService) SearchRuns(_ context.Context, _ bearertoken.Token, req runapi.SearchRunsRequest) (runapi1.SearchRunsResponse, error) {
+	m.mu.Lock()
+	m.searches = append(m.searches, req)
+	m.mu.Unlock()
+	return runapi1.SearchRunsResponse{Results: m.runs}, nil
+}
+
+// lastSearchQuery returns the last search query as the JSON the Nominal API receives.
+func (m *mockRunService) lastSearchQuery(t *testing.T) any {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.searches) == 0 {
+		t.Fatal("no run search was made")
+	}
+	return roundTripJSON(t, m.searches[len(m.searches)-1].Query)
+}
+
+// roundTripJSON returns v decoded from its JSON, so typed and literal values compare equal.
+func roundTripJSON(t *testing.T, v any) any {
+	t.Helper()
+	var out any
+	if err := json.Unmarshal(mustMarshal(v), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func mustParseRID(s string) rid.ResourceIdentifier {
+	parsed, err := rid.ParseRID(s)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
+
+func testRun(runRid string, assetRids ...string) runapi1.Run {
+	assets := make([]scoutrids.AssetRid, len(assetRids))
+	for i, assetRid := range assetRids {
+		assets[i] = scoutrids.AssetRid(mustParseRID(assetRid))
+	}
+	end := runapi.UtcTimestamp{SecondsSinceEpoch: 1700003600}
+	return runapi1.Run{
+		Rid:       runapi.RunRid(mustParseRID(runRid)),
+		RunNumber: 7,
+		Title:     "Hot fire " + runRid[len(runRid)-1:],
+		StartTime: runapi.UtcTimestamp{SecondsSinceEpoch: 1700000000},
+		EndTime:   &end,
+		Assets:    assets,
+	}
+}
+
+// withRunService rebuilds a test Datasource's catalogs around a run service.
+func withRunService(ds *Datasource, runService runAPI) *Datasource {
+	ds.runService = runService
+	return withCatalog(ds)
 }

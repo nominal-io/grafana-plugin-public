@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
@@ -34,7 +35,7 @@ func TestTemplateVariableCatalogAssetsFiltersAndShapesMetricFindValues(t *testin
 	server := newTestAssetServer(t, nil, searchResults)
 	defer server.Close()
 
-	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
@@ -57,6 +58,7 @@ func TestTemplateVariableCatalogAssetsFiltersAndShapesMetricFindValues(t *testin
 
 func TestTemplateVariableCatalogDatascopesFiltersAndHandlesUnresolvedVariables(t *testing.T) {
 	assetRid := "ri.scout.main.asset.1"
+	otherRid := "ri.scout.main.asset.2"
 	datasetRid := "ri.scout.main.data-source.dataset1"
 	videoRid := "ri.scout.main.data-source.video1"
 	server := newTestAssetServer(t, map[string]SingleAssetResponse{
@@ -71,7 +73,11 @@ func TestTemplateVariableCatalogDatascopesFiltersAndHandlesUnresolvedVariables(t
 	}, nil)
 	defer server.Close()
 
-	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	runService := newMockRunService(
+		testRun("ri.scout.main.run.1", assetRid),
+		testRun("ri.scout.main.run.2", assetRid, otherRid),
+	)
+	nominalCatalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, runService)
 	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
@@ -80,23 +86,28 @@ func TestTemplateVariableCatalogDatascopesFiltersAndHandlesUnresolvedVariables(t
 		},
 	}
 
-	values, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: assetRid})
-	if err != nil {
-		t.Fatalf("Datascopes returned error: %v", err)
+	supported := []metricFindValue{{Text: "supported", Value: "supported"}}
+	tests := []struct {
+		name string
+		rid  string
+		want []metricFindValue
+	}{
+		{"asset RID", assetRid, supported},
+		{"single-asset run", "ri.scout.main.run.1", supported},
+		{"multi-asset run", "ri.scout.main.run.2", []metricFindValue{}},
+		{"unknown run", "ri.scout.main.run.9", []metricFindValue{}},
+		{"unresolved variable", "$asset", []metricFindValue{}},
 	}
-	if len(values) != 1 {
-		t.Fatalf("len(values) = %d, want 1: %v", len(values), values)
-	}
-	if values[0] != (metricFindValue{Text: "supported", Value: "supported"}) {
-		t.Fatalf("values[0] = %+v, want supported metric value", values[0])
-	}
-
-	unresolved, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: "$asset"})
-	if err != nil {
-		t.Fatalf("unresolved Datascopes returned error: %v", err)
-	}
-	if len(unresolved) != 0 {
-		t.Fatalf("unresolved values = %v, want empty", unresolved)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			values, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: tt.rid})
+			if err != nil {
+				t.Fatalf("Datascopes returned error: %v", err)
+			}
+			if !reflect.DeepEqual(values, tt.want) {
+				t.Fatalf("values = %+v, want %+v", values, tt.want)
+			}
+		})
 	}
 }
 
@@ -123,7 +134,7 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 			},
 		},
 	}
-	nominalCatalog := newNominalCatalog(server.Client(), mockDS)
+	nominalCatalog := newNominalCatalog(server.Client(), mockDS, newMockRunService(testRun("ri.scout.main.run.1", assetRid)))
 	templateCatalog := newTemplateVariableCatalog(nominalCatalog)
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
@@ -144,6 +155,14 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	}
 	if got := mockDS.searchChannelsCallCount(); got != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", got)
+	}
+
+	fromRun, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: "ri.scout.main.run.1", DataScopeName: "scope-a"})
+	if err != nil {
+		t.Fatalf("run ChannelVariables returned error: %v", err)
+	}
+	if !reflect.DeepEqual(fromRun, values) {
+		t.Fatalf("run values = %+v, want %+v", fromRun, values)
 	}
 
 	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: assetRid, DataScopeName: "$scope"})

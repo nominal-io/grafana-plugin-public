@@ -4,5 +4,7 @@
   "channels": "channels",
   "assets": "assets",
   "datascopes": "datascopes",
-  "channelVariables": "channelvariables"
+  "channelVariables": "channelvariables",
+  "runs": "runs",
+  "run": "run"
 }

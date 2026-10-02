@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	runapi1 "github.com/nominal-io/nominal-api-go/scout/run/api1"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
@@ -130,7 +132,7 @@ func TestNominalCatalogDataSourceRidsForScopeFiltersExactScope(t *testing.T) {
 		},
 	}
 
-	catalog := newNominalCatalog(nil, nil)
+	catalog := newNominalCatalog(nil, nil, nil)
 	got := catalog.DataSourceRidsForScope(asset, "scope-a")
 	if len(got) != 3 {
 		t.Fatalf("len(DataSourceRidsForScope) = %d, want 3; got %v", len(got), got)
@@ -154,7 +156,7 @@ func TestNominalCatalogDataSourceRidsForScopeSupportsExactAndAllScopes(t *testin
 	logSetRid := "ri.scout.main.data-source.logset1"
 	otherRid := "ri.scout.main.data-source.other"
 	malformedRid := "not-a-rid"
-	catalog := newNominalCatalog(nil, nil)
+	catalog := newNominalCatalog(nil, nil, nil)
 
 	asset := &SingleAssetResponse{
 		Rid:   "ri.scout.main.asset.asset1",
@@ -187,7 +189,7 @@ func TestNominalCatalogDataSourceRidsForScopeSupportsExactAndAllScopes(t *testin
 
 func TestNominalCatalogHasSupportedDataSource(t *testing.T) {
 	datasetRid := "ri.scout.main.data-source.dataset1"
-	catalog := newNominalCatalog(nil, nil)
+	catalog := newNominalCatalog(nil, nil, nil)
 
 	supported := AssetSearchResult{
 		Rid:   "ri.scout.main.asset.supported",
@@ -232,7 +234,7 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 			ApiKey: "test-key",
 		},
 	}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 
 	first, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
 	if err != nil {
@@ -274,7 +276,7 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 			ApiKey: "test-key",
 		},
 	}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 
 	first, err := catalog.FetchAssetByRid(context.Background(), config, assetRid)
 	if err != nil {
@@ -320,7 +322,7 @@ func TestNominalCatalogFetchAssetByRidCachesNotFound(t *testing.T) {
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
 	}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 
 	first, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing")
 	if err != nil {
@@ -354,7 +356,7 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 			ApiKey: "test-key",
 		},
 	}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, "ri.scout.main.asset.missing"); err == nil {
 		t.Fatal("FetchAssetByRid error = nil, want non-nil")
@@ -381,7 +383,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 			ApiKey: "test-key",
 		},
 	}
-	catalog := newNominalCatalog(nil, &mockDatasourceService{})
+	catalog := newNominalCatalog(nil, &mockDatasourceService{}, nil)
 
 	if _, err := catalog.FetchAssetByRid(context.Background(), config, assetRid); err == nil || !strings.Contains(err.Error(), "resource HTTP client is not configured") {
 		t.Fatalf("FetchAssetByRid error = %v, want missing resource HTTP client error", err)
@@ -394,7 +396,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 func TestTTLCacheExpiredEntryReloads(t *testing.T) {
 	cache := newTTLCache[string](catalogCacheTTL)
 	cache.mu.Lock()
-	cache.entries["key"] = ttlCacheEntry[string]{value: "stale", fetchedAt: time.Now().Add(-catalogCacheTTL)}
+	cache.entries["key"] = ttlCacheEntry[string]{value: "stale", expiresAt: time.Now()}
 	cache.mu.Unlock()
 
 	loads := 0
@@ -446,7 +448,7 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 			ApiKey: "test-key",
 		},
 	}
-	catalog := newNominalCatalog(server.Client(), mockDS)
+	catalog := newNominalCatalog(server.Client(), mockDS, nil)
 
 	first := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
 	catalog.InferChannelMetadata(context.Background(), config, &first)
@@ -870,7 +872,7 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 	})
 
 	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 	var canceled, survivor assetLookupResult
 	runSurvivingCallerScenario(t, blocker,
 		func(ctx context.Context) {
@@ -919,7 +921,7 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 		},
 	}
 	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-	catalog := newNominalCatalog(server.Client(), mockDS)
+	catalog := newNominalCatalog(server.Client(), mockDS, nil)
 	canceledModel := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
 	survivorModel := canceledModel
 	runSurvivingCallerScenario(t, blocker,
@@ -962,7 +964,7 @@ func TestNominalCatalogFetchAssetByRidSharesFailureAndRetriesAfter(t *testing.T)
 	})
 
 	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{}, nil)
 
 	results := make([]assetLookupResult, callers)
 	var wg sync.WaitGroup
@@ -1044,7 +1046,7 @@ func TestNominalCatalogDoesNotDispatchPreCanceledMiss(t *testing.T) {
 			})
 			mockDS := &mockDatasourceService{}
 			config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
-			catalog := newNominalCatalog(server.Client(), mockDS)
+			catalog := newNominalCatalog(server.Client(), mockDS, nil)
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 
@@ -1067,5 +1069,112 @@ func TestChannelMetadataCacheKeyKeepsDelimiterNamesDistinct(t *testing.T) {
 	b := channelMetadataCacheKey("asset", "scope", "x|chan")
 	if a == b {
 		t.Fatalf("cache keys collide across the separator: %q", a)
+	}
+}
+
+func TestSearchRunsQuery(t *testing.T) {
+	archived := map[string]any{"type": "archived", "archived": false}
+	asset := func(r string) map[string]any { return map[string]any{"type": "asset", "asset": r} }
+	tests := []struct {
+		name       string
+		assetRids  []string
+		searchText string
+		workspace  string
+		want       any
+	}{
+		{"no filter", nil, "", "", map[string]any{"type": "and", "and": []any{archived}}},
+		{"one asset", []string{"ri.scout.main.asset.a"}, "", "",
+			map[string]any{"type": "and", "and": []any{archived, map[string]any{"type": "or", "or": []any{asset("ri.scout.main.asset.a")}}}}},
+		{"any of two assets", []string{"ri.scout.main.asset.a", "ri.scout.main.asset.b"}, "", "",
+			map[string]any{"type": "and", "and": []any{archived, map[string]any{"type": "or", "or": []any{asset("ri.scout.main.asset.a"), asset("ri.scout.main.asset.b")}}}}},
+		{"search text", nil, "hot", "",
+			map[string]any{"type": "and", "and": []any{archived, map[string]any{"type": "searchText", "searchText": "hot"}}}},
+		{"workspace", nil, "", "ri.security.main.workspace.w",
+			map[string]any{"type": "and", "and": []any{archived, map[string]any{"type": "workspace", "workspace": "ri.security.main.workspace.w"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runService := newMockRunService(testRun("ri.scout.main.run.1", "ri.scout.main.asset.a"))
+			catalog := newNominalCatalog(nil, nil, runService)
+			config := &models.PluginSettings{WorkspaceRid: tt.workspace, Secrets: &models.SecretPluginSettings{ApiKey: "k"}}
+			runs, err := catalog.SearchRuns(context.Background(), config, tt.assetRids, tt.searchText)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(runs) != 1 || runs[0].Rid != "ri.scout.main.run.1" {
+				t.Fatalf("runs = %+v", runs)
+			}
+			if got := runService.lastSearchQuery(t); !reflect.DeepEqual(got, roundTripJSON(t, tt.want)) {
+				t.Errorf("query = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchRunByRidRefetchesOpenRunsSooner(t *testing.T) {
+	open := testRun("ri.scout.main.run.open", "ri.scout.main.asset.a")
+	open.EndTime = nil
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}}
+	for _, tt := range []struct {
+		name        string
+		run         runapi1.Run
+		wantFetches int64
+	}{
+		{"open run", open, 2},
+		{"ended run", testRun("ri.scout.main.run.ended", "ri.scout.main.asset.a"), 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runService := newMockRunService(tt.run)
+			catalog := newNominalCatalog(nil, nil, runService)
+			key := tt.run.Rid.String()
+			for range 2 {
+				if _, err := catalog.FetchRunByRid(context.Background(), config, key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := runService.fetches.Load(); got != 1 {
+				t.Fatalf("run fetches inside the TTL = %d, want 1", got)
+			}
+			// Age the entry by the open-run TTL.
+			catalog.runCache.mu.Lock()
+			entry := catalog.runCache.entries[key]
+			entry.expiresAt = entry.expiresAt.Add(-openRunCacheTTL)
+			catalog.runCache.entries[key] = entry
+			catalog.runCache.mu.Unlock()
+
+			if _, err := catalog.FetchRunByRid(context.Background(), config, key); err != nil {
+				t.Fatal(err)
+			}
+			if got := runService.fetches.Load(); got != tt.wantFetches {
+				t.Errorf("run fetches = %d, want %d", got, tt.wantFetches)
+			}
+		})
+	}
+}
+
+func TestFetchRunByRid(t *testing.T) {
+	runService := newMockRunService(testRun("ri.scout.main.run.1", "ri.scout.main.asset.a"))
+	catalog := newNominalCatalog(nil, nil, runService)
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}}
+
+	run, err := catalog.FetchRunByRid(context.Background(), config, "ri.scout.main.run.1")
+	if err != nil || run == nil || run.Assets[0] != "ri.scout.main.asset.a" {
+		t.Fatalf("run = %+v, err = %v", run, err)
+	}
+	if want := time.Unix(1700000000, 0).UTC(); !run.StartTime.Equal(want) {
+		t.Errorf("start = %v, want %v", run.StartTime, want)
+	}
+	run.Assets[0] = "mutated"
+	again, _ := catalog.FetchRunByRid(context.Background(), config, "ri.scout.main.run.1")
+	if again.Assets[0] != "ri.scout.main.asset.a" {
+		t.Error("cached run was mutated through a returned copy")
+	}
+	if got := runService.fetches.Load(); got != 1 {
+		t.Errorf("run fetches = %d, want 1 (second call served from cache)", got)
+	}
+
+	missing, err := catalog.FetchRunByRid(context.Background(), config, "ri.scout.main.run.missing")
+	if err != nil || missing != nil {
+		t.Errorf("missing run = %+v, err = %v; want nil, nil", missing, err)
 	}
 }

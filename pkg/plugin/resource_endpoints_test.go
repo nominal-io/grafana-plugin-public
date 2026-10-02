@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -892,4 +893,39 @@ func TestHandleChannelVariables(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+func TestRunEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+		wantBody   string
+		wantSearch int
+	}{
+		{"runs lists items", "runs", `{}`, http.StatusOK,
+			`[{"rid":"ri.scout.main.run.1","title":"Hot fire 1","runNumber":7,"startMs":1700000000000,"endMs":1700003600000,"assetRids":["ri.scout.main.asset.a"]}]`, 1},
+		{"runs with unresolved variable", "runs", `{"assetRids":["$asset"]}`, http.StatusOK, `[]`, 0},
+		{"run found", "run", `{"runRid":"ri.scout.main.run.1"}`, http.StatusOK,
+			`{"rid":"ri.scout.main.run.1","title":"Hot fire 1","runNumber":7,"startMs":1700000000000,"endMs":1700003600000,"assetRids":["ri.scout.main.asset.a"]}`, 0},
+		{"run given an asset RID", "run", `{"runRid":"ri.scout.main.asset.a"}`, http.StatusBadRequest, "", 0},
+		{"run missing", "run", `{"runRid":"ri.scout.main.run.9"}`, http.StatusNotFound, "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runService := newMockRunService(testRun("ri.scout.main.run.1", "ri.scout.main.asset.a"))
+			ds := withRunService(newTestDatasource("http://unused", &mockAuthService{}, &mockDatasourceService{}), runService)
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: tt.path, Method: http.MethodPost, Body: []byte(tt.body)})
+			if resp.Status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.Status, tt.wantStatus, resp.Body)
+			}
+			if tt.wantBody != "" && !reflect.DeepEqual(roundTripJSON(t, json.RawMessage(resp.Body)), roundTripJSON(t, json.RawMessage(tt.wantBody))) {
+				t.Errorf("body = %s, want %s", resp.Body, tt.wantBody)
+			}
+			if len(runService.searches) != tt.wantSearch {
+				t.Errorf("searches = %d, want %d", len(runService.searches), tt.wantSearch)
+			}
+		})
+	}
 }

@@ -220,3 +220,89 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 	log.DefaultLogger.Debug("Channel variables request successful", "channelCount", len(result))
 	return jsonMarshalResponse(sender, http.StatusOK, result)
 }
+
+type runsRequest struct {
+	AssetRids  []string `json:"assetRids"`
+	SearchText string   `json:"searchText"`
+}
+
+type runRequest struct {
+	RunRid string `json:"runRid"`
+}
+
+type runItem struct {
+	Rid       string   `json:"rid"`
+	Title     string   `json:"title"`
+	RunNumber int64    `json:"runNumber"`
+	StartMs   int64    `json:"startMs"`
+	EndMs     *int64   `json:"endMs,omitempty"`
+	AssetRids []string `json:"assetRids"`
+}
+
+func toRunItem(run RunResponse) runItem {
+	item := runItem{
+		Rid:       run.Rid,
+		Title:     run.Title,
+		RunNumber: run.RunNumber,
+		StartMs:   run.StartTime.UnixMilli(),
+		AssetRids: run.Assets,
+	}
+	if run.EndTime != nil {
+		endMs := run.EndTime.UnixMilli()
+		item.EndMs = &endMs
+	}
+	return item
+}
+
+func (h *NominalResourceHandler) handleRuns(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var body runsRequest
+	if ok, err := decodeOptionalResourceJSON(req, sender, &body, "Failed to parse runs request body"); !ok {
+		return err
+	}
+	if hasUnresolvedTemplateVariable(append([]string{body.SearchText}, body.AssetRids...)...) {
+		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
+	}
+	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "Failed to load settings for runs")
+	if !ok {
+		return err
+	}
+	runs, err := h.datasource.nominalCatalog.SearchRuns(ctx, config, body.AssetRids, body.SearchText)
+	if err != nil {
+		logErrorWithConjureFields("Failed to search runs", err)
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to search runs", err))
+	}
+	items := make([]runItem, 0, len(runs))
+	for _, run := range runs {
+		items = append(items, toRunItem(run))
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, items)
+}
+
+func (h *NominalResourceHandler) handleRun(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var body runRequest
+	if ok, err := decodeResourceJSON(req.Body, sender, &body, "Failed to parse run request body"); !ok {
+		return err
+	}
+	if !ridHasType(body.RunRid, "run") {
+		return jsonErrorResponse(sender, http.StatusBadRequest, "runRid must be a run RID")
+	}
+	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "Failed to load settings for run")
+	if !ok {
+		return err
+	}
+	run, err := h.datasource.nominalCatalog.FetchRunByRid(ctx, config, body.RunRid)
+	if err != nil {
+		logErrorWithConjureFields("Failed to fetch run", err, "runRid", body.RunRid)
+		return jsonErrorResponse(sender, http.StatusInternalServerError, appendInstanceID("Failed to fetch run", err))
+	}
+	if run == nil {
+		return jsonErrorResponse(sender, http.StatusNotFound, "Run not found")
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, toRunItem(*run))
+}
