@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { AppEvents } from '@grafana/data';
-import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
+import { notifyError } from './notifyError';
 import type { ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
 
 interface UseChannelOptionsArgs {
@@ -37,13 +36,6 @@ function createChannelOptionsBackendRequestId(): string {
   return `nominal-channel-options-${nextChannelOptionsLoaderId}`;
 }
 
-const notifyError = (title: string, message: string) => {
-  getAppEvents().publish({
-    type: AppEvents.alertError.name,
-    payload: [title, message],
-  });
-};
-
 function getChannelOptionsContext({
   datasourceUrl,
   selectedAsset,
@@ -73,6 +65,8 @@ export function useChannelOptions({
 }: UseChannelOptionsArgs): ChannelOptionsModel {
   const queryRef = useRef(query);
   queryRef.current = query;
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const isMountedRef = useRef(true);
   const channelOptionsRequestId = useRef(0);
   const channelOptionsBackendRequestId = useMemo(createChannelOptionsBackendRequestId, []);
@@ -151,7 +145,7 @@ export function useChannelOptions({
         }
         const match = channels.find((ch) => ch.name === channelResolution.resolved);
         if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
-          onChange(inferChannelDataTypeQuery(queryRef.current, match.dataType));
+          onChangeRef.current(inferChannelDataTypeQuery(queryRef.current, match.dataType));
         }
       })
       .catch(() => undefined);
@@ -160,8 +154,8 @@ export function useChannelOptions({
     };
     // Intentionally depend on selectedAsset?.rid rather than the whole object to avoid
     // redundant /channels calls when setSelectedAsset receives a logically identical asset.
-    // onChange is omitted for the same reason this effect uses queryRef.current: this lookup
-    // should be driven by resolved channel/scope/asset identity, not parent callback identity.
+    // onChange is read through a ref: this lookup should be driven by resolved
+    // channel/scope/asset identity, not parent callback identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     channelResolution.resolved,

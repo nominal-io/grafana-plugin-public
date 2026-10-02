@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
@@ -11,8 +11,16 @@ import {
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
 import type { DataSource } from '../datasource';
-import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
-import { getSupportedScopeNames } from '../utils/api';
+import {
+  COMPUTE_BY_ASSET,
+  COMPUTE_BY_RUN,
+  QUERY_TYPE_COMPUTE,
+  QUERY_TYPE_SQL,
+  type ComputeBy,
+  type NominalDataSourceOptions,
+  type NominalQuery,
+} from '../types';
+import { formatRunWindow, getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 import { SqlQueryEditor } from './SqlQueryEditor';
@@ -113,6 +121,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     datasourceUrl: datasource.url,
   });
 
+  const { run } = state;
   const aggregationOptions = React.useMemo(
     () => toAggregationComboboxOptions(state.aggregationState.options),
     [state.aggregationState.options]
@@ -123,22 +132,39 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
           <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
-            {/* Asset Selection */}
-            <InlineField label="Asset" labelWidth={8}>
-              <Combobox
-                id="nominal-query-asset-picker"
-                value={state.assetSelectValue}
-                options={state.assetOptions}
-                onChange={(selection) => commands.selectAsset(selection.value)}
-                placeholder="Search assets or paste a RID..."
-                createCustomValue
-                isClearable={false}
-                width="auto"
-                minWidth={30}
-                maxWidth={100}
-                data-testid="asset-combobox"
-              />
-            </InlineField>
+            {state.isRunMode ? (
+              <InlineField label="Run" labelWidth={8}>
+                <Combobox
+                  id="nominal-query-run-picker"
+                  value={state.runSelectValue}
+                  options={state.runOptions}
+                  onChange={commands.selectRun}
+                  placeholder="Search runs, paste a RID, or type $..."
+                  createCustomValue
+                  isClearable={false}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  data-testid="run-combobox"
+                />
+              </InlineField>
+            ) : (
+              <InlineField label="Asset" labelWidth={8}>
+                <Combobox
+                  id="nominal-query-asset-picker"
+                  value={state.assetSelectValue}
+                  options={state.assetOptions}
+                  onChange={(selection) => commands.selectAsset(selection.value)}
+                  placeholder="Search assets or paste a RID..."
+                  createCustomValue
+                  isClearable={false}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  data-testid="asset-combobox"
+                />
+              </InlineField>
+            )}
 
             {state.assetComplete && (
               <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
@@ -212,6 +238,16 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         {/* Asset info display - compact single line */}
         {state.selectedAsset && (
           <div className={styles.assetSummary}>
+            {state.isRunMode && run && (
+              <>
+                <span className={styles.summaryLabel}>Run:</span>
+                <span className={styles.summaryPill}>
+                  {run.title} #{run.runNumber}
+                </span>
+                <span className={styles.summaryLabel}>Window:</span>
+                <span className={styles.summaryPill}>{formatRunWindow(run)}</span>
+              </>
+            )}
             <span className={styles.summaryLabel}>Asset:</span>
             <span className={styles.summaryPill}>
               {state.selectedAsset.title}
@@ -244,6 +280,18 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+  // The query has one dataScopeName, so each mode's last scope is kept here and
+  // restored when the user switches back. It lasts while the editor is open.
+  const scopeByMode = useRef<Partial<Record<ComputeBy, string>>>({});
+
+  const onComputeByChange = (computeBy: ComputeBy) => {
+    const from = query.computeBy ?? COMPUTE_BY_ASSET;
+    if (from === computeBy) {
+      return;
+    }
+    scopeByMode.current[from] = query.dataScopeName;
+    onChange({ ...query, computeBy, dataScopeName: scopeByMode.current[computeBy] ?? query.dataScopeName });
+  };
 
   const onQueryAPIChange = (api: 'compute' | 'sql') => {
     if ((api === 'sql') === isSqlQuery) {
@@ -256,14 +304,26 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   return (
     <Stack direction="column" gap={1}>
-      <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
-        <RadioButtonGroup
-          aria-label="Query API"
-          value={isSqlQuery ? 'sql' : 'compute'}
-          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
-          onChange={onQueryAPIChange}
-        />
-      </InlineField>
+      <Stack direction="row" gap={1} wrap alignItems="center">
+        <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
+          <RadioButtonGroup
+            aria-label="Query API"
+            value={isSqlQuery ? 'sql' : 'compute'}
+            options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+            onChange={onQueryAPIChange}
+          />
+        </InlineField>
+        {!isSqlQuery && (
+          <InlineField label="Compute by" labelWidth="auto" tooltip="Asset reads an asset's channels. Run reads a run's channels, limited to the run's time window.">
+            <RadioButtonGroup<ComputeBy>
+              aria-label="Compute by"
+              value={query.computeBy ?? COMPUTE_BY_ASSET}
+              options={[{ label: 'Asset', value: COMPUTE_BY_ASSET }, { label: 'Run', value: COMPUTE_BY_RUN }]}
+              onChange={onComputeByChange}
+            />
+          </InlineField>
+        )}
+      </Stack>
       {isSqlQuery
         ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
         : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}

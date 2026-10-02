@@ -7,7 +7,18 @@ import { DataSource } from '../datasource';
 
 const DATASOURCE_URL = '/api/datasources/uid/test/resources';
 const ASSET_RID = 'ri.scout.main.asset.abc123';
+const RUN_ASSET_RID = 'ri.scout.main.asset.run1';
+const RUN_RID = 'ri.scout.main.run.r1';
 const LOG_DS_RID = 'ri.logset.main.log-set.xyz';
+
+const RUN = {
+  rid: RUN_RID,
+  title: 'Hot fire',
+  runNumber: 7,
+  startMs: 1700000000000,
+  endMs: 1700003600000,
+  assetRids: [RUN_ASSET_RID],
+};
 
 const ASSET = {
   rid: ASSET_RID,
@@ -84,6 +95,7 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: jest.fn(() => ({ post })),
   getAppEvents: jest.fn(() => ({ publish })),
   getTemplateSrv: jest.fn(() => ({
+    getVariables: () => [],
     replace: (v: string) => {
       if (v in mockReplaceOverrides) {
         return mockReplaceOverrides[v];
@@ -141,8 +153,10 @@ describe('query API selection', () => {
 
   beforeEach(() => {
     post.mockImplementation(async (url: string) => {
-      if (url.endsWith('/assets-by-rid')) { return { [ASSET_RID]: ASSET }; }
+      if (url.endsWith('/assets-by-rid')) { return { [ASSET_RID]: ASSET, [RUN_ASSET_RID]: { ...ASSET, rid: RUN_ASSET_RID } }; }
       if (url.endsWith('/channels')) { return { channels: [{ name: 'app.logs', dataType: 'log' }] }; }
+      if (url.endsWith('/run')) { return RUN; }
+      if (url.endsWith('/runs')) { return [RUN]; }
       return { results: [] };
     });
   });
@@ -164,6 +178,79 @@ describe('query API selection', () => {
     expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ ...original, rawSql: 'SELECT 42' });
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
     expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 42');
+  });
+
+  it('shows Compute by only for Compute and keeps both RIDs across a switch', async () => {
+    const onChange = jest.fn();
+    const original = { refId: 'A', queryType: 'compute' as const, assetRid: ASSET_RID, runRid: RUN_RID, channel: 'app.logs', dataScopeName: 'default' };
+    render(<EditableQuery initialQuery={original} onChange={onChange} />);
+    await settleEffects();
+    expect(screen.getByRole('radio', { name: 'Asset' })).toBeChecked();
+    fireEvent.click(screen.getByRole('radio', { name: 'Run' }));
+    await settleEffects();
+    expect(screen.getByTestId('run-combobox')).toBeInTheDocument();
+    expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Asset' }));
+    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ ...original, computeBy: 'asset' });
+    await settleEffects();
+    expect(screen.getByTestId('asset-combobox')).toBeInTheDocument();
+    expect(screen.queryByTestId('run-combobox')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(screen.queryByRole('radio', { name: 'Run' })).not.toBeInTheDocument();
+  });
+
+  it('restores each mode\'s data scope when switching between Asset and Run', async () => {
+    const scopes = (...names: string[]) => names.map((dataScopeName) => ({ dataScopeName, dataSource: ASSET.dataScopes[0].dataSource }));
+    post.mockImplementation(async (url: string) => {
+      if (url.endsWith('/assets-by-rid')) {
+        return { [ASSET_RID]: { ...ASSET, dataScopes: scopes('primary', 'S') }, [RUN_ASSET_RID]: { ...ASSET, rid: RUN_ASSET_RID, dataScopes: scopes('default', 'other') } };
+      }
+      if (url.endsWith('/run')) { return RUN; }
+      if (url.endsWith('/runs')) { return [RUN]; }
+      return { results: [] };
+    });
+    const onChange = jest.fn();
+    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'compute', assetRid: ASSET_RID, dataScopeName: 'S' }} onChange={onChange} />);
+    await settleEffects();
+    const scope = () => onChange.mock.calls.at(-1)?.[0].dataScopeName;
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Run' }));
+    await settleEffects();
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => latestComboboxProps('run-combobox')!.onChange({ value: RUN_RID }));
+    await settleEffects();
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => latestComboboxProps('data-scope-combobox')!.onChange({ value: 'other' }));
+    await settleEffects();
+    expect(scope()).toBe('other');
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Asset' }));
+    await settleEffects();
+    expect(scope()).toBe('S');
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Run' }));
+    await settleEffects();
+    expect(scope()).toBe('other');
+  });
+
+  it.each([
+    ['without a saved asset', undefined],
+    ['with a saved asset', ASSET_RID],
+  ])('a cascade write in Run mode %s never saves the run asset', async (_name, savedAssetRid) => {
+    const onChange = jest.fn();
+    const initialQuery = { refId: 'A', queryType: 'compute' as const, computeBy: 'run' as const, runRid: RUN_RID, ...(savedAssetRid && { assetRid: savedAssetRid }) };
+    render(<EditableQuery initialQuery={initialQuery} onChange={onChange} />);
+    await settleEffects();
+    expect(screen.getByTestId('data-scope-combobox')).toBeInTheDocument();
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    act(() => latestComboboxProps('data-scope-combobox')!.onChange({ value: 'default' }));
+    const written = onChange.mock.calls.at(-1)?.[0];
+    expect(written).toMatchObject({ computeBy: 'run', runRid: RUN_RID, dataScopeName: 'default' });
+    if (savedAssetRid) {
+      expect(written.assetRid).toBe(savedAssetRid);
+    } else {
+      expect(written).not.toHaveProperty('assetRid');
+    }
   });
 
   it('opens saved SQL in the SQL editor and switches it back to Compute', () => {

@@ -47,6 +47,8 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			response.Responses[q.RefID] = e.handleConnectionTestQuery(ctx)
 		case preparedQueryBatchable:
 			batchable = append(batchable, prepared)
+		case preparedQueryAnswered:
+			response.Responses[q.RefID] = *prepared.Response
 		case preparedQuerySQL:
 			sqlQueries = append(sqlQueries, prepared)
 		case preparedQueryLegacy:
@@ -281,4 +283,22 @@ func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRang
 
 	response.Frames = append(response.Frames, frame)
 	return response
+}
+
+const runNoticeTimeFormat = "2006-01-02 15:04:05"
+
+// runWindowNotice explains why a run query outside the run is not sent to compute.
+func runWindowNotice(run *RunResponse, timeRange backend.TimeRange) string {
+	start := run.StartTime
+	if run.EndTime == nil {
+		if timeRange.To.After(start) {
+			return ""
+		}
+		return fmt.Sprintf("The time range ends before run %s starts at %s UTC.", run.Title, start.Format(runNoticeTimeFormat))
+	}
+	end := *run.EndTime
+	if timeRange.To.After(start) && timeRange.From.Before(end) {
+		return ""
+	}
+	return fmt.Sprintf("The time range does not overlap run %s (%s to %s UTC).", run.Title, start.Format(runNoticeTimeFormat), end.Format(runNoticeTimeFormat))
 }

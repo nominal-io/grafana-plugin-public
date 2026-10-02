@@ -5,6 +5,7 @@ import type { QueryBuilderModel } from './queryBuilderTypes';
 import { useAssetSelection } from './useAssetSelection';
 import { useChannelOptions } from './useChannelOptions';
 import { useAggregationRun } from './useAggregationRun';
+import { useRunSelection } from './useRunSelection';
 import { resolveQueryTemplateValues, resolveTemplateValue } from './templateResolution';
 
 export { AGGREGATION_RUN_DELAY_MS } from './useAggregationRun';
@@ -39,28 +40,39 @@ export function useNominalQueryBuilder({
     [replaceTemplateValue]
   );
 
-  const asset = useAssetSelection({
+  const runSelection = useRunSelection({
     query,
     onChange,
     datasourceUrl,
-    assetRidResolution: queryResolution.assetRid,
-    dataScopeResolution: queryResolution.dataScopeName,
+    queryResolution,
+    replace: replaceTemplateValue,
+    markInteracted,
+  });
+  const { isRunMode, cascade } = runSelection;
+  const { query: builderQuery, onChange: builderOnChange, resolution: builderResolution } = cascade;
+
+  const asset = useAssetSelection({
+    query: builderQuery,
+    onChange: builderOnChange,
+    datasourceUrl,
+    assetRidResolution: builderResolution.assetRid,
+    dataScopeResolution: builderResolution.dataScopeName,
     resolveTemplateText,
     hasUserInteracted,
     markInteracted,
   });
 
   const channel = useChannelOptions({
-    query,
-    onChange,
+    query: builderQuery,
+    onChange: builderOnChange,
     selectedAsset: asset.selectedAsset,
-    channelResolution: queryResolution.channel,
-    dataScopeResolution: queryResolution.dataScopeName,
+    channelResolution: builderResolution.channel,
+    dataScopeResolution: builderResolution.dataScopeName,
     datasourceUrl,
     markInteracted,
   });
 
-  const aggregation = useAggregationRun({ query, onChange, onRunQuery });
+  const aggregation = useAggregationRun({ query: builderQuery, onChange: builderOnChange, onRunQuery });
 
   const showCopiedForDuration = useCallback(() => {
     clearTimeout(copiedTimerRef.current);
@@ -102,22 +114,26 @@ export function useNominalQueryBuilder({
   // Step completion status. Asset is complete only when the saved RID actually
   // resolves - a template variable without a value does not open the
   // scope/channel fields.
-  const assetComplete = queryResolution.assetRid.resolved !== '' && queryResolution.assetRid.isResolved;
+  const assetComplete = builderResolution.assetRid.resolved !== '' && builderResolution.assetRid.isResolved;
   const configComplete = assetComplete && Boolean(query?.dataScopeName) && Boolean(query?.channel);
   // Show the channel selector whenever an asset is selected (even if dataScopes is empty).
   const hasChannelSearch = asset.selectedAsset !== null;
 
   return {
     state: {
+      isRunMode,
+      run: runSelection.run,
+      runOptions: runSelection.runOptions,
+      runSelectValue: runSelection.runSelectValue,
       selectedAsset: asset.selectedAsset,
       assetOptions: asset.assetOptions,
       assetSelectValue: asset.assetSelectValue,
       dataScopeOptions: asset.dataScopeOptions,
       channelOptions: channel.channelOptions,
       channelSelectValue: channel.channelSelectValue,
-      resolvedAssetRid: queryResolution.assetRid.resolved,
-      resolvedDataScopeName: queryResolution.dataScopeName.resolved,
-      resolvedChannel: queryResolution.channel.resolved,
+      resolvedAssetRid: builderResolution.assetRid.resolved,
+      resolvedDataScopeName: builderResolution.dataScopeName.resolved,
+      resolvedChannel: builderResolution.channel.resolved,
       assetComplete,
       configComplete,
       hasChannelSearch,
@@ -125,6 +141,7 @@ export function useNominalQueryBuilder({
       aggregationState: aggregation.aggregationState,
     },
     commands: {
+      selectRun: runSelection.selectRun,
       selectAsset: asset.selectAsset,
       selectDataScope: asset.selectDataScope,
       selectChannel: channel.selectChannel,

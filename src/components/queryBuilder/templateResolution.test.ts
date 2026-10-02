@@ -9,17 +9,25 @@ import {
 
 describe('templateResolution', () => {
   const replace = (value: string) =>
-    ({ '$asset': 'ri.scout.asset.a', '$scope': 'primary', '$chan': 'temperature' })[value] ?? value;
+    ({ '$asset': 'ri.scout.asset.a', '$run': 'ri.scout.run.r', '$scope': 'primary', '$chan': 'temperature' })[value] ?? value;
 
   it('resolves query template fields through one replacement adapter', () => {
     const query = {
       refId: 'A',
       assetRid: '$asset',
+      runRid: '$run',
       dataScopeName: '$scope',
       channel: '$chan',
     } as NominalQuery;
 
     const result = resolveQueryTemplateValues({ query, replace });
+
+    expect(result.runRid).toEqual({
+      raw: '$run',
+      resolved: 'ri.scout.run.r',
+      hasTemplate: true,
+      isResolved: true,
+    });
 
     expect(result.assetRid).toEqual({
       raw: '$asset',

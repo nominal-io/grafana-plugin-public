@@ -76,6 +76,14 @@ describe('filterQuery', () => {
     })).toBe(true);
   });
 
+  it.each([
+    ['complete run query', { computeBy: 'run', runRid: 'ri.scout.main.run.1', channel: 'temp', dataScopeName: 'default' }, true],
+    ['run query without a run', { computeBy: 'run', assetRid: 'ri.scout.main.asset.1', channel: 'temp', dataScopeName: 'default' }, false],
+    ['asset query ignores a kept runRid', { computeBy: 'asset', runRid: 'ri.scout.main.run.1', channel: 'temp', dataScopeName: 'default' }, false],
+  ] as const)('%s', (_name, fields, want) => {
+    expect(ds.filterQuery({ refId: 'A', ...fields })).toBe(want);
+  });
+
   it('accepts SQL queries with text and rejects empty ones', () => {
     expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' })).toBe(true);
     expect(ds.filterQuery({ refId: 'A', queryType: 'sql', rawSql: '  ' })).toBe(false);
@@ -97,11 +105,25 @@ describe('applyTemplateVariables', () => {
 
   it('keeps builder interpolation unchanged', () => {
     const ds = createDataSource();
-    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', channel: '$channel', dataScopeName: '$scope' }, {});
+    ds.applyTemplateVariables({ refId: 'A', assetRid: '$asset', runRid: '$run', channel: '$channel', dataScopeName: '$scope' }, {});
 
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$asset', {});
+    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$run', {});
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channel', {});
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$scope', {});
+  });
+
+  it.each([
+    ['$run', { raw: '$run', name: 'run' }],
+    ['${myvar}', { raw: '${myvar}', name: 'myvar' }],
+  ])('sends the variable behind %s as a template source', (runRid, want) => {
+    const result = createDataSource().applyTemplateVariables({ refId: 'A', computeBy: 'run', runRid }, {});
+    expect(result.templateSources).toEqual({ runRid: want });
+  });
+
+  it('omits template sources for literal RIDs', () => {
+    const result = createDataSource().applyTemplateVariables({ refId: 'A', computeBy: 'run', runRid: 'ri.scout.main.run.1' }, {});
+    expect(result.templateSources).toBeUndefined();
   });
 });
 

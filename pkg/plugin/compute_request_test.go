@@ -575,3 +575,49 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 		newTestQueryExecution(ds, nil).buildComputeContext(qm)
 	}
 }
+
+func channelSeriesArm(t *testing.T, cs computeapi.ChannelSeries) (arm string, runRid string, hasAsset bool) {
+	t.Helper()
+	err := cs.AcceptFuncs(
+		func(computeapi.DataSourceChannel) error { arm = "dataSource"; return nil },
+		func(computeapi.AssetChannel) error { arm = "asset"; return nil },
+		func(c computeapi.RunChannel) error {
+			arm = "run"
+			_, runRid = stringConstantValue(t, c.RunRid)
+			hasAsset = c.AssetRid != nil
+			return nil
+		},
+		func(string) error { return fmt.Errorf("unknown channel series type") },
+	)
+	if err != nil {
+		t.Fatalf("inspecting channel series: %v", err)
+	}
+	return arm, runRid, hasAsset
+}
+
+func TestBuildChannelSeries(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	base := NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temp", DataScopeName: "default"}
+	tests := []struct {
+		name      string
+		computeBy string
+		wantArm   string
+	}{
+		{"absent computeBy is an asset query", "", "asset"},
+		{"asset computeBy", "asset", "asset"},
+		{"run computeBy", computeByRun, "run"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qm := base
+			qm.ComputeBy, qm.RunRid = tt.computeBy, "ri.scout.main.run.1"
+			arm, runRid, hasAsset := channelSeriesArm(t, qe.buildChannelSeries(qm))
+			if arm != tt.wantArm {
+				t.Fatalf("arm = %q, want %q", arm, tt.wantArm)
+			}
+			if arm == "run" && (runRid != qm.RunRid || !hasAsset) {
+				t.Errorf("run channel = (%q, asset bound %v), want (%q, true)", runRid, hasAsset, qm.RunRid)
+			}
+		})
+	}
+}

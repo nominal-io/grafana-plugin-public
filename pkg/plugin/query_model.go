@@ -11,6 +11,7 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
@@ -21,6 +22,13 @@ type NominalQueryModel struct {
 	Channel         string `json:"channel"`
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
+	// ComputeBy is "run" for a run query. Empty or "asset" is an asset query.
+	ComputeBy string `json:"computeBy,omitempty"`
+	RunRid    string `json:"runRid,omitempty"`
+	// TemplateSources is set by the frontend for templated RID fields so errors can name the variable.
+	TemplateSources templateSources `json:"templateSources,omitempty"`
+	// Run is runtime-only; resolveRun fetches it and points AssetRid at its asset.
+	Run *RunResponse `json:"-"`
 
 	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
@@ -59,6 +67,37 @@ const (
 // queryTypeSQL marks a query that runs SQL instead of a Compute request.
 const queryTypeSQL = "sql"
 
+const computeByRun = "run"
+
+type templateSource struct {
+	Raw  string `json:"raw"`
+	Name string `json:"name"`
+}
+
+// templateSources names the variable behind each templated RID field.
+type templateSources struct {
+	AssetRid *templateSource `json:"assetRid,omitempty"`
+	RunRid   *templateSource `json:"runRid,omitempty"`
+}
+
+// ridFieldError explains a templated RID field that did not resolve to a RID
+// of the wanted type. Fields without a template source are not checked here.
+func ridFieldError(label, ridType, noun, value string, src *templateSource) error {
+	if src == nil {
+		return nil
+	}
+	switch {
+	case strings.Contains(value, "$"):
+		return fmt.Errorf("No variable named `%s`.", src.Name) //nolint:staticcheck // user-facing message
+	case strings.HasPrefix(value, "{") && strings.Contains(value, ","):
+		return fmt.Errorf("%s is `%s`, currently %d values. The %s field needs one %s.", label, src.Raw, strings.Count(value, ",")+1, label, ridType) //nolint:staticcheck // user-facing message
+	case ridHasType(value, ridType):
+		return nil
+	default:
+		return fmt.Errorf("%s is `%s`, currently `%s`. That is not %s. Check that variable's query.", label, src.Raw, value, noun) //nolint:staticcheck // user-facing message
+	}
+}
+
 type preparedQueryKind int
 
 const (
@@ -66,6 +105,8 @@ const (
 	preparedQueryLegacy
 	preparedQueryBatchable
 	preparedQuerySQL
+	// preparedQueryAnswered queries already have their Response and skip compute.
+	preparedQueryAnswered
 )
 
 type preparedQuery struct {
@@ -74,6 +115,8 @@ type preparedQuery struct {
 	Kind  preparedQueryKind
 	// SQL is set for preparedQuerySQL queries.
 	SQL *sqlutil.Query
+	// Response is set for preparedQueryAnswered queries.
+	Response *backend.DataResponse
 }
 
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
@@ -113,9 +156,25 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 		return preparedQuery{}, &response
 	}
 
+	if qm.ComputeBy == computeByRun {
+		if prepErr := e.resolveRun(ctx, &qm); prepErr != nil {
+			return preparedQuery{}, prepErr
+		}
+	}
+
 	e.inferChannelMetadata(ctx, &qm)
 	if prepErr := normalizeAggregations(&qm); prepErr != nil {
 		return preparedQuery{}, prepErr
+	}
+
+	// The compute service rejects a run query whose range misses the run, so
+	// answer it here with the frames an empty result would have, plus the reason.
+	if qm.ComputeBy == computeByRun {
+		if notice := runWindowNotice(qm.Run, q.TimeRange); notice != "" {
+			frames := framesFromResult(emptyTransformResult(qm), qm)
+			frames[0].AppendNotices(data.Notice{Severity: data.NoticeSeverityWarning, Text: notice})
+			return preparedQuery{Query: q, Model: qm, Kind: preparedQueryAnswered, Response: &backend.DataResponse{Frames: frames}}, nil
+		}
 	}
 
 	if qm.AssetRid != "" && qm.Channel != "" {
@@ -213,13 +272,62 @@ func (e *NominalQueryExecution) applyTemplateVariables(qm *NominalQueryModel) {
 	}
 
 	qm.AssetRid = interpolateTemplateVariables(qm.AssetRid, qm.TemplateVariables)
+	qm.RunRid = interpolateTemplateVariables(qm.RunRid, qm.TemplateVariables)
 	qm.Channel = interpolateTemplateVariables(qm.Channel, qm.TemplateVariables)
 	qm.DataScopeName = interpolateTemplateVariables(qm.DataScopeName, qm.TemplateVariables)
 	qm.QueryText = interpolateTemplateVariables(qm.QueryText, qm.TemplateVariables)
 }
 
+// resolveRun fetches the query's run and points the in-memory AssetRid at the
+// run's only asset, so metadata inference, the point budget and batching treat
+// it like an asset query. It runs before batching because a failure inside a
+// batch fails every query in the chunk.
+func (e *NominalQueryExecution) resolveRun(ctx context.Context, qm *NominalQueryModel) *backend.DataResponse {
+	fail := func(status backend.Status, msg string) *backend.DataResponse {
+		response := backend.ErrDataResponse(status, msg)
+		return &response
+	}
+	run, err := e.datasource.nominalCatalog.FetchRunByRid(ctx, e.config, qm.RunRid)
+	if err != nil {
+		logErrorWithConjureFields("Failed to fetch run", err, "runRid", qm.RunRid)
+		return fail(backend.StatusInternal, formatUserError("Failed to load run", err))
+	}
+	if run == nil {
+		return fail(backend.StatusBadRequest, fmt.Sprintf("run %s not found", qm.RunRid))
+	}
+	if len(run.Assets) != 1 {
+		return fail(backend.StatusBadRequest, fmt.Sprintf("run %s spans %d assets; multi-asset runs are not supported yet", run.Title, len(run.Assets)))
+	}
+	qm.Run = run
+	qm.AssetRid = run.Assets[0]
+	return nil
+}
+
 // validateQuery validates query parameters similar to pure-ts implementation
 func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
+	if qm.ComputeBy == computeByRun {
+		if strings.TrimSpace(qm.RunRid) == "" {
+			return fmt.Errorf("runRid is required for run queries")
+		}
+		if qm.TemplateSources.RunRid == nil && !ridHasType(qm.RunRid, "run") {
+			return fmt.Errorf("`%s` is not a run RID.", qm.RunRid) //nolint:staticcheck // user-facing message
+		}
+		if err := ridFieldError("Run", "run", "a run RID", qm.RunRid, qm.TemplateSources.RunRid); err != nil {
+			return err
+		}
+		switch {
+		case strings.TrimSpace(qm.Channel) == "":
+			return fmt.Errorf("channel cannot be empty")
+		case strings.TrimSpace(qm.DataScopeName) == "":
+			return fmt.Errorf("dataScopeName is required for run queries")
+		}
+		return nil
+	}
+
+	if err := ridFieldError("Asset", "asset", "an asset RID", qm.AssetRid, qm.TemplateSources.AssetRid); err != nil {
+		return err
+	}
+
 	// Check if we have either Nominal-specific fields or legacy fields
 	hasNominalQuery := qm.AssetRid != "" && qm.Channel != ""
 	hasLegacyQuery := qm.QueryText != ""

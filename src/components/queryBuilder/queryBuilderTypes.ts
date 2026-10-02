@@ -1,11 +1,12 @@
 import type { SelectableValue } from '@grafana/data';
 import type { ComboboxOption } from '@grafana/ui';
-import type { Asset } from '../../utils/api';
+import type { Asset, RunItem } from '../../utils/api';
 
 export type PickerOption = ComboboxOption<string>;
 export type AssetOption = PickerOption;
 export type DataScopeOption = PickerOption;
 export type ChannelOption = PickerOption & { dataType?: string };
+export type RunOption = PickerOption & { assetCount?: number };
 export type ChannelOptionsLoader = (searchText: string) => Promise<ChannelOption[]>;
 export type AssetOptionsLoader = (searchText: string) => Promise<AssetOption[]>;
 
@@ -20,6 +21,10 @@ export interface AggregationState {
 }
 
 export interface QueryBuilderState {
+  isRunMode: boolean;
+  run: RunItem | null;
+  runOptions: (searchText: string) => Promise<RunOption[]>;
+  runSelectValue: RunOption | null;
   selectedAsset: Asset | null;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
@@ -38,6 +43,7 @@ export interface QueryBuilderState {
 
 export interface QueryBuilderCommands {
   selectAsset: (assetRid: string) => void;
+  selectRun: (selection: RunOption) => void;
   selectDataScope: (dataScopeName: string) => void;
   selectChannel: (selection: ChannelOption) => void;
   changeAggregations: (selected: Array<SelectableValue<string>>) => void;

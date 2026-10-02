@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
@@ -1266,5 +1268,196 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if len(healthyResp.Frames) != 1 {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
+	}
+}
+
+func TestRunWindowNotice(t *testing.T) {
+	t0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := t0.Add(time.Hour)
+	closed := &RunResponse{Title: "Hot fire", StartTime: t0, EndTime: &end}
+	open := &RunResponse{Title: "Hot fire", StartTime: t0}
+	rng := func(from, to time.Time) backend.TimeRange { return backend.TimeRange{From: from, To: to} }
+
+	tests := []struct {
+		name string
+		run  *RunResponse
+		tr   backend.TimeRange
+		want bool
+	}{
+		{"inside", closed, rng(t0.Add(10*time.Minute), t0.Add(20*time.Minute)), false},
+		{"straddles start", closed, rng(t0.Add(-time.Hour), t0.Add(10*time.Minute)), false},
+		{"entirely before", closed, rng(t0.Add(-2*time.Hour), t0.Add(-time.Hour)), true},
+		{"entirely after", closed, rng(end.Add(time.Hour), end.Add(2*time.Hour)), true},
+		{"touches end exactly", closed, rng(end, end.Add(time.Hour)), true},
+		{"open run, after start", open, rng(t0.Add(time.Hour), t0.Add(2*time.Hour)), false},
+		{"open run, before start", open, rng(t0.Add(-2*time.Hour), t0.Add(-time.Hour)), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			notice := runWindowNotice(tt.run, tt.tr)
+			if (notice != "") != tt.want {
+				t.Fatalf("notice = %q, want present = %v", notice, tt.want)
+			}
+			if tt.want && (!strings.Contains(notice, "Hot fire") || !strings.Contains(notice, "UTC")) {
+				t.Errorf("notice %q should name the run and say UTC", notice)
+			}
+		})
+	}
+}
+
+func TestBatchQueryRunResolutionFailureStaysWithItsQuery(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.1"
+	mockService := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{1, 2, 3})},
+		},
+	}
+	runService := newMockRunService(
+		testRun("ri.scout.main.run.1", assetRid),
+		testRun("ri.scout.main.run.2", assetRid, "ri.scout.main.asset.2"),
+	)
+	ds := withRunService(&Datasource{settings: testDatasourceSettings(), computeService: mockService}, runService)
+
+	timeRange := backend.TimeRange{
+		From: time.Unix(1700000000, 0),
+		To:   time.Unix(1700001000, 0),
+	}
+	runQuery := func(refID, runRid string) backend.DataQuery {
+		return backend.DataQuery{
+			RefID: refID, TimeRange: timeRange,
+			JSON: mustMarshal(NominalQueryModel{ComputeBy: computeByRun, RunRid: runRid, Channel: "temp", DataScopeName: "default", Buckets: 100}),
+		}
+	}
+
+	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{
+		runQuery("A", "ri.scout.main.run.1"),
+		runQuery("B", "ri.scout.main.run.2"),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := resp.Responses["A"]; got.Error != nil || len(got.Frames) == 0 {
+		t.Errorf("A = %+v, want data frames", got)
+	}
+	if got := resp.Responses["B"]; got.Error == nil || !strings.Contains(got.Error.Error(), "spans 2 assets") {
+		t.Errorf("B error = %v, want spans 2 assets", got.Error)
+	}
+	if n := len(mockService.lastBatchRequest.Requests); n != 1 {
+		t.Errorf("compute request carried %d sub-requests, want 1", n)
+	}
+}
+
+func TestRunQueryOutsideRunSkipsCompute(t *testing.T) {
+	const assetRid = "ri.scout.main.asset.1"
+	run := testRun("ri.scout.main.run.1", assetRid) // 1700000000 to 1700003600
+	overlapping := backend.TimeRange{From: time.Unix(1700000000, 0), To: time.Unix(1700001000, 0)}
+	disjoint := backend.TimeRange{From: time.Unix(1800000000, 0), To: time.Unix(1800001000, 0)}
+
+	mockService := &mockComputeService{
+		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+			Results: []computeapi.ComputeWithUnitsResult{createMockArrowComputeResult([]float64{1, 2, 3})},
+		},
+	}
+	ds := withRunService(&Datasource{settings: testDatasourceSettings(), computeService: mockService}, newMockRunService(run))
+	runQuery := func(refID string, tr backend.TimeRange) backend.DataQuery {
+		return backend.DataQuery{
+			RefID: refID, TimeRange: tr,
+			JSON: mustMarshal(NominalQueryModel{ComputeBy: computeByRun, RunRid: "ri.scout.main.run.1", Channel: "temp", DataScopeName: "default", Buckets: 100}),
+		}
+	}
+
+	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{
+		runQuery("A", disjoint),
+		runQuery("B", overlapping),
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gotA := resp.Responses["A"]
+	if gotA.Error != nil || len(gotA.Frames) == 0 || gotA.Frames[0].Meta == nil || len(gotA.Frames[0].Meta.Notices) != 1 {
+		t.Fatalf("A = %+v, want a first frame with one notice and no error", gotA)
+	}
+	if f := gotA.Frames[0]; len(f.Fields) != 2 || f.Fields[0].Name != "time" || f.Fields[1].Name != "value" || f.Rows() != 0 {
+		t.Errorf("A frame fields = %+v, want empty time and value fields", f.Fields)
+	}
+	if n := gotA.Frames[0].Meta.Notices[0]; n.Severity != data.NoticeSeverityWarning || !strings.Contains(n.Text, "does not overlap run") {
+		t.Errorf("A notice = %+v, want an overlap warning", n)
+	}
+
+	gotB := resp.Responses["B"]
+	if gotB.Error != nil || len(gotB.Frames) == 0 {
+		t.Fatalf("B = %+v, want data frames", gotB)
+	}
+	for _, f := range gotB.Frames {
+		if f.Meta != nil && len(f.Meta.Notices) > 0 {
+			t.Errorf("B frame has meta %+v, want no notices", f.Meta)
+		}
+	}
+	if n := len(mockService.lastBatchRequest.Requests); n != 1 {
+		t.Errorf("compute request carried %d sub-requests, want 1 (only the overlapping query)", n)
+	}
+}
+
+// An early-answered run query must render like the empty result the compute
+// service would have returned for the same query.
+func TestEmptyRunResponseMatchesEmptyComputeResult(t *testing.T) {
+	type fieldShape struct {
+		Name, Type, DisplayName, Unit string
+	}
+	type frameShape struct {
+		Name   string
+		Fields []fieldShape
+	}
+	shapes := func(frames data.Frames) []frameShape {
+		out := []frameShape{}
+		for _, f := range frames {
+			fs := frameShape{Name: f.Name}
+			for _, field := range f.Fields {
+				shape := fieldShape{Name: field.Name, Type: field.Type().ItemTypeString()}
+				if field.Config != nil {
+					shape.DisplayName, shape.Unit = field.Config.DisplayNameFromDS, field.Config.Unit
+				}
+				fs.Fields = append(fs.Fields, shape)
+			}
+			out = append(out, fs)
+		}
+		return out
+	}
+	base := NominalQueryModel{ComputeBy: computeByRun, Channel: "temp", ChannelUnit: "kelvin", ChannelDataType: ChannelDataTypeNumeric}
+	with := func(mutate func(*NominalQueryModel)) NominalQueryModel {
+		qm := base
+		mutate(&qm)
+		return qm
+	}
+
+	tests := []struct {
+		name   string
+		qm     NominalQueryModel
+		normal computeapi.ComputeWithUnitsResult
+	}{
+		{"numeric default", with(func(qm *NominalQueryModel) { qm.Aggregations = []string{AggMean} }), createMockArrowComputeResult(nil)},
+		{"explicit aggregation", with(func(qm *NominalQueryModel) {
+			qm.Aggregations, qm.ExplicitAggregations = []string{AggMean}, true
+		}), createMockArrowComputeResult(nil)},
+		{"lttb", with(func(qm *NominalQueryModel) { qm.RawLTTB = true }), createMockComputeResult(nil)},
+		{"string", with(func(qm *NominalQueryModel) { qm.ChannelDataType = ChannelDataTypeString }), createMockEnumComputeResult(nil, nil)},
+		{"log", with(func(qm *NominalQueryModel) { qm.ChannelDataType = ChannelDataTypeLog }), createMockPagedLogResult(nil, nil, nil)},
+	}
+	e := newTestQueryExecution(&Datasource{}, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			want := e.transformBatchResult(tt.normal, tt.qm)
+			if want.Error != nil {
+				t.Fatalf("normal transform failed: %v", want.Error)
+			}
+			got := framesFromResult(emptyTransformResult(tt.qm), tt.qm)
+			if !reflect.DeepEqual(shapes(got), shapes(want.Frames)) {
+				t.Errorf("empty run frames = %+v, want %+v", shapes(got), shapes(want.Frames))
+			}
+			if len(got) == 0 || tt.qm.ChannelDataType == ChannelDataTypeNumeric && tt.qm.ChannelUnit != "" && got[0].Fields[1].Config.Unit == "" {
+				t.Errorf("empty run frames %+v lost the channel unit", shapes(got))
+			}
+		})
 	}
 }
