@@ -214,8 +214,14 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		return response, nil
 	}
 
-	return newNominalQueryExecution(d, config).Execute(ctx, req.Queries), nil
+	execution := newNominalQueryExecution(d, config)
+	// Alert and expression consumers ignore or reject annotation frames.
+	execution.skipShading = req.Headers[backend.FromAlertHeaderName] == "true" || req.GetHTTPHeader(fromExpressionHeader) != ""
+	return execution.Execute(ctx, req.Queries), nil
 }
+
+// fromExpressionHeader marks queries issued by Grafana's server-side expressions.
+const fromExpressionHeader = "X-Grafana-From-Expr"
 
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {

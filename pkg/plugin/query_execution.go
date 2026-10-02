@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strconv"
 	"sync"
 	"time"
 
@@ -18,8 +19,9 @@ import (
 )
 
 type NominalQueryExecution struct {
-	datasource *Datasource
-	config     *models.PluginSettings
+	datasource  *Datasource
+	config      *models.PluginSettings
+	skipShading bool
 }
 
 func newNominalQueryExecution(datasource *Datasource, config *models.PluginSettings) *NominalQueryExecution {
@@ -34,7 +36,7 @@ func newNominalQueryExecution(datasource *Datasource, config *models.PluginSetti
 func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.DataQuery) *backend.QueryDataResponse {
 	response := backend.NewQueryDataResponse()
 
-	var batchable, sqlQueries []preparedQuery
+	var batchable, sqlQueries, shadeable []preparedQuery
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
@@ -47,8 +49,10 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			response.Responses[q.RefID] = e.handleConnectionTestQuery(ctx)
 		case preparedQueryBatchable:
 			batchable = append(batchable, prepared)
+			shadeable = append(shadeable, prepared)
 		case preparedQueryAnswered:
 			response.Responses[q.RefID] = *prepared.Response
+			shadeable = append(shadeable, prepared)
 		case preparedQuerySQL:
 			sqlQueries = append(sqlQueries, prepared)
 		case preparedQueryLegacy:
@@ -60,6 +64,9 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 	var wg sync.WaitGroup
 	wg.Go(func() { sqlResponses = e.executeSQLQueries(ctx, sqlQueries) })
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
+	if !e.skipShading {
+		appendOutsideRunFrames(response, shadeable)
+	}
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
 
@@ -294,11 +301,88 @@ func runWindowNotice(run *RunResponse, timeRange backend.TimeRange) string {
 		if timeRange.To.After(start) {
 			return ""
 		}
-		return fmt.Sprintf("The time range ends before run %s starts at %s UTC.", run.Title, start.Format(runNoticeTimeFormat))
+		return fmt.Sprintf("The time range ends before run %s starts at %s UTC. Use Snap to run on the shaded strip (Grafana 12.3 and later) or in the query editor.", run.Title, start.Format(runNoticeTimeFormat))
 	}
 	end := *run.EndTime
 	if timeRange.To.After(start) && timeRange.From.Before(end) {
 		return ""
 	}
-	return fmt.Sprintf("The time range does not overlap run %s (%s to %s UTC).", run.Title, start.Format(runNoticeTimeFormat), end.Format(runNoticeTimeFormat))
+	return fmt.Sprintf("The time range does not overlap run %s (%s to %s UTC). Use Snap to run on the shaded strip (Grafana 12.3 and later) or in the query editor.", run.Title, start.Format(runNoticeTimeFormat), end.Format(runNoticeTimeFormat))
+}
+
+const outsideRunColor = "rgba(128, 128, 128, 0.15)"
+
+// appendOutsideRunFrames adds one shading frame per run, on the first
+// successful query that uses it, so shared runs are not shaded twice.
+func appendOutsideRunFrames(response *backend.QueryDataResponse, prepared []preparedQuery) {
+	seen := map[string]bool{}
+	for _, p := range prepared {
+		run := p.Model.Run
+		res, ok := response.Responses[p.Query.RefID]
+		if run == nil || seen[run.Rid] || !ok || res.Error != nil {
+			continue
+		}
+		if frame := outsideRunFrame(run, p.Query.TimeRange); frame != nil {
+			res.Frames = append(res.Frames, frame)
+			response.Responses[p.Query.RefID] = res
+		}
+		seen[run.Rid] = true
+	}
+}
+
+// outsideRunFrame shades the parts of the time range outside the run. Grafana
+// draws annotation-topic regions on time series panels without dashboard setup.
+func outsideRunFrame(run *RunResponse, timeRange backend.TimeRange) *data.Frame {
+	var from, to []time.Time
+	if timeRange.From.Before(run.StartTime) {
+		from, to = append(from, timeRange.From), append(to, minTime(run.StartTime, timeRange.To))
+	}
+	if run.EndTime != nil && timeRange.To.After(*run.EndTime) {
+		from, to = append(from, maxTime(*run.EndTime, timeRange.From)), append(to, timeRange.To)
+	}
+	if len(from) == 0 {
+		return nil
+	}
+	text := make([]string, len(from))
+	color := make([]string, len(from))
+	isRegion := make([]bool, len(from))
+	for i := range from {
+		text[i], color[i], isRegion[i] = "Outside run "+run.Title, outsideRunColor, true
+	}
+	frame := data.NewFrame("outside-run",
+		data.NewField("time", nil, from),
+		data.NewField("timeEnd", nil, to),
+		data.NewField("isRegion", nil, isRegion),
+		data.NewField("text", nil, text).SetConfig(&data.FieldConfig{
+			Links: []data.DataLink{{Title: "Snap to run " + run.Title, URL: snapToRunURL(run)}},
+		}),
+		data.NewField("color", nil, color),
+	)
+	frame.Meta = &data.FrameMeta{DataTopic: data.DataTopicAnnotations}
+	return frame
+}
+
+// snapToRunURL keeps the dashboard and every parameter except the time range.
+// With no other parameters ${__url.params:exclude:...} is "?", so the result
+// reads "?&from=...", which Grafana parses.
+func snapToRunURL(run *RunResponse) string {
+	to := "now"
+	if run.EndTime != nil {
+		to = strconv.FormatInt(run.EndTime.UnixMilli(), 10)
+	}
+	return fmt.Sprintf("${__url.path}${__url.params:exclude:from,to}&from=%d&to=%s", run.StartTime.UnixMilli(), to)
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
