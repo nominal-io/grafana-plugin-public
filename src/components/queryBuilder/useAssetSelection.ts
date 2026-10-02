@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
-import { AppEvents } from '@grafana/data';
-import { getAppEvents } from '@grafana/runtime';
 import type { NominalQuery } from '../../types';
 import { fetchAssetByRid, getSupportedScopeNames, searchAssets, type Asset } from '../../utils/api';
 import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
@@ -12,6 +10,8 @@ import {
   getVisibleAssetIdentity,
   isAssetFullyResolved,
 } from './assetIdentity';
+import { notifyError } from './notifyError';
+import { dashboardVariableOptions } from './variableOptions';
 import { AssetResolutionCoordinator } from './assetResolution';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
 import type { AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
@@ -35,13 +35,6 @@ export interface AssetSelectionModel {
   selectAsset: (assetRid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
 }
-
-const notifyError = (title: string, message: string) => {
-  getAppEvents().publish({
-    type: AppEvents.alertError.name,
-    payload: [title, message],
-  });
-};
 
 const isNominalRid = (value: string): boolean => value.trim().startsWith('ri.');
 
@@ -134,6 +127,9 @@ export function useAssetSelection({
 
   const assetOptions = useCallback<AssetOptionsLoader>(
     async (searchText: string): Promise<AssetOption[]> => {
+      if (searchText.startsWith('$')) {
+        return dashboardVariableOptions(searchText);
+      }
       const requestId = resolutionCoordinator.startAssetOptionsRequest();
       try {
         const found = await searchAssets(datasourceUrl, searchText);

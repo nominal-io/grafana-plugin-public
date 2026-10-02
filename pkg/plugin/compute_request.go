@@ -36,7 +36,7 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
 func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi1.SummarizeSeries {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
+	channelSeries := e.buildChannelSeries(qm)
 
 	switch qm.ChannelDataType {
 	case ChannelDataTypeString:
@@ -88,6 +88,24 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 			NumericOutputFields: &outputFields,
 		}
 	}
+}
+
+// buildChannelSeries binds the channel through the run for a run query and
+// through the asset otherwise. Both bind the asset RID by variable.
+func (e *NominalQueryExecution) buildChannelSeries(qm NominalQueryModel) computeapi.ChannelSeries {
+	if qm.ComputeBy != computeByRun {
+		return computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
+	}
+	assetRid := computeapi.NewStringConstantFromVariable(assetRidVariableName)
+	return computeapi.NewChannelSeriesFromRun(computeapi.RunChannel{
+		RunRid:         computeapi.NewStringConstantFromLiteral(qm.RunRid),
+		AssetRid:       &assetRid,
+		Channel:        computeapi.NewStringConstantFromLiteral(qm.Channel),
+		DataScopeName:  computeapi.NewStringConstantFromLiteral(qm.DataScopeName),
+		AdditionalTags: map[string]computeapi.StringConstant{},
+		TagsToGroupBy:  []string{},
+		GroupByTags:    []computeapi.StringConstant{},
+	})
 }
 
 // buildAssetChannel constructs the asset-bound AssetChannel shared by every channel kind.

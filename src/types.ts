@@ -4,6 +4,14 @@ import { DataQuery } from '@grafana/schema';
 export type SqlFormat = 'timeseries' | 'table';
 export const QUERY_TYPE_COMPUTE = 'compute' as const;
 export const QUERY_TYPE_SQL = 'sql' as const;
+export const COMPUTE_BY_ASSET = 'asset' as const;
+export const COMPUTE_BY_RUN = 'run' as const;
+export type ComputeBy = typeof COMPUTE_BY_ASSET | typeof COMPUTE_BY_RUN;
+
+export interface TemplateSource {
+  raw: string;
+  name: string;
+}
 
 export interface NominalQuery extends DataQuery {
   // Asset information
@@ -11,6 +19,11 @@ export interface NominalQuery extends DataQuery {
   channel?: string;
   dataScopeName?: string;
   channelDataType?: string;
+  // Absent means asset. Both RIDs are kept when switching so the user's choice survives.
+  computeBy?: ComputeBy;
+  runRid?: string;
+  // Set on the way to the backend so errors can name the variable behind a bad RID.
+  templateSources?: { assetRid?: TemplateSource; runRid?: TemplateSource };
 
   // Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
   aggregations?: string[];

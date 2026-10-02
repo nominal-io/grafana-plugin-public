@@ -434,6 +434,82 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 	}
 }
 
+func TestPrepareQueryResolvesRuns(t *testing.T) {
+	const (
+		assetRid      = "ri.scout.main.asset.runprobe"
+		otherAssetRid = "ri.scout.main.asset.other"
+		run1          = "ri.scout.main.run.1"
+		run2          = "ri.scout.main.run.2"
+		run3          = "ri.scout.main.run.3"
+	)
+	server := newTestAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {Rid: assetRid, Title: "Test Asset"},
+	}, nil)
+	defer server.Close()
+
+	runService := newMockRunService(testRun(run1, assetRid), testRun(run2, assetRid, otherAssetRid))
+	runService.failFor = run3
+	ds := withCatalog(&Datasource{
+		datasourceService:  &mockDatasourceService{},
+		resourceHTTPClient: server.Client(),
+		runService:         runService,
+	})
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+	}
+
+	runQuery := func(runRid string) NominalQueryModel {
+		return NominalQueryModel{ComputeBy: computeByRun, RunRid: runRid, Channel: "temp", DataScopeName: "default", Buckets: 100}
+	}
+	templated := runQuery("$run")
+	templated.TemplateVariables = map[string]interface{}{"run": run1}
+	noRun := NominalQueryModel{ComputeBy: computeByRun}
+	badAsset := NominalQueryModel{AssetRid: "*", Channel: "temp", DataScopeName: "default", Buckets: 100,
+		TemplateSources: templateSources{AssetRid: &templateSource{Raw: "$asset", Name: "asset"}}}
+
+	tests := []struct {
+		name    string
+		model   NominalQueryModel
+		wantRun string
+		wantErr string
+	}{
+		{"single-asset run", runQuery(run1), run1, ""},
+		{"multi-asset run", runQuery(run2), "", "spans 2 assets"},
+		{"missing run", runQuery("ri.scout.main.run.9"), "", "not found"},
+		{"not a run RID", runQuery(assetRid), "", "is not a run RID"},
+		{"templated asset that is not an RID", badAsset, "", "Query validation failed: Asset is `$asset`, currently `*`. That is not an asset RID."},
+		{"no runRid", noRun, "", "runRid is required"},
+		{"templated runRid", templated, run1, ""},
+		{"run lookup fails", runQuery(run3), "", "Failed to load run"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inRun := backend.TimeRange{From: time.Unix(1700000000, 0), To: time.Unix(1700001000, 0)}
+			query := backend.DataQuery{RefID: "A", TimeRange: inRun, JSON: mustMarshal(tt.model)}
+			prep, resp := newTestQueryExecution(ds, config).prepareQuery(context.Background(), query)
+			if tt.wantErr != "" {
+				if resp == nil || resp.Error == nil || !strings.Contains(resp.Error.Error(), tt.wantErr) {
+					t.Fatalf("response = %+v, want error containing %q", resp, tt.wantErr)
+				}
+				return
+			}
+			if resp != nil {
+				t.Fatalf("unexpected error: %v", resp.Error)
+			}
+			if prep.Kind != preparedQueryBatchable {
+				t.Errorf("Kind = %v, want batchable", prep.Kind)
+			}
+			if prep.Model.AssetRid != assetRid {
+				t.Errorf("AssetRid = %q, want %q", prep.Model.AssetRid, assetRid)
+			}
+			if prep.Model.Run == nil || prep.Model.Run.Rid != tt.wantRun {
+				t.Errorf("Run = %+v, want rid %q", prep.Model.Run, tt.wantRun)
+			}
+		})
+	}
+}
+
 func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
@@ -482,5 +558,57 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	}
 	if response.Frames[0].Meta == nil || response.Frames[0].Meta.Type != data.FrameTypeLogLines {
 		t.Errorf("expected FrameTypeLogLines, got %v", response.Frames[0].Meta)
+	}
+}
+
+func TestRidFieldError(t *testing.T) {
+	const (
+		validRun   = "ri.scout.main.run.1"
+		validRun2  = "ri.scout.main.run.2"
+		validAsset = "ri.nominal.asset.test"
+	)
+	src := func(raw string) *templateSource {
+		return &templateSource{Raw: raw, Name: strings.TrimLeft(raw, "${")}
+	}
+	tests := []struct {
+		name      string
+		label     string
+		ridType   string
+		noun      string
+		value     string
+		src       *templateSource
+		wantParts []string
+		wantNone  []string
+	}{
+		{"templated asset", "Asset", "asset", "an asset RID", "*", src("$asset"), []string{"not an asset RID", "Check that variable's query."}, []string{"a asset", "nominal_nominalds"}},
+		{"templated run", "Run", "run", "a run RID", "12", src("$myvar"), []string{"Check that variable's query."}, []string{"nominal_nominalds"}},
+		{"unknown variable", "Run", "run", "a run RID", "$foo", src("$foo"), []string{"No variable named `foo`."}, nil},
+		{"multi-value variable", "Run", "run", "a run RID", "{" + validRun + "," + validRun2 + "}", src("$run"), []string{"currently 2 values"}, nil},
+		{"valid templated RID", "Run", "run", "a run RID", validRun, src("$run"), nil, nil},
+		{"literal asset text", "Asset", "asset", "an asset RID", validAsset, nil, nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ridFieldError(tt.label, tt.ridType, tt.noun, tt.value, tt.src)
+			if len(tt.wantParts) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want error containing %q, got nil", tt.wantParts)
+			}
+			for _, part := range tt.wantParts {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("error %q missing %q", err, part)
+				}
+			}
+			for _, part := range tt.wantNone {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("error %q should not contain %q", err, part)
+				}
+			}
+		})
 	}
 }

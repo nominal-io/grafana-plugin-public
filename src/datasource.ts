@@ -6,14 +6,24 @@ import {
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
+import { NominalQuery, NominalDataSourceOptions, TemplateSource, DEFAULT_QUERY, QUERY_TYPE_SQL, COMPUTE_BY_RUN } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { RunItem, fetchRun, formatRunStart, searchRuns } from './utils/api';
+import {
+  buildDefaultLinks,
+  buildDefaultVariables,
+  findRunVariable,
+} from './defaultControls';
 import resourceRoutes from './resourceRoutes.json';
+
+// Lets the backend name the variable behind a bad RID in its error message.
+function source(raw: string | undefined): TemplateSource | undefined {
+  const name = raw?.match(/^\$\{?(\w+)/)?.[1];
+  return raw && name ? { raw, name } : undefined;
+}
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
-
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
     super(instanceSettings);
@@ -22,7 +32,15 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
   }
 
+  // Called by Grafana 13 and later at dashboard load. Grafana 12 never calls these.
+  async getDefaultVariables() {
+    const runVariable = findRunVariable(getTemplateSrv().getVariables(), this.uid);
+    return runVariable ? buildDefaultVariables(runVariable, this.uid) : [];
+  }
 
+  async getDefaultLinks() {
+    return findRunVariable(getTemplateSrv().getVariables(), this.uid) ? buildDefaultLinks() : [];
+  }
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {
     return DEFAULT_QUERY;
@@ -36,12 +54,18 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       };
     }
 
+    const replace = (raw: string) => getTemplateSrv().replace(raw, scopedVars);
+    const assetSource = source(query.assetRid);
+    const runSource = source(query.runRid);
+
     return {
       ...query,
       queryText: getTemplateSrv().replace(query.queryText || '', scopedVars),
-      assetRid: getTemplateSrv().replace(query.assetRid || '', scopedVars),
-      channel: getTemplateSrv().replace(query.channel || '', scopedVars),
-      dataScopeName: getTemplateSrv().replace(query.dataScopeName || '', scopedVars),
+      assetRid: replace(query.assetRid || ''),
+      runRid: replace(query.runRid || ''),
+      channel: replace(query.channel || ''),
+      dataScopeName: replace(query.dataScopeName || ''),
+      templateSources: assetSource || runSource ? { assetRid: assetSource, runRid: runSource } : undefined,
     };
   }
 
@@ -54,14 +78,16 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return !!query.rawSql?.trim();
     }
 
-    const queryText = query.queryText?.trim();
-    const assetRid = query.assetRid?.trim();
     const channel = query.channel?.trim();
     const dataScopeName = query.dataScopeName?.trim();
 
+    if (query.computeBy === COMPUTE_BY_RUN) {
+      return !!(query.runRid?.trim() && channel && dataScopeName);
+    }
+
     // Allow queries with either legacy queryText or new Nominal parameters.
     // All three fields (assetRid, channel, dataScopeName) are required for a valid Nominal query.
-    return !!(queryText || (assetRid && channel && dataScopeName));
+    return !!(query.queryText?.trim() || (query.assetRid?.trim() && channel && dataScopeName));
   }
 
   /**

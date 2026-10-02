@@ -30,6 +30,21 @@ describe('useAggregationRun', () => {
     expect(onRunQuery).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['asset to run', { computeBy: 'asset' as const }, { computeBy: 'run' as const }],
+    ['run to asset', { computeBy: 'run' as const }, { computeBy: 'asset' as const }],
+    ['a different run on the same asset', { computeBy: 'run' as const, runRid: 'ri.run.1' }, { computeBy: 'run' as const, runRid: 'ri.run.2' }],
+  ])('reruns once when %s changes with the same asset', (_name, before, after) => {
+    const onRunQuery = jest.fn();
+    const { rerender } = renderHook(
+      ({ query }) => useAggregationRun({ query, onChange: jest.fn(), onRunQuery }),
+      { initialProps: { query: makeQuery({ runRid: 'ri.run.1', ...before }) } }
+    );
+    onRunQuery.mockClear();
+    rerender({ query: makeQuery({ runRid: 'ri.run.1', ...before, ...after }) });
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('changeAggregations normalizes empty selection to the default and calls onChange', () => {
     const onChange = jest.fn();
     const { result } = renderHook(() => useAggregationRun({ query: makeQuery(), onChange, onRunQuery: jest.fn() }));

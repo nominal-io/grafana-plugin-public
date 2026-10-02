@@ -170,6 +170,22 @@ export interface RunItem {
 export const formatRunStart = (ms: number): string =>
   `${dateTimeFormat(ms, { format: 'YYYY-MM-DD HH:mm', timeZone: 'utc' })} UTC`;
 
+const toDuration = (ms: number): string => {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const [h, m, sec] = [Math.floor(total / 3600), Math.floor((total % 3600) / 60), total % 60];
+  return [h > 0 && `${h}h`, (h > 0 || m > 0) && `${m}m`, `${sec}s`].filter(Boolean).join(' ');
+};
+
+/** `start → end UTC (duration)`, or `start → now UTC` for a run that has not ended. */
+export const formatRunWindow = (run: RunItem): string => {
+  const format = (ms: number) => dateTimeFormat(ms, { format: 'YYYY-MM-DD HH:mm:ss', timeZone: 'utc' });
+  const start = format(run.startMs);
+  if (run.endMs === undefined) {
+    return `${start} → now UTC`;
+  }
+  return `${start} → ${format(run.endMs)} UTC (${toDuration(run.endMs - run.startMs)})`;
+};
+
 export const searchRuns = async (
   datasourceUrl: string,
   request: { assetRids?: string[]; searchText?: string }

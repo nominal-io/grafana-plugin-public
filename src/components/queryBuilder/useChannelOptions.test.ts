@@ -270,6 +270,28 @@ describe('useChannelOptions', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('reports an inferred data type through the latest onChange', async () => {
+    let resolveSearch: (channels: Channel[]) => void = () => undefined;
+    mockSearchChannels.mockReturnValue(new Promise((resolve) => (resolveSearch = resolve)));
+    const query = makeQuery({ channel: '$chan' });
+    const channelResolution = { raw: '$chan', resolved: 'temp', hasTemplate: true, isResolved: true };
+    const staleOnChange = jest.fn();
+    const latestOnChange = jest.fn();
+    const { rerender } = renderHook(
+      ({ onChange }) => useChannelOptions(args({ query, channelResolution, onChange })),
+      { initialProps: { onChange: staleOnChange } }
+    );
+    rerender({ onChange: latestOnChange });
+
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    await act(async () => {
+      resolveSearch([{ name: 'temp', dataSource: 'ds', description: '', dataType: 'numeric' }]);
+    });
+
+    expect(staleOnChange).not.toHaveBeenCalled();
+    expect(latestOnChange).toHaveBeenCalledWith(expect.objectContaining({ channelDataType: 'numeric' }));
+  });
+
   it('loads channel options against the currently resolved template data scope', async () => {
     mockSearchChannels.mockResolvedValue([]);
     const query = makeQuery({ dataScopeName: '$scope' });

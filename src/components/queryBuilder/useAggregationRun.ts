@@ -41,7 +41,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
     if (shouldRunCompleteQuery(queryRef.current)) {
       onRunQuery();
     }
-  }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
+  }, [query?.assetRid, query?.channel, query?.dataScopeName, query?.computeBy, query?.runRid, onRunQuery]);
 
   // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
   // Compared by normalized value so logically identical aggregations in a new array

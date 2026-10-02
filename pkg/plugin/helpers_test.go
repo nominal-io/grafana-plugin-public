@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -794,6 +795,8 @@ func createMockLogPointResult(message string, args map[string]string) computeapi
 // mockRunService serves the given runs and records run searches.
 type mockRunService struct {
 	runs     []runapi1.Run
+	failFor  string // run RID whose lookup returns an error
+	getErr   error
 	fetches  atomic.Int64
 	mu       sync.Mutex
 	searches []runapi.SearchRunsRequest
@@ -807,6 +810,12 @@ func newMockRunService(runs ...runapi1.Run) *mockRunService {
 
 func (m *mockRunService) GetRuns(_ context.Context, _ bearertoken.Token, runRids []runapi.RunRid) (map[runapi.RunRid]runapi1.Run, error) {
 	m.fetches.Add(1)
+	if m.failFor != "" && slices.ContainsFunc(runRids, func(r runapi.RunRid) bool { return r.String() == m.failFor }) {
+		return nil, errors.New("lookup failed")
+	}
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	found := map[runapi.RunRid]runapi1.Run{}
 	for _, run := range m.runs {
 		if slices.Contains(runRids, run.Rid) {

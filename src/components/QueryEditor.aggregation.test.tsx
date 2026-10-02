@@ -14,7 +14,7 @@ jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(() => ({ post })),
   getAppEvents: jest.fn(() => ({ publish })),
-  getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
+  getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v, getVariables: () => [] })),
 }));
 
 const mockDatasource = { url: '/api/datasources/uid/test/resources' } as unknown as DataSource;

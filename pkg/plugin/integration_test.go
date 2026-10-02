@@ -22,10 +22,12 @@ import (
 	scoutapi "github.com/nominal-io/nominal-api-go/scout/api"
 	assetapi "github.com/nominal-io/nominal-api-go/scout/asset/api"
 	assetservice "github.com/nominal-io/nominal-api-go/scout/assets"
+	scoutrids "github.com/nominal-io/nominal-api-go/scout/rids/api"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
+	"github.com/palantir/pkg/safelong"
 )
 
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
@@ -337,6 +339,67 @@ func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) 
 		from:          from,
 		to:            to,
 	}, true
+}
+
+func TestLiveNominalRunQueryIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	target := createLiveNominalQueryTarget(t, settings)
+	clients := newLiveNominalAPIClients(t, settings)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	assetRid, err := rid.ParseRID(target.assetRid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := runapi.UtcTimestamp{SecondsSinceEpoch: safelong.SafeLong(target.to.Unix())}
+	var run struct {
+		Rid string `json:"rid"`
+	}
+	err = clients.doJSON(ctx, http.MethodPost, "/scout/v1/run", runapi.CreateRunRequest{
+		Title:     fmt.Sprintf("grafana-plugin-live-run-%d", time.Now().UnixNano()),
+		StartTime: runapi.UtcTimestamp{SecondsSinceEpoch: safelong.SafeLong(target.from.Unix())},
+		EndTime:   &end,
+		Assets:    []scoutrids.AssetRid{scoutrids.AssetRid(assetRid)},
+		Workspace: clients.workspace,
+	}, &run)
+	if err != nil {
+		t.Fatalf("failed to create live Nominal run: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		path := fmt.Sprintf("/scout/v1/archive-run/%s", url.PathEscape(run.Rid))
+		if err := clients.doJSON(cleanupCtx, http.MethodPut, path, nil, nil); err != nil {
+			t.Logf("failed to archive live Nominal run %s: %v", run.Rid, err)
+		}
+	})
+
+	ds := liveNominalDatasource(t, settings)
+	query := NominalQueryModel{
+		ComputeBy:     computeByRun,
+		RunRid:        run.Rid,
+		Channel:       target.channel,
+		DataScopeName: target.dataScopeName,
+		Buckets:       liveNominalQueryBuckets(t),
+	}
+	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
+		Queries: []backend.DataQuery{{
+			RefID: "A", JSON: mustMarshal(query),
+			TimeRange:     backend.TimeRange{From: target.from, To: target.to},
+			MaxDataPoints: int64(query.Buckets),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected QueryData error: %v", err)
+	}
+	response := resp.Responses["A"]
+	if response.Error != nil {
+		t.Fatalf("unexpected response error: %v", response.Error)
+	}
+	assertLiveNominalNumericResponse(t, response, target.channel)
 }
 
 func liveNominalQueryBuckets(t *testing.T) int {

@@ -44,138 +44,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				return nil
 			}
 
-			if result.IsLog {
-				// Newest first. Grafana's infinite scroll derives the next time range
-				// from the boundary row, and the compute API's PageInfo fixes selection
-				// direction (sign of PageSize), not response order, so this sort is
-				// not redundant.
-				if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
-					slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
-				}
-
-				frame := data.NewFrame(qm.Channel)
-				frame.Meta = &data.FrameMeta{
-					Type: data.FrameTypeLogLines,
-					// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
-					TypeVersion:            data.FrameTypeVersion{0, 0},
-					PreferredVisualization: data.VisTypeLogs,
-				}
-
-				if len(result.LogEntries) > 0 {
-					times := make([]time.Time, len(result.LogEntries))
-					bodies := make([]string, len(result.LogEntries))
-					ids := make([]string, len(result.LogEntries))
-					labels := make([]json.RawMessage, len(result.LogEntries))
-					for i, e := range result.LogEntries {
-						times[i] = e.Time
-						bodies[i] = e.Body
-						ids[i] = e.ID
-						labels[i] = e.Labels
-					}
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, times),
-						data.NewField("body", nil, bodies),
-						data.NewField("id", nil, ids),
-						data.NewField("labels", nil, labels),
-					)
-				} else {
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, []time.Time{}),
-						data.NewField("body", nil, []string{}),
-						data.NewField("id", nil, []string{}),
-						data.NewField("labels", nil, []json.RawMessage{}),
-					)
-				}
-
-				log.DefaultLogger.Debug("Successfully processed log query",
-					"entries", len(result.LogEntries))
-				response.Frames = append(response.Frames, frame)
-			} else if len(result.AggSeries) > 0 {
-				// Multi-aggregation Arrow path: one frame per series
-				for _, agg := range result.AggSeries {
-					frame := data.NewFrame("response")
-					displayName := qm.Channel
-					if qm.ExplicitAggregations {
-						displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
-					}
-					frame.Name = displayName
-					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
-						valueField := data.NewField("value", nil, agg.Values)
-						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
-						frame.Fields = append(frame.Fields,
-							data.NewField("time", nil, agg.TimePoints),
-							valueField,
-						)
-					} else {
-						valueField := data.NewField("value", nil, []*float64{})
-						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
-						frame.Fields = append(frame.Fields,
-							data.NewField("time", nil, []time.Time{}),
-							valueField,
-						)
-					}
-					response.Frames = append(response.Frames, frame)
-				}
-				dataPoints := 0
-				if len(result.AggSeries) > 0 {
-					dataPoints = len(result.AggSeries[0].TimePoints)
-				}
-				log.DefaultLogger.Debug("Successfully processed multi-agg query",
-					"series", len(result.AggSeries),
-					"dataPoints", dataPoints)
-			} else if result.IsEnum {
-				frame := data.NewFrame("response")
-				frame.Name = qm.Channel
-				// Mark enum frames as table type so panels like Stat can pick up string fields.
-				// Time series frames filter to numeric fields only by default.
-				frame.Meta = &data.FrameMeta{
-					Type:                   data.FrameTypeTable,
-					PreferredVisualization: data.VisTypeTable,
-				}
-				if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
-					valueField := data.NewField("value", nil, result.StringValues)
-					valueField.Config = fieldConfigForEnum(&qm)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, result.TimePoints),
-						valueField,
-					)
-				} else {
-					valueField := data.NewField("value", nil, []string{})
-					valueField.Config = fieldConfigForEnum(&qm)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, []time.Time{}),
-						valueField,
-					)
-				}
-				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
-				response.Frames = append(response.Frames, frame)
-			} else {
-				// Legacy numeric path (BucketedNumericPlot, NumericPlot)
-				frame := data.NewFrame("response")
-				displayName := qm.Channel
-				if qm.RawLTTB {
-					displayName = fmt.Sprintf("%s (lttb)", qm.Channel)
-				}
-				frame.Name = displayName
-				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
-					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, result.TimePoints),
-						valueField,
-					)
-				} else {
-					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, []time.Time{}),
-						valueField,
-					)
-				}
-				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
-				response.Frames = append(response.Frames, frame)
-			}
-
+			response.Frames = framesFromResult(result, qm)
 			return nil
 		},
 		func(errorResult computeapi.ErrorResult) error {
@@ -212,6 +81,165 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 	}
 
 	return response
+}
+
+// framesFromResult renders a transform result as Grafana frames. An empty
+// result still yields the frames, fields and units a populated one would, so
+// panels keep their axes and series names.
+func framesFromResult(result TransformResult, qm NominalQueryModel) data.Frames {
+	var frames data.Frames
+	if result.IsLog {
+		// Newest first. Grafana's infinite scroll derives the next time range
+		// from the boundary row, and the compute API's PageInfo fixes selection
+		// direction (sign of PageSize), not response order, so this sort is
+		// not redundant.
+		if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
+			slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
+		}
+
+		frame := data.NewFrame(qm.Channel)
+		frame.Meta = &data.FrameMeta{
+			Type: data.FrameTypeLogLines,
+			// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
+			TypeVersion:            data.FrameTypeVersion{0, 0},
+			PreferredVisualization: data.VisTypeLogs,
+		}
+
+		if len(result.LogEntries) > 0 {
+			times := make([]time.Time, len(result.LogEntries))
+			bodies := make([]string, len(result.LogEntries))
+			ids := make([]string, len(result.LogEntries))
+			labels := make([]json.RawMessage, len(result.LogEntries))
+			for i, e := range result.LogEntries {
+				times[i] = e.Time
+				bodies[i] = e.Body
+				ids[i] = e.ID
+				labels[i] = e.Labels
+			}
+			frame.Fields = append(frame.Fields,
+				data.NewField("timestamp", nil, times),
+				data.NewField("body", nil, bodies),
+				data.NewField("id", nil, ids),
+				data.NewField("labels", nil, labels),
+			)
+		} else {
+			frame.Fields = append(frame.Fields,
+				data.NewField("timestamp", nil, []time.Time{}),
+				data.NewField("body", nil, []string{}),
+				data.NewField("id", nil, []string{}),
+				data.NewField("labels", nil, []json.RawMessage{}),
+			)
+		}
+
+		log.DefaultLogger.Debug("Successfully processed log query",
+			"entries", len(result.LogEntries))
+		frames = append(frames, frame)
+	} else if len(result.AggSeries) > 0 {
+		// Multi-aggregation Arrow path: one frame per series
+		for _, agg := range result.AggSeries {
+			frame := data.NewFrame("response")
+			displayName := qm.Channel
+			if qm.ExplicitAggregations {
+				displayName = fmt.Sprintf("%s (%s)", qm.Channel, agg.Name)
+			}
+			frame.Name = displayName
+			if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
+				valueField := data.NewField("value", nil, agg.Values)
+				valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
+				frame.Fields = append(frame.Fields,
+					data.NewField("time", nil, agg.TimePoints),
+					valueField,
+				)
+			} else {
+				valueField := data.NewField("value", nil, []*float64{})
+				valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
+				frame.Fields = append(frame.Fields,
+					data.NewField("time", nil, []time.Time{}),
+					valueField,
+				)
+			}
+			frames = append(frames, frame)
+		}
+		dataPoints := 0
+		if len(result.AggSeries) > 0 {
+			dataPoints = len(result.AggSeries[0].TimePoints)
+		}
+		log.DefaultLogger.Debug("Successfully processed multi-agg query",
+			"series", len(result.AggSeries),
+			"dataPoints", dataPoints)
+	} else if result.IsEnum {
+		frame := data.NewFrame("response")
+		frame.Name = qm.Channel
+		// Mark enum frames as table type so panels like Stat can pick up string fields.
+		// Time series frames filter to numeric fields only by default.
+		frame.Meta = &data.FrameMeta{
+			Type:                   data.FrameTypeTable,
+			PreferredVisualization: data.VisTypeTable,
+		}
+		if len(result.TimePoints) > 0 && len(result.StringValues) > 0 {
+			valueField := data.NewField("value", nil, result.StringValues)
+			valueField.Config = fieldConfigForEnum(&qm)
+			frame.Fields = append(frame.Fields,
+				data.NewField("time", nil, result.TimePoints),
+				valueField,
+			)
+		} else {
+			valueField := data.NewField("value", nil, []string{})
+			valueField.Config = fieldConfigForEnum(&qm)
+			frame.Fields = append(frame.Fields,
+				data.NewField("time", nil, []time.Time{}),
+				valueField,
+			)
+		}
+		log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
+		frames = append(frames, frame)
+	} else {
+		// Legacy numeric path (BucketedNumericPlot, NumericPlot)
+		frame := data.NewFrame("response")
+		displayName := qm.Channel
+		if qm.RawLTTB {
+			displayName = fmt.Sprintf("%s (lttb)", qm.Channel)
+		}
+		frame.Name = displayName
+		if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
+			valueField := data.NewField("value", nil, result.NumericValues)
+			valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
+			frame.Fields = append(frame.Fields,
+				data.NewField("time", nil, result.TimePoints),
+				valueField,
+			)
+		} else {
+			valueField := data.NewField("value", nil, []*float64{})
+			valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
+			frame.Fields = append(frame.Fields,
+				data.NewField("time", nil, []time.Time{}),
+				valueField,
+			)
+		}
+		log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
+		frames = append(frames, frame)
+	}
+
+	return frames
+}
+
+// emptyTransformResult is the result the compute service would return for qm
+// with no data, so a query that skips compute renders like an empty one.
+func emptyTransformResult(qm NominalQueryModel) TransformResult {
+	switch {
+	case qm.ChannelDataType == ChannelDataTypeLog:
+		return TransformResult{IsLog: true}
+	case qm.ChannelDataType == ChannelDataTypeString:
+		return TransformResult{IsEnum: true}
+	case qm.RawLTTB:
+		return TransformResult{}
+	}
+	series := make([]AggregationSeries, len(qm.Aggregations))
+	for i, agg := range qm.Aggregations {
+		spec := aggColumnSpecFromEnum(agg)
+		series[i] = AggregationSeries{Name: spec.Name, CarriesChannelUnit: spec.CarriesChannelUnit}
+	}
+	return TransformResult{AggSeries: series}
 }
 
 type TransformResult struct {
