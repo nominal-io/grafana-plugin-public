@@ -50,6 +50,7 @@ func TestMarshalLogArgs(t *testing.T) {
 		args    map[string]string
 		channel string
 		want    map[string]string
+		wantRaw string
 	}{
 		{
 			name:    "nil args with channel",
@@ -62,6 +63,13 @@ func TestMarshalLogArgs(t *testing.T) {
 			args:    map[string]string{"host": "srv-1", "level": "error"},
 			channel: "engine.temp",
 			want:    map[string]string{"host": "srv-1", "level": "error", "nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "args sort before the injected channel",
+			args:    map[string]string{"zone": "a", "host": "h", "level": "l"},
+			channel: "c",
+			want:    map[string]string{"zone": "a", "host": "h", "level": "l", "nominal.channel": "c"},
+			wantRaw: `{"host":"h","level":"l","zone":"a","nominal.channel":"c"}`,
 		},
 		{
 			name:    "existing channel is preserved",
@@ -123,6 +131,9 @@ func TestMarshalLogArgs(t *testing.T) {
 			got := marshalLogArgs(tt.args, tt.channel)
 			if !json.Valid(got) {
 				t.Fatalf("marshalLogArgs() = %q, want valid JSON", got)
+			}
+			if tt.wantRaw != "" && string(got) != tt.wantRaw {
+				t.Errorf("marshalLogArgs() = %q, want %q", got, tt.wantRaw)
 			}
 			if parsed := parseLogLabels(t, got); !reflect.DeepEqual(parsed, tt.want) {
 				t.Errorf("marshalLogArgs() decoded = %v, want %v", parsed, tt.want)
