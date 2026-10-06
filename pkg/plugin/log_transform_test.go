@@ -7,6 +7,7 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
@@ -50,6 +51,7 @@ func TestMarshalLogArgs(t *testing.T) {
 		args    map[string]string
 		channel string
 		want    map[string]string
+		wantRaw string
 	}{
 		{
 			name:    "nil args with channel",
@@ -62,6 +64,13 @@ func TestMarshalLogArgs(t *testing.T) {
 			args:    map[string]string{"host": "srv-1", "level": "error"},
 			channel: "engine.temp",
 			want:    map[string]string{"host": "srv-1", "level": "error", "nominal.channel": "engine.temp"},
+		},
+		{
+			name:    "args sort before the injected channel",
+			args:    map[string]string{"zone": "a", "host": "h", "level": "l"},
+			channel: "c",
+			want:    map[string]string{"zone": "a", "host": "h", "level": "l", "nominal.channel": "c"},
+			wantRaw: `{"host":"h","level":"l","zone":"a","nominal.channel":"c"}`,
 		},
 		{
 			name:    "existing channel is preserved",
@@ -124,6 +133,9 @@ func TestMarshalLogArgs(t *testing.T) {
 			if !json.Valid(got) {
 				t.Fatalf("marshalLogArgs() = %q, want valid JSON", got)
 			}
+			if tt.wantRaw != "" && string(got) != tt.wantRaw {
+				t.Errorf("marshalLogArgs() = %q, want %q", got, tt.wantRaw)
+			}
 			if parsed := parseLogLabels(t, got); !reflect.DeepEqual(parsed, tt.want) {
 				t.Errorf("marshalLogArgs() decoded = %v, want %v", parsed, tt.want)
 			}
@@ -182,6 +194,32 @@ func TestLogLabelEncoderZeroValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzAppendJSONString(f *testing.F) {
+	for b := range 0x20 {
+		f.Add(string(rune(b)))
+	}
+	for _, seed := range []string{
+		"", `"`, `\`, "雪🚀", "\xff", "a\xe2\x82b", "\xed\xa0\x80",
+		"key\"\\\n雪<&>\x7f\u2028end", "\xc3", "\xf0\x9f\x9a", " \x01", "\xe9\x9b\xaa\"",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		got := appendJSONString(nil, s)
+		if !utf8.Valid(got) {
+			t.Fatalf("appendJSONString(%q) = %q, want valid UTF-8", s, got)
+		}
+		var decoded string
+		if err := json.Unmarshal(got, &decoded); err != nil {
+			t.Fatalf("appendJSONString(%q) = %q, want valid JSON: %v", s, got, err)
+		}
+		// Converting to runes replaces each invalid UTF-8 byte with U+FFFD.
+		if want := string([]rune(s)); decoded != want {
+			t.Errorf("appendJSONString(%q) decodes to %q, want %q", s, decoded, want)
+		}
+	})
 }
 
 func TestLogPagedTransformation(t *testing.T) {
