@@ -121,7 +121,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
         <code className={styles.codeBlock}>{DEFAULT_SQL}</code>
         <ul className={styles.text}>
           <li>Telemetry tables (points_double, points_int, points_string, points_struct, logs, channels) require a dataset_rid filter.</li>
-          <li>Multi-value and Include All variables expand to {'\'a\',\'b\''}, so write channel IN ($channels). Write other variables as {'\'$channel\''}.</li>
+          <li>Write {'channel IN (${channel:sqlstring})'} for any variable: single-value, multi-value, or Include All. Plain $channel is quoted only for multi-value and Include All variables.</li>
         </ul>
       </div>
     </div>
