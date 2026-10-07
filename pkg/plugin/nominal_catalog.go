@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -95,7 +96,14 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 		return zero, err
 	}
 
-	ch := c.group.DoChan(key, func() (any, error) {
+	ch := c.group.DoChan(key, func() (_ any, err error) {
+		// singleflight re-panics on a new goroutine, outside any recovery.
+		defer func() {
+			if r := recover(); r != nil {
+				log.DefaultLogger.FromContext(ctx).Error("Catalog lookup panicked", "key", key, "panic", r, "stack", string(debug.Stack()))
+				err = errors.New("catalog lookup failed unexpectedly")
+			}
+		}()
 		if v, hit := c.lookup(key); hit {
 			return v, nil
 		}
