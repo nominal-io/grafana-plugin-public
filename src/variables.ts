@@ -1,4 +1,18 @@
-import { DataFrame, Field, FieldType, MetricFindValue } from '@grafana/data';
+import { from, map, Observable, of } from 'rxjs';
+import {
+  AppEvents,
+  CustomVariableSupport,
+  DataFrame,
+  DataQueryRequest,
+  DataQueryResponse,
+  Field,
+  FieldType,
+  MetricFindValue,
+} from '@grafana/data';
+import { getAppEvents } from '@grafana/runtime';
+import type { DataSource } from './datasource';
+import { VariableQueryEditor } from './components/VariableQueryEditor';
+import { NominalVariableQuery, QUERY_TYPE_SQL, toVariableQuery } from './types';
 
 // UTC with full nanosecond precision, so the value matches its row in a filter such as ts = TIMESTAMP '$t'.
 function sqlTimestamp(ms: number, nanos = 0): string {
@@ -38,4 +52,53 @@ export function framesToVariableOptions(frames: DataFrame[]): MetricFindValue[] 
     options.push({ text: cellText(textField, row) ?? value, value });
   }
   return options;
+}
+
+function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>, target: NominalVariableQuery) {
+  // Skip the backend until the variable has SQL; blank SQL fails its validation.
+  const rawSql = target.query;
+  if (!rawSql.trim()) {
+    return of({ data: [] });
+  }
+  return ds
+    .query({
+      ...request,
+      targets: [{ refId: target.refId, queryType: QUERY_TYPE_SQL, rawSql, format: 'table' }],
+    })
+    .pipe(
+      map((response) => {
+        // A failed query still returns an empty frame, which must not hide the backend error behind a column error.
+        if (response.errors?.length) {
+          return { ...response, data: [] };
+        }
+        // Grafana drops warnings from variable queries, so a row-limit cut keeps the partial list and shows a toast.
+        const frame: DataFrame | undefined = response.data[0];
+        const warning = frame?.meta?.notices?.find((notice) => notice.severity === 'warning');
+        if (warning) {
+          getAppEvents().publish({
+            type: AppEvents.alertWarning.name,
+            payload: ['SQL variable options are incomplete', `${warning.text}. Narrow the query, for example with DISTINCT.`],
+          });
+        }
+        return { ...response, data: framesToVariableOptions(response.data) };
+      })
+    );
+}
+
+export class NominalVariableSupport extends CustomVariableSupport<DataSource, NominalVariableQuery> {
+  editor = VariableQueryEditor;
+
+  constructor(private readonly datasource: DataSource) {
+    super();
+  }
+
+  query(request: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+    const target = toVariableQuery(request.targets[0]);
+    if (target.mode === 'sql') {
+      return runSql(this.datasource, request, target);
+    }
+    return from(this.datasource.metricFindQuery(target.query, { scopedVars: request.scopedVars })).pipe(
+      map((data) => ({ data }))
+    );
+  }
 }

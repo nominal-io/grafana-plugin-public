@@ -119,3 +119,7 @@ export function toVariableQuery(
     query: query.query ?? '',
   };
 }
+
+export const VARIABLE_SQL_EXAMPLE = `SELECT title AS __text, asset_rid AS __value
+FROM assets
+ORDER BY 1`;
