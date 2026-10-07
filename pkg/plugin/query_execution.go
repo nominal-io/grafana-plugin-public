@@ -145,8 +145,23 @@ func partitionPreparedQueries(prepared []preparedQuery) (queryBatch, queryBatch)
 	return logBatch, otherBatch
 }
 
-func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch queryBatch) map[string]backend.DataResponse {
-	results := make(map[string]backend.DataResponse)
+func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch queryBatch) (results map[string]backend.DataResponse) {
+	results = make(map[string]backend.DataResponse)
+
+	// After a panic the function returns its named result, so results keeps what was
+	// collected and only queries still without one get the error.
+	var panicked backend.DataResponse
+	defer func() {
+		if panicked.Error != nil {
+			for _, q := range batch.queries {
+				if _, ok := results[q.RefID]; !ok {
+					results[q.RefID] = panicked
+				}
+			}
+		}
+	}()
+	defer recoverQuery(ctx, "Batch query", &panicked)
+
 	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
 
 	if len(batch.queries) != len(batch.models) {
