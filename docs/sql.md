@@ -115,6 +115,98 @@ An edited variable is saved in a format that plugin versions without SQL
 variables cannot read. A variable you never edit keeps working after a
 downgrade.
 
+## Annotations
+
+A SQL query can draw dashboard annotations. Open **Dashboard settings →
+Annotations → New annotation**, choose the Nominal data source, and write SQL
+or click **Use events example** to insert a starting query. Each returned row
+draws one marker, or one shaded region when the row has an end time.
+
+| Column | Use |
+| --- | --- |
+| `"time"` | Required. Where the marker is drawn. Quote it, because `time` is reserved in Nominal SQL. |
+| `text` | Required. The annotation text. Without this column, the first string column is used. With no string column, Grafana draws nothing. |
+| `"timeEnd"` | Optional. Makes the annotation a region from `"time"` to `"timeEnd"`. Quote it to keep its case. |
+| `title` | Optional. The annotation title. |
+| `tags` | Optional. Comma-separated tags. |
+
+To use other column names, map them in the editor's field mapping.
+
+The examples below use `IN (${asset:sqlstring})` with an `asset` dashboard
+variable, as described in [Dashboard variables](#dashboard-variables). On a
+dashboard without an `asset` variable, replace it with an asset RID in single
+quotes.
+
+Add a `LIMIT`, because every returned row draws a marker. Also limit the query
+to the dashboard time range with `$__timeFilter` or `$__timeFrom()` and
+`$__timeTo()`.
+
+Events for an asset, drawn as regions. This is the **Use events example**
+query:
+
+```sql
+SELECT e.start_time AS "time",
+       e.start_time + e.duration_seconds * INTERVAL '1' SECOND AS "timeEnd",
+       e.name AS title,
+       e.description AS text,
+       e.type AS tags
+FROM event_assets AS ea
+JOIN events AS e ON ea.event_rid = e.event_rid
+WHERE ea.asset_rid IN (${asset:sqlstring})
+  AND e.start_time <= $__timeTo()
+  AND e.start_time + e.duration_seconds * INTERVAL '1' SECOND >= $__timeFrom()
+ORDER BY e.start_time
+LIMIT 1000
+```
+
+To show only some event types, add `AND e.type IN ('FLAG', 'ERROR')` to the
+`WHERE` clause.
+
+Runs as shaded regions. A run that has not ended has no end time, so this
+draws it to the end of the time range. It uses `CASE` because `COALESCE`
+rounds to whole seconds:
+
+```sql
+SELECT r.start_time AS "time",
+       CASE WHEN r.end_time IS NULL THEN $__timeTo() ELSE r.end_time END AS "timeEnd",
+       r.title AS text
+FROM run_assets AS ra
+JOIN runs AS r ON ra.run_rid = r.run_rid
+WHERE ra.asset_rid IN (${asset:sqlstring})
+  AND r.start_time <= $__timeTo()
+  AND (r.end_time IS NULL OR r.end_time >= $__timeFrom())
+ORDER BY r.start_time
+LIMIT 1000
+```
+
+The moments a numeric channel rises through a threshold:
+
+```sql
+SELECT ts AS "time", value AS text
+FROM (
+  SELECT ts, value, LAG(value) OVER (PARTITION BY dataset_rid, channel, tags ORDER BY ts) AS prev
+  FROM points_double
+  WHERE dataset_rid IN (SELECT dataset_rid FROM assets WHERE asset_rid IN (${asset:sqlstring}))
+    AND channel = 'temperature'
+    AND $__timeFilter(ts)
+) AS s
+WHERE prev < 10 AND value >= 10
+ORDER BY ts
+LIMIT 1000
+```
+
+`PARTITION BY dataset_rid, channel, tags` keeps each series separate. A
+multi-value `asset` variable brings several datasets, and one channel can carry
+several tagged series in one dataset. Without the partition, interleaved rows
+from different series read as crossings. A noisy signal that jitters around the
+threshold crosses it often and draws a marker for each crossing.
+
+To mark each change in a string channel instead, read from `points_string` and
+use `WHERE prev IS NULL OR value <> prev`. The first row in the time range
+always counts as a change. Remove `prev IS NULL OR` to hide it.
+
+Event labels cannot be used as tags yet.
+
 ## Limits
 
 The SQL service stops a query after 2 minutes. Results stop at Grafana's SQL
