@@ -48,6 +48,8 @@ ORDER BY 1
 
 `$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Write `channel IN (${channel:sqlstring})` to use a variable in SQL. It works whether the variable is single-value, multi-value, or has Include All, but a value that contains a double quote does not match. Plain `$channel` is unquoted for a single value but quoted for multi-value or Include All.
 
+Annotations can also run Nominal SQL. The query needs a `"time"` column and a text column, and the annotation editor's **Use events example** inserts a starting query. See [Annotations](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#annotations) for the columns and more patterns.
+
 ## Channel types
 
 ### Numeric
@@ -120,10 +122,6 @@ Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to us
 - If **Save & test** fails, confirm that the Base URL includes the `/api` path and that the API key is valid.
 - If asset or channel search fails, confirm that the data source can reach Nominal and that the API key has access to the requested data.
 - If an expected asset is missing from search, check the **Workspace RID**: only assets in that workspace are listed. Assets from other workspaces that the API key can access still resolve if referenced directly by RID.
-
-## Known limitations
-
-- Annotations are not yet supported.
 
 ## Links
 

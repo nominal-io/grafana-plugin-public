@@ -6,6 +6,7 @@
   "metrics": true,
   "logs": true,
   "alerting": true,
+  "annotations": true,
   "backend": true,
   "executable": "gpx_nominal_ds",
   "info": {

@@ -123,3 +123,16 @@ export function toVariableQuery(
 export const VARIABLE_SQL_EXAMPLE = `SELECT title AS __text, asset_rid AS __value
 FROM assets
 ORDER BY 1`;
+
+export const ANNOTATION_SQL_EXAMPLE = `SELECT e.start_time AS "time",
+       e.start_time + e.duration_seconds * INTERVAL '1' SECOND AS "timeEnd",
+       e.name AS title,
+       e.description AS text,
+       e.type AS tags
+FROM event_assets AS ea
+JOIN events AS e ON ea.event_rid = e.event_rid
+WHERE ea.asset_rid IN (\${asset:sqlstring})
+  AND e.start_time <= $__timeTo()
+  AND e.start_time + e.duration_seconds * INTERVAL '1' SECOND >= $__timeFrom()
+ORDER BY e.start_time
+LIMIT 1000`;
