@@ -56,7 +56,7 @@ func (e *workspaceLookupError) Unwrap() error { return e.err }
 
 // executeSQLQuery expands macros, runs the query and shapes the result for its format.
 func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared preparedQuery) (response backend.DataResponse) {
-	defer recoverSQLQuery(ctx, &response)
+	defer recoverQuery(ctx, "SQL query", &response)
 	if err := e.datasource.sqlErr; err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	}
@@ -196,11 +196,11 @@ func grafanaStatus(code codes.Code) backend.Status {
 	}
 }
 
-// recoverSQLQuery turns a panic into an error response. SQL queries run on their own goroutines,
-// outside the SDK's recovery, where a panic would stop the plugin process.
-func recoverSQLQuery(ctx context.Context, response *backend.DataResponse) {
+// recoverQuery turns a panic into an error response. Query work that runs on its own goroutines,
+// outside the SDK's recovery, would otherwise stop the plugin process. It must be deferred directly.
+func recoverQuery(ctx context.Context, what string, response *backend.DataResponse) {
 	if r := recover(); r != nil {
-		log.DefaultLogger.FromContext(ctx).Error("SQL query panicked", "panic", r, "stack", string(debug.Stack()))
-		*response = backend.ErrDataResponse(backend.StatusInternal, "SQL query failed unexpectedly")
+		log.DefaultLogger.FromContext(ctx).Error(what+" panicked", "panic", r, "stack", string(debug.Stack()))
+		*response = backend.ErrDataResponse(backend.StatusInternal, what+" failed unexpectedly")
 	}
 }
