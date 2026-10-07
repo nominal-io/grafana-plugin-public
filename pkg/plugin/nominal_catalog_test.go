@@ -414,6 +414,23 @@ func TestTTLCacheExpiredEntryReloads(t *testing.T) {
 	}
 }
 
+func TestTTLCacheLoadPanicReturnsErrorAndRetries(t *testing.T) {
+	cache := newTTLCache[string](catalogCacheTTL)
+
+	_, err := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		panic("boom")
+	})
+	if err == nil {
+		t.Fatal("get with a panicking load returned nil error")
+	}
+
+	if got, err := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		return "ok", nil
+	}); err != nil || got != "ok" {
+		t.Fatalf("get after panic = (%q, %v), want (ok, nil): a failed load must not be cached", got, err)
+	}
+}
+
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
