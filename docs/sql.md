@@ -68,12 +68,52 @@ and quoted strings, so remove a macro rather than commenting it out.
 
 ## Dashboard variables
 
-Grafana substitutes dashboard variables before the query runs. Multi-value and
-Include All variables become quoted, comma-separated values, so write
-`channel IN ($channels)`. Other variables are inserted as they are, with single
-quotes doubled, so write `channel = '$channel'`. Grafana's variable formats,
-such as `${channel:raw}`, override this. Alert rules cannot use dashboard
-variables.
+Grafana substitutes dashboard variables before the query runs. Write
+`channel IN (${channel:sqlstring})` to use a variable in SQL. It works whether
+the variable is single-value, multi-value, or has Include All. A value that
+contains a double quote does not match in this form.
+
+Plain `$channel` is quoted only for a multi-value or Include All variable, as
+in `'a','b'`. Otherwise it is inserted as it is, with single quotes doubled, so
+`channel = '$channel'` works only while Include All is off. Alert rules cannot
+use dashboard variables.
+
+A dashboard variable can also run a SQL query. Return one column to use each
+row as both label and value, or return columns named `__text` and `__value`
+for a separate label. Rows with a null value are skipped. Timestamps become
+UTC text that `TIMESTAMP '$time'` accepts. Large numbers lose precision and
+dates gain a midnight time, so cast them to text, as in `CAST(id AS VARCHAR)`.
+
+This variable lists assets by name, and its value is the selected asset's RID:
+
+```sql
+SELECT title AS __text, asset_rid AS __value
+FROM assets
+ORDER BY 1
+```
+
+A builder query takes `$asset` in its asset field. Tables such as
+`points_double` must filter on `dataset_rid`, so a SQL query joins `assets` to
+reach the asset's data:
+
+```sql
+SELECT $__timeGroup(p.ts) AS "time", p.channel, AVG(p.value) AS "value"
+FROM points_double p
+JOIN assets a ON p.dataset_rid = a.dataset_rid
+WHERE a.asset_rid IN (${asset:sqlstring})
+  AND $__timeFilter(p.ts)
+GROUP BY 1, 2
+ORDER BY 1
+```
+
+SQL variables can use other variables and the time macros. A variable that
+uses a time macro needs Refresh set to **On time range change**. A query that
+reaches the SQL row limit keeps the rows up to the limit, and Grafana shows a
+warning that the options are incomplete.
+
+An edited variable is saved in a format that plugin versions without SQL
+variables cannot read. A variable you never edit keeps working after a
+downgrade.
 
 ## Limits
 
