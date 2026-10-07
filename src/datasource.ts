@@ -9,6 +9,7 @@ import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/r
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
+import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -21,6 +22,15 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     // For backend datasources using CallResource, we use the resource endpoint
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
     this.variables = new NominalVariableSupport(this);
+    this.annotations = {
+      QueryEditor: SqlAnnotationEditor,
+      prepareQuery: (anno) => {
+        // Grafana 12.1 loads v2 dashboards without copying query.spec into target; 12.2 and later do.
+        const target: NominalQuery | undefined = anno.target ?? anno.query?.spec;
+        // The time series shape drops string columns, and annotation text lives in them.
+        return target && { ...target, queryType: QUERY_TYPE_SQL, format: 'table' };
+      },
+    };
   }
 
 
