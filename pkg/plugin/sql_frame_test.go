@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -397,6 +398,55 @@ func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("%s with %d labels: display name = %q, want %q", tc.column, len(tc.labels), got, tc.want)
 		}
+	}
+}
+
+func TestShapeSQLFramePicksValueColumn(t *testing.T) {
+	ts := time.Unix(1700000000, 0).UTC()
+	for name, tc := range map[string]struct {
+		fields []*data.Field // the columns after time, two rows each
+		want   []string      // each series as name{labels} [values]
+		typed  bool          // typed as numeric and bool series are; string series prefer a State timeline instead
+	}{
+		"string value before its label": {
+			[]*data.Field{data.NewField("value", nil, []string{"on", "off"}), data.NewField("channel", nil, []string{"b", "a"})},
+			[]string{"value{channel=a} [off]", "value{channel=b} [on]"},
+			false,
+		},
+		"string Value in another case": {
+			[]*data.Field{data.NewField("Value", nil, []string{"on", "off"}), data.NewField("channel", nil, []string{"b", "a"})},
+			[]string{"Value{channel=a} [off]", "Value{channel=b} [on]"},
+			false,
+		},
+		"bool value": {
+			[]*data.Field{data.NewField("value", nil, []bool{true, false}), data.NewField("channel", nil, []string{"b", "a"})},
+			[]string{"value{channel=a} [false]", "value{channel=b} [true]"},
+			true,
+		},
+		"numeric column with a string value": {
+			[]*data.Field{data.NewField("value", nil, []string{"x", "x"}), data.NewField("max", nil, []float64{1, 2})},
+			[]string{"max{value=x} [1 2]"},
+			true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame := data.NewFrame("A", append([]*data.Field{data.NewField("time", nil, []time.Time{ts, ts})}, tc.fields...)...)
+			frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+			if err != nil {
+				t.Fatalf("shapeSQLFrame() error = %v", err)
+			}
+			var got []string
+			for _, f := range frames {
+				value := f.Fields[1]
+				got = append(got, fmt.Sprintf("%s{%s} %v", value.Name, value.Labels, fieldValues(value)))
+				if typed, timeline := f.Meta.Type == data.FrameTypeTimeSeriesMulti, f.Meta.PreferredVisualizationPluginID == "state-timeline"; typed != tc.typed || timeline == tc.typed {
+					t.Errorf("series %s typed, prefers a State timeline = %v, %v; want %v, %v", value.Name, typed, timeline, tc.typed, !tc.typed)
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("series = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

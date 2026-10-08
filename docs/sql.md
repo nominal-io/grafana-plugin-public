@@ -37,9 +37,10 @@ Queries on `points_double`, `points_int`, `points_string`, `points_struct`,
 `logs` and `channels` must filter on `dataset_rid`. `time` and `timestamp` are
 reserved words, so quote them as column names, as in `AS "time"`.
 
-**Time series** needs a timestamp column and at least one numeric column. String
-and boolean columns become series labels, and each series is returned with only
-its own samples, sorted by time. A null label becomes an empty string, or
+**Time series** needs a timestamp column and at least one numeric column, or a
+string or boolean column named `value` as described below. String and boolean
+columns become series labels, and each series is returned with only its own
+samples, sorted by time. A null label becomes an empty string, or
 `false` for a boolean column, and shares a series with that value. The first
 timestamp column is the series time, and a null value in it fails the query.
 Each series is named by its label values in column order, such as
@@ -55,6 +56,28 @@ because alert rules tell series apart by labels alone. Other columns, such as a
 second timestamp, are left out with a notice. A result without both columns is
 shown as a table with a notice, so use a Table, Stat or Bar chart panel for it.
 **Table** returns rows and columns as the query produced them.
+
+When a result has no numeric column, a string or boolean column named `value`
+holds the values, and the other string and boolean columns are labels, as
+above. Series are named by their label values, so in a State timeline panel
+this query shows one row per channel without listing the channels:
+
+```sql
+SELECT ts AS "time", channel, tags, value
+FROM points_string
+WHERE dataset_rid = '<your-dataset-rid>'
+  AND $__timeFilter(ts)
+```
+
+Alias another column `AS "value"` to use it as the values. When the result also
+has a numeric column, `value` is a label like any other string column.
+
+A Table panel shows string series one at a time, and a Grafana SQL expression
+cannot read them, so set Format to **Table** for those.
+
+Raw `points_string` queries reach the row limit sooner, and State timeline
+draws the last state to the panel edge, so a truncated result can look current.
+`ORDER BY ts DESC` keeps the newest rows.
 
 Map columns such as `tags` are shown as `key=value` pairs, for example
 `satellite=GOCE-1`. Keys and values that contain `=`, `,`, `"` or a space are
