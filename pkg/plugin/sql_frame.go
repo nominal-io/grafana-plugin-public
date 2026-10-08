@@ -337,11 +337,15 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 			seriesTimes := make([]time.Time, len(rows))
 			field := data.NewFieldFromFieldType(column.Type().NullableType(), len(rows))
 			field.Name, field.Labels = column.Name, seriesLabels[id]
+			name := seriesNames[id]
 			if len(values) > 1 {
-				// Alerting identifies a series by its labels alone, so the column goes in a label. The
-				// display name stays what Grafana shows without it.
+				// Alerting identifies a series by its labels alone, so the column goes in a label.
 				field.Labels = withColumnLabel(seriesLabels[id], column.Name)
-				field.Config = &data.FieldConfig{DisplayNameFromDS: strings.TrimSpace(column.Name + " " + seriesNames[id])}
+				name = column.Name + " " + name
+			}
+			// Without a name, as when there are no labels, Grafana names the series by its column.
+			if name = strings.TrimSpace(name); name != "" {
+				field.Config = &data.FieldConfig{DisplayNameFromDS: name}
 			}
 			for i, row := range rows {
 				seriesTimes[i] = times[row]
@@ -353,6 +357,19 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 		}
 	}
 	return frames
+}
+
+// prefixSeriesNames puts each frame's name before the series names set on its fields. Grafana does
+// this for names it builds when a panel's frames have different names, but not for names a data
+// source sets.
+func prefixSeriesNames(frames data.Frames) {
+	for _, frame := range frames {
+		for _, field := range frame.Fields {
+			if field.Config != nil && field.Config.DisplayNameFromDS != "" {
+				field.Config.DisplayNameFromDS = frame.Name + " " + field.Config.DisplayNameFromDS
+			}
+		}
+	}
 }
 
 // seriesColumnLabel is the label that tells apart the series of a result's value columns.
