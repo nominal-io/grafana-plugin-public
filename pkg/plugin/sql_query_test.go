@@ -221,17 +221,23 @@ func TestExecuteSQLQuery(t *testing.T) {
 	}
 }
 
-func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
-	seriesSchema := arrow.NewSchema([]arrow.Field{
+// sqlSeriesStream is a time series result with two series, channel a and channel b.
+func sqlSeriesStream(t *testing.T) []byte {
+	t.Helper()
+	schema := arrow.NewSchema([]arrow.Field{
 		{Name: "time", Type: &arrow.TimestampType{Unit: arrow.Second, TimeZone: "UTC"}},
 		{Name: "channel", Type: arrow.BinaryTypes.String},
 		{Name: "value", Type: arrow.PrimitiveTypes.Float64},
 	}, nil)
-	series := sqlArrowStream(t, seriesSchema, 1, func(b *array.RecordBuilder) {
+	return sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) {
 		b.Field(0).(*array.TimestampBuilder).AppendValues([]arrow.Timestamp{1, 1}, nil)
 		b.Field(1).(*array.StringBuilder).AppendValues([]string{"a", "b"}, nil)
 		b.Field(2).(*array.Float64Builder).AppendValues([]float64{1, 2}, nil)
 	})
+}
+
+func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
+	series := sqlSeriesStream(t)
 	for _, tc := range []struct {
 		name       string
 		payload    []byte
@@ -481,6 +487,55 @@ func TestSQLQueriesRunInParallelWithinTheLimit(t *testing.T) {
 		if res.Error != nil {
 			t.Errorf("response %s error = %v", ref, res.Error)
 		}
+	}
+}
+
+func TestExecuteNamesSQLSeriesByQueryWhenThereAreSeveral(t *testing.T) {
+	unlabeledSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "time", Type: &arrow.TimestampType{Unit: arrow.Second, TimeZone: "UTC"}},
+		{Name: "value", Type: arrow.PrimitiveTypes.Float64},
+	}, nil)
+	unlabeled := sqlArrowStream(t, unlabeledSchema, 1, func(b *array.RecordBuilder) {
+		b.Field(0).(*array.TimestampBuilder).Append(1)
+		b.Field(1).(*array.Float64Builder).Append(1)
+	})
+	payloads := map[string][]byte{
+		"SELECT labeled":   sqlSeriesStream(t),
+		"SELECT unlabeled": unlabeled,
+		"SELECT empty":     sqlArrowStream(t, unlabeledSchema, 1, func(*array.RecordBuilder) {}),
+	}
+	client := sqlQueryService(t, func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		return sqlPayloadServer(payloads[req.GetQuery()])(req, stream)
+	})
+	query := func(refID, sql string) backend.DataQuery {
+		return backend.DataQuery{RefID: refID, JSON: []byte(`{"queryType":"sql","rawSql":"` + sql + `"}`)}
+	}
+	for _, tc := range []struct {
+		name    string
+		queries []backend.DataQuery
+		want    map[string][]string // each frame's display name by refID, "" when Grafana names it
+	}{
+		{"one query", []backend.DataQuery{query("A", "SELECT labeled")}, map[string][]string{"A": {"a", "b"}}},
+		{"two queries", []backend.DataQuery{query("A", "SELECT labeled"), query("B", "SELECT unlabeled")}, map[string][]string{"A": {"A a", "A b"}, "B": {""}}},
+		// Grafana leaves out query B's empty frame, so it would not add letters either.
+		{"two queries, one with no rows", []backend.DataQuery{query("A", "SELECT labeled"), query("B", "SELECT empty")}, map[string][]string{"A": {"a", "b"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := sqlTestExecution(t, client).Execute(context.Background(), tc.queries)
+			for refID, want := range tc.want {
+				var got []string
+				for _, frame := range response.Responses[refID].Frames {
+					var name string
+					if config := frame.Fields[1].Config; config != nil {
+						name = config.DisplayNameFromDS
+					}
+					got = append(got, name)
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("response %s display names = %q, want %q", refID, got, want)
+				}
+			}
+		})
 	}
 }
 

@@ -370,6 +370,36 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 	}
 }
 
+func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
+	labels := []*data.Field{data.NewField("channel", nil, []string{"a"}), data.NewField("vehicle", nil, []string{"car-1"})}
+	nullLabels := []*data.Field{data.NewField("channel", nil, []*string{nil}), data.NewField("vehicle", nil, []*string{nil})}
+	for _, tc := range []struct {
+		column string
+		labels []*data.Field
+		want   string // "" when Grafana names the series
+	}{
+		{"value", labels, "a car-1"},
+		{"Value", labels, "a car-1"},
+		{"avg_temp", labels, "avg_temp a car-1"},
+		{"avg_temp", nil, ""},
+		{"avg_temp", nullLabels, ""},
+	} {
+		fields := []*data.Field{data.NewField("time", nil, []time.Time{time.Unix(1700000000, 0).UTC()})}
+		fields = append(append(fields, tc.labels...), data.NewField(tc.column, nil, []float64{1}))
+		frames, err := shapeSQLFrame(data.NewFrame("A", fields...), sqlutil.FormatOptionTimeSeries)
+		if err != nil || len(frames) != 1 {
+			t.Fatalf("%s with %d labels: shapeSQLFrame() = %d frames, %v; want 1", tc.column, len(tc.labels), len(frames), err)
+		}
+		var got string
+		if config := frames[0].Fields[1].Config; config != nil {
+			got = config.DisplayNameFromDS
+		}
+		if got != tc.want {
+			t.Errorf("%s with %d labels: display name = %q, want %q", tc.column, len(tc.labels), got, tc.want)
+		}
+	}
+}
+
 func TestShapeSQLFrameSortsByTime(t *testing.T) {
 	early := time.Unix(1700000000, 0).UTC()
 	late := early.Add(time.Second)

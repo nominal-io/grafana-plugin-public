@@ -42,6 +42,13 @@ and boolean columns become series labels, and each series is returned with only
 its own samples, sorted by time. A null label becomes an empty string, or
 `false` for a boolean column, and shares a series with that value. The first
 timestamp column is the series time, and a null value in it fails the query.
+Each series is named by its label values in column order, such as
+`temperature car-1`. The numeric column's name comes first, such as
+`avg_temp temperature car-1`, unless it is the query's only numeric column and
+is named `value`. When a panel has more than one query, the query's letter comes
+first, such as `A temperature car-1`, so series from different queries keep
+different names. To show other names instead of the letters, rename the queries
+in the query editor, such as `raw` and `avg`.
 When a query returns more than one numeric column, such as `MIN(value)` and
 `MAX(value)`, each series also gets a `column` label with the column's name,
 because alert rules tell series apart by labels alone. Other columns, such as a
