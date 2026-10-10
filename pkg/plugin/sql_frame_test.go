@@ -370,6 +370,22 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 	}
 }
 
+func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
+	frame := data.NewFrame("A",
+		data.NewField("time", nil, []time.Time{time.Unix(1700000000, 0).UTC()}),
+		data.NewField("channel", nil, []string{"a"}),
+		data.NewField("vehicle", nil, []string{"car-1"}),
+		data.NewField("value", nil, []float64{1}),
+	)
+	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	if err != nil || len(frames) != 1 {
+		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
+	}
+	if value := frames[0].Fields[1]; value.Config == nil || value.Config.DisplayNameFromDS != "a car-1" {
+		t.Errorf("display name = %+v, want %q", value.Config, "a car-1")
+	}
+}
+
 func TestShapeSQLFrameSortsByTime(t *testing.T) {
 	early := time.Unix(1700000000, 0).UTC()
 	late := early.Add(time.Second)
