@@ -187,10 +187,11 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			field: arrow.Field{Name: "tags", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
 			column: func(t *testing.T) arrow.Array {
 				return arrowArray(t, arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String),
-					`[[{"key": "a", "value": "b, c=d"}], [{"key": "a", "value": "b"}, {"key": "c", "value": "d"}], [{"key": "a=b", "value": "c"}], [{"key": "a", "value": null}], [{"key": "a", "value": "null"}], [{"key": "a", "value": ""}]]`)
+					`[[{"key": "a", "value": "b, c=d"}], [{"key": "a", "value": "b"}, {"key": "c", "value": "d"}], [{"key": "a=b", "value": "c"}], [{"key": "a", "value": null}], [{"key": "a", "value": "null"}], [{"key": "a", "value": ""}], [{"key": "url", "value": "http://h:80/x"}], [{"key": "a", "value": "x;y&{z}"}], [{"key": "a", "value": "it's"}], [{"key": "a", "value": "C:\\t \"q\""}], [{"key": "a", "value": "l1\nl2\tb"}]]`)
 			},
 			wantType: data.FieldTypeString,
-			want:     []any{`a="b, c=d"`, "a=b, c=d", `"a=b"=c`, "a=null", `a="null"`, `a=""`},
+			want: []any{`a="b, c=d"`, "a=b, c=d", `"a=b"=c`, "a=null", `a="null"`, `a=""`,
+				`url="http://h:80/x"`, `a="x;y&{z}"`, `a="it's"`, `a="C:\\t \"q\""`, "a=\"l1\nl2\tb\""},
 		},
 		{
 			name:     "null type",
