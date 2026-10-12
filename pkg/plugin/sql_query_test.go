@@ -82,7 +82,9 @@ func sqlValueStream(t *testing.T, value float64) []byte {
 
 func executeTestSQLQuery(t *testing.T, ctx context.Context, e *NominalQueryExecution, queryJSON string) backend.DataResponse {
 	t.Helper()
-	prepared, response := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", JSON: []byte(queryJSON)})
+	// The range ends inside a millisecond, so a test can see whether a format moves the end.
+	timeRange := backend.TimeRange{To: time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)}
+	prepared, response := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", TimeRange: timeRange, JSON: []byte(queryJSON)})
 	if response != nil {
 		t.Fatalf("prepareQuery() error = %v", response.Error)
 	}
@@ -236,29 +238,31 @@ func sqlSeriesStream(t *testing.T) []byte {
 	})
 }
 
-func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
+func TestExecuteSQLQueryFormats(t *testing.T) {
 	series := sqlSeriesStream(t)
+	const end = "SELECT TIMESTAMP '2026-10-12 10:00:00.123'"
 	for _, tc := range []struct {
 		name       string
 		payload    []byte
 		format     string
 		wantFrames int
 		wantVis    data.VisType
+		wantSQL    string
 	}{
-		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable},
-		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph},
-		{name: "logs", payload: series, format: "logs", wantFrames: 1, wantVis: data.VisTypeLogs},
-		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable},
+		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable, wantSQL: end},
+		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph, wantSQL: end},
+		{name: "logs", payload: series, format: "logs", wantFrames: 1, wantVis: data.VisTypeLogs, wantSQL: "SELECT TIMESTAMP '2026-10-12 10:00:00.123999999'"},
+		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable, wantSQL: end},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := sqlTestExecution(t, sqlQueryService(t, sqlPayloadServer(tc.payload)))
-			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1","format":"`+tc.format+`"}`)
+			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT $__timeTo()","format":"`+tc.format+`"}`)
 			if response.Error != nil || len(response.Frames) != tc.wantFrames {
 				t.Fatalf("executeSQLQuery() = %v, %d frames; want %d frames", response.Error, len(response.Frames), tc.wantFrames)
 			}
 			for i, frame := range response.Frames {
-				if frame.RefID != "A" || frame.Meta.ExecutedQueryString != "SELECT 1" || frame.Meta.PreferredVisualization != tc.wantVis {
-					t.Errorf("frame %d RefID, meta = %q, %+v; want A with SELECT 1 and %s", i, frame.RefID, frame.Meta, tc.wantVis)
+				if frame.RefID != "A" || frame.Meta.ExecutedQueryString != tc.wantSQL || frame.Meta.PreferredVisualization != tc.wantVis {
+					t.Errorf("frame %d RefID, meta = %q, %+v; want A with %s and %s", i, frame.RefID, frame.Meta, tc.wantSQL, tc.wantVis)
 				}
 			}
 		})
