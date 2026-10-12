@@ -60,8 +60,28 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
+	if frameNamesDiffer(response.Responses) {
+		for _, sqlResponse := range sqlResponses {
+			prefixSeriesNames(sqlResponse.Frames)
+		}
+	}
 
 	return response
+}
+
+// frameNamesDiffer reports whether responses hold frames with different names. SQL frames are named
+// by query, so this is when they come from more than one query. Like Grafana, it leaves out frames
+// without fields, such as the one for a query that returned no rows.
+func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
+	names := make(map[string]struct{})
+	for _, response := range responses {
+		for _, frame := range response.Frames {
+			if len(frame.Fields) > 0 {
+				names[frame.Name] = struct{}{}
+			}
+		}
+	}
+	return len(names) > 1
 }
 
 // maxConcurrentSQLQueries bounds the SQL requests that one Grafana request runs at a time.
