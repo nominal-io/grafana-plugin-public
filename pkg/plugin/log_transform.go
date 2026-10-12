@@ -5,6 +5,8 @@ import (
 	"encoding/json/jsontext"
 	"slices"
 	"time"
+
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
 // Labels is json.RawMessage because Grafana's Logs panel wants a JSON-typed
@@ -97,4 +99,32 @@ func defaultLogLabelsForChannel(channel string) json.RawMessage {
 // compare as equal so a stable sort preserves source order.
 func compareLogEntriesNewestFirst(a, b LogEntry) int {
 	return b.Time.Compare(a.Time)
+}
+
+// logLinesFrame builds a Grafana log-lines frame, newest first. Grafana's infinite scroll takes the
+// next time range from the boundary row, so entries are sorted whatever order the source used.
+func logLinesFrame(name string, entries []LogEntry) *data.Frame {
+	if !slices.IsSortedFunc(entries, compareLogEntriesNewestFirst) {
+		slices.SortStableFunc(entries, compareLogEntriesNewestFirst)
+	}
+	times := make([]time.Time, len(entries))
+	bodies := make([]string, len(entries))
+	ids := make([]string, len(entries))
+	labels := make([]json.RawMessage, len(entries))
+	for i, e := range entries {
+		times[i], bodies[i], ids[i], labels[i] = e.Time, e.Body, e.ID, e.Labels
+	}
+	frame := data.NewFrame(name,
+		data.NewField("timestamp", nil, times),
+		data.NewField("body", nil, bodies),
+		data.NewField("id", nil, ids),
+		data.NewField("labels", nil, labels),
+	)
+	frame.Meta = &data.FrameMeta{
+		Type: data.FrameTypeLogLines,
+		// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
+		TypeVersion:            data.FrameTypeVersion{0, 0},
+		PreferredVisualization: data.VisTypeLogs,
+	}
+	return frame
 }

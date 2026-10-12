@@ -1,10 +1,8 @@
 package plugin
 
 import (
-	"encoding/json"
 	"fmt"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,48 +43,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			}
 
 			if result.IsLog {
-				// Newest first. Grafana's infinite scroll derives the next time range
-				// from the boundary row, and the compute API's PageInfo fixes selection
-				// direction (sign of PageSize), not response order, so this sort is
-				// not redundant.
-				if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
-					slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
-				}
-
-				frame := data.NewFrame(qm.Channel)
-				frame.Meta = &data.FrameMeta{
-					Type: data.FrameTypeLogLines,
-					// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
-					TypeVersion:            data.FrameTypeVersion{0, 0},
-					PreferredVisualization: data.VisTypeLogs,
-				}
-
-				if len(result.LogEntries) > 0 {
-					times := make([]time.Time, len(result.LogEntries))
-					bodies := make([]string, len(result.LogEntries))
-					ids := make([]string, len(result.LogEntries))
-					labels := make([]json.RawMessage, len(result.LogEntries))
-					for i, e := range result.LogEntries {
-						times[i] = e.Time
-						bodies[i] = e.Body
-						ids[i] = e.ID
-						labels[i] = e.Labels
-					}
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, times),
-						data.NewField("body", nil, bodies),
-						data.NewField("id", nil, ids),
-						data.NewField("labels", nil, labels),
-					)
-				} else {
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, []time.Time{}),
-						data.NewField("body", nil, []string{}),
-						data.NewField("id", nil, []string{}),
-						data.NewField("labels", nil, []json.RawMessage{}),
-					)
-				}
-
+				frame := logLinesFrame(qm.Channel, result.LogEntries)
 				log.DefaultLogger.Debug("Successfully processed log query",
 					"entries", len(result.LogEntries))
 				response.Frames = append(response.Frames, frame)
