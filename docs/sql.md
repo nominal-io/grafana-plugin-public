@@ -83,6 +83,78 @@ Map columns such as `tags` are shown as `key=value` pairs, for example
 `satellite=GOCE-1`. Keys and values with special characters are quoted so
 Grafana's **Extract fields** transform can split them into fields.
 
+## Logs
+
+Set **Format** to **Logs** to show each row as a log line in Explore and in the
+Logs panel, newest first by default. In an empty editor, **Use logs example**
+inserts a starting query:
+
+```sql
+SELECT ts, channel, message, args
+FROM logs
+WHERE dataset_rid = '<your-dataset-rid>'
+  AND $__timeFilter(ts)
+ORDER BY ts DESC
+LIMIT 500
+```
+
+The first timestamp column is the log time. A null value in it fails the query,
+so filter those rows out or put another time column first. The log text is the
+string column named `message`, or else the one named `body`, ignoring case.
+With neither, the first string column is the text, and a notice says which
+column was used. A column named `message` that is not a string is a label.
+
+If the result has no timestamp column or no string column, it is shown as a
+table with a notice.
+
+Every other column is a label. A map column such as `args` or `tags` is not a
+label itself. It gives one label per entry. An entry of the `args` column, or of
+the first map column when there is no `args`, uses its key as the label name.
+An entry of another map column gets the map column's name in front, as in
+`tags.host`. So does an entry whose key is already the name of a label from a
+column, or starts with another map column's name and a dot, so `tags.host` in
+`args` becomes `args.tags.host`. Labels are sorted by key. Null values are left out, and
+numbers, booleans and timestamps appear as text.
+
+Every row the query returns is shown, even when two rows look the same. To
+merge repeated lines, use Grafana's deduplication option in the log view.
+
+Grafana colors a row by its `level` label and groups rows by it in Explore's
+volume histogram. A row with no level Grafana recognizes, such as `error`,
+`warn` or `info`, counts as `unknown`. If the level is under another key,
+rename it, as in `args['severity'] AS level`.
+
+To load older lines as you scroll, keep `$__timeFilter(ts)`, `ORDER BY ts DESC`
+and a `LIMIT` in the query, with `ts` as the log time column. Infinite scrolling
+is on in Explore. In a dashboard, turn on the Logs panel's **Enable infinite
+scrolling** option.
+
+In Logs format, the end of the time range moves to the last nanosecond of its
+millisecond, so `$__timeTo()` and the end of `$__timeFilter(ts)` can be up to
+1 ms later than the time picker. Grafana cuts the end of each scroll request to
+the millisecond, and without this the older lines in that millisecond would be
+skipped.
+
+Limits:
+
+- Explore's volume histogram counts only the rows the query returned.
+- If one millisecond holds a full page of rows (the `LIMIT`), scrolling stops
+  at that millisecond.
+- A query that sorts oldest first, has no `$__timeFilter`, or filters or sorts
+  on a column other than the log time still displays its rows newest first, but
+  each scroll loads pages that hold the wrong rows.
+- Scrolling stops when the oldest loaded line is within one second of the
+  start of the time range. If the last page held a full `LIMIT` of rows, lines
+  in that second can be missing, even though Grafana shows "End of the
+  selected time range." To see them, start the time range a few seconds
+  earlier.
+- With the order set to oldest first, scrolling loads newer lines, not older
+  ones. On a time range that ends at now, each load gets only the newest
+  `LIMIT` lines, so if more lines than that arrived, the rest are skipped. Keep
+  the order newest first to scroll back through older lines.
+- In a dashboard, the filter buttons in the Logs panel's log details have no
+  effect on SQL queries. Explore hides them.
+
 ## Macros
 
 | Macro | Expands to |
