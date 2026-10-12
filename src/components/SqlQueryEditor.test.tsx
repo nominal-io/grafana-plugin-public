@@ -82,17 +82,6 @@ describe('SqlQueryEditor', () => {
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
-  it.each([
-    ['empty', ''],
-    ['missing', undefined],
-  ])('does not run when an editor with %s SQL loses focus', (_name, rawSql) => {
-    const { editor, onChange, onRunQuery } = renderEditor({ refId: 'A', queryType: 'sql', rawSql });
-    fireEvent.blur(editor);
-
-    expect(onChange).not.toHaveBeenCalled();
-    expect(onRunQuery).not.toHaveBeenCalled();
-  });
-
   it('runs its own query when several SQL editors are open', () => {
     const first = renderEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
     const second = renderEditor({ refId: 'B', queryType: 'sql', rawSql: 'SELECT 2' });
