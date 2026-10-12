@@ -71,11 +71,7 @@ jest.mock('@grafana/ui', () => {
         readOnly: true,
       });
     },
-    CodeEditor: (props: Record<string, any>) => React.createElement('textarea', {
-      value: props.value,
-      onChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => props.onChange?.(event.target.value),
-      onBlur: (event: React.FocusEvent<HTMLTextAreaElement>) => props.onBlur?.(event.target.value),
-    }),
+    CodeEditor: jest.requireActual('../test/mockCodeEditor').MockCodeEditor,
   };
 });
 

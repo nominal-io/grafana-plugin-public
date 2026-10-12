@@ -96,3 +96,30 @@ export interface NominalSecureJsonData {
 export type MyQuery = NominalQuery;
 export type MyDataSourceOptions = NominalDataSourceOptions;
 export type MySecureJsonData = NominalSecureJsonData;
+
+export type VariableQueryMode = 'catalog' | 'sql';
+
+export interface NominalVariableQuery extends DataQuery {
+  mode: VariableQueryMode;
+  // A catalog pattern or SQL, depending on mode.
+  query: string;
+}
+
+// Older dashboards store catalog queries as strings; provisioned queries may omit fields.
+export function toVariableQuery(
+  query: Partial<NominalVariableQuery> | string | null | undefined
+): NominalVariableQuery {
+  if (typeof query === 'string' || query == null) {
+    return { refId: 'variable', mode: 'catalog', query: query ?? '' };
+  }
+  return {
+    ...query,
+    refId: query.refId ?? 'variable',
+    mode: query.mode === 'sql' ? 'sql' : 'catalog',
+    query: query.query ?? '',
+  };
+}
+
+export const VARIABLE_SQL_EXAMPLE = `SELECT title AS __text, asset_rid AS __value
+FROM assets
+ORDER BY 1`;

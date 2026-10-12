@@ -46,7 +46,7 @@ GROUP BY 1, 2
 ORDER BY 1
 ```
 
-`$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Multi-value variables expand to quoted lists, so write `channel IN ($channels)`.
+`$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Write `channel IN (${channel:sqlstring})` to use a variable in SQL. It works whether the variable is single-value, multi-value, or has Include All, but a value that contains a double quote does not match. Plain `$channel` is unquoted for a single value but quoted for multi-value or Include All.
 
 ## Channel types
 
@@ -88,7 +88,7 @@ Nominal supports Grafana dashboard variables for assets, data scopes, and channe
 2. Select **New variable**.
 3. Set **Type** to **Query**.
 4. Set **Data source** to your Nominal data source.
-5. In the **Query** field, enter one of the strings below (for example, `assets`).
+5. Leave **Mode** on **Catalog** and enter one of the strings below (for example, `assets`), or choose **SQL** to write a Nominal SQL query.
 6. Click **Run query** to preview, then **Apply**.
 
 Chain variables by referencing earlier ones with `${var}`. For example, define `asset` first, then a `datascope` variable whose query is `datascopes(${asset})`. Grafana re-runs the child query whenever the parent changes.
@@ -100,6 +100,10 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
 - `channels(${asset})` returns the union of channel names across **all** data scopes on the selected asset, deduplicated by name. Most useful when your asset has a single primary data scope, or when your fleet uses a consistent scope name that you can pin as a literal in each panel's data scope field. If channels with the same name exist in multiple scopes, the variable shows the name once — the actual data returned depends on which scope is set in each panel.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
+
+### SQL variable queries
+
+Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to use each row as both label and value, or return columns named `__text` and `__value` for a separate label. See [Dashboard variables](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#dashboard-variables) for how values are converted, an example that filters a panel by asset, and what happens after a downgrade.
 
 ### Common patterns
 
