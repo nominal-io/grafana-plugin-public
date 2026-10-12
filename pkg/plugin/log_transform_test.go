@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
-	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
-	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 )
 
@@ -293,36 +292,6 @@ func TestLogPagedTransformation(t *testing.T) {
 		}
 	})
 
-	t.Run("sorting preserves source order for equal timestamps", func(t *testing.T) {
-		result := createMockPagedLogResult(
-			[]string{"newest-a", "oldest", "newest-b"},
-			[]map[string]string{{}, {}, {}},
-			[]api.Timestamp{
-				testTimestamp(1704067320),
-				testTimestamp(1704067200),
-				testTimestamp(1704067320),
-			},
-		)
-		qm := NominalQueryModel{
-			Channel:         "app.logs",
-			AssetRid:        "ri.nominal.asset.test",
-			ChannelDataType: "log",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if len(resp.Frames) != 1 {
-			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
-		}
-
-		bodyField := resp.Frames[0].Fields[1]
-		want := []string{"newest-a", "newest-b", "oldest"}
-		for i, wantBody := range want {
-			if got := bodyField.At(i).(string); got != wantBody {
-				t.Fatalf("row %d body = %q, want %q", i, got, wantBody)
-			}
-		}
-	})
-
 	t.Run("empty log response produces frame with correct schema", func(t *testing.T) {
 		result := createMockPagedLogResult([]string{}, nil, nil)
 		qm := NominalQueryModel{
@@ -346,31 +315,22 @@ func TestLogPagedTransformation(t *testing.T) {
 	})
 }
 
-func TestCompareLogEntriesNewestFirst(t *testing.T) {
+func TestLogLinesFrameKeepsSourceOrderForEqualTimes(t *testing.T) {
+	// More lines than sort.Sort sorts by insertion, which is stable, so its unstable path runs.
+	var lines logLines
 	base := time.Unix(1704067200, 0)
-	entry := func(offsetSeconds int64) LogEntry {
-		return LogEntry{Time: base.Add(time.Duration(offsetSeconds) * time.Second)}
+	for i := range 100 {
+		lines.add(base.Add(time.Duration(i%7)*time.Second), strconv.Itoa(i), "", nil)
 	}
-
-	tests := []struct {
-		name    string
-		entries []LogEntry
-		want    bool
-	}{
-		{name: "strict newest first", entries: []LogEntry{entry(3), entry(2), entry(1)}, want: true},
-		// Equal timestamps must compare as equal (already sorted) so the sort
-		// gate skips them and stable order is preserved.
-		{name: "equal timestamps count as sorted", entries: []LogEntry{entry(3), entry(3), entry(2)}, want: true},
-		{name: "oldest first", entries: []LogEntry{entry(1), entry(2), entry(3)}, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := slices.IsSortedFunc(tt.entries, compareLogEntriesNewestFirst)
-			if got != tt.want {
-				t.Fatalf("IsSortedFunc(compareLogEntriesNewestFirst) = %v, want %v", got, tt.want)
-			}
-		})
+	frame := logLinesFrame("A", &lines)
+	for i := 1; i < frame.Rows(); i++ {
+		prev, cur := frame.Fields[0].At(i-1).(time.Time), frame.Fields[0].At(i).(time.Time)
+		prevSource, _ := strconv.Atoi(frame.Fields[1].At(i - 1).(string))
+		source, _ := strconv.Atoi(frame.Fields[1].At(i).(string))
+		if cur.After(prev) || (cur.Equal(prev) && source < prevSource) {
+			t.Fatalf("line %d is source line %d at %v after source line %d at %v; want newest first, equal times in source order",
+				i, source, cur, prevSource, prev)
+		}
 	}
 }
 

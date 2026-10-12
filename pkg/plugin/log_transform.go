@@ -4,17 +4,58 @@ import (
 	"encoding/json"
 	"encoding/json/jsontext"
 	"slices"
+	"sort"
 	"time"
+
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
-// Labels is json.RawMessage because Grafana's Logs panel wants a JSON-typed
-// column, not a JSON string. It may alias a slice shared across entries, so
-// copy before mutating.
-type LogEntry struct {
-	Time   time.Time
-	Body   string
-	ID     string
-	Labels json.RawMessage
+// logLines holds log entries as the columns of a log-lines frame.
+type logLines struct {
+	times  []time.Time
+	bodies []string
+	ids    []string
+	// labels is json.RawMessage because Grafana's Logs panel wants a JSON-typed column, not a JSON
+	// string. A value may alias a slice shared across lines, so copy before mutating.
+	labels []json.RawMessage
+	// order holds each line's source position while sorting.
+	order []int32
+}
+
+// newLogLines returns logLines with room for n lines.
+func newLogLines(n int) logLines {
+	return logLines{
+		times:  make([]time.Time, 0, n),
+		bodies: make([]string, 0, n),
+		ids:    make([]string, 0, n),
+		labels: make([]json.RawMessage, 0, n),
+	}
+}
+
+func (l *logLines) add(t time.Time, body, id string, labels json.RawMessage) {
+	l.times = append(l.times, t)
+	l.bodies = append(l.bodies, body)
+	l.ids = append(l.ids, id)
+	l.labels = append(l.labels, labels)
+}
+
+func (l *logLines) Len() int { return len(l.times) }
+
+// Less orders lines newest first, and lines with equal times by source position, so that
+// sort.Sort, which is not stable, keeps their source order.
+func (l *logLines) Less(i, j int) bool {
+	if c := l.times[i].Compare(l.times[j]); c != 0 {
+		return c > 0
+	}
+	return l.order[i] < l.order[j]
+}
+
+func (l *logLines) Swap(i, j int) {
+	l.times[i], l.times[j] = l.times[j], l.times[i]
+	l.bodies[i], l.bodies[j] = l.bodies[j], l.bodies[i]
+	l.ids[i], l.ids[j] = l.ids[j], l.ids[i]
+	l.labels[i], l.labels[j] = l.labels[j], l.labels[i]
+	l.order[i], l.order[j] = l.order[j], l.order[i]
 }
 
 const nominalChannelLabel = "nominal.channel"
@@ -93,8 +134,30 @@ func defaultLogLabelsForChannel(channel string) json.RawMessage {
 	return append(labels, '}')
 }
 
-// compareLogEntriesNewestFirst orders log entries newest-first; equal timestamps
-// compare as equal so a stable sort preserves source order.
-func compareLogEntriesNewestFirst(a, b LogEntry) int {
-	return b.Time.Compare(a.Time)
+// logLinesFrame builds a Grafana log-lines frame, newest first. Grafana's infinite scroll takes the
+// next time range from the boundary row, so lines are sorted whatever order the source used. They
+// are kept and sorted as columns because data.NewField copies each column; building the columns from
+// a sorted slice of entries would hold one more copy of every line.
+func logLinesFrame(name string, lines *logLines) *data.Frame {
+	if !slices.IsSortedFunc(lines.times, func(a, b time.Time) int { return b.Compare(a) }) {
+		lines.order = make([]int32, lines.Len())
+		for i := range lines.order {
+			lines.order[i] = int32(i)
+		}
+		sort.Sort(lines)
+		lines.order = nil
+	}
+	frame := data.NewFrame(name,
+		data.NewField("timestamp", nil, lines.times),
+		data.NewField("body", nil, lines.bodies),
+		data.NewField("id", nil, lines.ids),
+		data.NewField("labels", nil, lines.labels),
+	)
+	frame.Meta = &data.FrameMeta{
+		Type: data.FrameTypeLogLines,
+		// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
+		TypeVersion:            data.FrameTypeVersion{0, 0},
+		PreferredVisualization: data.VisTypeLogs,
+	}
+	return frame
 }
