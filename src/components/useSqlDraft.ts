@@ -7,7 +7,12 @@ export interface SqlEditorProps {
   onRunQuery: () => void;
 }
 
-export function useSqlDraft(query: NominalQuery, onChange: (query: NominalQuery) => void, onRunQuery: () => void) {
+export function useSqlDraft(
+  query: NominalQuery,
+  onChange: (query: NominalQuery) => void,
+  onRunQuery: () => void,
+  { runOnChange = true } = {}
+) {
   const savedSql = query.rawSql ?? '';
   const [value, setValue] = useState(savedSql);
 
@@ -23,7 +28,9 @@ export function useSqlDraft(query: NominalQuery, onChange: (query: NominalQuery)
   const commit = (text: string, runUnchanged: boolean) => {
     if (text !== savedSql) {
       save(text);
-      onRunQuery();
+      if (runOnChange) {
+        onRunQuery();
+      }
     } else if (runUnchanged && text.trim()) {
       onRunQuery();
     }

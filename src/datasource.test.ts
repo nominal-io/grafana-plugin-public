@@ -305,3 +305,25 @@ describe('validateMetricFindResponse', () => {
     await expect(ds.metricFindQuery('assets')).rejects.toThrow('Unable to load Nominal assets');
   });
 });
+
+describe('annotations', () => {
+  it('runs annotation targets as SQL tables', () => {
+    const ds = createDataSource();
+    const prepare = ds.annotations!.prepareQuery!;
+
+    expect(prepare({ enable: true, name: 'a', iconColor: 'red', target: { refId: 'Anno', rawSql: 'SELECT 1' } })).toEqual({
+      refId: 'Anno',
+      rawSql: 'SELECT 1',
+      queryType: 'sql',
+      format: 'table',
+    });
+    expect(
+      prepare({ enable: true, name: 'a', iconColor: 'red', target: { refId: 'Anno', rawSql: 'SELECT 1', format: 'timeseries' } })
+    ).toMatchObject({ format: 'table' });
+    // A v2 dashboard loaded by Grafana 12.1 carries the query only under query.spec.
+    expect(
+      prepare({ enable: true, name: 'a', iconColor: 'red', query: { kind: 'DataQuery', spec: { refId: 'Anno', rawSql: 'SELECT 1' } } })
+    ).toEqual({ refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' });
+    expect(prepare({ enable: true, name: 'a', iconColor: 'red' })).toBeUndefined();
+  });
+});
