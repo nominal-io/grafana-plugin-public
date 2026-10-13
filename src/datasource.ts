@@ -1,9 +1,15 @@
 import {
   DataSourceInstanceSettings,
   CoreApp,
+  DataFrame,
+  DataFrameType,
+  DataQueryRequest,
+  DataQueryResponse,
+  FieldType,
   ScopedVars,
   MetricFindValue
 } from '@grafana/data';
+import { map, Observable } from 'rxjs';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
@@ -34,6 +40,24 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
 
+
+  query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
+    return super.query(request).pipe(
+      map((response) => {
+        // Explore's page merge loses alignment when only some pages carry nanos.
+        response.data.forEach((frame: DataFrame) => {
+          if (frame.meta?.type === DataFrameType.LogLines) {
+            frame.fields.forEach((field) => {
+              if (field.type === FieldType.time && !field.nanos) {
+                field.nanos = new Array(field.values.length).fill(0);
+              }
+            });
+          }
+        });
+        return response;
+      })
+    );
+  }
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {
     return DEFAULT_QUERY;
@@ -213,6 +237,4 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
     return this.validateMetricFindResponse(response, 'channel');
   }
-
-  // No custom query method - let DataSourceWithBackend handle routing to Go backend
 }
