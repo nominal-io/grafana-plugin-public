@@ -17,11 +17,11 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
-// frameFromArrowStream decodes an Arrow IPC stream into one frame, keeping at most rowLimit rows.
-// It converts columns itself because data.FromArrowRecord rejects nested types such as the
+// frameFromArrowStream decodes an Arrow IPC stream, keeping at most rowLimit rows, and shapes it for
+// format. It converts columns itself because data.FromArrowRecord rejects nested types such as the
 // map<string,string> tags column and assumes nanosecond timestamps. When the whole stream fits,
 // it also reads r to EOF, so a stream that fails after its last batch reports that error.
-func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame, error) {
+func frameFromArrowStream(r io.Reader, name string, rowLimit int64, format sqlutil.FormatQueryOption) (data.Frames, error) {
 	reader, err := ipc.NewReader(r)
 	if errors.Is(err, io.EOF) {
 		return nil, errors.New("SQL response was empty")
@@ -60,23 +60,36 @@ func frameFromArrowStream(r io.Reader, name string, rowLimit int64) (*data.Frame
 		}
 	}
 
-	frame := data.NewFrame(name)
-	chunks := make([]arrow.Array, len(batches))
-	for i, field := range fields {
-		for b, batch := range batches {
-			chunks[b] = batch.Column(i)
-		}
-		values, err := columnValues(field, chunks, int(rows))
-		if err != nil {
-			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
-		}
-		frame.Fields = append(frame.Fields, data.NewField(field.Name, nil, values))
+	frame, err := tableFrame(name, fields, batches, int(rows))
+	if err != nil {
+		return nil, err
 	}
 	if truncated {
 		frame.AppendNotices(data.Notice{
 			Severity: data.NoticeSeverityWarning,
 			Text:     fmt.Sprintf("Results have been limited to %d rows because the SQL row limit was reached", rowLimit),
 		})
+	}
+	if format == sqlutil.FormatOptionTable {
+		return data.Frames{frame}, nil
+	}
+	return shapeSQLFrame(frame)
+}
+
+// tableFrame converts every column of batches to a field of a frame that prefers a table.
+func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int) (*data.Frame, error) {
+	frame := data.NewFrame(name)
+	frame.Meta = &data.FrameMeta{PreferredVisualization: data.VisTypeTable}
+	chunks := make([]arrow.Array, len(batches))
+	for i, field := range fields {
+		for b, batch := range batches {
+			chunks[b] = batch.Column(i)
+		}
+		values, err := columnValues(field, chunks, rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
+		}
+		frame.Fields = append(frame.Fields, data.NewField(field.Name, nil, values))
 	}
 	return frame, nil
 }
@@ -202,14 +215,11 @@ func appendMapToken(buf []byte, s string) []byte {
 	return append(buf, '"')
 }
 
-// shapeSQLFrame returns table results unchanged. A time series result becomes one frame per numeric
-// column and label set, sorted by time, where the result's string and bool columns are the labels.
-// A result without a numeric column uses its string or bool column named value instead.
-// A result without a timestamp and a value column is shown as a table with a notice.
-func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Frames, error) {
-	if format == sqlutil.FormatOptionTable {
-		return data.Frames{frame}, nil
-	}
+// shapeSQLFrame splits a time series result into one frame per numeric column and label set, sorted
+// by time, where the result's string and bool columns are the labels. A result without a numeric
+// column uses its string or bool column named value instead. A result without a timestamp and a
+// value column is returned as it came, with a notice.
+func shapeSQLFrame(frame *data.Frame) (data.Frames, error) {
 	schema := frame.TimeSeriesSchema()
 	var values []int
 	var skipped []string
@@ -232,8 +242,6 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 			Severity: data.NoticeSeverityInfo,
 			Text:     "Result is shown as a table because a time series needs a timestamp column and either a numeric column or a string column named value.",
 		})
-		// Explore shows frames that prefer a graph only as a graph.
-		frame.Meta.PreferredVisualization = data.VisTypeTable
 		return data.Frames{frame}, nil
 	}
 	if len(skipped) > 0 {
@@ -245,6 +253,7 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 	if frame.Meta == nil {
 		frame.Meta = &data.FrameMeta{}
 	}
+	frame.Meta.PreferredVisualization = data.VisTypeGraph
 	// Typed time series hold only numeric and bool values, and Grafana's SQL expressions return an
 	// empty table for typed string series, so string series stay untyped and fail with an error.
 	// Explore cannot graph strings, and its table merges the series into one column, so Explore
@@ -258,7 +267,7 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 		// A frame without fields is the no-data response, which alerting evaluates as no data whether
 		// or not it is typed.
 		empty := data.NewFrame(frame.Name)
-		empty.RefID, empty.Meta = frame.RefID, frame.Meta
+		empty.Meta = frame.Meta
 		return data.Frames{empty}, nil
 	}
 	times, err := fieldTimes(frame.Fields[schema.TimeIndex])
@@ -266,6 +275,14 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 		return nil, err
 	}
 	return splitSeries(frame, schema.TimeIndex, factors, values, times, timeOrder(times)), nil
+}
+
+// nullTimeError is a fault in the query, so sqlErrorResponse returns it as a bad request rather
+// than an internal error.
+type nullTimeError struct{ column string }
+
+func (e *nullTimeError) Error() string {
+	return fmt.Sprintf("time column %q has null values; filter out rows where it is null or put another time column first", e.column)
 }
 
 // fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
@@ -280,7 +297,7 @@ func fieldTimes(field *data.Field) ([]time.Time, error) {
 			t = *p
 		}
 		if t == nil {
-			return nil, fmt.Errorf("time column %q has null values; filter out rows where it is null or put another time column first", field.Name)
+			return nil, &nullTimeError{column: field.Name}
 		}
 		times[i] = *t
 	}
@@ -376,7 +393,7 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 				field.Set(i, valueAt(row))
 			}
 			series := data.NewFrame(frame.Name, data.NewField(timeName, nil, seriesTimes), field)
-			series.RefID, series.Meta = frame.RefID, frame.Meta
+			series.Meta = frame.Meta
 			frames = append(frames, series)
 		}
 	}

@@ -310,6 +310,11 @@ func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
 func TestExecuteSQLQueryErrors(t *testing.T) {
 	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-1", "bad query")
 	throttled := sqlStatusError(t, codes.ResourceExhausted, "throttled", "q-2", "")
+	nullTimeSchema := arrow.NewSchema([]arrow.Field{{Name: "ts", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true}, {Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
+	nullTime := sqlArrowStream(t, nullTimeSchema, 1, func(b *array.RecordBuilder) {
+		b.Field(0).AppendNull()
+		b.Field(1).(*array.Float64Builder).Append(1)
+	})
 	for _, tc := range []struct {
 		name       string
 		handler    sqlQueryHandler
@@ -347,6 +352,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			wantStatus: backend.StatusTimeout,
 			wantMsg:    "SQL query timed out",
 		},
+		{name: "null time in a time series", handler: sqlPayloadServer(nullTime), wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
