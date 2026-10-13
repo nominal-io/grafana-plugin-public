@@ -1,10 +1,17 @@
 import { DataSource } from './datasource';
 import { NominalDataSourceOptions } from './types';
-import { DataSourceInstanceSettings } from '@grafana/data';
+import { DataFrameType, DataQueryRequest, DataQueryResponse, DataSourceInstanceSettings, FieldType, toDataFrame } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { lastValueFrom, of } from 'rxjs';
+
+const mockBackendQuery = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {},
+  DataSourceWithBackend: class {
+    query(request: unknown) {
+      return mockBackendQuery(request);
+    }
+  },
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
 }));
@@ -325,5 +332,28 @@ describe('annotations', () => {
       prepare({ enable: true, name: 'a', iconColor: 'red', query: { kind: 'DataQuery', spec: { refId: 'Anno', rawSql: 'SELECT 1' } } })
     ).toEqual({ refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' });
     expect(prepare({ enable: true, name: 'a', iconColor: 'red' })).toBeUndefined();
+  });
+});
+
+describe('query', () => {
+  const frame = (type: DataFrameType, nanos?: number[]) =>
+    toDataFrame({
+      meta: { type },
+      fields: [
+        { name: 'timestamp', type: FieldType.time, values: [1, 2], nanos },
+        { name: 'body', type: FieldType.string, values: ['a', 'b'] },
+      ],
+    });
+
+  it.each([
+    ['pads a log frame without nanos', DataFrameType.LogLines, undefined, [0, 0]],
+    ['keeps nanos a log frame already has', DataFrameType.LogLines, [5, 7], [5, 7]],
+    ['leaves other frames alone', DataFrameType.TimeSeriesMulti, undefined, undefined],
+  ])('%s', async (_, type, nanos, want) => {
+    const response: DataQueryResponse = { data: [frame(type, nanos)], key: 'k' };
+    mockBackendQuery.mockReturnValue(of(response));
+    const result = await lastValueFrom(createDataSource().query({ targets: [] } as unknown as DataQueryRequest<any>));
+    expect(result.data[0].fields[0].nanos).toEqual(want);
+    expect(result.key).toBe('k');
   });
 });
