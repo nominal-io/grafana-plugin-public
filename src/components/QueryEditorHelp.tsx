@@ -121,6 +121,7 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
         <code className={styles.codeBlock}>{DEFAULT_SQL}</code>
         <ul className={styles.text}>
           <li>Telemetry tables (points_double, points_int, points_string, points_struct, logs, channels) require a dataset_rid filter.</li>
+          <li>For a State timeline of string channels, select time, channel and value from points_string with Time series format. Use Table format to read string values in a Grafana SQL expression.</li>
           <li>Write {'channel IN (${channel:sqlstring})'} for any variable: single-value, multi-value, or Include All. Plain $channel is quoted only for multi-value and Include All variables.</li>
         </ul>
       </div>

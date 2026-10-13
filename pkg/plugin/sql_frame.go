@@ -199,7 +199,8 @@ func isMapSeparator(r rune) bool {
 
 // shapeSQLFrame returns table results unchanged. A time series result becomes one frame per numeric
 // column and label set, sorted by time, where the result's string and bool columns are the labels.
-// A result without a timestamp and a numeric column is shown as a table with a notice.
+// A result without a numeric column uses its string or bool column named value instead.
+// A result without a timestamp and a value column is shown as a table with a notice.
 func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Frames, error) {
 	if format == sqlutil.FormatOptionTable {
 		return data.Frames{frame}, nil
@@ -214,10 +215,17 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 			skipped = append(skipped, frame.Fields[i].Name)
 		}
 	}
-	if schema.Type == data.TimeSeriesTypeNot || len(values) == 0 {
+	factors := schema.FactorIndices
+	if len(values) == 0 {
+		if i := slices.IndexFunc(factors, func(f int) bool { return strings.EqualFold(frame.Fields[f].Name, "value") }); i >= 0 {
+			values = []int{factors[i]}
+			factors = slices.Delete(factors, i, i+1)
+		}
+	}
+	if len(values) == 0 {
 		frame.AppendNotices(data.Notice{
 			Severity: data.NoticeSeverityInfo,
-			Text:     "Result is shown as a table because a time series needs a timestamp column and a numeric column.",
+			Text:     "Result is shown as a table because a time series needs a timestamp column and either a numeric column or a string column named value.",
 		})
 		// Explore shows frames that prefer a graph only as a graph.
 		frame.Meta.PreferredVisualization = data.VisTypeTable
@@ -232,10 +240,18 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 	if frame.Meta == nil {
 		frame.Meta = &data.FrameMeta{}
 	}
-	frame.Meta.Type, frame.Meta.TypeVersion = data.FrameTypeTimeSeriesMulti, data.FrameTypeVersion{0, 1}
+	// Typed time series hold only numeric and bool values, and Grafana's SQL expressions return an
+	// empty table for typed string series, so string series stay untyped and fail with an error.
+	// Explore cannot graph strings, and its table merges the series into one column, so Explore
+	// shows them in a State timeline.
+	if frame.Fields[values[0]].Type().NonNullableType() == data.FieldTypeString {
+		frame.Meta.PreferredVisualizationPluginID = "state-timeline"
+	} else {
+		frame.Meta.Type, frame.Meta.TypeVersion = data.FrameTypeTimeSeriesMulti, data.FrameTypeVersion{0, 1}
+	}
 	if frame.Rows() == 0 {
-		// A typed frame without fields is the dataplane's no-data response, which alerting evaluates
-		// as no data.
+		// A frame without fields is the no-data response, which alerting evaluates as no data whether
+		// or not it is typed.
 		empty := data.NewFrame(frame.Name)
 		empty.RefID, empty.Meta = frame.RefID, frame.Meta
 		return data.Frames{empty}, nil
@@ -244,7 +260,7 @@ func shapeSQLFrame(frame *data.Frame, format sqlutil.FormatQueryOption) (data.Fr
 	if err != nil {
 		return nil, err
 	}
-	return splitSeries(frame, schema.TimeIndex, schema.FactorIndices, values, times, timeOrder(times)), nil
+	return splitSeries(frame, schema.TimeIndex, factors, values, times, timeOrder(times)), nil
 }
 
 // fieldTimes reads a time field through PointerAt, which unlike At and ConcreteAt does not allocate.
