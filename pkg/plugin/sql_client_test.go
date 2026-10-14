@@ -3,16 +3,12 @@ package plugin
 import (
 	"context"
 	"io"
-	"net"
-	"strings"
 	"testing"
 
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 type sqlQueryHandler func(*sqlv1.SqlServiceQueryRequest, grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error
@@ -39,47 +35,7 @@ func (f *fakeSQLService) GetSqlCatalog(ctx context.Context, req *sqlv1.GetSqlCat
 
 // newFakeSQLService serves service over an in-memory connection and returns the generated client.
 func newFakeSQLService(t *testing.T, service *fakeSQLService) sqlv1.SqlServiceClient {
-	t.Helper()
-	listener := bufconn.Listen(1 << 20)
-	server := grpc.NewServer()
-	sqlv1.RegisterSqlServiceServer(server, service)
-	go func() { _ = server.Serve(listener) }()
-	conn, err := grpc.NewClient("passthrough:///bufconn",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }),
-	)
-	if err != nil {
-		t.Fatalf("grpc.NewClient() error = %v", err)
-	}
-	t.Cleanup(func() {
-		_ = conn.Close()
-		server.Stop()
-	})
-	return sqlv1.NewSqlServiceClient(conn)
-}
-
-func TestDialSQL(t *testing.T) {
-	for _, tc := range []struct {
-		baseURL    string
-		wantTarget string
-	}{
-		{baseURL: "https://api.gov.nominal.io/api", wantTarget: "api.gov.nominal.io"},
-		{baseURL: "https://nominal.example.com:8443/api/", wantTarget: "nominal.example.com:8443"},
-	} {
-		conn, err := dialSQL(tc.baseURL, "test")
-		if err != nil {
-			t.Fatalf("dialSQL(%q) error = %v", tc.baseURL, err)
-		}
-		if got := conn.Target(); got != tc.wantTarget {
-			t.Errorf("dialSQL(%q) target = %q, want %q", tc.baseURL, got, tc.wantTarget)
-		}
-		_ = conn.Close()
-	}
-	for _, baseURL := range []string{"", "api.gov.nominal.io", "http://admin:secret@nominal.internal/api", "https://%zz"} {
-		if _, err := dialSQL(baseURL, "test"); err == nil || strings.Contains(err.Error(), "secret") {
-			t.Errorf("dialSQL(%q) error = %v, want an error that does not repeat the URL", baseURL, err)
-		}
-	}
+	return sqlv1.NewSqlServiceClient(newInMemoryConn(t, func(s *grpc.Server) { sqlv1.RegisterSqlServiceServer(s, service) }))
 }
 
 func TestSQLStreamReader(t *testing.T) {

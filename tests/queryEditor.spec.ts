@@ -1,5 +1,6 @@
 import { test, expect } from '@grafana/plugin-e2e';
 import { setTimeout } from 'node:timers/promises';
+import { ASSET_RID_FALLBACK_LABEL } from '../src/components/queryBuilder/assetReconcile';
 
 const ASSET_PLACEHOLDER = 'Search assets or paste a RID...';
 const DATA_SCOPE_PLACEHOLDER = 'Choose scope or use $variable...';
@@ -53,6 +54,14 @@ async function getQueryEditorRow(panelEditPage: any, page: any) {
     .first();
 }
 
+// The pickers load options asynchronously; Enter before the typed value's option
+// renders selects nothing and clears the input.
+async function commitTypedValue(page: any, input: any, value: string) {
+  await input.fill(value);
+  await expect(page.getByRole('option', { name: value })).toBeVisible();
+  await input.press('Enter');
+}
+
 async function openPanelEditPage(page: any, request: any, gotoPanelEditPage: any) {
   const uid = await createDashboardWithPanel(request);
   const panelEditPage = await gotoPanelEditPage({ dashboard: { uid }, id: '1' });
@@ -101,12 +110,57 @@ test('data query should work with asset and channel selection', async ({
 
   const assetInput = queryRow.getByPlaceholder(ASSET_PLACEHOLDER, { exact: true });
   await expect(assetInput).toBeVisible();
-  await assetInput.fill(TEST_ASSET_RID);
-  // fill() never fires selectAsset; Enter commits the custom-value option.
-  await assetInput.press('Enter');
+  await commitTypedValue(page, assetInput, TEST_ASSET_RID);
 
   // Data scope only renders for a committed assetRid; the summary RID appears
   // once the by-RID fetch settles (real or fallback asset).
   await expect(queryRow.getByPlaceholder(DATA_SCOPE_PLACEHOLDER, { exact: true })).toBeVisible();
   await expect(queryRow.getByText(TEST_ASSET_RID)).toBeVisible();
 });
+
+const TEST_DATASET_RID = 'ri.catalog.cerulean-staging.dataset.test-dataset-rid';
+
+// The test RIDs never resolve, so each picker settles on its unresolved label:
+// the dataset picker keeps showing the RID, the asset picker its fallback label.
+for (const { source, previousRid, shownLabel, wrongRid, message } of [
+  {
+    source: 'Dataset',
+    previousRid: TEST_DATASET_RID,
+    shownLabel: TEST_DATASET_RID,
+    wrongRid: TEST_ASSET_RID,
+    message: 'Not a dataset RID',
+  },
+  {
+    source: 'Asset',
+    previousRid: TEST_ASSET_RID,
+    shownLabel: ASSET_RID_FALLBACK_LABEL,
+    wrongRid: TEST_DATASET_RID,
+    message: 'Not an asset RID',
+  },
+]) {
+  test(`${source} picker rejects a pasted RID of the other type and keeps its selection`, async ({
+    gotoPanelEditPage,
+    page,
+    request,
+    readProvisionedDataSource,
+  }) => {
+    const panelEditPage = await openPanelEditPage(page, request, gotoPanelEditPage);
+    const ds = await readProvisionedDataSource({ fileName: 'datasources.yml' });
+    await panelEditPage.datasource.set(ds.name);
+    const queryRow = await getQueryEditorRow(panelEditPage, page);
+    await queryRow
+      .getByRole('radiogroup', { name: 'Source' })
+      .getByRole('radio', { name: source, exact: true })
+      .click();
+
+    // By id: while its menu is open, the Combobox swaps the placeholder for the selected label.
+    const input = queryRow.locator(`#nominal-query-${source.toLowerCase()}-picker`);
+    await commitTypedValue(page, input, previousRid);
+    await expect(input).toHaveValue(shownLabel);
+
+    await commitTypedValue(page, input, wrongRid);
+    await expect(queryRow.getByText(message, { exact: true })).toBeVisible();
+    await input.press('Escape');
+    await expect(input).toHaveValue(shownLabel);
+  });
+}

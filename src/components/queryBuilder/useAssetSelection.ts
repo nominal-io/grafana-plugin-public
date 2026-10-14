@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
-import type { NominalQuery } from '../../types';
-import { fetchAssetByRid, getSupportedScopeNames, searchAssets, type Asset } from '../../utils/api';
-import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue } from './queryBuilderOptions';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { isDatasetQuery, type NominalQuery } from '../../types';
+import {
+  fetchAssetByRid,
+  getSupportedScopeNames,
+  resolveDataSourceRids,
+  searchAssets,
+  type Asset,
+} from '../../utils/api';
+import { buildAssetOptions, buildDataScopeOptions, getAssetSelectValue, resolvedRidError } from './queryBuilderOptions';
+import { ridType } from '../../utils/rid';
 import { changeAssetRidQuery, changeSelectedDataScopeQuery } from './queryMutations';
 import { ASSET_RID_FALLBACK_LABEL, decideAssetReconcile } from './assetReconcile';
 import {
@@ -14,7 +21,7 @@ import { notifyError } from './notifyError';
 import { dashboardVariableOptions } from './variableOptions';
 import { AssetResolutionCoordinator } from './assetResolution';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
-import type { AssetOption, AssetOptionsLoader, DataScopeOption } from './queryBuilderTypes';
+import type { AssetOption, AssetOptionsLoader, ChannelSource, DataScopeOption } from './queryBuilderTypes';
 
 interface UseAssetSelectionArgs {
   query: NominalQuery;
@@ -25,18 +32,20 @@ interface UseAssetSelectionArgs {
   resolveTemplateText: (value: string) => TemplateValueResolution;
   hasUserInteracted: boolean;
   markInteracted: () => void;
+  /** Whether the asset picker is shown. */
+  active: boolean;
 }
 
 export interface AssetSelectionModel {
   selectedAsset: Asset | null;
   assetOptions: AssetOptionsLoader;
   assetSelectValue: AssetOption | null;
+  assetError: string | undefined;
+  channelSource: ChannelSource;
   dataScopeOptions: DataScopeOption[];
   selectAsset: (assetRid: string) => void;
   selectDataScope: (dataScopeName: string) => void;
 }
-
-const isNominalRid = (value: string): boolean => value.trim().startsWith('ri.');
 
 export function useAssetSelection({
   query,
@@ -47,6 +56,7 @@ export function useAssetSelection({
   resolveTemplateText,
   hasUserInteracted,
   markInteracted,
+  active,
 }: UseAssetSelectionArgs): AssetSelectionModel {
   const [assetIdentity, dispatchAssetIdentity] = useReducer(
     assetIdentityReducer,
@@ -56,6 +66,8 @@ export function useAssetSelection({
   const queryRef = useRef(query);
   queryRef.current = query;
   const latestAssetOptionsAssetsRef = useRef<Asset[]>([]);
+  // A typed value that was not an asset RID; the query keeps its previous asset.
+  const [inputError, setInputError] = useState<string>();
 
   const resolutionCoordinatorRef = useRef<AssetResolutionCoordinator | null>(null);
   if (!resolutionCoordinatorRef.current) {
@@ -65,6 +77,11 @@ export function useAssetSelection({
 
   const applyAssetFromRid = useCallback(
     async (resolvedRid: string, displayLabel: string, signal?: AbortSignal) => {
+      if (ridType(resolvedRid) !== 'asset') {
+        // selectAsset may already have marked this value pending.
+        dispatchAssetIdentity({ type: 'cancelResolving', rid: resolvedRid });
+        return;
+      }
       dispatchAssetIdentity({ type: 'beginResolving', rid: resolvedRid });
       const cancelResolving = () => {
         if (resolutionCoordinator.isMounted) {
@@ -155,11 +172,13 @@ export function useAssetSelection({
     [datasourceUrl, resolutionCoordinator]
   );
 
+  // A dataset query keeps no asset, so the one picked before it is cleared like a removed RID.
+  const savedAssetRid = isDatasetQuery(query) ? '' : query?.assetRid;
   useEffect(() => {
     let reconcileSignal: AbortSignal | undefined;
 
     const action = decideAssetReconcile({
-      assetRid: query?.assetRid,
+      assetRid: savedAssetRid,
       selectedAssetRid: selectedAsset?.rid,
       assetRidResolution: assetRidSnapshot,
     });
@@ -172,7 +191,7 @@ export function useAssetSelection({
     }
 
     return reconcileSignal ? () => resolutionCoordinator.cancelFetch(reconcileSignal) : undefined;
-  }, [query?.assetRid, selectedAsset?.rid, assetRidSnapshot, applyAssetFromRid, resolutionCoordinator]);
+  }, [savedAssetRid, selectedAsset?.rid, assetRidSnapshot, applyAssetFromRid, resolutionCoordinator]);
 
   useEffect(() => {
     if (selectedAsset) {
@@ -211,21 +230,25 @@ export function useAssetSelection({
 
   const selectAsset = useCallback(
     (value: string) => {
-      markInteracted();
       const trimmedValue = value.trim();
 
       if (!trimmedValue) {
         // A blank/whitespace selection clears the asset rather than committing
         // whitespace as the assetRid and firing a doomed by-RID fetch.
+        setInputError(undefined);
+        markInteracted();
         clearAssetSelection();
         onChange(changeAssetRidQuery(query, ''));
         return;
       }
 
       const isVariable = trimmedValue.includes('$');
-      if (!isVariable && !isNominalRid(trimmedValue)) {
+      if (!isVariable && ridType(trimmedValue) !== 'asset') {
+        setInputError('Not an asset RID');
         return;
       }
+      setInputError(undefined);
+      markInteracted();
 
       const selectedRidResolution = resolveTemplateText(trimmedValue);
       const ridToFind = isVariable ? selectedRidResolution.resolved : trimmedValue;
@@ -296,6 +319,15 @@ export function useAssetSelection({
     [markInteracted, onChange, query]
   );
 
+  // A search still in flight when the picker is hidden stays quiet, and a rejected entry is forgotten.
+  useEffect(
+    () => () => {
+      resolutionCoordinator.startAssetOptionsRequest();
+      setInputError(undefined);
+    },
+    [active, resolutionCoordinator]
+  );
+
   useEffect(() => {
     resolutionCoordinator.markMounted();
     return () => {
@@ -304,9 +336,13 @@ export function useAssetSelection({
     };
   }, [resolutionCoordinator]);
 
+  const assetError = assetRidIsResolved ? resolvedRidError(assetRidResolved, 'asset') : undefined;
+  // An invalid value must not keep showing the asset that was loaded for the previous value.
+  const shownAsset = assetError ? null : visibleAssetIdentity.selectedAsset;
+
   const assetSelectValue = useMemo(
-    () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: visibleAssetIdentity.selectedAsset }),
-    [assetRidSnapshot, visibleAssetIdentity.selectedAsset]
+    () => getAssetSelectValue({ assetRid: assetRidSnapshot, selectedAsset: shownAsset }),
+    [assetRidSnapshot, shownAsset]
   );
 
   const dataScopeOptions = useMemo(
@@ -318,10 +354,24 @@ export function useAssetSelection({
     [visibleAssetIdentity.dataScopes, dataScopeResolutionSnapshot]
   );
 
+  const assetComplete = assetRidResolved !== '' && assetRidIsResolved && !assetError;
+  const resolvedScopeName = dataScopeResolution.resolved;
+  const channelSource = useMemo<ChannelSource>(
+    () => ({
+      complete: assetComplete,
+      dataSourceRids: shownAsset ? resolveDataSourceRids(shownAsset, resolvedScopeName || undefined) : [],
+      canSearchChannels: shownAsset !== null,
+      channelPickerKey: `${assetRidResolved || 'no-asset'}-${resolvedScopeName}`,
+    }),
+    [assetComplete, shownAsset, assetRidResolved, resolvedScopeName]
+  );
+
   return {
-    selectedAsset: visibleAssetIdentity.selectedAsset,
+    selectedAsset: shownAsset,
     assetOptions,
     assetSelectValue,
+    assetError: inputError ?? assetError,
+    channelSource,
     dataScopeOptions,
     selectAsset,
     selectDataScope,

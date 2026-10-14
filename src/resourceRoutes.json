@@ -1,6 +1,8 @@
 {
   "searchAssets": "search-assets",
   "assetsByRid": "assets-by-rid",
+  "datasets": "datasets",
+  "datasetsByRid": "datasets-by-rid",
   "channels": "channels",
   "assets": "assets",
   "datascopes": "datascopes",

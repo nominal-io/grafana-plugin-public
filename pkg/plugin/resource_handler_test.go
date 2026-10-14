@@ -201,6 +201,9 @@ func TestCallResourceRejectsBadRequests(t *testing.T) {
 		{"assets-by-rid with empty array", "assets-by-rid", http.MethodPost, `[]`, http.StatusBadRequest},
 		{"assets-by-rid with malformed rid", "assets-by-rid", http.MethodPost, `["not-a-rid"]`, http.StatusBadRequest},
 		{"search-assets with null body", "search-assets", http.MethodPost, `null`, http.StatusBadRequest},
+		{"datasets-by-rid with malformed rid", "datasets-by-rid", http.MethodPost, `{"rids":["ri.catalog.main.dataset.a","not a rid"]}`, http.StatusBadRequest},
+		{"datasets-by-rid with empty rids", "datasets-by-rid", http.MethodPost, `{"rids":[]}`, http.StatusBadRequest},
+		{"datasets-by-rid without rids", "datasets-by-rid", http.MethodPost, `{}`, http.StatusBadRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

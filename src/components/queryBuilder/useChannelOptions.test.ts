@@ -1,7 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, renderHook } from '@testing-library/react';
 import type { NominalQuery } from '../../types';
-import { searchChannels, type Asset, type Channel } from '../../utils/api';
+import { searchChannels, type Channel } from '../../utils/api';
 import type { ChannelOption } from './queryBuilderTypes';
 import { buildChannelOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { resolveTemplateValue, type TemplateValueResolution } from './templateResolution';
@@ -31,38 +31,8 @@ const mockSearchChannels = searchChannels as jest.MockedFunction<typeof searchCh
 const mockBuildChannelOptions = buildChannelOptions as jest.MockedFunction<typeof buildChannelOptions>;
 const mockGetChannelSelectValue = getChannelSelectValue as jest.MockedFunction<typeof getChannelSelectValue>;
 
-const ASSET: Asset = {
-  rid: 'ri.scout.main.asset.a',
-  title: 'Asset A',
-  labels: [],
-  dataScopes: [
-    {
-      dataScopeName: 'default',
-      dataSource: { type: 'dataset', dataset: 'ri.scout.main.dataset.a' },
-      timestampType: 'ABSOLUTE',
-      seriesTags: {},
-    },
-  ],
-  properties: {},
-};
-
-const MULTI_SCOPE_ASSET: Asset = {
-  ...ASSET,
-  dataScopes: [
-    {
-      dataScopeName: 'scope-a',
-      dataSource: { type: 'dataset', dataset: 'ri.scout.main.dataset.a' },
-      timestampType: 'ABSOLUTE',
-      seriesTags: {},
-    },
-    {
-      dataScopeName: 'scope-b',
-      dataSource: { type: 'dataset', dataset: 'ri.scout.main.dataset.b' },
-      timestampType: 'ABSOLUTE',
-      seriesTags: {},
-    },
-  ],
-};
+const DATASET_A = 'ri.scout.main.dataset.a';
+const DATASET_B = 'ri.scout.main.dataset.b';
 
 function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
   return { refId: 'A', dataScopeName: 'default', ...overrides } as NominalQuery;
@@ -74,10 +44,10 @@ function args(overrides: Record<string, unknown> = {}) {
   return {
     query,
     onChange: jest.fn(),
-    selectedAsset: ASSET as Asset | null,
+    dataSourceRids: [DATASET_A],
     channelResolution: resolveTemplateValue(query.channel, replace),
-    dataScopeResolution: resolveTemplateValue(query.dataScopeName, replace),
     datasourceUrl: '/api/x',
+    hasUserInteracted: false,
     markInteracted: jest.fn(),
     ...overrides,
   };
@@ -98,7 +68,6 @@ function renderMemoTestHook() {
   const hookArgs = args({
     query,
     channelResolution: unresolvedResolution('$channel'),
-    dataScopeResolution: unresolvedResolution('$scope'),
   });
   const { result, rerender } = renderHook((nextArgs: ReturnType<typeof args>) => useChannelOptions(nextArgs), {
     initialProps: hookArgs,
@@ -177,17 +146,51 @@ describe('useChannelOptions', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ channel: 'manual.channel', channelDataType: '' }));
   });
 
-  it('returns no channel options and does not call the API without a selected asset', async () => {
-    const { result } = renderHook(() => useChannelOptions(args({ selectedAsset: null })));
+  it('offers the template channel when the source has no data source RIDs', async () => {
+    mockSearchChannels.mockResolvedValue([]);
+    const query = makeQuery({ channel: '$chan' });
+    const { result } = renderHook(() =>
+      useChannelOptions(args({ query, dataSourceRids: [], channelResolution: unresolvedResolution('$chan') }))
+    );
 
     let options: ChannelOption[] = [];
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
-      options = await result.current.channelOptions('temp');
+      options = await result.current.channelOptions('');
     });
 
-    expect(options).toEqual([]);
-    expect(mockSearchChannels).not.toHaveBeenCalled();
+    expect(options.map((o) => o.value)).toEqual(['$chan']);
+  });
+
+  it.each([
+    {
+      name: 'keeps a saved type while the data source RIDs change before any edit',
+      hasUserInteracted: false,
+      inferred: false,
+    },
+    {
+      name: 're-checks a saved type when the data source RIDs change after an edit',
+      hasUserInteracted: true,
+      inferred: true,
+    },
+  ])('$name', async ({ hasUserInteracted, inferred }) => {
+    mockSearchChannels.mockResolvedValue([{ name: 'temp', dataSource: 'ds', description: '', dataType: 'string' }]);
+    const query = makeQuery({ channel: 'temp', channelDataType: 'numeric' });
+    const onChange = jest.fn();
+    const { rerender } = renderHook(
+      ({ dataSourceRids }) => useChannelOptions(args({ query, onChange, dataSourceRids, hasUserInteracted })),
+      { initialProps: { dataSourceRids: [] as string[] } }
+    );
+
+    // A dashboard variable that switches the scope changes the RIDs after the first list.
+    for (const dataSourceRids of [[DATASET_A], [DATASET_B]]) {
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
+      await act(async () => {
+        rerender({ dataSourceRids });
+      });
+    }
+
+    expect(onChange.mock.calls.some(([q]) => q.channelDataType === 'string')).toBe(inferred);
   });
 
   it('publishes a Grafana alert and returns empty options when channel loading fails', async () => {
@@ -203,7 +206,7 @@ describe('useChannelOptions', () => {
     expect(options).toEqual([]);
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({
-        payload: ['Unable to load Nominal channels', 'Check the selected asset, data scope, and data source configuration.'],
+        payload: ['Unable to load Nominal channels', 'Check the selected source and data source configuration.'],
       })
     );
   });
@@ -239,7 +242,7 @@ describe('useChannelOptions', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it('does not publish an alert when a previous asset request fails after switching to another asset with the same data source', async () => {
+  it('does not publish an alert when a request for earlier data source RIDs fails', async () => {
     const calls: Array<{
       reject: (error: Error) => void;
     }> = [];
@@ -249,17 +252,12 @@ describe('useChannelOptions', () => {
           calls.push({ reject });
         })
     );
-    const nextAsset: Asset = {
-      ...ASSET,
-      rid: 'ri.scout.main.asset.b',
-    };
-    const { result, rerender } = renderHook(
-      ({ selectedAsset }) => useChannelOptions(args({ selectedAsset })),
-      { initialProps: { selectedAsset: ASSET } }
-    );
+    const { result, rerender } = renderHook(({ dataSourceRids }) => useChannelOptions(args({ dataSourceRids })), {
+      initialProps: { dataSourceRids: [DATASET_A] },
+    });
 
     const olderRequest = result.current.channelOptions('old-asset-search');
-    rerender({ selectedAsset: nextAsset });
+    rerender({ dataSourceRids: [DATASET_B] });
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
@@ -291,58 +289,34 @@ describe('useChannelOptions', () => {
     expect(latestOnChange).toHaveBeenCalledWith(expect.objectContaining({ channelDataType: 'numeric' }));
   });
 
-  it('loads channel options against the currently resolved template data scope', async () => {
+  it('loads channel options against the current data source RIDs', async () => {
     mockSearchChannels.mockResolvedValue([]);
-    const query = makeQuery({ dataScopeName: '$scope' });
-    const { result, rerender } = renderHook(
-      ({ dataScopeName }) =>
-        useChannelOptions(
-          args({
-            query,
-            selectedAsset: MULTI_SCOPE_ASSET,
-            dataScopeResolution: resolveTemplateValue(query.dataScopeName, () => dataScopeName),
-          })
-        ),
-      { initialProps: { dataScopeName: 'scope-a' } }
-    );
+    const { result, rerender } = renderHook(({ dataSourceRids }) => useChannelOptions(args({ dataSourceRids })), {
+      initialProps: { dataSourceRids: [DATASET_A] },
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await result.current.channelOptions('');
     });
-    expect(mockSearchChannels).toHaveBeenCalledWith(
-      '/api/x',
-      ['ri.scout.main.dataset.a'],
-      '',
-      { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
-    );
+    expect(mockSearchChannels).toHaveBeenLastCalledWith('/api/x', [DATASET_A], '', expect.anything());
 
-    mockSearchChannels.mockClear();
-    rerender({ dataScopeName: 'scope-b' });
-
+    rerender({ dataSourceRids: [DATASET_B] });
     // eslint-disable-next-line @typescript-eslint/no-deprecated
     await act(async () => {
       await result.current.channelOptions('');
     });
-    expect(mockSearchChannels).toHaveBeenCalledWith(
-      '/api/x',
-      ['ri.scout.main.dataset.b'],
-      '',
-      { requestId: expect.stringMatching(/^nominal-channel-options-\d+$/) }
-    );
+    expect(mockSearchChannels).toHaveBeenLastCalledWith('/api/x', [DATASET_B], '', expect.anything());
   });
 
   it('does not rebuild options when resolution references change but primitive fields do not', () => {
     const { hookArgs, rerender } = renderMemoTestHook();
     const nextChannelResolution = unresolvedResolution('$channel');
-    const nextDataScopeResolution = unresolvedResolution('$scope');
     expect(nextChannelResolution).not.toBe(hookArgs.channelResolution);
-    expect(nextDataScopeResolution).not.toBe(hookArgs.dataScopeResolution);
 
     rerender({
       ...hookArgs,
       channelResolution: nextChannelResolution,
-      dataScopeResolution: nextDataScopeResolution,
     });
 
     expect(mockBuildChannelOptions).not.toHaveBeenCalled();

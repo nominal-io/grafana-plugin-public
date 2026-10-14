@@ -10,6 +10,7 @@ export interface TemplateValueResolution {
 
 export interface QueryTemplateResolution {
   assetRid: TemplateValueResolution;
+  datasetRid: TemplateValueResolution;
   dataScopeName: TemplateValueResolution;
   channel: TemplateValueResolution;
 }
@@ -52,6 +53,7 @@ export function resolveQueryTemplateValues({
 }): QueryTemplateResolution {
   return {
     assetRid: resolveTemplateValue(query?.assetRid, replace),
+    datasetRid: resolveTemplateValue(query?.datasetRid, replace),
     dataScopeName: resolveTemplateValue(query?.dataScopeName, replace),
     channel: resolveTemplateValue(query?.channel, replace),
   };

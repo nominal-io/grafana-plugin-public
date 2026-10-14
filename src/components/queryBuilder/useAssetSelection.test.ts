@@ -53,6 +53,7 @@ function args(overrides: Record<string, unknown> = {}) {
     dataScopeResolution: resolveTemplateValue(query.dataScopeName, replace),
     resolveTemplateText: (value: string) => resolveTemplateValue(value, replace),
     hasUserInteracted: false,
+    active: true,
     markInteracted: jest.fn(),
     ...overrides,
   };
@@ -304,15 +305,20 @@ describe('useAssetSelection', () => {
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
   });
 
-  it('clears the selected asset when a saved RID is removed', async () => {
+  it.each([
+    { name: 'a saved RID is removed', query: makeQuery({ assetRid: '' }) },
+    { name: 'a dataset replaces the asset', query: makeQuery({ datasetRid: 'ri.scout.main.dataset.d' }) },
+  ])('clears the selected asset when $name', async ({ query }) => {
     const { result, rerender } = await renderSavedAsset();
 
-    rerender(args({ query: makeQuery({ assetRid: '' }) }));
+    rerender(args({ query }));
 
     await waitFor(() => {
       expect(result.current.selectedAsset).toBeNull();
       expect(result.current.dataScopeOptions).toEqual([]);
     });
+    mockSearchAssets.mockResolvedValue([ASSET_B]);
+    expect((await result.current.assetOptions('bbb')).map((o) => o.value)).toEqual([ASSET_B.rid]);
   });
 
   it('restores a saved concrete RID via a single by-RID fetch', async () => {
@@ -548,6 +554,26 @@ describe('useAssetSelection', () => {
       expect(result.current.selectedAsset?.rid).toBe(ASSET.rid);
     });
     expect(mockFetchAssetByRid).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the held asset again when a variable that resolved to a non-asset value narrows back to it', async () => {
+    mockFetchAssetByRid.mockResolvedValue(ASSET);
+    let resolvesTo = 'not-a-rid';
+    const replace = (value: string) => (value === '$asset' ? resolvesTo : value);
+    const harness = renderAssetSelectionHarness({
+      initialQuery: makeQuery({ assetRid: ASSET.rid }),
+      hookOverrides: { resolveTemplateText: (value: string) => resolveTemplateValue(value, replace) },
+    });
+    const { result } = harness;
+    await waitFor(() => expect(result.current.selectedAsset?.rid).toBe(ASSET.rid));
+
+    selectAsset(result, '$asset');
+    harness.rerenderCurrent({ assetRidResolution: resolveTemplateValue('$asset', replace) });
+    expect(result.current.assetError).toBe('Not an asset RID');
+
+    resolvesTo = ASSET.rid;
+    harness.rerenderCurrent({ assetRidResolution: resolveTemplateValue('$asset', replace) });
+    await waitFor(() => expect(result.current.selectedAsset?.rid).toBe(ASSET.rid));
   });
 
   it('saved template RID fetches once', async () => {

@@ -1,6 +1,12 @@
 import { getBackendSrv } from '@grafana/runtime';
 import resourceRoutes from '../resourceRoutes.json';
 
+/** The plugin backend's own message for a request it rejected, or the fallback. */
+export const badRequestMessage = (error: unknown, fallback: string): string => {
+  const { status, data } = (error ?? {}) as { status?: number; data?: { error?: unknown } };
+  return status === 400 && typeof data?.error === 'string' ? data.error : fallback;
+};
+
 export type WeakTimestampType = 'ABSOLUTE' | 'RELATIVE' | 'PENDING' | 'UNKNOWN';
 
 export interface Duration {
@@ -162,4 +168,25 @@ export const searchChannels = async (
     ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
     : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
+};
+
+export interface Dataset {
+  rid: string;
+  name: string;
+  startMs?: number;
+  endMs?: number;
+}
+
+/** Searches datasets, most recently ingested first. */
+export const searchDatasets = async (datasourceUrl: string, searchText: string): Promise<Dataset[]> => {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.datasets}`, {
+    searchText: searchText || '',
+  });
+  return response ?? [];
+};
+
+/** Fetches datasets by exact RID. Unknown RIDs are skipped. */
+export const fetchDatasetsByRid = async (datasourceUrl: string, rids: string[]): Promise<Dataset[]> => {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.datasetsByRid}`, { rids });
+  return response ?? [];
 };

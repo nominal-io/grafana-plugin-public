@@ -1,8 +1,22 @@
 import { AggregationType, DEFAULT_AGGREGATIONS } from '../../types';
 import { getSupportedScopes, type Asset, type Channel } from '../../utils/api';
+import { ridType, ridValueCount } from '../../utils/rid';
 import { rankChannelOptions } from './channelRanking';
 import { templateDisplayLabel, type TemplateValueResolution } from './templateResolution';
 import type { AggregationOption, AssetOption, ChannelOption, DataScopeOption, PickerOption } from './queryBuilderTypes';
+
+/** Inline error for a resolved field value that is not a single RID of the expected type. */
+export function resolvedRidError(resolved: string, expected: 'asset' | 'dataset'): string | undefined {
+  const value = resolved.trim();
+  if (!value || ridType(value) === expected) {
+    return undefined;
+  }
+  const count = ridValueCount(value);
+  if (count > 1) {
+    return `Has ${count} values. Pick one.`;
+  }
+  return expected === 'asset' ? 'Not an asset RID' : 'Not a dataset RID';
+}
 
 export const NUMERIC_AGG_OPTIONS = [
   {

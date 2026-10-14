@@ -117,7 +117,7 @@ describe('useAggregationRun', () => {
 
   it('exposes string aggregation state for string channels', () => {
     const { result } = renderHook(() =>
-      useAggregationRun({ query: makeQuery({ channelDataType: 'string' }), onChange: jest.fn(), onRunQuery: jest.fn() })
+      useAggregationRun({ query: makeQuery(), onChange: jest.fn(), onRunQuery: jest.fn(), channelDataType: 'string' })
     );
     expect(result.current.aggregationState.kind).toBe('string');
     expect(result.current.aggregationState.value).toEqual(['Mode']);
