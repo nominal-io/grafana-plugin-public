@@ -111,6 +111,11 @@ func TestBuildComputeContext(t *testing.T) {
 			expectedVars: 1, // Just assetRid
 		},
 		{
+			name:         "dataset query binds no assetRid",
+			qm:           NominalQueryModel{DatasetRid: "ri.catalog.main.dataset.1", Channel: "temperature"},
+			expectedVars: 0,
+		},
+		{
 			name: "context with template variables",
 			qm: NominalQueryModel{
 				AssetRid: "ri.nominal.asset.12345",
@@ -144,9 +149,8 @@ func TestBuildComputeContext(t *testing.T) {
 				t.Errorf("expected %d variables, got %d", tt.expectedVars, len(ctx.Variables))
 			}
 
-			// Verify assetRid is always present
-			if _, ok := ctx.Variables[assetRidVariableName]; !ok {
-				t.Error("expected assetRid variable to be present")
+			if _, ok := ctx.Variables[assetRidVariableName]; ok != (tt.qm.AssetRid != "") {
+				t.Errorf("assetRid variable present = %v, want %v", ok, tt.qm.AssetRid != "")
 			}
 
 			// Verify non-string template variables are excluded
@@ -382,6 +386,7 @@ func TestBuildSeriesPlanMatchesRequestShape(t *testing.T) {
 		"predicate":{"type":"in","in":{
 			"key":{"type":"literal","literal":"DATA_SCOPE"},
 			"values":{"type":"literal","literal":[{"type":"literal","literal":"alpha"}]}}}}}`
+	savedDataset := `{"type":"saved","saved":{"rid":{"type":"literal","literal":"ri.catalog.main.dataset.test"}}}`
 	selectTags := func(arm, channel, dataset string) string {
 		return `{"type":"selectTags","selectTags":{"input":{"type":"` + arm + `","` + arm + `":{
 			"name":{"type":"literal","literal":"` + channel + `"},"dataset":` + dataset + `}},"tagKeys":[]}}`
@@ -394,18 +399,20 @@ func TestBuildSeriesPlanMatchesRequestShape(t *testing.T) {
 		aggregations []string
 		// path walks from the plan root to the selectTags node; each key other than
 		// "input" is also the type of the union node it descends through.
-		path []string
-		want string
+		path       []string
+		want       string
+		datasetRid string
 	}{
-		{"numeric bucketed", "temp", ChannelDataTypeNumeric, nil, []string{"input", "numeric", "timeShift", "input"}, selectTags("selectNumeric", "temp", assetDataset)},
-		{"numeric LTTB", "temp", ChannelDataTypeNumeric, []string{AggLTTB}, []string{"input", "numeric"}, selectTags("selectNumeric", "temp", assetDataset)},
-		{"string", "mode", ChannelDataTypeString, nil, []string{"input", "enum", "timeShift", "input"}, selectTags("selectEnum", "mode", assetDataset)},
-		{"log", "events", ChannelDataTypeLog, nil, []string{"input", "log"}, selectTags("selectLogs", "events", assetDataset)},
+		{"numeric bucketed", "temp", ChannelDataTypeNumeric, nil, []string{"input", "numeric", "timeShift", "input"}, selectTags("selectNumeric", "temp", assetDataset), ""},
+		{"numeric LTTB", "temp", ChannelDataTypeNumeric, []string{AggLTTB}, []string{"input", "numeric"}, selectTags("selectNumeric", "temp", assetDataset), ""},
+		{"string", "mode", ChannelDataTypeString, nil, []string{"input", "enum", "timeShift", "input"}, selectTags("selectEnum", "mode", assetDataset), ""},
+		{"log", "events", ChannelDataTypeLog, nil, []string{"input", "log"}, selectTags("selectLogs", "events", assetDataset), ""},
+		{"dataset", "temp", ChannelDataTypeNumeric, nil, []string{"input", "numeric", "timeShift", "input"}, selectTags("selectNumeric", "temp", savedDataset), "ri.catalog.main.dataset.test"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			qm := NominalQueryModel{Channel: tt.channel, ChannelDataType: tt.dataType, Aggregations: tt.aggregations, DataScopeName: "alpha"}
+			qm := NominalQueryModel{Channel: tt.channel, ChannelDataType: tt.dataType, Aggregations: tt.aggregations, DataScopeName: "alpha", DatasetRid: tt.datasetRid}
 
 			raw, err := json.Marshal(seriesPlanFor(qe, qm))
 			if err != nil {

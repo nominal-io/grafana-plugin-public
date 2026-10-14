@@ -596,6 +596,37 @@ func TestFuzzySearchTextFor(t *testing.T) {
 	}
 }
 
+func TestNominalCatalogInferChannelMetadataForDataset(t *testing.T) {
+	datasetRid := "ri.catalog.main.dataset.metadata"
+	server, assetFetches := newCountingAssetServer(t, nil, nil)
+	defer server.Close()
+
+	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{
+				{Name: api.Channel("speed"), DataType: &numericType, Unit: &runapi.Unit{Symbol: "m/s"}},
+			},
+		},
+	}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	for range 2 {
+		qm := NominalQueryModel{DatasetRid: datasetRid, Channel: "speed", ChannelDataType: ChannelDataTypeString}
+		catalog.InferChannelMetadata(context.Background(), config, &qm)
+		if qm.ChannelDataType != ChannelDataTypeNumeric || qm.ChannelUnit != "m/s" {
+			t.Fatalf("inferred (%q, %q), want (%q, %q)", qm.ChannelDataType, qm.ChannelUnit, ChannelDataTypeNumeric, "m/s")
+		}
+	}
+	if got := int(assetFetches.Load()); got != 0 {
+		t.Fatalf("asset fetch count = %d, want 0", got)
+	}
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1", got)
+	}
+}
+
 func TestChannelMetadataEntryForExactMatch(t *testing.T) {
 	numericType := api.New_SeriesDataType(api.SeriesDataType_DOUBLE)
 

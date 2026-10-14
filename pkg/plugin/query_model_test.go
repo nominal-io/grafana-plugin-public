@@ -171,6 +171,16 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			wantPreparedQueryKind: preparedQueryLegacy,
 		},
 		{
+			name: "templated dataset channel query is batchable without a data scope",
+			model: NominalQueryModel{
+				DatasetRid:        "${dataset}",
+				Channel:           "temperature",
+				TemplateVariables: map[string]interface{}{"dataset": "ri.catalog.main.dataset.1"},
+			},
+			wantAggregations:      []string{AggMean},
+			wantPreparedQueryKind: preparedQueryBatchable,
+		},
+		{
 			name: "asset channel query without data scope is rejected",
 			model: NominalQueryModel{
 				AssetRid: "ri.scout.main.asset.1",
@@ -458,7 +468,7 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	req := newQueryRequest([]backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log"}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.main.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log"}),
 			TimeRange: timeRange,
 		},
 	})
@@ -486,14 +496,24 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 }
 
 func TestValidateQueryComputeSource(t *testing.T) {
-	const asset = "ri.scout.main.asset.1"
+	const (
+		dataset = "ri.catalog.main.dataset.1"
+		asset   = "ri.scout.main.asset.1"
+	)
 	assetSrc := templateSources{AssetRid: "$asset"}
 	tests := []struct {
 		name    string
 		qm      NominalQueryModel
 		wantErr string // substring; "" means valid
 	}{
+		{"dataset only", NominalQueryModel{DatasetRid: dataset, Channel: "c"}, ""},
 		{"asset only", NominalQueryModel{AssetRid: asset, Channel: "c", DataScopeName: "s"}, ""},
+		{"both", NominalQueryModel{DatasetRid: dataset, AssetRid: asset, Channel: "c", DataScopeName: "s"}, "dataset or an asset, not both"},
+		{"neither", NominalQueryModel{Channel: "c"}, "dataset/channel or asset/channel"},
+		{"dataset without channel", NominalQueryModel{DatasetRid: dataset}, "dataset/channel or asset/channel"},
+		{"literal asset RID in dataset field", NominalQueryModel{DatasetRid: asset, Channel: "c"}, "`" + asset + "` is not a dataset RID."},
+		{"literal dataset RID in asset field", NominalQueryModel{AssetRid: dataset, Channel: "c", DataScopeName: "s"}, "`" + dataset + "` is not an asset RID."},
+		{"padded literal dataset RID", NominalQueryModel{DatasetRid: " " + dataset + " ", Channel: "c"}, "is not a dataset RID."},
 		{"templated asset resolves to a non-RID", NominalQueryModel{AssetRid: "*", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "Check that variable."},
 		{"templated asset resolves empty", NominalQueryModel{AssetRid: "", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "Asset is `$asset`, currently empty. Check that variable."},
 		{"templated asset unknown variable", NominalQueryModel{AssetRid: "$asset", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "No variable named `$asset`."},
@@ -502,6 +522,7 @@ func TestValidateQueryComputeSource(t *testing.T) {
 		{"templated asset multi-value in csv format", NominalQueryModel{AssetRid: asset + ",ri.scout.main.asset.2", Channel: "c", DataScopeName: "s", TemplateSources: templateSources{AssetRid: "${asset:csv}"}}, "Asset `${asset:csv}` has 2 values."},
 		{"templated asset multi-value in pipe format", NominalQueryModel{AssetRid: asset + "|ri.scout.main.asset.2|ri.scout.main.asset.3", Channel: "c", DataScopeName: "s", TemplateSources: templateSources{AssetRid: "${asset:pipe}"}}, "Asset `${asset:pipe}` has 3 values."},
 		{"templated asset", NominalQueryModel{AssetRid: asset, Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, ""},
+		{"templated dataset multi-value", NominalQueryModel{DatasetRid: "{" + dataset + ",ri.catalog.main.dataset.2}", Channel: "c", TemplateSources: templateSources{DatasetRid: "$ds"}}, "Dataset `$ds` has 2 values. The Dataset field needs one dataset."},
 		// Expression panels send the interpolated query without the variable's name.
 		{"unknown variable without its source", NominalQueryModel{AssetRid: "$asset", Channel: "c", DataScopeName: "s"}, "No variable named `$asset`."},
 		{"multi-value without its source", NominalQueryModel{AssetRid: "{" + asset + ",ri.scout.main.asset.2}", Channel: "c", DataScopeName: "s"}, "Asset has 2 values. The Asset field needs one asset."},

@@ -1,17 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { SelectableValue } from '@grafana/data';
-import type { NominalQuery } from '../../types';
+import { isCompleteComputeQuery, type NominalQuery } from '../../types';
 import { getAggregationValue, NUMERIC_AGG_OPTIONS } from './queryBuilderOptions';
 import { changeAggregationsQuery } from './queryMutations';
 import type { AggregationState } from './queryBuilderTypes';
 
 export const AGGREGATION_RUN_DELAY_MS = 400;
-
-type QueryCompletenessInput = Pick<NominalQuery, 'assetRid' | 'channel' | 'dataScopeName'> | undefined;
-
-function shouldRunCompleteQuery(query: QueryCompletenessInput): boolean {
-  return Boolean(query?.assetRid && query.channel && query.dataScopeName);
-}
 
 interface UseAggregationRunArgs {
   query: NominalQuery;
@@ -39,10 +33,10 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
   // Trigger graph update when query is complete. onRunQuery is read through the ref:
   // the alert rule editor passes a new one every render, and rerunning on that loops.
   useEffect(() => {
-    if (shouldRunCompleteQuery(queryRef.current)) {
+    if (isCompleteComputeQuery(queryRef.current)) {
       onRunQueryRef.current();
     }
-  }, [query?.assetRid, query?.channel, query?.dataScopeName]);
+  }, [query?.datasetRid, query?.assetRid, query?.channel, query?.dataScopeName]);
 
   // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
   // Compared by normalized value so logically identical aggregations in a new array
@@ -53,7 +47,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
     }
     lastDebouncedAggregationsKeyRef.current = aggregationsKey;
 
-    if (!shouldRunCompleteQuery(queryRef.current)) {
+    if (!isCompleteComputeQuery(queryRef.current)) {
       return;
     }
     const timer = setTimeout(() => onRunQueryRef.current(), AGGREGATION_RUN_DELAY_MS);

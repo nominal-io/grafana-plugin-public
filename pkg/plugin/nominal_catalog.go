@@ -471,22 +471,31 @@ func ridHasType(value, ridType string) bool {
 // InferChannelMetadata verifies (or backfills) channel metadata — both data type
 // and unit symbol — against the actual ChannelMetadata returned by SearchChannels.
 func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {
-	if qm == nil || c.datasourceService == nil {
-		return
-	}
-	if strings.TrimSpace(qm.AssetRid) == "" || strings.TrimSpace(qm.Channel) == "" || strings.TrimSpace(qm.DataScopeName) == "" {
+	if qm == nil || c.datasourceService == nil || strings.TrimSpace(qm.Channel) == "" {
 		return
 	}
 
-	cacheKey := channelMetadataCacheKey(qm.AssetRid, qm.DataScopeName, qm.Channel)
-
-	assetRid := qm.AssetRid
-	dataScopeName := qm.DataScopeName
+	sourceRid, dataScopeName := qm.AssetRid, qm.DataScopeName
+	if qm.DatasetRid != "" {
+		sourceRid, dataScopeName = qm.DatasetRid, ""
+	} else if strings.TrimSpace(sourceRid) == "" || strings.TrimSpace(dataScopeName) == "" {
+		return
+	}
 	channel := qm.Channel
-	entry, err := c.channelMetadataCache.get(ctx, oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, cacheKey),
-		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
-			return c.computeChannelMetadata(lookupCtx, config, assetRid, dataScopeName, channel)
-		})
+	cacheKey := channelMetadataCacheKey(sourceRid, dataScopeName, channel)
+	lookup := func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
+		dataSourceRids, err := c.sourceDataSourceRids(lookupCtx, config, sourceRid, dataScopeName)
+		if err != nil {
+			log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "sourceRid", sourceRid, "error", err)
+			return channelMetadataCacheEntry{}, err
+		}
+		if len(dataSourceRids) == 0 {
+			return channelMetadataCacheEntry{}, errChannelMetadataUnavailable
+		}
+		return c.searchChannelMetadata(lookupCtx, config, sourceRid, dataSourceRids, channel)
+	}
+
+	entry, err := c.channelMetadataCache.get(ctx, oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, cacheKey), lookup)
 	if err != nil {
 		// Metadata enrichment is best-effort.
 		return
@@ -498,24 +507,28 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 // is an error so it is cached only briefly: a stale asset can hide a scope.
 var errChannelMetadataUnavailable = errors.New("channel metadata unavailable")
 
-// computeChannelMetadata performs an uncached lookup. A completed search that
-// matches nothing returns an empty entry, which is cached so the search is not
-// repeated. Every other exit returns an error, which is cached only briefly.
-func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
-	asset, err := c.FetchAssetByRid(ctx, config, assetRid)
+// sourceDataSourceRids returns the data sources behind a source: the dataset
+// itself for a dataset RID, otherwise the data sources behind the asset's data
+// scope. An unknown asset or scope gives an empty list.
+func (c *NominalCatalog) sourceDataSourceRids(ctx context.Context, config *models.PluginSettings, sourceRid, dataScopeName string) ([]rids.DataSourceRid, error) {
+	if parsed, err := rid.ParseRID(sourceRid); err == nil && parsed.Type == "dataset" {
+		return []rids.DataSourceRid{rids.DataSourceRid(parsed)}, nil
+	}
+	asset, err := c.FetchAssetByRid(ctx, config, sourceRid)
 	if err != nil {
-		log.DefaultLogger.Warn("Failed to fetch asset for channel metadata inference", "assetRid", assetRid, "error", err)
-		return channelMetadataCacheEntry{}, err
+		return nil, err
 	}
 	if asset == nil {
-		return channelMetadataCacheEntry{}, errChannelMetadataUnavailable
+		return nil, nil
 	}
+	return c.DataSourceRidsForScope(asset, dataScopeName), nil
+}
 
-	dataSourceRids := c.DataSourceRidsForScope(asset, dataScopeName)
-	if len(dataSourceRids) == 0 {
-		return channelMetadataCacheEntry{}, errChannelMetadataUnavailable
-	}
-
+// searchChannelMetadata performs an uncached exact-match search. A completed
+// search that matches nothing returns an empty entry, which is cached so the
+// search is not repeated. Every other exit returns an error, which is cached only
+// briefly. sourceRid names the asset or dataset in log fields.
+func (c *NominalCatalog) searchChannelMetadata(ctx context.Context, config *models.PluginSettings, sourceRid string, dataSourceRids []rids.DataSourceRid, channel string) (channelMetadataCacheEntry, error) {
 	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 	searchRequest := datasourceapi.SearchChannelsRequest{
 		// The API filters on ExactMatch (case-insensitive contains) but orders by
@@ -526,7 +539,7 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
-		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "assetRid", assetRid, "error", err)
+		log.DefaultLogger.Warn("Failed to search channels for channel metadata inference", "sourceRid", sourceRid, "error", err)
 		return channelMetadataCacheEntry{}, err
 	}
 
@@ -536,7 +549,7 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 
 	// Absent, paged out, or present without a data type or unit.
 	log.DefaultLogger.Debug("No usable channel metadata for inference",
-		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
+		"sourceRid", sourceRid, "channel", channel, "results", len(channelsResponse.Results))
 	return channelMetadataCacheEntry{}, nil
 }
 
@@ -620,8 +633,8 @@ func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata,
 }
 
 // Quoted components prevent separator collisions in cache keys.
-func channelMetadataCacheKey(assetRid, dataScopeName, channel string) string {
-	return fmt.Sprintf("%q|%q|%q", assetRid, dataScopeName, channel)
+func channelMetadataCacheKey(sourceRid, dataScopeName, channel string) string {
+	return fmt.Sprintf("%q|%q|%q", sourceRid, dataScopeName, channel)
 }
 
 // getChannelMetadataDescription extracts description from channel metadata

@@ -18,7 +18,8 @@ import (
 
 // NominalQueryModel represents a query to the Nominal API
 type NominalQueryModel struct {
-	// Asset information
+	// A query reads from a dataset or an asset, not both.
+	DatasetRid      string `json:"datasetRid"`
 	AssetRid        string `json:"assetRid"`
 	Channel         string `json:"channel"`
 	DataScopeName   string `json:"dataScopeName"`
@@ -77,16 +78,17 @@ const queryTypeSQL = "sql"
 const queryTypeEvents = "events"
 
 type templateSources struct {
-	AssetRid string `json:"assetRid,omitempty"`
+	DatasetRid string `json:"datasetRid,omitempty"`
+	AssetRid   string `json:"assetRid,omitempty"`
 }
 
 // templateVariable matches a variable reference that interpolation left in place.
 var templateVariable = regexp.MustCompile(`\$\{?(\w+)`)
 
-// ridFieldError explains a templated RID field that did not resolve to a RID
-// of the wanted type. raw is the field's text before interpolation, empty for a
-// literal and for queries that reach the backend without it, such as expression
-// panels. Without raw, only a leftover variable or several values are reported.
+// ridFieldError checks a literal or templated RID field against the wanted RID
+// type. raw is the field's text before interpolation, empty for a literal and for
+// queries that reach the backend without it, such as expression panels. An empty
+// literal passes; the caller decides whether the field is required.
 func ridFieldError(label, ridType, noun, value, raw string) error {
 	if unresolved := templateVariable.FindStringSubmatch(value); unresolved != nil {
 		return fmt.Errorf("No variable named `$%s`.", unresolved[1]) //nolint:staticcheck // user-facing message
@@ -101,6 +103,9 @@ func ridFieldError(label, ridType, noun, value, raw string) error {
 		return fmt.Errorf("%s has %d values. The %s field needs one %s.", field, separators+1, label, ridType) //nolint:staticcheck // user-facing message
 	}
 	if raw == "" {
+		if value != "" && !ridHasType(value, ridType) {
+			return fmt.Errorf("`%s` is not %s.", value, noun) //nolint:staticcheck // user-facing message
+		}
 		return nil
 	}
 	switch {
@@ -192,7 +197,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 		return preparedQuery{}, prepErr
 	}
 
-	if qm.AssetRid != "" && qm.Channel != "" {
+	if qm.hasComputeSource() {
 		qm.Points = resolvePointBudget(qm.ChannelDataType, q.MaxDataPoints)
 		qm.Range = q.TimeRange
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryBatchable}, nil
@@ -275,38 +280,47 @@ func (e *NominalQueryExecution) applyTemplateVariables(qm *NominalQueryModel) {
 		return
 	}
 
+	qm.DatasetRid = interpolateTemplateVariables(qm.DatasetRid, qm.TemplateVariables)
 	qm.AssetRid = interpolateTemplateVariables(qm.AssetRid, qm.TemplateVariables)
 	qm.Channel = interpolateTemplateVariables(qm.Channel, qm.TemplateVariables)
 	qm.DataScopeName = interpolateTemplateVariables(qm.DataScopeName, qm.TemplateVariables)
 	qm.QueryText = interpolateTemplateVariables(qm.QueryText, qm.TemplateVariables)
 }
 
+// hasComputeSource reports whether the query names a channel on a dataset or an asset.
+func (qm NominalQueryModel) hasComputeSource() bool {
+	return qm.Channel != "" && (qm.DatasetRid != "" || qm.AssetRid != "")
+}
+
 // validateQuery validates query parameters similar to pure-ts implementation
 func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
+	if err := ridFieldError("Dataset", "dataset", "a dataset RID", qm.DatasetRid, qm.TemplateSources.DatasetRid); err != nil {
+		return err
+	}
 	if err := ridFieldError("Asset", "asset", "an asset RID", qm.AssetRid, qm.TemplateSources.AssetRid); err != nil {
 		return err
 	}
+	if qm.DatasetRid != "" && qm.AssetRid != "" {
+		return errors.New("A query reads from a dataset or an asset, not both.") //nolint:staticcheck // user-facing message
+	}
 
 	// Check if we have either Nominal-specific fields or legacy fields
-	hasNominalQuery := qm.AssetRid != "" && qm.Channel != ""
+	hasNominalQuery := qm.hasComputeSource()
 	hasLegacyQuery := qm.QueryText != ""
 	hasConstantQuery := qm.Constant != 0
 
 	if !hasNominalQuery && !hasLegacyQuery && !hasConstantQuery {
-		return fmt.Errorf("query must have either asset/channel parameters, query text, or constant value")
+		return fmt.Errorf("query must have either dataset/channel or asset/channel parameters, query text, or constant value")
 	}
 
 	// Validate Nominal query fields
 	if hasNominalQuery {
-		if strings.TrimSpace(qm.AssetRid) == "" {
-			return fmt.Errorf("assetRid cannot be empty")
-		}
 		if strings.TrimSpace(qm.Channel) == "" {
 			return fmt.Errorf("channel cannot be empty")
 		}
-		// DataScopeName is required — the compute API needs it to locate the channel.
+		// The compute API needs the data scope to locate an asset's channel; a dataset has none.
 		// The frontend filterQuery also enforces this; this is defense-in-depth.
-		if strings.TrimSpace(qm.DataScopeName) == "" {
+		if qm.AssetRid != "" && strings.TrimSpace(qm.DataScopeName) == "" {
 			return fmt.Errorf("dataScopeName is required for asset/channel queries")
 		}
 	}

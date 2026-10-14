@@ -261,6 +261,7 @@ type QueryAPI = typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
 
 // Which API owns each query field. A field added to NominalQuery fails typecheck until it is listed here.
 const FIELD_API = {
+  datasetRid: QUERY_TYPE_COMPUTE,
   assetRid: QUERY_TYPE_COMPUTE,
   channel: QUERY_TYPE_COMPUTE,
   dataScopeName: QUERY_TYPE_COMPUTE,

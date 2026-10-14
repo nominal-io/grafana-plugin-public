@@ -851,6 +851,36 @@ func TestErrorMessageFormatPreservation(t *testing.T) {
 		}
 	})
 
+	t.Run("missing source errors name the channel and its source", func(t *testing.T) {
+		for _, tc := range []struct {
+			errType string
+			qm      NominalQueryModel
+			want    string
+		}{
+			{
+				"LogicalSeries:UnableToResolve",
+				NominalQueryModel{Channel: "col_1", DatasetRid: "ri.catalog.main.dataset.abc"},
+				`Channel "col_1" or dataset ri.catalog.main.dataset.abc not found (LogicalSeries:UnableToResolve)`,
+			},
+			{
+				"LogicalSeries:UnableToResolve",
+				NominalQueryModel{Channel: "col_1", AssetRid: "ri.nominal.asset.test", DataScopeName: "mavlink"},
+				`Channel "col_1" not found in data scope "mavlink" (LogicalSeries:UnableToResolve)`,
+			},
+			{
+				"Compute:SelectSeriesResolvedNoChannels",
+				NominalQueryModel{Channel: "col_1", AssetRid: "ri.nominal.asset.test", DataScopeName: "mavlink"},
+				`No data for channel "col_1" in data scope "mavlink". Check the data scope and time range. (Compute:SelectSeriesResolvedNoChannels)`,
+			},
+		} {
+			result := createMockErrorResult(400, tc.errType)
+			resp := newTestQueryExecution(ds, nil).transformBatchResult(result, tc.qm)
+			if resp.Error == nil || resp.Error.Error() != tc.want {
+				t.Errorf("got %v, want %q", resp.Error, tc.want)
+			}
+		}
+	})
+
 	t.Run("bare ChannelHasWrongType also gets hint", func(t *testing.T) {
 		result := createMockErrorResult(400, "ChannelHasWrongType")
 		qm := NominalQueryModel{

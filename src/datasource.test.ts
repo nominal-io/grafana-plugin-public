@@ -1,5 +1,5 @@
 import { DataSource } from './datasource';
-import { NominalDataSourceOptions, NominalQuery } from './types';
+import { NominalDataSourceOptions, NominalQuery, isCompleteComputeQuery } from './types';
 import {
   CoreApp,
   DataFrame,
@@ -147,6 +147,19 @@ describe('backend health check routing', () => {
   });
 });
 
+describe('isCompleteComputeQuery', () => {
+  it.each<[string, Partial<NominalQuery>, boolean]>([
+    ['dataset and channel', { datasetRid: 'ri.d', channel: 'c' }, true],
+    ['asset, scope and channel', { assetRid: 'ri.a', dataScopeName: 's', channel: 'c' }, true],
+    ['dataset without channel', { datasetRid: 'ri.d' }, false],
+    ['whitespace-only dataset', { datasetRid: ' ', channel: 'c' }, false],
+    ['asset without scope', { assetRid: 'ri.a', channel: 'c' }, false],
+    ['empty', {}, false],
+  ])('%s', (_name, query, want) => {
+    expect(isCompleteComputeQuery(query)).toBe(want);
+  });
+});
+
 describe('filterQuery', () => {
   let ds: DataSource;
 
@@ -214,6 +227,12 @@ describe('applyTemplateVariables', () => {
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channel', {});
     expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$scope', {});
   });
+
+  it('replaces the dataset RID', () => {
+    mockTemplateSrv.replace.mockImplementation((value: string) => (value === '$dataset' ? 'ri.dataset.1' : value));
+    const result = createDataSource().applyTemplateVariables({ refId: 'A', datasetRid: '$dataset', channel: 'c' }, {});
+    expect(result.datasetRid).toBe('ri.dataset.1');
+  });
 });
 
 describe('event queries', () => {
@@ -261,6 +280,10 @@ describe('template sources', () => {
     ['ri.scout.main.asset.1', undefined],
   ])('sends the variable behind %s', (assetRid, want) => {
     expect(sent({ refId: 'A', assetRid })).toEqual(want);
+  });
+
+  it('sends the variable behind a dataset RID', () => {
+    expect(sent({ refId: 'A', datasetRid: '$dataset', channel: 'c' })).toEqual({ datasetRid: '$dataset' });
   });
 
   it('leaves SQL queries alone', () => {

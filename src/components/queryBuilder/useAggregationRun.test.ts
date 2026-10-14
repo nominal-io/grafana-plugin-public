@@ -35,6 +35,22 @@ describe('useAggregationRun', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('runs a dataset query that has no asset or data scope', () => {
+    const onRunQuery = jest.fn();
+    const query = makeQuery({ assetRid: undefined, dataScopeName: undefined, datasetRid: 'ri.dataset.1' });
+    renderHook(() => useAggregationRun({ query, onChange: jest.fn(), onRunQuery }));
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs again when only the dataset changes', () => {
+    const onRunQuery = jest.fn();
+    const { rerender } = renderHook(({ query }) => useAggregationRun({ query, onChange: jest.fn(), onRunQuery }), {
+      initialProps: { query: makeQuery({ assetRid: undefined, dataScopeName: undefined, datasetRid: 'ri.dataset.1' }) },
+    });
+    rerender({ query: makeQuery({ assetRid: undefined, dataScopeName: undefined, datasetRid: 'ri.dataset.2' }) });
+    expect(onRunQuery).toHaveBeenCalledTimes(2);
+  });
+
   it('does not run an incomplete query', () => {
     const onRunQuery = jest.fn();
     renderHook(() => useAggregationRun({ query: makeQuery({ channel: '' }), onChange: jest.fn(), onRunQuery }));
