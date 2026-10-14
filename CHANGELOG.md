@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.16.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.15.0...nominal-grafana-plugin@0.16.0) (2026-10-14)
+
+
+### Features
+
+* dashboard annotations from SQL queries ([#189](https://github.com/nominal-io/grafana-plugin-public/issues/189)) ([3ee8706](https://github.com/nominal-io/grafana-plugin-public/commit/3ee87067209bb1e991ea21c0c5ab183016ae926a))
+* dashboard variables from SQL queries ([#185](https://github.com/nominal-io/grafana-plugin-public/issues/185)) ([2ebd0d6](https://github.com/nominal-io/grafana-plugin-public/commit/2ebd0d614d9fe81ccc6e13bf19b4f7376ef78651))
+* name SQL series by their label values ([#190](https://github.com/nominal-io/grafana-plugin-public/issues/190)) ([a7df75f](https://github.com/nominal-io/grafana-plugin-public/commit/a7df75f506880b07388bbd8b3990aab1a55000a3))
+* split long-format string SQL results into series by a value column ([#193](https://github.com/nominal-io/grafana-plugin-public/issues/193)) ([b01ad52](https://github.com/nominal-io/grafana-plugin-public/commit/b01ad52d64c422e661caf806dacacb1fe70bb2c8))
+
+
+### Bug Fixes
+
+* **deps:** update go dependencies (non-major) ([#163](https://github.com/nominal-io/grafana-plugin-public/issues/163)) ([d3244bd](https://github.com/nominal-io/grafana-plugin-public/commit/d3244bd4bb23dba4ad32608abae898e9b825f979))
+* quote SQL map entries that Grafana's Extract fields would split ([#194](https://github.com/nominal-io/grafana-plugin-public/issues/194)) ([486397a](https://github.com/nominal-io/grafana-plugin-public/commit/486397ab114c01c98af9f1a59edc5ce7a52b448e))
+* stop Explore crashing when a query editor picker is used ([#182](https://github.com/nominal-io/grafana-plugin-public/issues/182)) ([24a518d](https://github.com/nominal-io/grafana-plugin-public/commit/24a518d40e26388248472ae4363e49a453177330))
+
+
+### Chores
+
+* **deps:** bump Go to 1.27.2 and golang.org/x/net to v0.61.0 ([#208](https://github.com/nominal-io/grafana-plugin-public/issues/208)) ([25b0e43](https://github.com/nominal-io/grafana-plugin-public/commit/25b0e43d19e9e2f632d067b0aa15439c8340f412))
+* **deps:** bump source-map-js, remove braces, and drop the minimatch override ([#209](https://github.com/nominal-io/grafana-plugin-public/issues/209)) ([a800b87](https://github.com/nominal-io/grafana-plugin-public/commit/a800b877467f425f53024033441fa98c15391262))
+
 ## [0.15.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.14.0...nominal-grafana-plugin@0.15.0) (2026-09-30)
 
 
