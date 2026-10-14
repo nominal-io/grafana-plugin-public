@@ -11,7 +11,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const datasetSearchPageSize = 50
+const (
+	defaultDatasetSearchResults = 50
+	maxDatasetSearchResults     = 1000
+	// datasetPageSize keeps a page of full dataset records, descriptions included, under gRPC's
+	// default 4 MiB message limit.
+	datasetPageSize = 250
+)
 
 // The dataset service shares the SQL connection, which needs an https base URL.
 var errNoDatasetService = status.Error(codes.FailedPrecondition, "Datasets need an https Nominal API base URL")
@@ -29,11 +35,17 @@ func datasetContext(ctx context.Context, config *models.PluginSettings) (context
 	return withBearerToken(ctx, bearertoken.Token(config.Secrets.AuthToken)), cancel
 }
 
-// searchDatasets returns up to datasetSearchPageSize non-archived datasets, most recently ingested first.
-func (d *Datasource) searchDatasets(ctx context.Context, config *models.PluginSettings, searchText string) ([]datasetItem, error) {
+// searchDatasets returns up to maxResults non-archived datasets, most recently ingested first. A
+// maxResults of zero or less means the default; values above 1000 are capped.
+func (d *Datasource) searchDatasets(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]datasetItem, error) {
 	if d.datasetService == nil {
 		return nil, errNoDatasetService
 	}
+	if maxResults <= 0 {
+		maxResults = defaultDatasetSearchResults
+	}
+	maxResults = min(maxResults, maxDatasetSearchResults)
+
 	queries := []*datasetsv1.DatasetQuery{{Query: &datasetsv1.DatasetQuery_IsArchived{IsArchived: false}}}
 	if searchText = strings.TrimSpace(searchText); searchText != "" {
 		queries = append(queries, &datasetsv1.DatasetQuery{Query: &datasetsv1.DatasetQuery_SearchText{SearchText: searchText}})
@@ -50,14 +62,14 @@ func (d *Datasource) searchDatasets(ctx context.Context, config *models.PluginSe
 	// A page can hold fewer datasets than asked for while more remain.
 	var datasets []*datasetsv1.Dataset
 	for {
-		req.PageSize = new(int32(datasetSearchPageSize - len(datasets)))
+		req.PageSize = new(int32(min(maxResults-len(datasets), datasetPageSize)))
 		resp, err := d.datasetService.SearchDatasets(ctx, req)
 		if err != nil {
 			return nil, err
 		}
 		datasets = append(datasets, resp.GetDatasets()...)
-		if req.PageToken = resp.GetNextPageToken(); req.PageToken == "" || len(datasets) >= datasetSearchPageSize {
-			return datasetItems(datasets), nil
+		if req.PageToken = resp.GetNextPageToken(); req.PageToken == "" || len(datasets) >= maxResults {
+			return datasetItems(datasets[:min(len(datasets), maxResults)]), nil
 		}
 	}
 }

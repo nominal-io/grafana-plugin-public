@@ -171,6 +171,7 @@ func (h *NominalResourceHandler) handleDatasets(ctx context.Context, req *backen
 	}
 	var search struct {
 		SearchText string `json:"searchText"`
+		MaxResults int    `json:"maxResults"`
 	}
 	if ok, err := decodeResourceJSON(req.Body, sender, &search, "Failed to parse datasets request body"); !ok {
 		return err
@@ -179,7 +180,7 @@ func (h *NominalResourceHandler) handleDatasets(ctx context.Context, req *backen
 	if !ok {
 		return err
 	}
-	items, err := h.datasource.searchDatasets(ctx, config, search.SearchText)
+	items, err := h.datasource.searchDatasets(ctx, config, search.SearchText, search.MaxResults)
 	if err != nil {
 		return grpcErrorResponse(ctx, sender, err, "datasets")
 	}

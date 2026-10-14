@@ -97,9 +97,13 @@ export function QueryEditorHelp({ onClickExample }: QueryEditorHelpProps<Nominal
         <p className={styles.text}>Create chained variables with these query patterns.</p>
         <code className={styles.code}>assets</code>
         <br />
+        <code className={styles.code}>datasets(&lt;search&gt;)</code>
+        <br />
         <code className={styles.code}>{'datascopes(${asset})'}</code>
         <br />
         <code className={styles.code}>{'channels(${asset}, ${datascope})'}</code>
+        <br />
+        <code className={styles.code}>{'channels(${dataset})'}</code>
         <p className={styles.text}>Or choose SQL mode in the variable editor to fill a variable from SQL.</p>
       </div>
 

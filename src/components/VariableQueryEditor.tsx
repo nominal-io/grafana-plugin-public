@@ -62,7 +62,12 @@ export function VariableQueryEditor({ query, onChange }: Props) {
           <SqlCodeEditor value={draft} onChange={setDraft} onCommit={commit} />
         </>
       ) : (
-        <InlineField label="Query" labelWidth={10} grow tooltip="assets, assets(<search>), datascopes(${asset}), channels(${asset}, ${datascope})">
+        <InlineField
+          label="Query"
+          labelWidth={10}
+          grow
+          tooltip="assets, assets(<search>), datasets, datasets(<search>), datascopes(${asset}), channels(${asset}, ${datascope}), channels(${dataset})"
+        >
           <Input
             aria-label="Catalog query"
             placeholder="assets"

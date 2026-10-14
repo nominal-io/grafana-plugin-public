@@ -154,3 +154,42 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 		t.Fatalf("unresolved values = %v, want empty", unresolved)
 	}
 }
+
+func TestTemplateVariableCatalogDatasetRidReadsNoAsset(t *testing.T) {
+	datasetRid := "ri.catalog.main.dataset.11111111-1111-1111-1111-111111111111"
+	server, assetFetches := newCountingAssetServer(t, nil, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{
+		searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+			Results: []datasourceapi.ChannelMetadata{{Name: api.Channel("rpm")}},
+		},
+	}
+	templateCatalog := newTemplateVariableCatalog(newNominalCatalog(server.Client(), mockDS))
+	config := &models.PluginSettings{
+		BaseUrl: server.URL,
+		Secrets: &models.SecretPluginSettings{AuthToken: "test-key"},
+	}
+
+	channels, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{AssetRid: datasetRid, DataScopeName: "ignored"})
+	if err != nil {
+		t.Fatalf("ChannelVariables returned error: %v", err)
+	}
+	if len(channels) != 1 || channels[0] != (metricFindValue{Text: "rpm", Value: "rpm"}) {
+		t.Fatalf("channels = %+v, want rpm", channels)
+	}
+	if got := mockDS.searchChannelsRequestSnapshot().DataSources; len(got) != 1 || got[0].String() != datasetRid {
+		t.Fatalf("searched data sources = %v, want [%s]", got, datasetRid)
+	}
+
+	scopes, err := templateCatalog.Datascopes(context.Background(), config, datascopesVariableRequest{AssetRid: datasetRid})
+	if err != nil {
+		t.Fatalf("Datascopes returned error: %v", err)
+	}
+	if len(scopes) != 0 {
+		t.Fatalf("scopes = %v, want empty", scopes)
+	}
+	if got := assetFetches.Load(); got != 0 {
+		t.Fatalf("asset fetches = %d, want 0", got)
+	}
+}

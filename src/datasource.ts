@@ -19,6 +19,8 @@ import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
 import { AnnotationEditor } from './components/AnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
+import { badRequestMessage, searchDatasets } from './utils/api';
+import { ridValueCount } from './utils/rid';
 
 const SIGN_IN_REDIRECT_KEY = 'nominal-sign-in-redirect';
 
@@ -250,6 +252,13 @@ function withTemplateSources(query: NominalQuery): PageQuery {
   const assetRid = source(query.assetRid);
   const datasetRid = source(query.datasetRid);
   return assetRid || datasetRid ? { ...query, templateSources: { assetRid, datasetRid } } : query;
+}
+
+function assertOneRid(fn: string, rid: string) {
+  const count = ridValueCount(rid);
+  if (count > 1) {
+    throw new Error(`${fn}() needs one asset or dataset, but its variable has ${count} values.`);
+  }
 }
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -519,11 +528,14 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * Supports query types:
    * - "assets", "assets()", or empty: Returns all assets with text=title, value=rid
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
+   * - "datasets", "datasets()" or "datasets(<search>)": Returns datasets with text=name, value=rid
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
    * - "channels(<assetRid>, <dataScopeName>, $__searchFilter)": Returns channels matching the typed search text
    * - "channels(<assetRid>, $__searchFilter)": Searches channels across all datascopes
+   * - "channels(<datasetRid>)": Returns all channels for a specific dataset
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
+   * - "datascopes(<datasetRid>)": Returns an empty list
    */
   async metricFindQuery(
     query: string,
@@ -558,6 +570,12 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       // Resolve any template variables in the asset RID
       const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
       return this.fetchDatascopeVariables(assetRid);
+    }
+
+    const datasetsMatch = trimmedQuery.match(/^datasets(?:\(([^)]*)\))?$/i);
+    if (datasetsMatch) {
+      const searchText = interpolateCatalogSearch((datasetsMatch[1] ?? '').trim(), scopedVars);
+      return searchText === undefined ? [] : this.fetchDatasetVariables(searchText, requestId);
     }
 
     // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
@@ -613,11 +631,23 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return this.validateMetricFindResponse(response, entity);
   }
 
+  private async fetchDatasetVariables(searchText: string, requestId?: string): Promise<MetricFindValue[]> {
+    try {
+      const datasets = await searchDatasets(this.url, searchText, 500, requestId);
+      return datasets.map(({ name, rid }) => ({ text: name, value: rid }));
+    } catch (error) {
+      throw isCancelled(error)
+        ? error
+        : new Error(badRequestMessage(error, 'Unable to load Nominal datasets for the variable query.'));
+    }
+  }
+
   private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
     // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
     }
+    assertOneRid('datascopes', assetRid);
 
     let response: unknown;
     try {
@@ -647,6 +677,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     if (dataScopeName && dataScopeName.includes('$')) {
       return [];
     }
+    assertOneRid('channels', assetRid);
 
     return this.postSearchVariable('channel', { assetRid, dataScopeName, searchText }, requestId);
   }

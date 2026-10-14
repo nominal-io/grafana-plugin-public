@@ -88,10 +88,10 @@ func TestHandleDatasetsSearch(t *testing.T) {
 	notArchived := &datasetsv1.DatasetQuery{Query: &datasetsv1.DatasetQuery_IsArchived{IsArchived: false}}
 	text := &datasetsv1.DatasetQuery{Query: &datasetsv1.DatasetQuery_SearchText{SearchText: "abc"}}
 	inWorkspace := &datasetsv1.DatasetQuery{Query: &datasetsv1.DatasetQuery_WorkspaceRid{WorkspaceRid: testWorkspaceRid}}
-	sent := func(queries ...*datasetsv1.DatasetQuery) *datasetsv1.SearchDatasetsRequest {
+	sent := func(pageSize int32, queries ...*datasetsv1.DatasetQuery) *datasetsv1.SearchDatasetsRequest {
 		return &datasetsv1.SearchDatasetsRequest{
 			Query:    &datasetsv1.DatasetQuery{Query: &datasetsv1.DatasetQuery_And{And: &datasetsv1.DatasetQueryList{Queries: queries}}},
-			PageSize: new(int32(50)),
+			PageSize: new(pageSize),
 			Sort:     &datasetsv1.DatasetSort{Field: datasetsv1.DatasetSortField_DATASET_SORT_FIELD_LAST_INGESTED_AT, Descending: true},
 		}
 	}
@@ -100,9 +100,10 @@ func TestHandleDatasetsSearch(t *testing.T) {
 		name, workspace, request string
 		wantSent                 *datasetsv1.SearchDatasetsRequest
 	}{
-		{"no workspace", "", `{"searchText":" abc "}`, sent(notArchived, text)},
-		{"workspace", testWorkspaceRid, `{"searchText":"abc"}`, sent(notArchived, text, inWorkspace)},
-		{"blank text omits searchText", "", `{"searchText":"  "}`, sent(notArchived)},
+		{"defaults, no workspace", "", `{"searchText":" abc "}`, sent(50, notArchived, text)},
+		{"workspace and explicit size", testWorkspaceRid, `{"searchText":"abc","maxResults":200}`, sent(200, notArchived, text, inWorkspace)},
+		{"page size capped, empty text omits searchText", "", `{"maxResults":5000}`, sent(250, notArchived)},
+		{"blank text omits searchText", "", `{"searchText":"  "}`, sent(50, notArchived)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -150,6 +151,8 @@ func TestHandleDatasetsPaging(t *testing.T) {
 		wantResponseItems int
 	}{
 		{"follows tokens to the last page", `{}`, []string{"", "1", "2"}, []int32{50, 49, 48}, 3},
+		{"stops at maxResults", `{"maxResults":2}`, []string{"", "1"}, []int32{2, 1}, 2},
+		{"asks for at most a page at a time", `{"maxResults":1000}`, []string{"", "1", "2"}, []int32{250, 250, 250}, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			service := &fakeDatasetService{datasets: testDatasets}

@@ -178,10 +178,17 @@ export interface Dataset {
 }
 
 /** Searches datasets, most recently ingested first. */
-export const searchDatasets = async (datasourceUrl: string, searchText: string): Promise<Dataset[]> => {
-  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.datasets}`, {
-    searchText: searchText || '',
-  });
+export const searchDatasets = async (
+  datasourceUrl: string,
+  searchText: string,
+  maxResults?: number,
+  requestId?: string
+): Promise<Dataset[]> => {
+  const response = await getBackendSrv().post(
+    `${datasourceUrl}/${resourceRoutes.datasets}`,
+    { searchText: searchText || '', maxResults },
+    { requestId }
+  );
   return response ?? [];
 };
 
