@@ -247,6 +247,7 @@ func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
 	}{
 		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable},
 		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph},
+		{name: "logs", payload: series, format: "logs", wantFrames: 1, wantVis: data.VisTypeLogs},
 		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,14 +311,11 @@ func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
 func TestExecuteSQLQueryErrors(t *testing.T) {
 	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-1", "bad query")
 	throttled := sqlStatusError(t, codes.ResourceExhausted, "throttled", "q-2", "")
-	nullTimeSchema := arrow.NewSchema([]arrow.Field{{Name: "ts", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true}, {Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
-	nullTime := sqlArrowStream(t, nullTimeSchema, 1, func(b *array.RecordBuilder) {
-		b.Field(0).AppendNull()
-		b.Field(1).(*array.Float64Builder).Append(1)
-	})
+	nullTime := logStream(t, tsColumn("ts", `[null]`), strColumn("message", `["m"]`), testLogColumn{name: "v", typ: arrow.PrimitiveTypes.Float64, values: `[1]`})
 	for _, tc := range []struct {
 		name       string
 		handler    sqlQueryHandler
+		format     string
 		timeout    time.Duration
 		wantStatus backend.Status
 		wantMsg    string
@@ -353,6 +351,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			wantMsg:    "SQL query timed out",
 		},
 		{name: "null time in a time series", handler: sqlPayloadServer(nullTime), wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
+		{name: "null time in logs", handler: sqlPayloadServer(nullTime), format: "logs", wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -361,7 +360,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
 				defer cancel()
 			}
-			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)"}`)
+			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)","format":"`+tc.format+`"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
 				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
 			}

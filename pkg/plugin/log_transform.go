@@ -1,10 +1,13 @@
 package plugin
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"encoding/json/jsontext"
+	"hash/fnv"
 	"slices"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
@@ -20,23 +23,48 @@ type logLines struct {
 	labels []json.RawMessage
 	// order holds each line's source position while sorting.
 	order []int32
+	// repeats counts the lines added with each hash.
+	repeats map[uint64]int
 }
 
 // newLogLines returns logLines with room for n lines.
 func newLogLines(n int) logLines {
 	return logLines{
-		times:  make([]time.Time, 0, n),
-		bodies: make([]string, 0, n),
-		ids:    make([]string, 0, n),
-		labels: make([]json.RawMessage, 0, n),
+		times:   make([]time.Time, 0, n),
+		bodies:  make([]string, 0, n),
+		ids:     make([]string, 0, n),
+		labels:  make([]json.RawMessage, 0, n),
+		repeats: make(map[uint64]int, n),
 	}
 }
 
-func (l *logLines) add(t time.Time, body, id string, labels json.RawMessage) {
+// add appends a line with the id <unix ns>:<hash>, where the hash covers what Grafana shows of the
+// line. Grafana drops a row whose id it has already shown, so repeats of a row are numbered. The
+// next page reads its boundary millisecond again in full, so the numbers match across pages.
+func (l *logLines) add(t time.Time, body string, labels json.RawMessage) {
+	hash := logEntryHash(t, body, labels)
+	var buf [96]byte
+	id := strconv.AppendInt(buf[:0], t.UnixNano(), 10)
+	id = strconv.AppendUint(append(id, ':'), hash, 16)
+	if n := l.repeats[hash]; n > 0 {
+		id = strconv.AppendInt(append(id, '_'), int64(n), 10)
+	}
+	l.repeats[hash]++
 	l.times = append(l.times, t)
 	l.bodies = append(l.bodies, body)
-	l.ids = append(l.ids, id)
+	l.ids = append(l.ids, string(id))
 	l.labels = append(l.labels, labels)
+}
+
+// logEntryHash hashes a line so the same line gets the same id on every page, which Grafana uses to
+// drop lines repeated between pages.
+func logEntryHash(t time.Time, body string, labels []byte) uint64 {
+	h := fnv.New64a()
+	h.Write(binary.BigEndian.AppendUint64(nil, uint64(t.UnixNano())))
+	h.Write([]byte(body))
+	h.Write([]byte{0})
+	h.Write(labels)
+	return h.Sum64()
 }
 
 func (l *logLines) Len() int { return len(l.times) }

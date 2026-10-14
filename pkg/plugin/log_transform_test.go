@@ -3,13 +3,17 @@ package plugin
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	"github.com/palantir/pkg/uuid"
 )
 
 func parseLogLabels(t *testing.T, raw json.RawMessage) map[string]string {
@@ -257,9 +261,9 @@ func TestLogPagedTransformation(t *testing.T) {
 			if got := frame.Fields[1].At(row).(string); got != messages[sourceIndex] {
 				t.Errorf("row %d body = %q, want %q", row, got, messages[sourceIndex])
 			}
-			wantID := (computeapi.LogValue{Id: [16]byte{byte(sourceIndex)}}).Id.String()
-			if got := frame.Fields[2].At(row).(string); got != wantID {
-				t.Errorf("row %d id = %q, want %q", row, got, wantID)
+			wantPrefix := strconv.FormatInt(wantTime.UnixNano(), 10) + ":"
+			if got := frame.Fields[2].At(row).(string); !strings.HasPrefix(got, wantPrefix) {
+				t.Errorf("row %d id = %q, want prefix %q", row, got, wantPrefix)
 			}
 			wantLabels := map[string]string{
 				"host":              args[sourceIndex]["host"],
@@ -315,12 +319,50 @@ func TestLogPagedTransformation(t *testing.T) {
 	})
 }
 
+func TestComputeLogLineIDs(t *testing.T) {
+	ds := withCatalog(&Datasource{})
+	qm := NominalQueryModel{Channel: "app.logs", ChannelDataType: ChannelDataTypeLog}
+	at := testTimestamp(1704067200)
+	// The service's id hashes the message and args, so lines from different hosts differ and
+	// repeats of a line share one.
+	line := func(host string) computeapi.LogValue {
+		return computeapi.LogValue{Message: "retrying", Id: uuid.UUID{host[0]}, Args: map[string]string{"host": host}}
+	}
+	ids := func(values ...computeapi.LogValue) map[string]string {
+		timestamps := make([]api.Timestamp, len(values))
+		for i := range timestamps {
+			timestamps[i] = at
+		}
+		result := computeapi.ComputeWithUnitsResult{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+			computeapi.NewComputeNodeResponseFromPagedLog(computeapi.PagedLogPlot{Timestamps: timestamps, Values: values}))}
+		frame := newTestQueryExecution(ds, nil).transformBatchResult(result, qm).Frames[0]
+		got := map[string]string{}
+		for i := range frame.Rows() {
+			id := frame.Fields[2].At(i).(string)
+			if _, ok := got[id]; ok {
+				t.Fatalf("lines share id %q", id)
+			}
+			got[id] = logFrameLabelsAt(t, frame, i)["host"]
+		}
+		return got
+	}
+	// Grafana shows each id once, so every line gets its own: repeats of a line, and lines from
+	// different series.
+	if got := ids(line("a"), line("a"), line("b")); len(got) != 3 {
+		t.Errorf("ids = %v; want 3", got)
+	}
+	// A page that rereads the time in another order must give each line the same id again.
+	if a, b := ids(line("a"), line("b")), ids(line("b"), line("a")); !maps.Equal(a, b) {
+		t.Errorf("ids = %v, then %v reread; want the same", a, b)
+	}
+}
+
 func TestLogLinesFrameKeepsSourceOrderForEqualTimes(t *testing.T) {
 	// More lines than sort.Sort sorts by insertion, which is stable, so its unstable path runs.
-	var lines logLines
+	lines := newLogLines(100)
 	base := time.Unix(1704067200, 0)
 	for i := range 100 {
-		lines.add(base.Add(time.Duration(i%7)*time.Second), strconv.Itoa(i), "", nil)
+		lines.add(base.Add(time.Duration(i%7)*time.Second), strconv.Itoa(i), nil)
 	}
 	frame := logLinesFrame("A", &lines)
 	for i := 1; i < frame.Rows(); i++ {
