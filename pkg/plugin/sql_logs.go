@@ -38,9 +38,9 @@ func isText(f arrow.Field) bool {
 	return t.ID() == arrow.STRING
 }
 
-// sqlLogFrame reads rows into log entries. Labels come from every column except the time, the body
-// and map columns. Without a timestamp or string column it returns the result as a table, with a
-// notice.
+// sqlLogFrame reads rows into log entries. Labels come from every column except the time and
+// body, then from the entries of map columns. Without a timestamp or string column it returns the
+// result as a table, with a notice.
 func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int) (*data.Frame, error) {
 	timeIndex, bodyIndex, named := sqlLogColumns(fields)
 	if timeIndex < 0 || bodyIndex < 0 {
@@ -54,11 +54,31 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 		})
 		return frame, nil
 	}
+	// An entry of the args map, or of the first map when there is no args, uses its key as the label
+	// name. Any other entry key is prefixed with its map's name, and so is a key that a column has as
+	// its name or that starts with another map's name and a dot. Keys then come from the schema, not
+	// the row, and only names that already look prefixed can collide.
+	isMap := func(f arrow.Field) bool { return f.Type.ID() == arrow.MAP }
+	plainMap := slices.IndexFunc(fields, func(f arrow.Field) bool { return isMap(f) && strings.EqualFold(f.Name, "args") })
+	if plainMap < 0 {
+		plainMap = slices.IndexFunc(fields, isMap)
+	}
 	// NULL arrays have no validity bitmap, so IsNull cannot skip them; they are left out here.
-	var labelColumns []int
+	var labelColumns, mapColumns []int
+	var otherMaps []string
+	columnLabels := map[string]bool{}
 	for c, f := range fields {
-		if c != timeIndex && c != bodyIndex && f.Type.ID() != arrow.NULL && f.Type.ID() != arrow.MAP {
+		switch {
+		case isMap(f):
+			if f.Type.(*arrow.MapType).ItemType().ID() != arrow.NULL {
+				mapColumns = append(mapColumns, c)
+			}
+			if c != plainMap {
+				otherMaps = append(otherMaps, f.Name+".")
+			}
+		case c != timeIndex && c != bodyIndex && f.Type.ID() != arrow.NULL:
 			labelColumns = append(labelColumns, c)
+			columnLabels[f.Name] = true
 		}
 	}
 	unit := fields[timeIndex].Type.(*arrow.TimestampType).Unit
@@ -82,6 +102,25 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 			for _, c := range labelColumns {
 				if col := batch.Column(c); !col.IsNull(i) {
 					addLabel(fields[c].Name, col.ValueStr(i))
+				}
+			}
+			for _, c := range mapColumns {
+				m := batch.Column(c).(*array.Map)
+				if m.IsNull(i) {
+					continue
+				}
+				keys, items := m.Keys(), m.Items()
+				start, end := m.ValueOffsets(i)
+				for j := int(start); j < int(end); j++ {
+					if items.IsNull(j) {
+						continue
+					}
+					key := keys.ValueStr(j)
+					looksPrefixed := slices.ContainsFunc(otherMaps, func(p string) bool { return strings.HasPrefix(key, p) })
+					if c != plainMap || columnLabels[key] || looksPrefixed {
+						key = fields[c].Name + "." + key
+					}
+					addLabel(key, items.ValueStr(j))
 				}
 			}
 			encoded := enc.encode(labels)
