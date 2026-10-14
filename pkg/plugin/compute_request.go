@@ -16,8 +16,7 @@ import (
 const logPageSize = 1000
 
 // assetRidVariableName is the compute-context variable that carries the asset RID.
-// AssetChannel binds the RID by this variable name; the value is supplied separately
-// in buildComputeContext, so the channel builders do not take the RID as a parameter.
+// buildDataset binds the RID by this name; buildComputeContext supplies the value.
 const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
@@ -80,12 +79,22 @@ func enumBucketCount(timeRange backend.TimeRange, n int) int {
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
 func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange backend.TimeRange) (computeapi1.SummarizeSeries, backend.TimeRange) {
-	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
+	// A bare select is grouped by ASSET_RID and DATA_SCOPE; selectTags([]) collapses the
+	// result to a single series.
+	selectSeries := computeapi1.SelectSeries{
+		Name:    new(computeapi.NewStringConstantFromLiteral(qm.Channel)),
+		Dataset: new(buildDataset(qm)),
+	}
+	noTagKeys := []computeapi.StringConstant{}
 
 	switch qm.ChannelDataType {
 	case ChannelDataTypeString:
+		selected := computeapi1.NewEnumSeriesFromSelectTags(computeapi1.EnumSelectTagsSeries{
+			Input:   computeapi1.NewEnumSeriesFromSelectEnum(selectSeries),
+			TagKeys: noTagKeys,
+		})
 		enumTimeShiftSeries := computeapi1.EnumTimeShiftSeries{
-			Input:    computeapi1.NewEnumSeriesFromChannel(channelSeries),
+			Input:    selected,
 			Duration: zeroDurationConstant(),
 		}
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
@@ -100,7 +109,10 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		}, timeRange
 
 	case ChannelDataTypeLog:
-		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
+		logSeries := computeapi1.NewLogSeriesFromSelectTags(computeapi1.LogSelectTagsSeries{
+			Input:   computeapi1.NewLogSeriesFromSelectLogs(selectSeries),
+			TagKeys: noTagKeys,
+		})
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
 		pageRange, cursor := logPageRange(timeRange, qm)
@@ -112,14 +124,18 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		}, pageRange
 
 	default:
+		selected := computeapi1.NewNumericSeriesFromSelectTags(computeapi1.NumericSelectTagsSeries{
+			Input:   computeapi1.NewNumericSeriesFromSelectNumeric(selectSeries),
+			TagKeys: noTagKeys,
+		})
 		if slices.Contains(qm.Aggregations, AggLTTB) {
-			series := computeapi1.NewSeriesFromNumeric(computeapi1.NewNumericSeriesFromChannel(channelSeries))
+			series := computeapi1.NewSeriesFromNumeric(selected)
 			strategy := computeapi.NewSummarizationStrategyFromLargestTriangleThreeBuckets(computeapi.LttbStrategy{MaxPointsPerGroup: qm.Points.Count})
 			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
 			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy, OutputFormat: &arrowFormat}, timeRange
 		}
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
-			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
+			Input:    selected,
 			Duration: zeroDurationConstant(),
 		}
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
@@ -144,17 +160,22 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 	}
 }
 
-// buildAssetChannel constructs the asset-bound AssetChannel shared by every channel kind.
-// The asset RID is bound by variable name (see assetRidVariableName); its value is supplied in buildComputeContext.
-func (e *NominalQueryExecution) buildAssetChannel(channel, dataScopeName string) computeapi.AssetChannel {
-	return computeapi.AssetChannel{
-		AssetRid:       computeapi.NewStringConstantFromVariable(assetRidVariableName),
-		Channel:        computeapi.NewStringConstantFromLiteral(channel),
-		DataScopeName:  computeapi.NewStringConstantFromLiteral(dataScopeName),
-		AdditionalTags: map[string]computeapi.StringConstant{},
-		TagsToGroupBy:  []string{},
-		GroupByTags:    []computeapi.StringConstant{},
-	}
+// buildDataset selects the asset's series restricted to one data scope.
+//
+// The scope predicate belongs on the Dataset: outside selectTags([]) the server
+// rejects it, and without it an asset with several scopes merges every scope into
+// one series.
+func buildDataset(qm NominalQueryModel) computeapi1.Dataset {
+	asset := computeapi1.NewDatasetFromAsset(computeapi.Asset{
+		Rid: computeapi.NewStringConstantFromVariable(assetRidVariableName),
+	})
+	scope := computeapi.NewTagPredicateFromIn(computeapi.TagIn{
+		Key: computeapi.NewStringConstantFromLiteral(string(computeapi.ReservedTagKey_DATA_SCOPE)),
+		Values: computeapi.NewStringSetConstantV2FromLiteral([]computeapi.StringConstant{
+			computeapi.NewStringConstantFromLiteral(qm.DataScopeName),
+		}),
+	})
+	return computeapi1.NewDatasetFromFilter(computeapi1.FilteredDataset{Input: asset, Predicate: scope})
 }
 
 // buildComputeContext creates the context with variables for the compute request.

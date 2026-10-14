@@ -37,6 +37,10 @@ import (
 
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
 const liveNominalDataScopeName = "primary"
+
+// liveNominalSecondaryScope is a second data scope on the live asset. Its dataset swaps the
+// temperature and humidity headers of liveNominalCSV, so its temperature channel holds humidity.
+const liveNominalSecondaryScope = "secondary"
 const liveNominalChannelName = "temperature"
 const liveNominalLogChannel = "grafana-live-logs"
 
@@ -171,21 +175,89 @@ func TestLiveNominalQueries(t *testing.T) {
 	settings := liveNominalSettings(t)
 	target := createLiveNominalQueryTarget(t, settings)
 	ds := liveNominalDatasource(t, settings)
-	t.Run("Numeric", func(t *testing.T) { testLiveNominalNumeric(t, settings, ds, target) })
+	t.Run("Numeric", func(t *testing.T) {
+		source := NominalQueryModel{AssetRid: target.assetRid, DataScopeName: target.dataScopeName}
+		testLiveNominalNumeric(t, settings, ds, target, source, liveNominalChannelName)
+	})
 	t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target) })
 	t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target) })
+	t.Run("Logs", func(t *testing.T) {
+		testLiveNominalLogs(t, settings, ds, NominalQueryModel{AssetRid: target.assetRid, DataScopeName: target.dataScopeName})
+	})
 	t.Run("SQL", func(t *testing.T) { testLiveNominalSQL(t, settings, ds, target) })
 	t.Run("SQLLogs", func(t *testing.T) { testLiveNominalSQLLogs(t, settings, ds, target) })
+	t.Run("DataScopeSelection", func(t *testing.T) {
+		for _, tc := range []struct{ scope, column string }{
+			{target.dataScopeName, liveNominalChannelName},
+			{liveNominalSecondaryScope, "humidity"},
+		} {
+			t.Run(tc.scope, func(t *testing.T) {
+				source := NominalQueryModel{AssetRid: target.assetRid, DataScopeName: tc.scope}
+				testLiveNominalNumeric(t, settings, ds, target, source, tc.column)
+			})
+		}
+	})
 }
 
-func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
+// testLiveNominalLogs reads the three lines writeLiveNominalLogs wrote, newest first, then scrolls on
+// from "second". That page must hold only "first": it shares a millisecond with "second" and is older.
+func testLiveNominalLogs(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, source NominalQueryModel) {
+	base := liveNominalLogBase
+	query := source
+	query.Channel, query.ChannelDataType = liveNominalLogChannel, ChannelDataTypeLog
+	request := func(query NominalQueryModel, to time.Time) *backend.QueryDataRequest {
+		return &backend.QueryDataRequest{
+			PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
+			Queries: []backend.DataQuery{{
+				RefID: "A", JSON: mustMarshal(query), TimeRange: backend.TimeRange{From: base.Add(-time.Minute), To: to},
+			}},
+		}
+	}
+	rowsReady := func(want int) func(backend.Responses) error {
+		return func(responses backend.Responses) error {
+			response := responses["A"]
+			if response.Error != nil || len(response.Frames) != 1 {
+				return fmt.Errorf("%d frames, error: %v", len(response.Frames), response.Error)
+			}
+			if rows := response.Frames[0].Rows(); rows != want {
+				return fmt.Errorf("%d of %d log lines", rows, want)
+			}
+			return nil
+		}
+	}
+
+	frame := pollLiveQuery(t, ds, request(query, base.Add(time.Minute)), rowsReady(3))["A"].Frames[0]
+	for i, wantBody := range []string{"third", "second", "first"} {
+		body, _, rawLabels := logRow(frame, i)
+		if body != wantBody {
+			t.Errorf("row %d body = %q, want %q (newest first)", i, body, wantBody)
+		}
+		labels := parseLogLabels(t, json.RawMessage(rawLabels))
+		for key, want := range map[string]string{"level": "error", "host": "h1"} {
+			if labels[key] != want {
+				t.Errorf("row %d label %q = %q, want %q", i, key, labels[key], want)
+			}
+		}
+	}
+
+	// Grafana ends the next page at the start of the oldest shown line's millisecond.
+	_, secondID, _ := logRow(frame, 1)
+	query.ScrollID = secondID
+	next := pollLiveQuery(t, ds, request(query, base), rowsReady(1))["A"].Frames[0]
+	body, id, _ := logRow(next, 0)
+	wantBody, wantID, _ := logRow(frame, 2)
+	if body != wantBody || id != wantID {
+		t.Errorf("next page row = %q with id %s, want %q with id %s as on the first page", body, id, wantBody, wantID)
+	}
+}
+
+// testLiveNominalNumeric queries the temperature channel of source and expects the values of column
+// in liveNominalCSV.
+func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget, source NominalQueryModel, column string) {
 	// 100 buckets over 11 minutes are under 7 s wide, so each one-per-minute sample has its own bucket.
 	const buckets = 100
-	query := NominalQueryModel{
-		AssetRid:      target.assetRid,
-		Channel:       target.channel,
-		DataScopeName: target.dataScopeName,
-	}
+	query := source
+	query.Channel = target.channel
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
 			DataSourceInstanceSettings: &settings,
@@ -200,7 +272,7 @@ func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSet
 		},
 	}
 
-	_, expected := liveNominalCSVSamples(t)
+	_, expected := liveNominalCSVSamples(t, column)
 	response := pollLiveQuery(t, ds, request, func(responses backend.Responses) error {
 		response := responses["A"]
 		values := liveNominalValues(t, response)
@@ -388,15 +460,10 @@ func skipUnlessLiveWritesAllowed(t *testing.T, settings backend.DataSourceInstan
 	}
 }
 
-// createTempLiveNominalDataset builds API clients and creates a dataset that is archived when the
-// test ends. It skips first unless writes to the default base URL are explicitly allowed.
-func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings backend.DataSourceInstanceSettings) (liveNominalAPIClients, string, liveNominalDataset) {
+// createTempLiveNominalDataset creates a dataset that is archived when the test ends.
+func createTempLiveNominalDataset(t *testing.T, ctx context.Context, clients liveNominalAPIClients, name string) liveNominalDataset {
 	t.Helper()
 
-	skipUnlessLiveWritesAllowed(t, settings)
-
-	clients := newLiveNominalAPIClients(t, settings)
-	name := fmt.Sprintf("grafana-plugin-live-%d", time.Now().UnixNano())
 	isV2Dataset := true
 	dataset, err := clients.createDataset(ctx, name, isV2Dataset)
 	if err != nil {
@@ -409,7 +476,7 @@ func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings ba
 			t.Logf("failed to archive live Nominal dataset %s: %v", dataset.Rid, err)
 		}
 	})
-	return clients, name, dataset
+	return dataset
 }
 
 // TestLiveNominalEvents creates an asset with an instant event and an event with a duration, then
@@ -517,7 +584,12 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	ctx, cancel := context.WithDeadline(context.Background(), liveDeadline(t))
 	defer cancel()
 
-	clients, name, dataset := createTempLiveNominalDataset(t, ctx, settings)
+	skipUnlessLiveWritesAllowed(t, settings)
+
+	clients := newLiveNominalAPIClients(t, settings)
+	name := fmt.Sprintf("grafana-plugin-live-%d", time.Now().UnixNano())
+	dataset := createTempLiveNominalDataset(t, ctx, clients, name)
+	secondary := createTempLiveNominalDataset(t, ctx, clients, name+"-"+liveNominalSecondaryScope)
 
 	asset, err := clients.asset.CreateAsset(ctx, clients.token, assetapi.CreateAssetRequest{
 		Title:     name,
@@ -541,15 +613,23 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 				DataSource:    runapi.NewDataSourceFromDataset(rids.DatasetRid(dataset.Rid)),
 				SeriesTags:    map[nominalapi.TagName]nominalapi.TagValue{},
 			},
+			{
+				DataScopeName: scoutapi.DataSourceRefName(liveNominalSecondaryScope),
+				DataSource:    runapi.NewDataSourceFromDataset(rids.DatasetRid(secondary.Rid)),
+				SeriesTags:    map[nominalapi.TagName]nominalapi.TagValue{},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("failed to add live Nominal data scope: %v", err)
 	}
 
-	fileID := ingestLiveNominalCSV(t, ctx, clients, dataset.Rid)
+	fileID := ingestLiveNominalCSV(t, ctx, clients, dataset.Rid, liveNominalCSV)
+	secondaryCSV := strings.Replace(liveNominalCSV, "temperature,humidity", "humidity,temperature", 1)
+	secondaryFileID := ingestLiveNominalCSV(t, ctx, clients, secondary.Rid, secondaryCSV)
 	writeLiveNominalLogs(t, ctx, clients, dataset.Rid)
 	waitForLiveNominalIngest(t, ctx, clients, dataset.Rid, fileID)
+	waitForLiveNominalIngest(t, ctx, clients, secondary.Rid, secondaryFileID)
 
 	from, to := liveNominalCSVTimeRange(t)
 	return liveNominalQueryTarget{
@@ -790,10 +870,10 @@ func (c liveNominalAPIClients) doJSON(ctx context.Context, method, path string, 
 	return nil
 }
 
-func ingestLiveNominalCSV(t *testing.T, ctx context.Context, clients liveNominalAPIClients, datasetRid rid.ResourceIdentifier) nominaldatasource.DatasetFileId {
+func ingestLiveNominalCSV(t *testing.T, ctx context.Context, clients liveNominalAPIClients, datasetRid rid.ResourceIdentifier, csv string) nominaldatasource.DatasetFileId {
 	t.Helper()
 
-	csvBytes := []byte(liveNominalCSV)
+	csvBytes := []byte(csv)
 	query := url.Values{}
 	query.Set("fileName", "grafana-plugin-live.csv")
 	query.Set("sizeBytes", strconv.Itoa(len(csvBytes)))
@@ -895,13 +975,13 @@ func (s liveNominalIngestStatus) isComplete() (bool, error) {
 	}
 }
 
-// liveNominalCSVSamples reads fixture timestamps and channel values.
-func liveNominalCSVSamples(t *testing.T) ([]time.Time, []float64) {
+// liveNominalCSVSamples reads fixture timestamps and the values of one column.
+func liveNominalCSVSamples(t *testing.T, name string) ([]time.Time, []float64) {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(liveNominalCSV), "\n")
-	column := slices.Index(strings.Split(lines[0], ","), liveNominalChannelName)
+	column := slices.Index(strings.Split(lines[0], ","), name)
 	if column < 0 {
-		t.Fatalf("liveNominalCSV has no %q column", liveNominalChannelName)
+		t.Fatalf("liveNominalCSV has no %q column", name)
 	}
 	var timestamps []time.Time
 	var values []float64
@@ -913,7 +993,7 @@ func liveNominalCSVSamples(t *testing.T) ([]time.Time, []float64) {
 		}
 		value, err := strconv.ParseFloat(fields[column], 64)
 		if err != nil {
-			t.Fatalf("liveNominalCSV %s %q: %v", liveNominalChannelName, fields[column], err)
+			t.Fatalf("liveNominalCSV %s %q: %v", name, fields[column], err)
 		}
 		timestamps = append(timestamps, timestamp)
 		values = append(values, value)
@@ -923,7 +1003,7 @@ func liveNominalCSVSamples(t *testing.T) ([]time.Time, []float64) {
 
 // liveNominalCSVTimeRange pads the fixture's time range.
 func liveNominalCSVTimeRange(t *testing.T) (time.Time, time.Time) {
-	timestamps, _ := liveNominalCSVSamples(t)
+	timestamps, _ := liveNominalCSVSamples(t, liveNominalChannelName)
 	return timestamps[0].Add(-time.Minute), timestamps[len(timestamps)-1].Add(time.Minute)
 }
 
