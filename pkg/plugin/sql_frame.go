@@ -185,16 +185,21 @@ func appendMap(buf []byte, m *array.Map, i int) []byte {
 	return buf
 }
 
-// appendMapToken quotes s when it is empty, reads as a null, or contains a separator.
+// appendMapToken quotes s if it is empty, "null", or has a character that Grafana's Extract fields
+// "Key+value pairs" parser splits, quotes or escapes on. Inside quotes that parser honors only \,
+// so just \ and " are escaped. strconv.AppendQuote would write \n, which reads back as n.
 func appendMapToken(buf []byte, s string) []byte {
-	if s == "" || s == "null" || strings.ContainsFunc(s, isMapSeparator) {
-		return strconv.AppendQuote(buf, s)
+	if s != "" && s != "null" && !strings.ContainsAny(s, "=:,;&{}\"'\\ \t\r\n") {
+		return append(buf, s...)
 	}
-	return append(buf, s...)
-}
-
-func isMapSeparator(r rune) bool {
-	return r == '=' || r == ',' || r == ' ' || r == '"'
+	buf = append(buf, '"')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' || s[i] == '"' {
+			buf = append(buf, '\\')
+		}
+		buf = append(buf, s[i])
+	}
+	return append(buf, '"')
 }
 
 // shapeSQLFrame returns table results unchanged. A time series result becomes one frame per numeric

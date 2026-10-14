@@ -80,8 +80,8 @@ draws the last state to the panel edge, so a truncated result can look current.
 `ORDER BY ts DESC` keeps the newest rows.
 
 Map columns such as `tags` are shown as `key=value` pairs, for example
-`satellite=GOCE-1`. Keys and values that contain `=`, `,`, `"` or a space are
-quoted, so different maps never look the same.
+`satellite=GOCE-1`. Keys and values with special characters are quoted so
+Grafana's **Extract fields** transform can split them into fields.
 
 ## Macros
 
