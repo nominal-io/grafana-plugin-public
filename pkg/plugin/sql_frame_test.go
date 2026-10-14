@@ -40,11 +40,11 @@ func sqlArrowStream(t testing.TB, schema *arrow.Schema, batches int, build func(
 	return out.Bytes()
 }
 
-// arrowColumnStream writes column as a single-batch Arrow stream.
-func arrowColumnStream(t *testing.T, field arrow.Field, column arrow.Array) []byte {
+// arrowColumnsStream writes columns as a single-batch Arrow stream.
+func arrowColumnsStream(t *testing.T, fields []arrow.Field, columns []arrow.Array) []byte {
 	t.Helper()
-	schema := arrow.NewSchema([]arrow.Field{field}, nil)
-	record := array.NewRecordBatch(schema, []arrow.Array{column}, int64(column.Len()))
+	schema := arrow.NewSchema(fields, nil)
+	record := array.NewRecordBatch(schema, columns, int64(columns[0].Len()))
 	defer record.Release()
 	var out bytes.Buffer
 	writer := ipc.NewWriter(&out, ipc.WithSchema(schema), ipc.WithZstd())
@@ -212,7 +212,7 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			frame, err := decodeTable(bytes.NewReader(arrowColumnStream(t, tc.field, tc.column(t))), testRowLimit)
+			frame, err := decodeTable(bytes.NewReader(arrowColumnsStream(t, []arrow.Field{tc.field}, []arrow.Array{tc.column(t)})), testRowLimit)
 			if err != nil {
 				t.Fatalf("frameFromArrowStream() error = %v", err)
 			}
