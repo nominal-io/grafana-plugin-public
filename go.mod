@@ -13,7 +13,7 @@ require (
 	github.com/palantir/pkg/safelong v1.3.0
 	github.com/palantir/pkg/uuid v1.3.0
 	golang.org/x/sync v0.24.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941
 	google.golang.org/grpc v1.84.0
 )
 
