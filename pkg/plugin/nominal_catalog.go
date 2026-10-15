@@ -417,8 +417,11 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 
 	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{channel},
-		DataSources: dataSourceRids,
+		// The API filters on ExactMatch (case-insensitive contains) but orders by
+		// similarity to FuzzySearchText. Without it the wanted row can page out.
+		FuzzySearchText: fuzzySearchTextFor(channel),
+		ExactMatch:      []string{channel},
+		DataSources:     dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
@@ -430,6 +433,9 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return entry, nil
 	}
 
+	// Absent, paged out, or present without a data type or unit.
+	log.DefaultLogger.Debug("No usable channel metadata for inference",
+		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	return channelMetadataCacheEntry{}, nil
 }
 
@@ -467,6 +473,18 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
+}
+
+// Scout scores this endpoint with PostgreSQL trigram similarity, whose word-character
+// classification is database-locale-dependent. Restrict this ranking hint to portable
+// ASCII letters and digits so the minimum-score filter cannot remove the exact row.
+func fuzzySearchTextFor(channel string) string {
+	for _, r := range channel {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return channel
+		}
+	}
+	return ""
 }
 
 func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {
