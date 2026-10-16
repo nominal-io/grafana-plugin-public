@@ -247,6 +247,7 @@ func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
 	}{
 		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable},
 		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph},
+		{name: "logs", payload: series, format: "logs", wantFrames: 1, wantVis: data.VisTypeLogs},
 		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,6 +319,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		handler    sqlQueryHandler
+		format     string
 		timeout    time.Duration
 		wantStatus backend.Status
 		wantMsg    string
@@ -353,6 +355,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			wantMsg:    "SQL query timed out",
 		},
 		{name: "null time in a time series", handler: sqlPayloadServer(nullTime), wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
+		{name: "null time in logs", handler: sqlPayloadServer(logStream(t, tsColumn("ts", `[null]`), strColumn("message", `["m"]`))), format: "logs", wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -361,7 +364,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
 				defer cancel()
 			}
-			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)"}`)
+			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)","format":"`+tc.format+`"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
 				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
 			}
@@ -552,5 +555,37 @@ func TestCheckSQLReportsServiceErrors(t *testing.T) {
 	ds := &Datasource{workspaceRid: &workspace, sqlService: client}
 	if err := ds.checkSQL(context.Background(), bearertoken.Token("k")); err == nil || err.Error() != "SQL is not enabled for this key" {
 		t.Errorf("checkSQL() error = %v, want the SQL service's error", err)
+	}
+}
+
+func TestExecuteSQLQueryRangeEnd(t *testing.T) {
+	to := time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)
+	for _, tc := range []struct {
+		format string
+		want   string
+	}{
+		{format: "logs", want: "TIMESTAMP '2026-10-12 10:00:00.123999999'"},
+		{format: "table", want: "TIMESTAMP '2026-10-12 10:00:00.123'"},
+		{format: "timeseries", want: "TIMESTAMP '2026-10-12 10:00:00.123'"},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			var sent string
+			e := sqlTestExecution(t, sqlQueryService(t, func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+				sent = req.GetQuery()
+				return sqlPayloadServer(sqlValueStream(t, 42))(req, stream)
+			}))
+			prepared, response := e.prepareQuery(context.Background(), backend.DataQuery{
+				RefID:     "A",
+				TimeRange: backend.TimeRange{To: to},
+				JSON:      []byte(`{"queryType":"sql","rawSql":"SELECT $__timeTo()","format":"` + tc.format + `"}`),
+			})
+			if response != nil {
+				t.Fatalf("prepareQuery() error = %v", response.Error)
+			}
+			e.executeSQLQuery(context.Background(), prepared)
+			if want := "SELECT " + tc.want; sent != want {
+				t.Errorf("sent query = %q, want %q", sent, want)
+			}
+		})
 	}
 }

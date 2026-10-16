@@ -61,6 +61,13 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	}
 	query := prepared.SQL
+	if query.Format == sqlutil.FormatOptionLogs {
+		// Infinite scroll ends the next page at the oldest row's time cut to the millisecond. Covering
+		// the rest of that millisecond keeps its older rows; Grafana drops the repeated ones by id.
+		withEnd := *query
+		withEnd.TimeRange.To = withEnd.TimeRange.To.Truncate(time.Millisecond).Add(time.Millisecond - time.Nanosecond)
+		query = &withEnd
+	}
 	expanded, err := sqlutil.Interpolate(query, sqlMacros)
 	if err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "Macro expansion failed: "+err.Error())
