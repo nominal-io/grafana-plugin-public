@@ -76,6 +76,15 @@ func fieldValues(field *data.Field) []any {
 	return values
 }
 
+// decodeTable decodes r as a table result, which is always one frame.
+func decodeTable(r io.Reader, rowLimit int64) (*data.Frame, error) {
+	frames, err := frameFromArrowStream(r, "A", rowLimit, sqlutil.FormatOptionTable)
+	if err != nil {
+		return nil, err
+	}
+	return frames[0], nil
+}
+
 func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -203,7 +212,7 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			frame, err := frameFromArrowStream(bytes.NewReader(arrowColumnStream(t, tc.field, tc.column(t))), "A", testRowLimit)
+			frame, err := decodeTable(bytes.NewReader(arrowColumnStream(t, tc.field, tc.column(t))), testRowLimit)
 			if err != nil {
 				t.Fatalf("frameFromArrowStream() error = %v", err)
 			}
@@ -246,14 +255,14 @@ func TestFrameFromArrowStreamConcatenatesBatches(t *testing.T) {
 		b.Field(0).(*array.Int64Builder).AppendValues(values[batch], valid[batch])
 		batch++
 	})
-	frame, err := frameFromArrowStream(bytes.NewReader(stream), "A", testRowLimit)
+	frame, err := decodeTable(bytes.NewReader(stream), testRowLimit)
 	if err != nil {
 		t.Fatalf("frameFromArrowStream() error = %v", err)
 	}
 	if got, want := fieldValues(frame.Fields[0]), []any{int64(1), nil, int64(3), nil, int64(5)}; !equalValues(got, want) {
 		t.Errorf("values = %v, want %v", got, want)
 	}
-	if frame.Meta != nil {
+	if len(frame.Meta.Notices) != 0 {
 		t.Errorf("frame notices = %+v, want none", frame.Meta.Notices)
 	}
 }
@@ -276,7 +285,7 @@ func TestFrameFromArrowStreamLimitsRows(t *testing.T) {
 		{name: "whole stream", limit: 6, want: []any{int64(1), int64(2), int64(3), int64(4), int64(5), int64(6)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			frame, err := frameFromArrowStream(bytes.NewReader(stream), "A", tc.limit)
+			frame, err := decodeTable(bytes.NewReader(stream), tc.limit)
 			if err != nil {
 				t.Fatalf("frameFromArrowStream() error = %v", err)
 			}
@@ -293,7 +302,7 @@ func TestFrameFromArrowStreamLimitsRows(t *testing.T) {
 }
 
 func TestFrameFromArrowStreamEmptyResponse(t *testing.T) {
-	_, err := frameFromArrowStream(bytes.NewReader(nil), "A", testRowLimit)
+	_, err := decodeTable(bytes.NewReader(nil), testRowLimit)
 	if err == nil || err.Error() != "SQL response was empty" {
 		t.Fatalf("frameFromArrowStream() error = %v, want %q", err, "SQL response was empty")
 	}
@@ -301,7 +310,7 @@ func TestFrameFromArrowStreamEmptyResponse(t *testing.T) {
 
 func TestFrameFromArrowStreamSchemaOnly(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
-	frame, err := frameFromArrowStream(bytes.NewReader(sqlArrowStream(t, schema, 0, nil)), "A", testRowLimit)
+	frame, err := decodeTable(bytes.NewReader(sqlArrowStream(t, schema, 0, nil)), testRowLimit)
 	if err != nil || frame.Rows() != 0 || len(frame.Fields) != 1 {
 		t.Fatalf("frameFromArrowStream() = %d fields, %d rows, %v; want 1 field, 0 rows", len(frame.Fields), frame.Rows(), err)
 	}
@@ -318,7 +327,7 @@ func TestFrameFromArrowStreamReportsErrorAfterLastBatch(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).Append(1) })
 	failure := errors.New("query failed after the last batch")
-	_, err := frameFromArrowStream(io.MultiReader(bytes.NewReader(stream), failingReader{failure}), "A", testRowLimit)
+	_, err := decodeTable(io.MultiReader(bytes.NewReader(stream), failingReader{failure}), testRowLimit)
 	if !errors.Is(err, failure) {
 		t.Fatalf("frameFromArrowStream() error = %v, want %v", err, failure)
 	}
@@ -332,9 +341,8 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		data.NewField("avg", nil, []*float64{new(2.0), new(1.0), nil, new(4.0)}),
 		data.NewField("max", nil, []int64{20, 10, 30, 40}),
 	)
-	frame.RefID = "A"
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	frames, err := shapeSQLFrame(frame)
 	if err != nil {
 		t.Fatalf("shapeSQLFrame() error = %v", err)
 	}
@@ -353,8 +361,8 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 	}
 	for i, w := range want {
 		f := frames[i]
-		if f.RefID != "A" || f.Meta.Type != data.FrameTypeTimeSeriesMulti || f.Meta.ExecutedQueryString != "SELECT ..." {
-			t.Errorf("frame %d RefID, meta = %q, %+v; want A, a multi-frame series with the input's query", i, f.RefID, f.Meta)
+		if f.Meta.Type != data.FrameTypeTimeSeriesMulti || f.Meta.ExecutedQueryString != "SELECT ..." {
+			t.Errorf("frame %d meta = %+v, want a multi-frame series with the input's query", i, f.Meta)
 		}
 		value := f.Fields[1]
 		if value.Name != w.name || value.Labels["channel"] != w.channel || value.Labels["column"] != w.name {
@@ -388,7 +396,7 @@ func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
 	} {
 		fields := []*data.Field{data.NewField("time", nil, []time.Time{time.Unix(1700000000, 0).UTC()})}
 		fields = append(append(fields, tc.labels...), data.NewField(tc.column, nil, []float64{1}))
-		frames, err := shapeSQLFrame(data.NewFrame("A", fields...), sqlutil.FormatOptionTimeSeries)
+		frames, err := shapeSQLFrame(data.NewFrame("A", fields...))
 		if err != nil || len(frames) != 1 {
 			t.Fatalf("%s with %d labels: shapeSQLFrame() = %d frames, %v; want 1", tc.column, len(tc.labels), len(frames), err)
 		}
@@ -432,7 +440,7 @@ func TestShapeSQLFramePicksValueColumn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", append([]*data.Field{data.NewField("time", nil, []time.Time{ts, ts})}, tc.fields...)...)
-			frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+			frames, err := shapeSQLFrame(frame)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -460,7 +468,7 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("value", nil, []float64{2, 1, 3}))
-			frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+			frames, err := shapeSQLFrame(frame)
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1 frame", len(frames), err)
 			}
@@ -476,15 +484,12 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 
 func TestShapeSQLFrameWithoutTimeSeriesColumns(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{time.Unix(0, 0)}), data.NewField("channel", nil, []string{"a"}))
-	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	frames, err := shapeSQLFrame(frame)
 	if err != nil || len(frames) != 1 || frames[0] != frame {
 		t.Fatalf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 	}
 	if frame.Meta == nil || len(frame.Meta.Notices) != 1 || !strings.Contains(frame.Meta.Notices[0].Text, "numeric column") {
 		t.Errorf("frame meta = %+v, want a notice that a numeric column is needed", frame.Meta)
-	}
-	if frame.Meta.PreferredVisualization != data.VisTypeTable {
-		t.Errorf("preferred visualization = %q, want %q", frame.Meta.PreferredVisualization, data.VisTypeTable)
 	}
 }
 
@@ -492,7 +497,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	t.Run("with a numeric column", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}), data.NewField("value", nil, []float64{1}))
-		frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+		frames, err := shapeSQLFrame(frame)
 		if err != nil || len(frames) != 1 || frames[0].Fields[1].Name != "value" {
 			t.Fatalf("shapeSQLFrame() = %v, %v; want one value series", frames, err)
 		}
@@ -505,9 +510,9 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	})
 	t.Run("without one", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}))
-		frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
-		if err != nil || len(frames) != 1 || frames[0] != frame || frame.Meta.PreferredVisualization != data.VisTypeTable {
-			t.Errorf("shapeSQLFrame() = %v, %v; want the input frame as a table", frames, err)
+		frames, err := shapeSQLFrame(frame)
+		if err != nil || len(frames) != 1 || frames[0] != frame {
+			t.Errorf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 		}
 	})
 }
@@ -515,7 +520,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("min", nil, []float64{1}), data.NewField("max", nil, []float64{2}))
-	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	frames, err := shapeSQLFrame(frame)
 	if err != nil || len(frames) != 2 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
 	}
@@ -529,38 +534,21 @@ func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 
 func TestShapeSQLFrameReturnsNoDataForEmptyTimeSeries(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
-	frame.RefID = "A"
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries)
+	frames, err := shapeSQLFrame(frame)
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 	}
 	// The dataplane's no-data response: a single typed frame without fields.
 	empty := frames[0]
-	if len(empty.Fields) != 0 || empty.RefID != "A" || empty.Meta.Type != data.FrameTypeTimeSeriesMulti || empty.Meta.TypeVersion != (data.FrameTypeVersion{0, 1}) || empty.Meta.ExecutedQueryString != "SELECT ..." {
-		t.Errorf("frame = %d fields, RefID %q, meta %+v; want no fields and a typed meta with the query", len(empty.Fields), empty.RefID, empty.Meta)
-	}
-}
-
-func TestShapeSQLFramePassesThrough(t *testing.T) {
-	for name, tc := range map[string]struct {
-		frame  *data.Frame
-		format sqlutil.FormatQueryOption
-	}{
-		"table":       {data.NewFrame("A", data.NewField("value", nil, []float64{1})), sqlutil.FormatOptionTable},
-		"empty table": {data.NewFrame("A", data.NewField("value", nil, []float64{})), sqlutil.FormatOptionTable},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if frames, err := shapeSQLFrame(tc.frame, tc.format); err != nil || len(frames) != 1 || frames[0] != tc.frame {
-				t.Errorf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
-			}
-		})
+	if len(empty.Fields) != 0 || empty.Meta.Type != data.FrameTypeTimeSeriesMulti || empty.Meta.TypeVersion != (data.FrameTypeVersion{0, 1}) || empty.Meta.ExecutedQueryString != "SELECT ..." {
+		t.Errorf("frame = %d fields, meta %+v; want no fields and a typed meta with the query", len(empty.Fields), empty.Meta)
 	}
 }
 
 func TestShapeSQLFrameRejectsNullTimes(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("end_time", nil, []*time.Time{nil}), data.NewField("value", nil, []float64{1}))
-	if _, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries); err == nil || !strings.Contains(err.Error(), `"end_time"`) {
+	if _, err := shapeSQLFrame(frame); err == nil || !strings.Contains(err.Error(), `"end_time"`) {
 		t.Errorf("shapeSQLFrame() error = %v, want an error naming end_time", err)
 	}
 }
@@ -596,7 +584,7 @@ func TestShapeSQLFrameTreatsNullLabelsAsEmpty(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			frames, err := shapeSQLFrame(tc.frame, sqlutil.FormatOptionTimeSeries)
+			frames, err := shapeSQLFrame(tc.frame)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -644,7 +632,7 @@ func BenchmarkFrameFromArrowStream(b *testing.B) {
 	})
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := frameFromArrowStream(bytes.NewReader(stream), "A", testRowLimit); err != nil {
+		if _, err := decodeTable(bytes.NewReader(stream), testRowLimit); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -664,7 +652,7 @@ func BenchmarkShapeSQLFrame(b *testing.B) {
 	frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("channel", nil, names), data.NewField("value", nil, values))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := shapeSQLFrame(frame, sqlutil.FormatOptionTimeSeries); err != nil {
+		if _, err := shapeSQLFrame(frame); err != nil {
 			b.Fatal(err)
 		}
 	}
