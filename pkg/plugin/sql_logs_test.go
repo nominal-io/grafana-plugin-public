@@ -14,7 +14,10 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
 )
 
-var testTimestampType = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+var (
+	testTimestampType = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
+	testStringMapType = arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)
+)
 
 // testLogColumn is one nullable column of a Logs test result, with its Arrow JSON values.
 type testLogColumn struct {
@@ -29,6 +32,10 @@ func tsColumn(name, values string) testLogColumn {
 
 func strColumn(name, values string) testLogColumn {
 	return testLogColumn{name: name, typ: arrow.BinaryTypes.String, values: values}
+}
+
+func mapColumn(name, values string) testLogColumn {
+	return testLogColumn{name: name, typ: testStringMapType, values: values}
 }
 
 func logStream(t *testing.T, columns ...testLogColumn) []byte {
@@ -74,7 +81,26 @@ func TestSQLLogsBodyAndLabels(t *testing.T) {
 		{"case is ignored", []testLogColumn{ts, strColumn("MESSAGE", `["m"]`), strColumn("channel", `["c"]`)}, "m", `{"channel":"c"}`, ""},
 		{"dictionary-encoded message", []testLogColumn{ts, strColumn("channel", `["c"]`), {name: "message", typ: &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}, values: `["m"]`}}, "m", `{"channel":"c"}`, ""},
 		{"non-string message is a label", []testLogColumn{ts, {name: "message", typ: arrow.PrimitiveTypes.Int64, values: `[7]`}, strColumn("text", `["t"]`)}, "t", `{"message":"7"}`, "No message or body column; showing text as the log text."},
-		{"null body", []testLogColumn{ts, strColumn("message", `[null]`)}, "", `{}`, ""},
+		{"null body, null map and null map item", []testLogColumn{
+			ts,
+			strColumn("message", `[null]`),
+			mapColumn("args", `[null]`),
+			mapColumn("tags", `[[{"key":"a","value":null},{"key":"b","value":"1"}]]`),
+		}, "", `{"tags.b":"1"}`, ""},
+		{"columns and map entries", []testLogColumn{
+			ts,
+			message,
+			strColumn("channel", `["c1"]`),
+			mapColumn("tags", `[[{"key":"host","value":"b"},{"key":"vehicle","value":"v"}]]`),
+			mapColumn("args", `[[{"key":"host","value":"a"},{"key":"channel","value":"x"},{"key":"tags.host","value":"t"}]]`),
+		}, "m", `{"args.channel":"x","args.tags.host":"t","channel":"c1","host":"a","tags.host":"b","tags.vehicle":"v"}`, ""},
+		{"a column beats a prefixed map entry", []testLogColumn{
+			ts,
+			message,
+			strColumn("tags.host", `["column"]`),
+			mapColumn("args", `[[]]`),
+			mapColumn("tags", `[[{"key":"host","value":"map"}]]`),
+		}, "m", `{"tags.host":"column"}`, ""},
 		{"types and nulls", []testLogColumn{
 			ts,
 			message,
@@ -120,7 +146,7 @@ func TestSQLLogsAcrossBatches(t *testing.T) {
 	})
 	frame := shapedLogFrame(t, stream)
 	// Newest first, so the second batch comes before the first.
-	for i, want := range []struct{ body, labels string }{{"batch2", `{}`}, {"batch1", `{}`}} {
+	for i, want := range []struct{ body, labels string }{{"batch2", `{"n":"20"}`}, {"batch1", `{"n":"10"}`}} {
 		if body, _, labels := logRow(frame, i); body != want.body || labels != want.labels {
 			t.Errorf("row %d = %q, %s; want %q, %s", i, body, labels, want.body, want.labels)
 		}
