@@ -138,6 +138,7 @@ jobs:
     if: ${{ needs.build.outputs.has-e2e == 'true' }}
     outputs:
       matrix: ${{ steps.resolve-versions.outputs.matrix }}
+      stable-versions: ${{ steps.stable-versions.outputs.versions }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
@@ -147,6 +148,50 @@ jobs:
         uses: grafana/plugin-actions/e2e-version@c4393f091fd9f2ff7b7c6a09ca9d95c582cc174f # pinned
         with:
           plugin-directory: src
+      # The grafana-dev image tag has no matching @grafana/* npm release, so
+      # the API check only covers the released versions.
+      - name: Select released versions
+        id: stable-versions
+        env:
+          MATRIX: ${{ steps.resolve-versions.outputs.matrix }}
+        run: |
+          echo "versions=$(jq -c '[.[] | select(.name == "grafana-enterprise") | .version]' <<< "$MATRIX")" >> "$GITHUB_OUTPUT"
+
+  compatibility:
+    name: API compatibility (${{ matrix.version }})
+    needs: resolve-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJson(needs.resolve-versions.outputs.stable-versions) }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+        with:
+          package_json_file: package.json
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: package.json
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      # Compares the APIs src/module.ts uses between grafanaDependency's lower
+      # bound in src/plugin.json and this version.
+      - name: Check API compatibility
+        uses: grafana/plugin-actions/is-compatible@4698961fa64137fcac207108397ebe8a738a33d1 # is-compatible/v1.0.3
+        with:
+          module: ./src/module.ts
+          targets: '@grafana/data@${{ matrix.version }},@grafana/ui@${{ matrix.version }},@grafana/runtime@${{ matrix.version }},@grafana/schema@${{ matrix.version }}'
+          comment-pr: 'no'
+          fail-if-incompatible: 'yes'
 
   playwright-tests:
     needs: [resolve-versions, build]
