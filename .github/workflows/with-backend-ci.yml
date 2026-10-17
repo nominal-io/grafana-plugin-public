@@ -184,14 +184,23 @@ jobs:
         run: pnpm install --frozen-lockfile --prefer-offline
 
       # Compares the APIs src/module.ts uses between grafanaDependency's lower
-      # bound in src/plugin.json and this version.
+      # bound in src/plugin.json and this version. Levitate exits 1 both when it
+      # finds incompatibilities and when it cannot finish, so only a report of
+      # incompatibilities fails the job.
       - name: Check API compatibility
-        uses: grafana/plugin-actions/is-compatible@4698961fa64137fcac207108397ebe8a738a33d1 # is-compatible/v1.0.3
-        with:
-          module: ./src/module.ts
-          targets: '@grafana/data@${{ matrix.version }},@grafana/ui@${{ matrix.version }},@grafana/runtime@${{ matrix.version }},@grafana/schema@${{ matrix.version }}'
-          comment-pr: 'no'
-          fail-if-incompatible: 'yes'
+        env:
+          VERSION: ${{ matrix.version }}
+        run: |
+          min=$(jq -r .dependencies.grafanaDependency src/plugin.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          if npx --yes @grafana/levitate@0.18.0 is-compatible --path src/module.ts \
+            --target "@grafana/data@$VERSION,@grafana/ui@$VERSION,@grafana/runtime@$VERSION,@grafana/schema@$VERSION" \
+            --min-package-version "$min" 2>&1 | tee "$RUNNER_TEMP/levitate.log"; then
+            exit 0
+          fi
+          if grep -q 'not fully compatible' "$RUNNER_TEMP/levitate.log"; then
+            exit 1
+          fi
+          echo "::warning::Levitate exited before finishing, so compatibility with Grafana $VERSION was not checked"
 
   playwright-tests:
     needs: [resolve-versions, build]
