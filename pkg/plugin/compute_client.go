@@ -15,6 +15,7 @@ import (
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/codecs"
 	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/safelong"
 	werror "github.com/palantir/witchcraft-go-error"
 )
 
@@ -67,6 +68,9 @@ type computeResponseDecoder struct{ codecs.Decoder }
 // The unmarshalers below replace them: each decodes into a copy of the type
 // without methods, then applies the generated method's nil-to-empty rules. The
 // small unions, ComputeUnitResult and PageToken, keep their generated methods.
+//
+// If TestComputeResponseDecoderMatchesGenerated fails after a client update,
+// copy the changed nil-to-empty rules from the generated UnmarshalJSON here.
 var computeDecodeOptions = jsonv2.JoinOptions(
 	jsonv2.RejectUnknownMembers(true),
 	jsonv2.WithUnmarshalers(jsonv2.JoinUnmarshalers(
@@ -88,6 +92,73 @@ var computeDecodeOptions = jsonv2.JoinOptions(
 			if *r, err = decodeComputeResult(raw, dec.Options()); err != nil {
 				log.DefaultLogger.Debug("Compute result left to the generated decoder", "error", redactDecodeError(err))
 				return codecs.JSON.Unmarshal(raw, r)
+			}
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, s *safelong.SafeLong) error {
+			var n int64
+			if err := jsonv2.UnmarshalDecode(dec, &n); err != nil {
+				return err
+			}
+			v, err := safelong.NewSafeLong(n)
+			*s = v
+			return err
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, p *computeapi.NumericPlot) error {
+			type plain computeapi.NumericPlot
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(p)); err != nil {
+				return err
+			}
+			emptyIfNil(&p.Timestamps)
+			emptyIfNil(&p.Values)
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, p *computeapi.PagedLogPlot) error {
+			type plain computeapi.PagedLogPlot
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(p)); err != nil {
+				return err
+			}
+			emptyIfNil(&p.Timestamps)
+			emptyIfNil(&p.Values)
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, l *computeapi.LogValue) error {
+			type plain computeapi.LogValue
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(l)); err != nil {
+				return err
+			}
+			if l.Args == nil {
+				l.Args = map[string]string{}
+			}
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, p *computeapi.EnumPlot) error {
+			type plain computeapi.EnumPlot
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(p)); err != nil {
+				return err
+			}
+			emptyIfNil(&p.Timestamps)
+			emptyIfNil(&p.Values)
+			emptyIfNil(&p.Categories)
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, p *computeapi.BucketedEnumPlot) error {
+			type plain computeapi.BucketedEnumPlot
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(p)); err != nil {
+				return err
+			}
+			emptyIfNil(&p.Timestamps)
+			emptyIfNil(&p.Buckets)
+			emptyIfNil(&p.Categories)
+			return nil
+		}),
+		jsonv2.UnmarshalFromFunc(func(dec *jsontext.Decoder, b *computeapi.EnumBucket) error {
+			type plain computeapi.EnumBucket
+			if err := jsonv2.UnmarshalDecode(dec, (*plain)(b)); err != nil {
+				return err
+			}
+			if b.Histogram == nil {
+				b.Histogram = map[int]safelong.SafeLong{}
 			}
 			return nil
 		}),
@@ -137,8 +208,12 @@ func decodeComputeResult(raw []byte, opts jsonv2.Options) (computeapi.ComputeWit
 		ComputeResult struct {
 			Type    string `json:"type"`
 			Success *struct {
-				Type                 string                `json:"type"`
-				ArrowBucketedNumeric *computeapi.ArrowPlot `json:"arrowBucketedNumeric"`
+				Type                 string                       `json:"type"`
+				ArrowBucketedNumeric *computeapi.ArrowPlot        `json:"arrowBucketedNumeric"`
+				Numeric              *computeapi.NumericPlot      `json:"numeric"`
+				PagedLog             *computeapi.PagedLogPlot     `json:"pagedLog"`
+				Enum                 *computeapi.EnumPlot         `json:"enum"`
+				BucketedEnum         *computeapi.BucketedEnumPlot `json:"bucketedEnum"`
 			} `json:"success"`
 		} `json:"computeResult"`
 		UnitResult computeapi.ComputeUnitResult `json:"unitResult"`
@@ -150,12 +225,28 @@ func decodeComputeResult(raw []byte, opts jsonv2.Options) (computeapi.ComputeWit
 	if res.ComputeResult.Type != "success" || success == nil {
 		return computeapi.ComputeWithUnitsResult{}, fmt.Errorf("unhandled compute result type %q", res.ComputeResult.Type)
 	}
+	// The generated decoder keeps every arm present in the input, and the
+	// constructors below set only one, so a response with two arms falls back.
 	var resp computeapi.ComputeNodeResponse
-	switch {
-	case success.Type == "arrowBucketedNumeric" && success.ArrowBucketedNumeric != nil:
-		resp = computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(*success.ArrowBucketedNumeric)
-	default:
-		return computeapi.ComputeWithUnitsResult{}, fmt.Errorf("unhandled compute response type %q", success.Type)
+	var arm string
+	arms := 0
+	if s := success.ArrowBucketedNumeric; s != nil {
+		arms, arm, resp = arms+1, "arrowBucketedNumeric", computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(*s)
+	}
+	if s := success.Numeric; s != nil {
+		arms, arm, resp = arms+1, "numeric", computeapi.NewComputeNodeResponseFromNumeric(*s)
+	}
+	if s := success.PagedLog; s != nil {
+		arms, arm, resp = arms+1, "pagedLog", computeapi.NewComputeNodeResponseFromPagedLog(*s)
+	}
+	if s := success.Enum; s != nil {
+		arms, arm, resp = arms+1, "enum", computeapi.NewComputeNodeResponseFromEnum(*s)
+	}
+	if s := success.BucketedEnum; s != nil {
+		arms, arm, resp = arms+1, "bucketedEnum", computeapi.NewComputeNodeResponseFromBucketedEnum(*s)
+	}
+	if arms != 1 || arm != success.Type {
+		return computeapi.ComputeWithUnitsResult{}, fmt.Errorf("compute response type %q with %d arms", success.Type, arms)
 	}
 	return computeapi.ComputeWithUnitsResult{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(resp), UnitResult: res.UnitResult}, nil
 }

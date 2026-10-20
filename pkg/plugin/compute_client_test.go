@@ -164,12 +164,21 @@ func computeDecoderCases(tb testing.TB) []computeDecoderCase {
 	batch := func(results ...string) []byte {
 		return []byte(`{"results":[` + strings.Join(results, ",") + `]}`)
 	}
+	const ts = `{"seconds":1704067200,"nanos":5}`
+	const id = `"00000000-0000-0000-0000-000000000001"`
 	arrow := success(`{"type":"arrowBucketedNumeric","arrowBucketedNumeric":{"arrowBinary":"AQID"}}`)
+	logResult := func(timestamp, value string) []byte {
+		return batch(success(`{"type":"pagedLog","pagedLog":{"timestamps":[` + timestamp + `],"values":[` + value + `]}}`))
+	}
 
 	token := computeapi.NewPageTokenFromTimestampAndId(computeapi.TimestampAndId{Timestamp: testTimestamp(1704067200)})
 	paged := successResult(computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
 		computeapi.ArrowPlot{ArrowBinary: []byte{1, 2, 3}, GroupByKeys: &[]string{"vehicle"}, NextPageToken: &token}))
 	fixture := computeResponseBody(tb, createMockArrowComputeResult([]float64{1, 2, 3}))
+	enumBucket := func(histogram string) []byte {
+		return batch(success(`{"type":"bucketedEnum","bucketedEnum":{"timestamps":[` + ts + `],"categories":["a","b"],"buckets":[` +
+			`{"histogram":` + histogram + `,"firstPoint":{"timestamp":` + ts + `,"value":0},"lastPoint":{"timestamp":` + ts + `,"value":1}}]}}`))
+	}
 
 	return []computeDecoderCase{
 		{"arrow", fixture, true},
@@ -189,6 +198,24 @@ func computeDecoderCases(tb testing.TB) []computeDecoderCase {
 		{"truncated body", fixture[:len(fixture)/2], false},
 		{"trailing bytes", append(append([]byte{}, fixture...), `{}`...), false},
 		{"result that fails to decode", batch(arrow, `5`), false},
+		{"numeric", computeResponseBody(tb, createMockComputeResult([]float64{1.5, -2, 3e10})), true},
+		{"numeric lists null", batch(success(`{"type":"numeric","numeric":{"timestamps":null,"values":null}}`)), true},
+		{"numeric value NaN", batch(success(`{"type":"numeric","numeric":{"timestamps":[` + ts + `],"values":["NaN"]}}`)), false},
+		{"log", computeResponseBody(tb, benchmarkPagedLogResult(3, benchmarkLogDescending, benchmarkLogArgsPopulated)), true},
+		{"log args null", logResult(ts, `{"message":"m","args":null,"id":`+id+`}`), true},
+		{"log timestamps and values null", batch(success(`{"type":"pagedLog","pagedLog":{"timestamps":null,"values":null}}`)), true},
+		{"log timestamp above 2^53", logResult(`{"seconds":9007199254740992,"nanos":0}`, `{"message":"m","args":{},"id":`+id+`}`), false},
+		{"log timestamp not an integer", logResult(`{"seconds":1.5,"nanos":0}`, `{"message":"m","args":{},"id":`+id+`}`), false},
+		{"log id malformed", logResult(ts, `{"message":"m","args":{},"id":"nope"}`), false},
+		{"log id null", logResult(ts, `{"message":"m","args":{},"id":null}`), false},
+		{"log message invalid UTF-8", logResult(ts, "{\"message\":\"m\xff\",\"args\":{},\"id\":"+id+"}"), false},
+		{"enum", computeResponseBody(tb, createMockEnumComputeResult([]string{"idle", "fault"}, []int{0, 1, 1})), true},
+		{"enum lists null", batch(success(`{"type":"enum","enum":{"timestamps":null,"values":null,"categories":null}}`)), true},
+		{"bucketed enum", computeResponseBody(tb, successResult(computeapi.NewComputeNodeResponseFromBucketedEnum(benchmarkBucketedEnumPlot(3)))), true},
+		{"bucketed enum lists null", batch(success(`{"type":"bucketedEnum","bucketedEnum":{"timestamps":null,"buckets":null,"categories":null}}`)), true},
+		{"bucketed enum with last point", enumBucket(`{"0":3,"1":1}`), true},
+		{"bucketed enum histogram null", enumBucket(`null`), true},
+		{"bucketed enum histogram key with sign", enumBucket(`{"+1":1}`), false},
 	}
 }
 

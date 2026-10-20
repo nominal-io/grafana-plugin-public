@@ -264,6 +264,10 @@ func BenchmarkDecodeComputeResponse(b *testing.B) {
 		body []byte
 	}{
 		{"arrow_10k", computeResponseBody(b, createMockArrowComputeResult(values))},
+		{"numeric_1k", computeResponseBody(b, createMockComputeResult(values[:1000]))},
+		{"log_250", computeResponseBody(b, benchmarkPagedLogResult(250, benchmarkLogDescending, benchmarkLogArgsPopulated))},
+		{"enum_1k", computeResponseBody(b, successResult(computeapi.NewComputeNodeResponseFromEnum(benchmarkEnumPlot(1000))))},
+		{"bucketed_enum_1k", computeResponseBody(b, successResult(computeapi.NewComputeNodeResponseFromBucketedEnum(benchmarkBucketedEnumPlot(1000))))},
 	}
 	decoders := []struct {
 		name string
