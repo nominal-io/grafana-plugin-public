@@ -96,6 +96,7 @@ func summarizeSeriesFromNode(t *testing.T, node computeapi1.ComputableNode) comp
 		},
 		func(computeapi1.FrequencyDomain) error { return fmt.Errorf("expected series node, got frequency") },
 		func(computeapi1.FrequencyDomainV2) error { return fmt.Errorf("expected series node, got frequencyV2") },
+		func(computeapi1.Spectrogram) error { return fmt.Errorf("expected series node, got spectrogram") },
 		func(computeapi1.Histogram) error { return fmt.Errorf("expected series node, got histogram") },
 		func(computeapi1.CurveFitV2) error { return fmt.Errorf("expected series node, got curveV2") },
 		func(computeapi1.CurveFit) error { return fmt.Errorf("expected series node, got curve") },
