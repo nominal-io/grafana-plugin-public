@@ -101,7 +101,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		settings:            settings,
 		resourceHTTPClient:  resourceHTTPClient,
 		authService:         authapi.NewAuthenticationServiceV2Client(conjureClient),
-		computeService:      computeapi1.NewComputeServiceClient(conjureClient),
+		computeService:      newComputeClient(conjureClient),
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:        workspaceRid,
