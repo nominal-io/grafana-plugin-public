@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	sdklog "github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
+	"github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/codecs"
 	"github.com/palantir/pkg/safelong"
 )
 
@@ -249,5 +251,38 @@ func BenchmarkPagedLogTransform(b *testing.B) {
 				benchmarkSinkDataResponse = exec.transformBatchResult(result, qm)
 			}
 		})
+	}
+}
+
+func BenchmarkDecodeComputeResponse(b *testing.B) {
+	values := make([]float64, 10000)
+	for i := range values {
+		values[i] = float64(i) * 1.5
+	}
+	bodies := []struct {
+		name string
+		body []byte
+	}{
+		{"arrow_10k", computeResponseBody(b, createMockArrowComputeResult(values))},
+	}
+	decoders := []struct {
+		name string
+		dec  codecs.Decoder
+	}{
+		{"generated", codecs.JSON},
+		{"v2", computeResponseDecoder{codecs.JSON}},
+	}
+	for _, tc := range bodies {
+		for _, d := range decoders {
+			b.Run(tc.name+"/"+d.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var out *computeapi.BatchComputeWithUnitsResponse
+					if err := d.dec.Decode(bytes.NewReader(tc.body), &out); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
 	}
 }
