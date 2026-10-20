@@ -575,3 +575,32 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 		newTestQueryExecution(ds, nil).buildComputeContext(qm)
 	}
 }
+
+func TestBuildComputeRequestEnd(t *testing.T) {
+	ds := withCatalog(&Datasource{})
+	to := time.Unix(1704067200, 123_456_789) // 2024-01-01 00:00:00.123456789 UTC
+
+	tests := []struct {
+		name         string
+		dataType     string
+		wantEndNanos int32
+	}{
+		{"log end covers the rest of its millisecond", ChannelDataTypeLog, 124_000_000},
+		{"numeric end is unchanged", ChannelDataTypeNumeric, 123_456_789},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qm := NominalQueryModel{
+				AssetRid:        "ri.nominal.asset.12345",
+				Channel:         "ch",
+				DataScopeName:   "default",
+				ChannelDataType: tt.dataType,
+				Buckets:         100,
+			}
+			req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, backend.TimeRange{From: to.Add(-time.Hour), To: to})
+			if int64(req.End.Seconds) != 1704067200 || int32(req.End.Nanos) != tt.wantEndNanos {
+				t.Errorf("End = %d.%09d, want 1704067200.%09d", req.End.Seconds, req.End.Nanos, tt.wantEndNanos)
+			}
+		})
+	}
+}

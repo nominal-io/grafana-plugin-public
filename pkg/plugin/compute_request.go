@@ -24,9 +24,16 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 	seriesPlan := e.buildSeriesPlan(qm)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
+	end := timeRange.To
+	if qm.ChannelDataType == ChannelDataTypeLog {
+		// Infinite scroll ends the next page at the oldest row's time cut to the millisecond. Covering
+		// the rest of that millisecond keeps its older rows; Grafana drops the repeated ones by id.
+		end = end.Truncate(time.Millisecond).Add(time.Millisecond)
+	}
+
 	return computeapi1.ComputeNodeRequest{
 		Start:   timestampFromTime(timeRange.From),
-		End:     timestampFromTime(timeRange.To),
+		End:     timestampFromTime(end),
 		Node:    node,
 		Context: e.buildComputeContext(qm),
 	}
