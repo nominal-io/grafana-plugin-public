@@ -143,33 +143,55 @@ describe('query API selection', () => {
     });
   });
 
-  it('retains Compute selections and SQL when switching APIs', async () => {
+  it('keeps only the active API fields in the query and restores the other API when switching back', async () => {
     const onChange = jest.fn();
-    const original = { refId: 'A', queryType: 'compute' as const, assetRid: ASSET_RID, channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
-    render(<EditableQuery initialQuery={original} onChange={onChange} />);
+    const compute = { refId: 'A', queryType: 'compute' as const, assetRid: '$asset', channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    render(<EditableQuery initialQuery={compute} onChange={onChange} />);
     await settleEffects();
-    expect(screen.getByRole('radio', { name: 'Compute' })).toBeChecked();
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-    expect(screen.getByTestId('sql-code-editor')).toBeInTheDocument();
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'sql', hide: true });
     expect(screen.queryByTestId('asset-combobox')).not.toBeInTheDocument();
     const editor = screen.getByTestId('sql-code-editor').querySelector('textarea')!;
     fireEvent.change(editor, { target: { value: 'SELECT 42' } });
     fireEvent.blur(editor);
     fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
     await settleEffects();
-    expect(onChange.mock.calls.at(-1)?.[0]).toMatchObject({ ...original, rawSql: 'SELECT 42' });
+    expect(onChange).toHaveBeenLastCalledWith(compute);
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 42', hide: true });
     expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 42');
   });
 
-  it('opens saved SQL in the SQL editor and switches it back to Compute', () => {
+  it('leaves a saved SQL query with Compute fields alone until it is edited, then moves them out', () => {
     const onChange = jest.fn();
-    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' }} onChange={onChange} />);
+    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1', format: 'table', assetRid: '$asset', channel: 'app.logs' }} onChange={onChange} />);
     expect(screen.getByRole('radio', { name: 'SQL' })).toBeChecked();
-    expect(screen.getByTestId('sql-code-editor').querySelector('textarea')).toHaveValue('SELECT 1');
     expect(onChange).not.toHaveBeenCalled();
+    const editor = screen.getByTestId('sql-code-editor').querySelector('textarea')!;
+    fireEvent.change(editor, { target: { value: 'SELECT 2' } });
+    fireEvent.blur(editor);
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 2', format: 'table' });
     fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
-    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ queryType: 'compute', rawSql: 'SELECT 1' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'compute', assetRid: '$asset', channel: 'app.logs' });
+  });
+
+  it('restores Compute fields left in a saved SQL query when switching to Compute without editing', () => {
+    const onChange = jest.fn();
+    render(<EditableQuery initialQuery={{ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1', assetRid: '$asset' }} onChange={onChange} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Compute' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'compute', assetRid: '$asset' });
+  });
+
+  it('does not restore remembered fields into a query replaced from outside the editor', async () => {
+    const onChange = jest.fn();
+    const props = { onChange, onRunQuery: jest.fn(), datasource: mockDatasource };
+    const { rerender } = render(<QueryEditor {...props} query={{ refId: 'A', queryType: 'compute', assetRid: 'ri.scout.main.asset.old' }} />);
+    await settleEffects();
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    rerender(<QueryEditor {...props} query={{ refId: 'A', queryType: 'compute', assetRid: ASSET_RID }} />);
+    await settleEffects();
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'sql' });
   });
 });
 
