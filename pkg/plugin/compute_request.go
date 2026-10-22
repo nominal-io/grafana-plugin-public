@@ -19,14 +19,20 @@ const logPageSize = -250
 // in buildComputeContext, so the channel builders do not take the RID as a parameter.
 const assetRidVariableName computeapi.VariableName = "assetRid"
 
-// buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
-func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
-	seriesPlan := e.buildSeriesPlan(qm)
+// buildComputeRequest constructs a ComputeNodeRequest from query model and time range. pageToken
+// continues a log query from a line of its previous page.
+func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange, pageToken *computeapi.PageToken) computeapi1.ComputeNodeRequest {
+	seriesPlan := e.buildSeriesPlan(qm, pageToken)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
+
+	end := timeRange.To
+	if qm.ChannelDataType == ChannelDataTypeLog {
+		end = endOfMillisecond(end)
+	}
 
 	return computeapi1.ComputeNodeRequest{
 		Start:   timestampFromTime(timeRange.From),
-		End:     timestampFromTime(timeRange.To),
+		End:     timestampFromTime(end),
 		Node:    node,
 		Context: e.buildComputeContext(qm),
 	}
@@ -35,7 +41,7 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 // buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
-func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi1.SummarizeSeries {
+func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, pageToken *computeapi.PageToken) computeapi1.SummarizeSeries {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 
 	switch qm.ChannelDataType {
@@ -57,7 +63,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
-		pageInfo := computeapi.PageInfo{PageSize: logPageSize}
+		pageInfo := computeapi.PageInfo{PageToken: pageToken, PageSize: logPageSize}
 		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		return computeapi1.SummarizeSeries{

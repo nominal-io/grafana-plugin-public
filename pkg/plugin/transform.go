@@ -300,7 +300,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			}
 			result.LogLines = newLogLines(n)
 			labelEncoder := newLogLabelEncoder(qm.Channel)
-			for i := 0; i < n; i++ {
+			// Newest first, so lines at one time keep the service's order and the last line is the
+			// cursor for the page before.
+			for i := n - 1; i >= 0; i-- {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 

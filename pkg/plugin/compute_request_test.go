@@ -54,15 +54,15 @@ func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value
 	return kind, value
 }
 
-// summarizationPageSize returns the page size when the strategy is a page strategy.
-func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrategy) (size int, isPage bool) {
+// summarizationPageInfo returns the page info when the strategy is a page strategy.
+func summarizationPageInfo(t *testing.T, strategy computeapi.SummarizationStrategy) (page computeapi.PageInfo, isPage bool) {
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
 		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
-				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
+				func(info computeapi.PageInfo) error { page, isPage = info, true; return nil },
 				func(string) error { return fmt.Errorf("unknown page strategy type") },
 			)
 		},
@@ -70,9 +70,9 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 		func(string) error { return fmt.Errorf("unknown summarization strategy type") },
 	)
 	if err != nil {
-		t.Fatalf("inspecting page size: %v", err)
+		t.Fatalf("inspecting page info: %v", err)
 	}
-	return size, isPage
+	return page, isPage
 }
 
 // isArrowV3 reports whether the SummarizeSeries output format is ARROW_V3.
@@ -299,7 +299,7 @@ func TestBuildComputeRequest(t *testing.T) {
 		To:   time.Unix(1704067200, 900_000_000), // 2024-01-01 00:00:00.900 UTC
 	}
 
-	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange)
+	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange, nil)
 
 	if int64(req.Start.Seconds) != 1704067200 {
 		t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, 1704067200)
@@ -388,7 +388,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := baseQM
 			qm.ChannelDataType = tt.dataType
-			plan := qe.buildSeriesPlan(qm)
+			plan := qe.buildSeriesPlan(qm, nil)
 			if got := seriesKind(t, plan.Input); got != tt.wantKind {
 				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
 			}
@@ -401,8 +401,8 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		numericQM := baseQM
 		numericQM.ChannelDataType = ChannelDataTypeNumeric
 
-		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM).Input)
-		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM).Input)
+		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM, nil).Input)
+		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM, nil).Input)
 		if stringKind == numericKind {
 			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
@@ -421,7 +421,7 @@ func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
 				Buckets:         1000,
 				Points:          pointBudget{Count: 750},
 			}
-			plan := qe.buildSeriesPlan(qm)
+			plan := qe.buildSeriesPlan(qm, nil)
 			if plan.Buckets == nil || *plan.Buckets != 750 {
 				t.Errorf("buckets = %v, want 750", plan.Buckets)
 			}
@@ -442,7 +442,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{AggMean},
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := qe.buildSeriesPlan(qm, nil)
 
 		if !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
@@ -460,7 +460,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := qe.buildSeriesPlan(qm); !isArrowV3(plan.OutputFormat) {
+		if plan := qe.buildSeriesPlan(qm, nil); !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
@@ -473,7 +473,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := qe.buildSeriesPlan(qm, nil)
 
 		if plan.OutputFormat != nil {
 			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
@@ -491,7 +491,7 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 		ChannelDataType: ChannelDataTypeNumeric, RawLTTB: true, Buckets: 5000,
 		Points: pointBudget{Count: 500},
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := qe.buildSeriesPlan(qm, nil)
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
@@ -532,7 +532,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		DataScopeName:   "default",
 		Buckets:         1000,
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := qe.buildSeriesPlan(qm, nil)
 
 	if got := seriesKind(t, plan.Input); got != "log" {
 		t.Errorf("series kind = %q, want \"log\"", got)
@@ -550,12 +550,12 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("expected a summarization strategy for log path")
 	}
-	size, isPage := summarizationPageSize(t, *plan.SummarizationStrategy)
+	page, isPage := summarizationPageInfo(t, *plan.SummarizationStrategy)
 	if !isPage {
 		t.Error("expected a page strategy for log path")
 	}
-	if size != logPageSize {
-		t.Errorf("pageSize = %d, want %d (newest-first)", size, logPageSize)
+	if page.PageSize != logPageSize {
+		t.Errorf("pageSize = %d, want %d (newest-first)", page.PageSize, logPageSize)
 	}
 }
 
