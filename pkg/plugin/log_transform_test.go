@@ -258,7 +258,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			if got := frame.Fields[1].At(row).(string); got != messages[sourceIndex] {
 				t.Errorf("row %d body = %q, want %q", row, got, messages[sourceIndex])
 			}
-			wantID := (computeapi.LogValue{Id: [16]byte{byte(sourceIndex)}}).Id.String()
+			wantID := strconv.FormatInt(wantTime.UnixNano(), 10) + ":" + (computeapi.LogValue{Id: [16]byte{byte(sourceIndex)}}).Id.String()
 			if got := frame.Fields[2].At(row).(string); got != wantID {
 				t.Errorf("row %d id = %q, want %q", row, got, wantID)
 			}
