@@ -1,12 +1,14 @@
 package plugin
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
 	"slices"
 	"sort"
 	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
@@ -160,4 +162,59 @@ func logLinesFrame(name string, lines *logLines) *data.Frame {
 		PreferredVisualization: data.VisTypeLogs,
 	}
 	return frame
+}
+
+// endOfMillisecond returns the last nanosecond of t's millisecond. Infinite scroll ends the next
+// page at the oldest row's time cut to the millisecond. Covering the rest of that millisecond keeps
+// its older rows; Grafana drops the repeated ones by id.
+func endOfMillisecond(t time.Time) time.Time {
+	return t.Truncate(time.Millisecond).Add(time.Millisecond - time.Nanosecond)
+}
+
+// isLogLines reports whether f was built by logLinesFrame.
+func isLogLines(f *data.Frame) bool {
+	return f != nil && f.Meta != nil && f.Meta.Type == data.FrameTypeLogLines
+}
+
+// maxBoundaryReads caps the extra reads for one log page.
+const maxBoundaryReads = 5
+
+// readPastBoundaryMillisecond reads older lines into frame until it reaches a millisecond before
+// end's, so Grafana's next page, which ends at the oldest line's millisecond, moves on. readOlder
+// returns lines from the given line back, or nil to stop. Repeats are dropped by id. A failed read
+// keeps the page, because Grafana discards a page that carries an error.
+func readPastBoundaryMillisecond(ctx context.Context, frame *data.Frame, end time.Time, readOlder func(oldest time.Time, id string) (*data.Frame, error)) {
+	if !isLogLines(frame) {
+		return
+	}
+	msStart := end.Truncate(time.Millisecond)
+	times, ids := frame.Fields[0], frame.Fields[2]
+	seen := make(map[string]bool, ids.Len())
+	for i := range ids.Len() {
+		seen[ids.At(i).(string)] = true
+	}
+	for range maxBoundaryReads {
+		n := frame.Rows()
+		if n == 0 || times.At(n-1).(time.Time).Before(msStart) {
+			return
+		}
+		older, err := readOlder(times.At(n-1).(time.Time), ids.At(n-1).(string))
+		if err != nil && ctx.Err() == nil {
+			log.DefaultLogger.FromContext(ctx).Warn("Failed to read log lines past the page's boundary millisecond", "error", err)
+		}
+		if err != nil || !isLogLines(older) {
+			return
+		}
+		added := false
+		for r := range older.Rows() {
+			if id := older.Fields[2].At(r).(string); !seen[id] {
+				seen[id] = true
+				frame.AppendRow(older.RowCopy(r)...)
+				added = true
+			}
+		}
+		if !added {
+			return
+		}
+	}
 }

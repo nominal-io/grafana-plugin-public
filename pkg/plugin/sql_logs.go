@@ -117,8 +117,8 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 				body = bodies.ValueStr(i)
 			}
 			t := timeAt(i)
-			// Grafana drops a row whose id it has already shown, so repeats of a row are numbered. The
-			// next page reads its boundary millisecond again in full, so the numbers match across pages.
+			// Grafana drops a row whose id it has already shown, so repeats of a row are numbered. Repeats
+			// are identical, so every read numbers the ones it holds the same way.
 			hash := logEntryHash(t, body, encoded)
 			n := seen[hash]
 			seen[hash]++

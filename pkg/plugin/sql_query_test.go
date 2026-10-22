@@ -269,6 +269,84 @@ func TestExecuteSQLQueryFormats(t *testing.T) {
 	}
 }
 
+// sqlLogTable serves log rows newest first, up to limit, ending at the end of the query's BETWEEN
+// range when it has one. Rows are nanoseconds after 10:00:00 on the day executeTestSQLQuery's range ends.
+// The read numbered failRead fails. It counts the queries it serves in reads.
+func sqlLogTable(t *testing.T, nanos []int, limit, failRead int, reads *int) sqlQueryHandler {
+	base := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "ts", Type: &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}},
+		{Name: "message", Type: arrow.BinaryTypes.String},
+	}, nil)
+	return func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		*reads++
+		if *reads == failRead {
+			return status.Error(codes.Unavailable, "unavailable")
+		}
+		end := time.Unix(1<<40, 0)
+		if _, literal, ok := strings.Cut(req.Query, "AND TIMESTAMP '"); ok {
+			var err error
+			if end, err = time.Parse("2006-01-02 15:04:05.999999999", strings.Split(literal, "'")[0]); err != nil {
+				t.Errorf("time.Parse() error = %v", err)
+			}
+		}
+		var rows []int
+		for _, n := range slices.Sorted(slices.Values(nanos)) {
+			if !base.Add(time.Duration(n)).After(end) {
+				rows = append(rows, n)
+			}
+		}
+		slices.Reverse(rows)
+		rows = rows[:min(limit, len(rows))]
+		payload := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) {
+			for _, n := range rows {
+				b.Field(0).(*array.TimestampBuilder).Append(arrow.Timestamp(base.Add(time.Duration(n)).UnixNano()))
+				b.Field(1).(*array.StringBuilder).Append(strconv.Itoa(n))
+			}
+		})
+		return stream.Send(&sqlv1.SqlServiceQueryResponse{QueryId: "q", Payload: payload})
+	}
+}
+
+func TestExecuteSQLQueryReadsPastTheBoundaryMillisecond(t *testing.T) {
+	const ranged = "SELECT ts, message FROM logs WHERE $__timeFilter(ts) ORDER BY ts DESC LIMIT 2"
+	// The range ends in millisecond .123; .122 is the one before it.
+	const ms123, ms122 = 123_000_000, 122_000_000
+	tenIn123 := make([]int, 10)
+	for i := range tenIn123 {
+		tenIn123[i] = ms123 + i
+	}
+	for _, tc := range []struct {
+		name      string
+		sql       string
+		nanos     []int
+		failRead  int
+		wantRows  int
+		wantReads int
+	}{
+		{name: "reads until a line from an older millisecond", sql: ranged, nanos: []int{ms123 + 3, ms123 + 2, ms123 + 1, ms122 + 2, ms122 + 1}, wantRows: 4, wantReads: 3},
+		{name: "stops at the end of the data", sql: ranged, nanos: []int{ms123 + 3, ms123 + 2, ms123 + 1}, wantRows: 3, wantReads: 3},
+		{name: "stops after the read limit", sql: ranged, nanos: tenIn123, wantRows: 2 + maxBoundaryReads, wantReads: 1 + maxBoundaryReads},
+		{name: "a page that reaches an older millisecond", sql: ranged, nanos: []int{ms123 + 1, ms122 + 1}, wantRows: 2, wantReads: 1},
+		{name: "a query without the range", sql: "SELECT ts, message FROM logs ORDER BY ts DESC LIMIT 2", nanos: []int{ms123 + 2, ms123 + 1}, wantRows: 2, wantReads: 1},
+		{name: "a failed read keeps the page", sql: ranged, nanos: []int{ms123 + 3, ms123 + 2, ms123 + 1}, failRead: 2, wantRows: 2, wantReads: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			e := sqlTestExecution(t, sqlQueryService(t, sqlLogTable(t, tc.nanos, 2, tc.failRead, &reads)))
+			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"`+tc.sql+`","format":"logs"}`)
+			if response.Error != nil || len(response.Frames) != 1 {
+				t.Fatalf("executeSQLQuery() = %v, %d frames; want 1 frame", response.Error, len(response.Frames))
+			}
+			frame := response.Frames[0]
+			if frame.Rows() != tc.wantRows || reads != tc.wantReads {
+				t.Errorf("rows, reads = %d, %d; want %d, %d", frame.Rows(), reads, tc.wantRows, tc.wantReads)
+			}
+			assertNewestFirst(t, frame)
+		})
+	}
+}
+
 func TestExecuteSQLQueryAppliesGrafanaRowLimit(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	stream := sqlArrowStream(t, schema, 1, func(b *array.RecordBuilder) { b.Field(0).(*array.Int64Builder).AppendValues([]int64{1, 2, 3}, nil) })

@@ -62,10 +62,8 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 	}
 	query := prepared.SQL
 	if query.Format == sqlutil.FormatOptionLogs {
-		// Infinite scroll ends the next page at the oldest row's time cut to the millisecond. Covering
-		// the rest of that millisecond keeps its older rows; Grafana drops the repeated ones by id.
 		withEnd := *query
-		withEnd.TimeRange.To = withEnd.TimeRange.To.Truncate(time.Millisecond).Add(time.Millisecond - time.Nanosecond)
+		withEnd.TimeRange.To = endOfMillisecond(withEnd.TimeRange.To)
 		query = &withEnd
 	}
 	expanded, err := sqlutil.Interpolate(query, sqlMacros)
@@ -77,6 +75,22 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		failed := sqlErrorResponse(ctx, err)
 		failed.Frames = sqlutil.ErrorFrameFromQuery(query.WithSQL(expanded))
 		return failed
+	}
+	if query.Format == sqlutil.FormatOptionLogs {
+		readPastBoundaryMillisecond(ctx, frames[0], query.TimeRange.To, func(oldest time.Time, _ string) (*data.Frame, error) {
+			older := *query
+			older.TimeRange.To = oldest
+			sql, err := sqlutil.Interpolate(&older, sqlMacros)
+			// Unchanged SQL would return the same lines.
+			if err != nil || sql == expanded {
+				return nil, err
+			}
+			more, err := e.runSQLQuery(ctx, query.RefID, sql, query.Format)
+			if err != nil {
+				return nil, err
+			}
+			return more[0], nil
+		})
 	}
 	for _, frame := range frames {
 		frame.RefID = query.RefID
