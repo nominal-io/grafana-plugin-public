@@ -1,10 +1,8 @@
 package plugin
 
 import (
-	"encoding/json"
 	"fmt"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,50 +43,9 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			}
 
 			if result.IsLog {
-				// Newest first. Grafana's infinite scroll derives the next time range
-				// from the boundary row, and the compute API's PageInfo fixes selection
-				// direction (sign of PageSize), not response order, so this sort is
-				// not redundant.
-				if !slices.IsSortedFunc(result.LogEntries, compareLogEntriesNewestFirst) {
-					slices.SortStableFunc(result.LogEntries, compareLogEntriesNewestFirst)
-				}
-
-				frame := data.NewFrame(qm.Channel)
-				frame.Meta = &data.FrameMeta{
-					Type: data.FrameTypeLogLines,
-					// The log-lines dataplane contract is at v0.0, not time-series-wide's 0.1.
-					TypeVersion:            data.FrameTypeVersion{0, 0},
-					PreferredVisualization: data.VisTypeLogs,
-				}
-
-				if len(result.LogEntries) > 0 {
-					times := make([]time.Time, len(result.LogEntries))
-					bodies := make([]string, len(result.LogEntries))
-					ids := make([]string, len(result.LogEntries))
-					labels := make([]json.RawMessage, len(result.LogEntries))
-					for i, e := range result.LogEntries {
-						times[i] = e.Time
-						bodies[i] = e.Body
-						ids[i] = e.ID
-						labels[i] = e.Labels
-					}
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, times),
-						data.NewField("body", nil, bodies),
-						data.NewField("id", nil, ids),
-						data.NewField("labels", nil, labels),
-					)
-				} else {
-					frame.Fields = append(frame.Fields,
-						data.NewField("timestamp", nil, []time.Time{}),
-						data.NewField("body", nil, []string{}),
-						data.NewField("id", nil, []string{}),
-						data.NewField("labels", nil, []json.RawMessage{}),
-					)
-				}
-
+				frame := logLinesFrame(qm.Channel, &result.LogLines)
 				log.DefaultLogger.Debug("Successfully processed log query",
-					"entries", len(result.LogEntries))
+					"entries", result.LogLines.Len())
 				response.Frames = append(response.Frames, frame)
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
@@ -227,8 +184,8 @@ type TransformResult struct {
 	IsEnum       bool
 
 	// Log path
-	IsLog      bool
-	LogEntries []LogEntry
+	IsLog    bool
+	LogLines logLines
 }
 
 func unsupportedComputeResponse[T any](typeName string) func(T) error {
@@ -339,22 +296,17 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				log.DefaultLogger.Warn("Paged log response has mismatched timestamp and value counts; truncating",
 					"timestamps", len(paged.Timestamps), "values", len(paged.Values))
 			}
-			result.LogEntries = make([]LogEntry, 0, n)
+			result.LogLines = newLogLines(n)
 			labelEncoder := newLogLabelEncoder(qm.Channel)
 			for i := 0; i < n; i++ {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
-				result.LogEntries = append(result.LogEntries, LogEntry{
-					Time:   time.Unix(int64(ts.Seconds), int64(ts.Nanos)),
-					Body:   val.Message,
-					ID:     val.Id.String(),
-					Labels: labelEncoder.encode(val.Args),
-				})
+				result.LogLines.add(time.Unix(int64(ts.Seconds), int64(ts.Nanos)), val.Message, val.Id.String(), labelEncoder.encode(val.Args))
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
-				"entries", len(result.LogEntries))
+				"entries", result.LogLines.Len())
 			return nil
 		},
 		func(lp *computeapi.LogPoint) error {
@@ -362,12 +314,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				result.IsLog = true
 				return nil
 			}
-			result.LogEntries = []LogEntry{{
-				Time:   time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)),
-				Body:   lp.Value.Message,
-				ID:     lp.Value.Id.String(),
-				Labels: marshalLogArgs(lp.Value.Args, qm.Channel),
-			}}
+			result.LogLines = newLogLines(1)
+			result.LogLines.add(time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)), lp.Value.Message, lp.Value.Id.String(), marshalLogArgs(lp.Value.Args, qm.Channel))
 			result.IsLog = true
 			return nil
 		},
