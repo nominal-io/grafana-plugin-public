@@ -40,8 +40,15 @@ func withBearerToken(ctx context.Context, token bearertoken.Token) context.Conte
 // last chunk it returns io.EOF, or the stream's gRPC error if the query failed.
 type sqlStreamReader struct {
 	stream grpc.ServerStreamingClient[sqlv1.SqlServiceQueryResponse]
+	cancel context.CancelFunc
 	buf    []byte
 	err    error
+}
+
+// Close cancels the stream's context, which ends the query on the server.
+func (r *sqlStreamReader) Close() error {
+	r.cancel()
+	return nil
 }
 
 func (r *sqlStreamReader) Read(p []byte) (int, error) {

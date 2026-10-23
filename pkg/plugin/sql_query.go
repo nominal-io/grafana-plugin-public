@@ -65,36 +65,28 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 	if err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "Macro expansion failed: "+err.Error())
 	}
-	frame, err := e.runSQLQuery(ctx, query.RefID, expanded)
+	frames, err := e.runSQLQuery(ctx, query.RefID, expanded, query.Format)
 	if err != nil {
 		failed := sqlErrorResponse(ctx, err)
 		failed.Frames = sqlutil.ErrorFrameFromQuery(query.WithSQL(expanded))
 		return failed
 	}
-	frame.RefID = query.RefID
-	if frame.Meta == nil {
-		frame.Meta = &data.FrameMeta{}
-	}
-	frame.Meta.ExecutedQueryString = expanded
-	frame.Meta.PreferredVisualization = data.VisTypeGraph
-	if query.Format == sqlutil.FormatOptionTable {
-		frame.Meta.PreferredVisualization = data.VisTypeTable
-	}
-	frames, err := shapeSQLFrame(frame, query.Format)
-	if err != nil {
-		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
+	for _, frame := range frames {
+		frame.RefID = query.RefID
+		frame.Meta.ExecutedQueryString = expanded
 	}
 	return backend.DataResponse{Frames: frames}
 }
 
-// runSQLQuery runs sql in the data source's workspace and decodes the Arrow result.
-func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql string) (*data.Frame, error) {
+// runSQLQuery runs sql in the data source's workspace and decodes the Arrow result for format.
+func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql string, format sqlutil.FormatQueryOption) (data.Frames, error) {
 	token := bearertoken.Token(e.config.Secrets.ApiKey)
 	workspace, err := e.datasource.resolveSQLWorkspace(ctx, token)
 	if err != nil {
 		return nil, err
 	}
-	// Cancelling ends the stream if the row limit stops reading early.
+	// Cancelling ends the stream. The reader's Close cancels once reading stops, and the deferred
+	// call covers early returns.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream, err := e.datasource.sqlService.Query(withBearerToken(ctx, token), &sqlv1.SqlServiceQueryRequest{
@@ -105,7 +97,7 @@ func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql stri
 	if err != nil {
 		return nil, err
 	}
-	return frameFromArrowStream(&sqlStreamReader{stream: stream}, refID, sqlRowLimit(ctx))
+	return frameFromArrowStream(&sqlStreamReader{stream: stream, cancel: cancel}, refID, sqlRowLimit(ctx), format)
 }
 
 // sqlRowLimit returns the row limit Grafana applies to its own SQL data sources.
@@ -122,6 +114,7 @@ func sqlRowLimit(ctx context.Context) int64 {
 // timeouts and cancellations are downstream errors, so Grafana does not count them against the plugin.
 func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
 	var lookupErr *workspaceLookupError
+	var timeErr *nullTimeError
 	deadline, hasDeadline := ctx.Deadline()
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
@@ -131,7 +124,7 @@ func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded),
 		status.Code(err) == codes.DeadlineExceeded && hasDeadline && !time.Now().Before(deadline):
 		return backend.ErrDataResponseWithSource(backend.StatusTimeout, backend.ErrorSourceDownstream, "SQL query timed out")
-	case errors.Is(err, errNoSQLWorkspace):
+	case errors.Is(err, errNoSQLWorkspace), errors.As(err, &timeErr):
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	case errors.As(err, &lookupErr):
 		status := backend.StatusBadGateway
