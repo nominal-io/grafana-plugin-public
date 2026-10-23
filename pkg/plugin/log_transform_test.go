@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"reflect"
 	"strconv"
@@ -257,7 +258,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			if got := frame.Fields[1].At(row).(string); got != messages[sourceIndex] {
 				t.Errorf("row %d body = %q, want %q", row, got, messages[sourceIndex])
 			}
-			wantID := (computeapi.LogValue{Id: [16]byte{byte(sourceIndex)}}).Id.String()
+			wantID := strconv.FormatInt(wantTime.UnixNano(), 10) + ":" + (computeapi.LogValue{Id: [16]byte{byte(sourceIndex)}}).Id.String()
 			if got := frame.Fields[2].At(row).(string); got != wantID {
 				t.Errorf("row %d id = %q, want %q", row, got, wantID)
 			}
@@ -409,5 +410,45 @@ func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
 	}
 	if a == b {
 		t.Errorf("expected distinct nominal.channel labels, both were %q", a)
+	}
+}
+
+// assertNewestFirst fails when a line of a log frame is newer than the line before it.
+func assertNewestFirst(t *testing.T, frame *data.Frame) {
+	t.Helper()
+	times := frame.Fields[0]
+	for i := 1; i < times.Len(); i++ {
+		if times.At(i).(time.Time).After(times.At(i - 1).(time.Time)) {
+			t.Errorf("line %d is newer than line %d", i, i-1)
+		}
+	}
+}
+
+func TestReadPastBoundaryMillisecondNeedsLogFrames(t *testing.T) {
+	end := time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)
+	logFrame := func() *data.Frame {
+		lines := newLogLines(1)
+		lines.add(end, "line", "1", emptyLogLabels)
+		return logLinesFrame("logs", &lines)
+	}
+	table := data.NewFrame("table", data.NewField("value", nil, []float64{1}))
+	for _, tc := range []struct {
+		name         string
+		frame, older *data.Frame
+		wantReads    int
+	}{
+		{name: "a page that is not log lines", frame: table, older: logFrame(), wantReads: 0},
+		{name: "an older read that is not log lines", frame: logFrame(), older: table, wantReads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, reads := tc.frame.Rows(), 0
+			readPastBoundaryMillisecond(context.Background(), tc.frame, end, func(time.Time, string) (*data.Frame, error) {
+				reads++
+				return tc.older, nil
+			})
+			if reads != tc.wantReads || tc.frame.Rows() != rows {
+				t.Errorf("reads, rows = %d, %d; want %d, %d", reads, tc.frame.Rows(), tc.wantReads, rows)
+			}
+		})
 	}
 }

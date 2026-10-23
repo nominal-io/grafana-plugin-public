@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/pkg/uuid"
 )
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
@@ -298,11 +300,14 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			}
 			result.LogLines = newLogLines(n)
 			labelEncoder := newLogLabelEncoder(qm.Channel)
-			for i := 0; i < n; i++ {
+			// Newest first, so lines at one time keep the service's order and the last line is the
+			// cursor for the page before.
+			for i := n - 1; i >= 0; i-- {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
-				result.LogLines.add(time.Unix(int64(ts.Seconds), int64(ts.Nanos)), val.Message, val.Id.String(), labelEncoder.encode(val.Args))
+				t := time.Unix(int64(ts.Seconds), int64(ts.Nanos))
+				result.LogLines.add(t, val.Message, computeLogID(t, val.Id), labelEncoder.encode(val.Args))
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
@@ -315,7 +320,8 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				return nil
 			}
 			result.LogLines = newLogLines(1)
-			result.LogLines.add(time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)), lp.Value.Message, lp.Value.Id.String(), marshalLogArgs(lp.Value.Args, qm.Channel))
+			t := time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos))
+			result.LogLines.add(t, lp.Value.Message, computeLogID(t, lp.Value.Id), marshalLogArgs(lp.Value.Args, qm.Channel))
 			result.IsLog = true
 			return nil
 		},
@@ -475,4 +481,9 @@ func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName str
 
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+}
+
+// computeLogID adds the time to the service's id, which hashes only the message and args.
+func computeLogID(t time.Time, id uuid.UUID) string {
+	return strconv.FormatInt(t.UnixNano(), 10) + ":" + id.String()
 }

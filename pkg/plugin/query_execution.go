@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
+	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/uuid"
@@ -199,7 +201,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		chunkModels := batch.models[chunkStart:chunkEnd]
 		computeRequests := make([]computeapi1.ComputeNodeRequest, len(chunkModels))
 		for i, qm := range chunkModels {
-			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange)
+			computeRequests[i] = e.buildComputeRequest(qm, chunkQueries[i].TimeRange, nil)
 		}
 
 		// A shared request ID lets one kill cancel the entire batch.
@@ -220,11 +222,7 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 		)
 
 		batchResponse, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, batchRequest)
-		// Kill only when nothing answered: Grafana cancelled the query or the connection dropped.
-		if ctx.Err() != nil || (err != nil && extractErrorDetails(err).Status == 0) {
-			ua, _ := userAgentComponentsFromContext(ctx)
-			e.datasource.enqueueKill(requestID, killTarget{token: bearerToken, ua: ua})
-		}
+		e.killIfUnanswered(ctx, requestID, bearerToken, err)
 		if err != nil {
 			logErrorWithConjureFields("Batch compute API call failed", err,
 				"chunkStart", chunkStart, "chunkEnd", chunkEnd)
@@ -252,6 +250,9 @@ func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch que
 			}
 
 			response := e.transformBatchResult(batchResponse.Results[i], chunkModels[i])
+			if chunkModels[i].ChannelDataType == ChannelDataTypeLog && response.Error == nil && len(response.Frames) == 1 {
+				readPastBoundaryMillisecond(ctx, response.Frames[0], q.TimeRange.To, e.olderComputeLogs(ctx, chunkModels[i], q.TimeRange, response.Frames[0].Rows()))
+			}
 			if notice := chunkModels[i].Points.Notice; notice != "" && len(response.Frames) > 0 {
 				response.Frames[0].AppendNotices(data.Notice{Severity: data.NoticeSeverityInfo, Text: notice})
 			}
@@ -301,4 +302,45 @@ func (e *NominalQueryExecution) handleLegacyQuery(qm NominalQueryModel, timeRang
 
 	response.Frames = append(response.Frames, frame)
 	return response
+}
+
+// killIfUnanswered kills a compute request when nothing answered it: Grafana cancelled the query
+// or the connection dropped.
+func (e *NominalQueryExecution) killIfUnanswered(ctx context.Context, requestID uuid.UUID, token bearertoken.Token, err error) {
+	if ctx.Err() != nil || (err != nil && extractErrorDetails(err).Status == 0) {
+		ua, _ := userAgentComponentsFromContext(ctx)
+		e.datasource.enqueueKill(requestID, killTarget{token: token, ua: ua})
+	}
+}
+
+// olderComputeLogs reads the page of a log query that comes before a line, by the line's time and
+// service id. A short page means nothing older is left, so it stops after one.
+func (e *NominalQueryExecution) olderComputeLogs(ctx context.Context, qm NominalQueryModel, timeRange backend.TimeRange, firstPageRows int) func(time.Time, string) (*data.Frame, error) {
+	full := firstPageRows >= -logPageSize
+	return func(oldest time.Time, id string) (*data.Frame, error) {
+		if !full {
+			return nil, nil
+		}
+		_, serviceID, _ := strings.Cut(id, ":")
+		lineID, err := uuid.ParseUUID(serviceID)
+		if err != nil {
+			return nil, err
+		}
+		token := computeapi.NewPageTokenFromTimestampAndId(computeapi.TimestampAndId{Timestamp: timestampFromTime(oldest), Id: &lineID})
+		request := e.buildComputeRequest(qm, timeRange, &token)
+		requestID := uuid.NewUUID()
+		request.RequestId = &requestID
+		bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+		response, err := e.datasource.computeService.BatchComputeWithUnits(ctx, bearerToken, computeapi1.BatchComputeWithUnitsRequest{Requests: []computeapi1.ComputeNodeRequest{request}})
+		e.killIfUnanswered(ctx, requestID, bearerToken, err)
+		if err != nil || len(response.Results) == 0 {
+			return nil, err
+		}
+		older := e.transformBatchResult(response.Results[0], qm)
+		if older.Error != nil || len(older.Frames) == 0 {
+			return nil, older.Error
+		}
+		full = older.Frames[0].Rows() >= -logPageSize
+		return older.Frames[0], nil
+	}
 }

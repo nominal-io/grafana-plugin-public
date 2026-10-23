@@ -133,13 +133,16 @@ Infinite scrolling is on in Explore. In a dashboard, turn on the Logs panel's
 
 In Logs format, `$__timeTo()` and the end of `$__timeFilter(ts)` move to the
 end of their millisecond, up to 1 ms past the time picker, so scrolling does not
-skip older lines in that millisecond.
+skip older lines in that millisecond. If a page's lines all fall in that
+millisecond, a query that uses these macros runs up to 5 more times, ending at
+the oldest line, so a page can hold more lines than the `LIMIT`.
 
 Limits:
 
 - Explore's volume histogram counts only the rows the query returned.
-- If one millisecond holds a full page of rows (the `LIMIT`), scrolling stops
-  at that millisecond.
+- Scrolling stops at a millisecond that holds more than about 6 times the
+  `LIMIT` in lines, or more than the `LIMIT` in lines at one exact time. Raise
+  the `LIMIT` to read past it.
 - Scrolling stops within one second of the start of the time range. If the
   last page was full, lines in that second can be missing. To see them, start
   the time range a few seconds earlier.

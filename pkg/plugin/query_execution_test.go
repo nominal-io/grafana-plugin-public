@@ -3,9 +3,11 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1266,5 +1268,109 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if len(healthyResp.Frames) != 1 {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
+	}
+}
+
+// computeLogStore serves log lines like the compute service's backward pages: up to the request's
+// page size of lines before its page token, ordered by time and id, ascending. With inclusive set
+// it also returns the token's line, as the service's in-memory pager does. Lines are nanoseconds
+// after 01:00:00 on 2024-01-01, and a line's index is its id. The call numbered failCall fails.
+func computeLogStore(t *testing.T, nanos []int, inclusive bool, failCall int) *mockComputeService {
+	base := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	key := func(i int) [2]int { return [2]int{nanos[i], i} }
+	less := func(a, b [2]int) bool { return a[0] < b[0] || (a[0] == b[0] && a[1] < b[1]) }
+	calls := 0
+	return &mockComputeService{batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+		calls++
+		if calls == failCall {
+			return computeapi.BatchComputeWithUnitsResponse{}, errors.New("unavailable")
+		}
+		page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Requests[0].Node).SummarizationStrategy)
+		end := time.Unix(int64(req.Requests[0].End.Seconds), int64(req.Requests[0].End.Nanos))
+		before, include := [2]int{int(end.Sub(base)) + 1, 0}, false
+		if page.PageToken != nil {
+			_ = page.PageToken.AcceptFuncs(func(token computeapi.TimestampAndId) error {
+				at := time.Unix(int64(token.Timestamp.Seconds), int64(token.Timestamp.Nanos))
+				before, include = [2]int{int(at.Sub(base)), int(token.Id[0]) | int(token.Id[1])<<8}, inclusive
+				return nil
+			}, func(string) error { return nil })
+		}
+		var lines []int
+		for i := range nanos {
+			if less(key(i), before) || (include && key(i) == before) {
+				lines = append(lines, i)
+			}
+		}
+		slices.SortFunc(lines, func(a, b int) int {
+			if less(key(b), key(a)) {
+				return -1
+			}
+			return 1
+		})
+		lines = lines[:min(-page.PageSize, len(lines))]
+		slices.Reverse(lines)
+		paged := computeapi.PagedLogPlot{}
+		for _, i := range lines {
+			paged.Timestamps = append(paged.Timestamps, timestampFromTime(base.Add(time.Duration(nanos[i]))))
+			paged.Values = append(paged.Values, computeapi.LogValue{Message: strconv.Itoa(i), Id: [16]byte{byte(i), byte(i >> 8)}})
+		}
+		result := computeapi.NewComputeNodeResultFromSuccess(computeapi.NewComputeNodeResponseFromPagedLog(paged))
+		return computeapi.BatchComputeWithUnitsResponse{Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: result}}}, nil
+	}}
+}
+
+func TestComputeLogQueryReadsPastTheBoundaryMillisecond(t *testing.T) {
+	// The range ends in millisecond .123; .122 is the one before it.
+	const ms123, ms122 = 123_000_000, 122_000_000
+	page := -logPageSize
+	// lines returns n lines in millisecond .123, one nanosecond apart when spread, else at one time.
+	lines := func(n int, spread bool) []int {
+		nanos := make([]int, n)
+		for i := range nanos {
+			nanos[i] = ms123 + 1
+			if spread {
+				nanos[i] += i
+			}
+		}
+		return nanos
+	}
+	older := func(nanos []int) []int { return append(nanos, ms122+2, ms122+1) }
+	for _, tc := range []struct {
+		name      string
+		nanos     []int
+		inclusive bool
+		failCall  int
+		wantRows  int
+		wantCalls int
+	}{
+		{name: "reads until a line from an older millisecond", nanos: older(lines(page+50, true)), wantRows: page + 52, wantCalls: 2},
+		{name: "a short read ends the data", nanos: lines(page+50, true), wantRows: page + 50, wantCalls: 2},
+		{name: "a short first page needs no reads", nanos: lines(100, true), wantRows: 100, wantCalls: 1},
+		{name: "pages through lines at one time", nanos: older(lines(page+50, false)), wantRows: page + 52, wantCalls: 2},
+		{name: "a service that repeats the cursor line", nanos: older(lines(page+50, true)), inclusive: true, wantRows: page + 52, wantCalls: 2},
+		{name: "stops after the read limit", nanos: lines(page*(maxBoundaryReads+2), true), wantRows: page * (maxBoundaryReads + 1), wantCalls: maxBoundaryReads + 1},
+		{name: "a failed read keeps the page", nanos: lines(page+50, true), failCall: 2, wantRows: page, wantCalls: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := computeLogStore(t, tc.nanos, tc.inclusive, tc.failCall)
+			ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: service})
+			timeRange := backend.TimeRange{From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2024, 1, 1, 1, 0, 0, ms123, time.UTC)}
+			resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{{
+				RefID:     "A",
+				JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog}),
+				TimeRange: timeRange,
+			}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := resp.Responses["A"]
+			if response.Error != nil || len(response.Frames) != 1 {
+				t.Fatalf("response = %v, %d frames; want 1 frame", response.Error, len(response.Frames))
+			}
+			if rows, calls := response.Frames[0].Rows(), len(service.batchRequests); rows != tc.wantRows || calls != tc.wantCalls {
+				t.Errorf("rows, calls = %d, %d; want %d, %d", rows, calls, tc.wantRows, tc.wantCalls)
+			}
+			assertNewestFirst(t, response.Frames[0])
+		})
 	}
 }
