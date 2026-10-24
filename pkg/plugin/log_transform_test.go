@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 )
@@ -409,5 +410,27 @@ func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
 	}
 	if a == b {
 		t.Errorf("expected distinct nominal.channel labels, both were %q", a)
+	}
+}
+
+func TestLogPageRange(t *testing.T) {
+	from := time.Date(2026, 10, 12, 10, 0, 0, 5_000_000, time.UTC)
+	to := time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)
+	for _, tc := range []struct {
+		name             string
+		start, end       *int64
+		wantFrom, wantTo time.Time
+	}{
+		{name: "covers the last millisecond", wantFrom: from, wantTo: to.Add(time.Millisecond - 1)},
+		{name: "ends at the oldest line", end: new(int64(345)), wantFrom: from, wantTo: to.Add(345)},
+		{name: "starts at the newest line", start: new(int64(7)), wantFrom: from.Add(7), wantTo: to.Add(time.Millisecond - 1)},
+		{name: "ignores a bound outside its millisecond", start: new(int64(1_000_000)), end: new(int64(-1)), wantFrom: from, wantTo: to.Add(time.Millisecond - 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := logPageRange(backend.TimeRange{From: from, To: to}, tc.start, tc.end)
+			if !got.From.Equal(tc.wantFrom) || !got.To.Equal(tc.wantTo) {
+				t.Errorf("logPageRange() = %v to %v; want %v to %v", got.From, got.To, tc.wantFrom, tc.wantTo)
+			}
+		})
 	}
 }

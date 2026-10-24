@@ -39,6 +39,11 @@ type NominalQueryModel struct {
 	QueryText string  `json:"queryText"`
 	Constant  float64 `json:"constant"`
 
+	// ScrollStartNanos and ScrollEndNanos place the start or end of a Logs scroll page's range within
+	// its millisecond, at the line the page continues from. The frontend sets them.
+	ScrollStartNanos *int64 `json:"scrollStartNanos,omitempty"`
+	ScrollEndNanos   *int64 `json:"scrollEndNanos,omitempty"`
+
 	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
 	// json:"-" prevents inferred values from persisting into saved dashboards.
 	ChannelUnit string `json:"-"`
