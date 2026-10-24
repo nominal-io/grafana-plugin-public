@@ -23,6 +23,9 @@ const assetRidVariableName computeapi.VariableName = "assetRid"
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
 	seriesPlan := e.buildSeriesPlan(qm)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
+	if qm.ChannelDataType == ChannelDataTypeLog {
+		timeRange = logPageRange(timeRange, qm.ScrollStartNanos, qm.ScrollEndNanos)
+	}
 
 	return computeapi1.ComputeNodeRequest{
 		Start:   timestampFromTime(timeRange.From),
@@ -57,8 +60,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
-		pageInfo := computeapi.PageInfo{PageSize: logPageSize}
-		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
+		pageStrategy := computeapi.NewPageStrategyFromPageInfo(logPageInfo(qm))
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		return computeapi1.SummarizeSeries{
 			Input:                 series,
@@ -187,4 +189,26 @@ func timestampFromTime(value time.Time) api.Timestamp {
 		Seconds: safelong.SafeLong(value.Unix()),
 		Nanos:   safelong.SafeLong(value.Nanosecond()),
 	}
+}
+
+// logPageInfo pages a log query back from the end of its range, or, on a scroll page that continues
+// from a line, from that line back or, for oldest-first panels, forward.
+func logPageInfo(qm NominalQueryModel) computeapi.PageInfo {
+	if token := linePageToken(qm.ScrollEndID); token != nil {
+		return computeapi.PageInfo{PageToken: token, PageSize: logPageSize}
+	}
+	if token := linePageToken(qm.ScrollStartID); token != nil {
+		return computeapi.PageInfo{PageToken: token, PageSize: -logPageSize}
+	}
+	return computeapi.PageInfo{PageSize: logPageSize}
+}
+
+// linePageToken returns a page token at the line with an id made by computeLogID.
+func linePageToken(id string) *computeapi.PageToken {
+	t, lineID, err := parseComputeLogID(id)
+	if err != nil {
+		return nil
+	}
+	token := computeapi.NewPageTokenFromTimestampAndId(computeapi.TimestampAndId{Timestamp: timestampFromTime(t), Id: &lineID})
+	return &token
 }

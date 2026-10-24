@@ -300,7 +300,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			}
 			result.LogLines = newLogLines(n)
 			labelEncoder := newLogLabelEncoder(qm.Channel)
-			for i := 0; i < n; i++ {
+			// Newest first, so lines at one time keep the service's order and the last line is the
+			// cursor for the page before.
+			for i := n - 1; i >= 0; i-- {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
@@ -484,4 +486,15 @@ func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 // computeLogID adds the time to the service's id, which hashes only the message and args.
 func computeLogID(t time.Time, id uuid.UUID) string {
 	return strconv.FormatInt(t.UnixNano(), 10) + ":" + id.String()
+}
+
+// parseComputeLogID returns the time and service id that computeLogID joined.
+func parseComputeLogID(id string) (time.Time, uuid.UUID, error) {
+	unixNano, serviceID, _ := strings.Cut(id, ":")
+	ns, err := strconv.ParseInt(unixNano, 10, 64)
+	if err != nil {
+		return time.Time{}, uuid.UUID{}, err
+	}
+	lineID, err := uuid.ParseUUID(serviceID)
+	return time.Unix(0, ns), lineID, err
 }
