@@ -13,7 +13,7 @@ import (
 	"github.com/palantir/pkg/safelong"
 )
 
-const logPageSize = -250
+const logPageSize = 1000
 
 // assetRidVariableName is the compute-context variable that carries the asset RID.
 // AssetChannel binds the RID by this variable name; the value is supplied separately
@@ -103,13 +103,13 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
-		pageInfo := computeapi.PageInfo{PageSize: logPageSize}
-		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
+		pageRange, cursor := logPageRange(timeRange, qm)
+		pageStrategy := computeapi.NewPageStrategyFromPageInfo(logPageInfo(qm.ScrollNewer, cursor))
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		return computeapi1.SummarizeSeries{
 			Input:                 series,
 			SummarizationStrategy: &summarizationStrategy,
-		}, timeRange
+		}, pageRange
 
 	default:
 		if slices.Contains(qm.Aggregations, AggLTTB) {
@@ -240,4 +240,18 @@ func timestampFromTime(value time.Time) api.Timestamp {
 		Seconds: safelong.SafeLong(value.Unix()),
 		Nanos:   safelong.SafeLong(value.Nanosecond()),
 	}
+}
+
+// logPageInfo pages a log query back from the end of its range, or forward from its start on a scroll
+// page that reads newer lines. A scroll page that continues from a line pages from that line.
+func logPageInfo(newer bool, cursor *logCursor) computeapi.PageInfo {
+	info := computeapi.PageInfo{PageSize: -logPageSize}
+	if newer {
+		info.PageSize = logPageSize
+	}
+	if cursor != nil && cursor.serviceID != nil {
+		token := computeapi.NewPageTokenFromTimestampAndId(computeapi.TimestampAndId{Timestamp: timestampFromTime(cursor.at), Id: cursor.serviceID})
+		info.PageToken = &token
+	}
+	return info
 }

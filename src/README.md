@@ -82,6 +82,8 @@ A **State Timeline** panel colors each segment by string value over time, making
 
 Event-style records with a message field. Grafana's **Logs** panel renders Nominal log records inline with other telemetry from the same dashboard; pair it with a numeric or string panel for an at-a-glance correlation between signals and logs.
 
+A log channel query loads the newest 1,000 lines in the time range, and scrolling loads older ones. With the log order set to oldest first, scrolling loads only newer lines, so lines older than the first 1,000 do not load. Use newest first, or shorten the time range. Scrolling stops once the lines shown come within one second of the range's start, so if the last page loaded ended within that second, the lines left in it do not show. Start the time range a few seconds earlier to see them.
+
 ## Dashboards and template variables
 
 Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so dashboards can be re-pointed at a different asset, data scope, or channel without editing every panel individually.

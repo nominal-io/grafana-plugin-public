@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
+	"github.com/palantir/pkg/uuid"
 )
 
 // --- typed plan inspectors ---
@@ -55,15 +57,15 @@ func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value
 	return kind, value
 }
 
-// summarizationPageSize returns the page size when the strategy is a page strategy.
-func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrategy) (size int, isPage bool) {
+// summarizationPageInfo returns the page info when the strategy is a page strategy.
+func summarizationPageInfo(t *testing.T, strategy computeapi.SummarizationStrategy) (page computeapi.PageInfo, isPage bool) {
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
 		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
-				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
+				func(info computeapi.PageInfo) error { page, isPage = info, true; return nil },
 				func(string) error { return fmt.Errorf("unknown page strategy type") },
 			)
 		},
@@ -71,9 +73,9 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 		func(string) error { return fmt.Errorf("unknown summarization strategy type") },
 	)
 	if err != nil {
-		t.Fatalf("inspecting page size: %v", err)
+		t.Fatalf("inspecting page info: %v", err)
 	}
-	return size, isPage
+	return page, isPage
 }
 
 func isArrowFormat(format *computeapi.OutputFormat, want computeapi.OutputFormat_Value) bool {
@@ -659,12 +661,39 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("expected a summarization strategy for log path")
 	}
-	size, isPage := summarizationPageSize(t, *plan.SummarizationStrategy)
+	page, isPage := summarizationPageInfo(t, *plan.SummarizationStrategy)
 	if !isPage {
 		t.Error("expected a page strategy for log path")
 	}
-	if size != logPageSize {
-		t.Errorf("pageSize = %d, want %d (newest-first)", size, logPageSize)
+	if page.PageSize != -logPageSize || page.PageToken != nil {
+		t.Errorf("page = %d with token %v, want %d without (newest-first)", page.PageSize, page.PageToken, -logPageSize)
+	}
+}
+
+func TestBuildComputeRequestLogPage(t *testing.T) {
+	from := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	lineID := func(at time.Time) string {
+		return strconv.FormatInt(at.UnixNano(), 10) + ":" + uuid.UUID{7}.String() + ":1f"
+	}
+	for _, tc := range []struct {
+		name     string
+		id       string
+		newer    bool
+		wantSize int
+	}{
+		{name: "forward from the start for newer lines", newer: true, wantSize: logPageSize},
+		{name: "back from the end when the line is before the range", id: lineID(from.Add(-1)), wantSize: -logPageSize},
+		{name: "forward from the start when the line is after the range", id: lineID(from.Add(2 * time.Minute)), newer: true, wantSize: logPageSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+			qm := NominalQueryModel{Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog, ScrollID: tc.id, ScrollNewer: tc.newer}
+			req := qe.buildComputeRequest(qm, backend.TimeRange{From: from, To: from.Add(time.Minute)})
+			page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Node).SummarizationStrategy)
+			if page.PageSize != tc.wantSize || page.PageToken != nil {
+				t.Errorf("page = %d with token %v; want %d without a token", page.PageSize, page.PageToken, tc.wantSize)
+			}
+		})
 	}
 }
 
