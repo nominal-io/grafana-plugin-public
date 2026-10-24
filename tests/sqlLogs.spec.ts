@@ -4,7 +4,7 @@ const FROM = Date.UTC(2024, 0, 1);
 const TO = FROM + 10 * 60 * 1000;
 
 // The backend sends nanos only for pages that hold a sub-millisecond timestamp.
-const logsResponse = (rows: Array<[number, string]>, withNanos: boolean) => ({
+const logsResponse = (rows: Array<[number, string, string]>, withNanos: boolean) => ({
   results: {
     A: {
       status: 200,
@@ -16,11 +16,12 @@ const logsResponse = (rows: Array<[number, string]>, withNanos: boolean) => ({
             fields: [
               { name: 'timestamp', type: 'time', typeInfo: { frame: 'time.Time' } },
               { name: 'body', type: 'string', typeInfo: { frame: 'string' } },
+              { name: 'id', type: 'string', typeInfo: { frame: 'string' } },
             ],
           },
           data: {
-            values: [rows.map(([time]) => time), rows.map(([, body]) => body)],
-            ...(withNanos && { nanos: [rows.map(() => 500000), null] }),
+            values: [rows.map(([time]) => time), rows.map(([, body]) => body), rows.map(([, , id]) => id)],
+            ...(withNanos && { nanos: [rows.map(() => 500000), null, null] }),
           },
         },
       ],
@@ -28,19 +29,23 @@ const logsResponse = (rows: Array<[number, string]>, withNanos: boolean) => ({
   },
 });
 
-test('loads an older page of SQL logs in Explore when only the first page has nanoseconds', async ({
+test('loads an older page of SQL logs in Explore from the line the first page ends at, when only the first page has nanoseconds', async ({
   createDataSource,
   page,
   request,
 }) => {
   test.setTimeout(60000);
   const ds = await createDataSource({ type: 'nominal-nominalds-datasource', name: `Nominal logs E2E ${Date.now()}` });
+  let scrollQuery: { scrollId?: string } | undefined;
   try {
     await page.route('**/api/ds/query*', async (route) => {
       const firstPage = Number(route.request().postDataJSON().to) === TO;
-      const rows: Array<[number, string]> = firstPage
-        ? Array.from({ length: 100 }, (_, i) => [TO - i * 1000, `newer line ${i}`])
-        : [[FROM + 60000, 'oldest line']];
+      if (!firstPage) {
+        scrollQuery = route.request().postDataJSON().queries[0];
+      }
+      const rows: Array<[number, string, string]> = firstPage
+        ? Array.from({ length: 100 }, (_, i) => [TO - i * 1000, `newer line ${i}`, `line-${i}`])
+        : [[FROM + 60000, 'oldest line', 'line-oldest']];
       await route.fulfill({ json: logsResponse(rows, firstPage) });
     });
     const query = { refId: 'A', datasource: { type: ds.type, uid: ds.uid }, queryType: 'sql', format: 'logs', rawSql: 'SELECT 1' };
@@ -60,6 +65,7 @@ test('loads an older page of SQL logs in Explore when only the first page has na
       await page.mouse.wheel(0, 3000);
       await expect(page.getByText('oldest line')).toBeVisible({ timeout: 1000 });
     }).toPass({ timeout: 30000 });
+    expect(scrollQuery?.scrollId).toBe('line-99');
   } finally {
     await request.delete(`/api/datasources/uid/${ds.uid}`);
   }

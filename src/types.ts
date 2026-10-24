@@ -21,6 +21,10 @@ export interface NominalQuery extends DataQuery {
   queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
   rawSql?: string;
   format?: SqlFormat;
+  // Set on Logs scroll requests: the id of the line the page continues from, and whether the page
+  // reads newer lines.
+  scrollId?: string;
+  scrollNewer?: boolean;
 
   // Template variables support
   templateVariables?: Record<string, any>;
