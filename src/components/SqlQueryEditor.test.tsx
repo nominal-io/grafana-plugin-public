@@ -1,6 +1,9 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { SqlQueryEditor } from './SqlQueryEditor';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { LogSortOrderChangeEvent } from '@grafana/data';
+import { getAppEvents } from '@grafana/runtime';
+import { LogsSortOrder } from '@grafana/schema';
+import { SqlQueryEditor, sqlLogOrder } from './SqlQueryEditor';
 import { DEFAULT_SQL, LOGS_SQL_EXAMPLE, NominalQuery } from '../types';
 
 // Mirrors Monaco's keybinding resolution: the most recent matching registration wins, where
@@ -135,5 +138,52 @@ describe('SqlQueryEditor', () => {
     fireEvent.change(editor, { target: { value: '' } });
     expect(screen.queryByRole('button', { name: 'Use time-series example' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use logs example' })).not.toBeInTheDocument();
+  });
+});
+
+describe('sqlLogOrder', () => {
+  it.each([
+    ['SELECT ts FROM logs ORDER BY ts DESC LIMIT 5', LogsSortOrder.Descending],
+    ['select ts from logs order by ts desc', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY ts ASC LIMIT 5', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts LIMIT 5', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts, message DESC', LogsSortOrder.Ascending],
+    ['SELECT * FROM (SELECT ts FROM logs ORDER BY ts ASC) ORDER BY ts DESC', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY CAST(ts AS TIMESTAMP) DESC', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY ts ASC -- choose DESC for newest first', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts /* or DESC */ ASC', LogsSortOrder.Ascending],
+    ["SELECT ts FROM logs ORDER BY ts = 'desc'", LogsSortOrder.Ascending],
+    ['SELECT ts, lag(ts) OVER (ORDER BY ts DESC) FROM logs ORDER BY ts', LogsSortOrder.Ascending],
+    ['SELECT * FROM (SELECT ts FROM logs ORDER BY ts DESC)', undefined],
+    ['SELECT ts FROM logs LIMIT 5', undefined],
+  ])('%s', (sql, want) => {
+    expect(sqlLogOrder(sql)).toBe(want);
+  });
+});
+
+describe('ORDER BY warning', () => {
+  const warning = /Query order may not match/;
+  const announce = (order: LogsSortOrder) => act(() => getAppEvents().publish(new LogSortOrderChangeEvent({ order })));
+
+  // Runs first: the panel order is module state, and the tests after it announce one.
+  it('waits for a panel to announce its order', () => {
+    renderEditor({ refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT ts FROM logs ORDER BY ts ASC' });
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+
+  it.each([
+    ['a query sorted against the panel', 'logs', 'SELECT ts FROM logs ORDER BY ts ASC', true],
+    ['a query sorted with the panel', 'logs', 'SELECT ts FROM logs ORDER BY ts DESC', false],
+    ['a table query', 'table', 'SELECT ts FROM logs ORDER BY ts ASC', false],
+  ])('%s', (_, format, rawSql, shown) => {
+    renderEditor({ refId: 'A', queryType: 'sql', format: format as NominalQuery['format'], rawSql });
+    announce(LogsSortOrder.Descending);
+    expect(screen.queryByText(warning) !== null).toBe(shown);
+  });
+
+  it('warns in an editor that mounts after the panel announced its order', () => {
+    announce(LogsSortOrder.Ascending);
+    renderEditor({ refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT ts FROM logs ORDER BY ts DESC' });
+    expect(screen.queryByText(warning)).not.toBeNull();
   });
 });

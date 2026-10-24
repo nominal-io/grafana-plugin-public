@@ -13,7 +13,7 @@ const publish = jest.fn();
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(() => ({ post })),
-  getAppEvents: jest.fn(() => ({ publish })),
+  getAppEvents: jest.fn(() => ({ publish: (event: unknown) => publish(event), subscribe: jest.fn() })),
   getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
 }));
 
