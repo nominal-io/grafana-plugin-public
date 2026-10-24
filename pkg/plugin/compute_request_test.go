@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
+	"github.com/palantir/pkg/uuid"
 )
 
 // --- typed plan inspectors ---
@@ -54,15 +56,15 @@ func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value
 	return kind, value
 }
 
-// summarizationPageSize returns the page size when the strategy is a page strategy.
-func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrategy) (size int, isPage bool) {
+// summarizationPageInfo returns the page info when the strategy is a page strategy.
+func summarizationPageInfo(t *testing.T, strategy computeapi.SummarizationStrategy) (page computeapi.PageInfo, isPage bool) {
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
 		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
-				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
+				func(info computeapi.PageInfo) error { page, isPage = info, true; return nil },
 				func(string) error { return fmt.Errorf("unknown page strategy type") },
 			)
 		},
@@ -70,9 +72,9 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 		func(string) error { return fmt.Errorf("unknown summarization strategy type") },
 	)
 	if err != nil {
-		t.Fatalf("inspecting page size: %v", err)
+		t.Fatalf("inspecting page info: %v", err)
 	}
-	return size, isPage
+	return page, isPage
 }
 
 // isArrowV3 reports whether the SummarizeSeries output format is ARROW_V3.
@@ -388,7 +390,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := baseQM
 			qm.ChannelDataType = tt.dataType
-			plan := qe.buildSeriesPlan(qm)
+			plan := qe.buildSeriesPlan(qm, nil)
 			if got := seriesKind(t, plan.Input); got != tt.wantKind {
 				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
 			}
@@ -401,8 +403,8 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		numericQM := baseQM
 		numericQM.ChannelDataType = ChannelDataTypeNumeric
 
-		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM).Input)
-		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM).Input)
+		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM, nil).Input)
+		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM, nil).Input)
 		if stringKind == numericKind {
 			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
@@ -421,7 +423,7 @@ func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
 				Buckets:         1000,
 				Points:          pointBudget{Count: 750},
 			}
-			plan := qe.buildSeriesPlan(qm)
+			plan := qe.buildSeriesPlan(qm, nil)
 			if plan.Buckets == nil || *plan.Buckets != 750 {
 				t.Errorf("buckets = %v, want 750", plan.Buckets)
 			}
@@ -442,7 +444,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{AggMean},
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := qe.buildSeriesPlan(qm, nil)
 
 		if !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
@@ -460,7 +462,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := qe.buildSeriesPlan(qm); !isArrowV3(plan.OutputFormat) {
+		if plan := qe.buildSeriesPlan(qm, nil); !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
@@ -473,7 +475,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := qe.buildSeriesPlan(qm, nil)
 
 		if plan.OutputFormat != nil {
 			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
@@ -491,7 +493,7 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 		ChannelDataType: ChannelDataTypeNumeric, RawLTTB: true, Buckets: 5000,
 		Points: pointBudget{Count: 500},
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := qe.buildSeriesPlan(qm, nil)
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
@@ -532,7 +534,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		DataScopeName:   "default",
 		Buckets:         1000,
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := qe.buildSeriesPlan(qm, nil)
 
 	if got := seriesKind(t, plan.Input); got != "log" {
 		t.Errorf("series kind = %q, want \"log\"", got)
@@ -550,12 +552,39 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("expected a summarization strategy for log path")
 	}
-	size, isPage := summarizationPageSize(t, *plan.SummarizationStrategy)
+	page, isPage := summarizationPageInfo(t, *plan.SummarizationStrategy)
 	if !isPage {
 		t.Error("expected a page strategy for log path")
 	}
-	if size != logPageSize {
-		t.Errorf("pageSize = %d, want %d (newest-first)", size, logPageSize)
+	if page.PageSize != -logPageSize || page.PageToken != nil {
+		t.Errorf("page = %d with token %v, want %d without (newest-first)", page.PageSize, page.PageToken, -logPageSize)
+	}
+}
+
+func TestBuildComputeRequestLogPage(t *testing.T) {
+	from := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	lineID := func(at time.Time) string {
+		return strconv.FormatInt(at.UnixNano(), 10) + ":" + uuid.UUID{7}.String() + ":1f"
+	}
+	for _, tc := range []struct {
+		name     string
+		id       string
+		newer    bool
+		wantSize int
+	}{
+		{name: "forward from the start for newer lines", newer: true, wantSize: logPageSize},
+		{name: "back from the end when the line is before the range", id: lineID(from.Add(-1)), wantSize: -logPageSize},
+		{name: "forward from the start when the line is after the range", id: lineID(from.Add(2 * time.Minute)), newer: true, wantSize: logPageSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+			qm := NominalQueryModel{Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog, ScrollID: tc.id, ScrollNewer: tc.newer}
+			req := qe.buildComputeRequest(qm, backend.TimeRange{From: from, To: from.Add(time.Minute)})
+			page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Node).SummarizationStrategy)
+			if page.PageSize != tc.wantSize || page.PageToken != nil {
+				t.Errorf("page = %d with token %v; want %d without a token", page.PageSize, page.PageToken, tc.wantSize)
+			}
+		})
 	}
 }
 

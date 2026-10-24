@@ -643,6 +643,8 @@ describe('query', () => {
         compute: boolean;
         lines: Line[];
         size: number;
+        // The service's in-memory pager sends the line a page continues from again.
+        repeats?: boolean;
       }
       const ns = (l: Line) => l.ms * 1e6 + l.nanos;
       // Newest first; lines that share a time are ordered by service id, highest first.
@@ -661,8 +663,8 @@ describe('query', () => {
       });
 
       // serve models the backend's page. SQL ends a page at the line it continues from, inclusive and by
-      // time only. Compute pages strictly after the line by time and service id, as the compute API's page
-      // token does. Grafana's bound covers its whole millisecond. A page holds the newest lines, or the
+      // time only. Compute pages strictly after the line by time and service id, or from the line itself
+      // with repeats. Grafana's bound covers its whole millisecond. A page holds the newest lines, or the
       // oldest when asc.
       const serve = (q: Query, from: number, to: number, scrollId?: string, asc = false) => {
         const c = q.lines.find((l) => l.id === scrollId);
@@ -674,7 +676,9 @@ describe('query', () => {
         }
         const past = (l: Line) => (asc ? newestFirst(l, cursor!) : newestFirst(cursor!, l)) < 0;
         const inPage = q.lines
-          .filter((l) => ns(l) >= start && ns(l) <= end && !(cursor && q.compute && !past(l)))
+          .filter(
+            (l) => ns(l) >= start && ns(l) <= end && !(cursor && q.compute && !past(l) && !(q.repeats && l === cursor))
+          )
           .sort(newestFirst);
         const rows = asc ? inPage.slice(-q.size) : inPage.slice(0, q.size);
         return logPage(
@@ -756,12 +760,18 @@ describe('query', () => {
         expect(await scrollAll(q, { latch })).toEqual(ids(q));
       });
 
+      // C's pages at one time move only by id, so S's line in the range's first second waits for them, and
+      // no longer once C has no line past the one its page continues from.
       it.each([
-        ['', []],
-        [', a page dropped', [1]],
-      ])('shows every Compute line at one time across page edges%s', async (_, drops) => {
+        ['', [], false],
+        [', a page dropped', [1], false],
+        [' when the service repeats the line a page continues from', [], true],
+      ])('shows every Compute line at one time across page edges%s', async (_, drops, repeats) => {
         const tied = [9, 8, 7, 6, 5, 4, 3, 2, 1].map((sid) => [30000, 0, sid]);
-        const q = [query('C', 'compute', [...tied, [20000], [10000]], 3)];
+        const q = [
+          { ...query('C', 'compute', [...tied, [20000], [10000]], 3), repeats },
+          query('S', 'sql', [[59000], [31000], [500]], 2),
+        ];
         expect(await scrollAll(q, { drops })).toEqual(ids(q));
       });
 
