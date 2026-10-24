@@ -325,6 +325,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[computeapi.BucketedCartesian3dPlot]("bucketedCartesian3d"),
 		unsupportedComputeResponse[computeapi.FrequencyDomainPlot]("frequencyDomain"),
 		unsupportedComputeResponse[computeapi.FrequencyDomainPlotV2]("frequencyDomainV2"),
+		unsupportedComputeResponse[computeapi.SpectrogramPlot]("spectrogram"),
 		unsupportedComputeResponse[computeapi.BucketedFrequencyDomainPlot]("bucketedFrequencyDomain"),
 		unsupportedComputeResponse[computeapi.NumericHistogramPlot]("numericHistogram"),
 		unsupportedComputeResponse[computeapi.EnumHistogramPlot]("enumHistogram"),
