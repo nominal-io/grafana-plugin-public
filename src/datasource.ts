@@ -18,6 +18,73 @@ import { NominalVariableSupport } from './variables';
 import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
 
+// Grafana asks for the next page of logs with a range that ends at the millisecond of the oldest line
+// it has merged, or for oldest-first panels starts at the newest one's. pageEdges keeps those two lines
+// of each log query run to the nanosecond, so the next page continues from the line instead of
+// rereading its whole millisecond. Runs are keyed by requestId, which Grafana keeps across a run's
+// scroll pages. The map is module-level because Grafana 13 dashboards send scroll requests through a
+// different data source instance than the first query.
+interface Edges {
+  oldest: Edge;
+  newest: Edge;
+}
+interface Edge {
+  ms: number;
+  nanos: number;
+}
+const pageEdges = new Map<string, Edges & { query: string }>();
+// Dashboards start a new run, and so a new entry, on every refresh.
+const maxPageEdges = 200;
+
+const isOlder = (a: Edge, b: Edge) => a.ms < b.ms || (a.ms === b.ms && a.nanos < b.nanos);
+// A run's scroll pages repeat its query.
+const querySignature = (q: NominalQuery) =>
+  JSON.stringify([q.queryType, q.rawSql, q.assetRid, q.dataScopeName, q.channel, q.channelDataType]);
+
+function scrollBounds(runKey: string, query: string, from: number, to: number): Partial<NominalQuery> {
+  const run = pageEdges.get(runKey);
+  if (!run || run.query !== query) {
+    return {};
+  }
+  if (to === run.oldest.ms) {
+    return { scrollEndNanos: run.oldest.nanos };
+  }
+  if (from === run.newest.ms) {
+    return { scrollStartNanos: run.newest.nanos };
+  }
+  return {};
+}
+
+// frameEdges returns a log frame's oldest and newest lines. Lines arrive newest first.
+function frameEdges(frame: DataFrame): Edges | undefined {
+  const times = frame.fields.find((field) => field.type === FieldType.time);
+  if (!times || times.values.length === 0) {
+    return undefined;
+  }
+  const edge = (i: number) => ({ ms: times.values[i], nanos: times.nanos?.[i] ?? 0 });
+  return { oldest: edge(times.values.length - 1), newest: edge(0) };
+}
+
+// recordPage starts a run at a page's edges, or widens the run when the page continues it.
+function recordPage(runKey: string, query: string, edges: Edges, continues: boolean) {
+  const run = pageEdges.get(runKey);
+  // Deleting first moves the run to the end of the map, so the cap evicts the least recently used.
+  pageEdges.delete(runKey);
+  pageEdges.set(
+    runKey,
+    continues && run && run.query === query
+      ? {
+          query,
+          oldest: isOlder(run.oldest, edges.oldest) ? run.oldest : edges.oldest,
+          newest: isOlder(edges.newest, run.newest) ? run.newest : edges.newest,
+        }
+      : { query, ...edges }
+  );
+  if (pageEdges.size > maxPageEdges) {
+    pageEdges.delete(pageEdges.keys().next().value!);
+  }
+}
+
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
 
@@ -42,16 +109,39 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
 
   query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
-    return super.query(request).pipe(
+    // Mixed-datasource panels prefix each datasource's requestId; their scroll requests do not.
+    const requestId = request.requestId.replace(/^mixed-\d+-/, '');
+    const key = (target: NominalQuery) => `${target.datasource?.uid ?? this.uid}|${requestId}|${target.refId}`;
+    // Explore keeps one requestId per pane for every run, so only its scroll targets, which Grafana
+    // marks, continue a run.
+    const scrolling = (target: NominalQuery) =>
+      request.app !== CoreApp.Explore ||
+      (target as { supportingQueryType?: string }).supportingQueryType === 'infiniteScroll';
+    const from = request.range.from.valueOf();
+    const to = request.range.to.valueOf();
+    const targets = request.targets.map((target) =>
+      scrolling(target) ? { ...target, ...scrollBounds(key(target), querySignature(target), from, to) } : target
+    );
+    return super.query({ ...request, targets }).pipe(
       map((response) => {
-        // Explore's page merge loses alignment when only some pages carry nanos.
+        // A non-scroll request starts a new run, so the last run's edges go even when this one has no lines.
+        targets.forEach((target) => !scrolling(target) && pageEdges.delete(key(target)));
+        // Explore drops a whole scroll page when any query in it errors, so that page must not move a run.
+        const dropped = request.app === CoreApp.Explore && Boolean(response.errors?.length);
         response.data.forEach((frame: DataFrame) => {
-          if (frame.meta?.type === DataFrameType.LogLines) {
-            frame.fields.forEach((field) => {
-              if (field.type === FieldType.time && !field.nanos) {
-                field.nanos = new Array(field.values.length).fill(0);
-              }
-            });
+          if (frame.meta?.type !== DataFrameType.LogLines) {
+            return;
+          }
+          frame.fields.forEach((field) => {
+            // Explore's page merge loses alignment when only some pages carry nanos.
+            if (field.type === FieldType.time && !field.nanos) {
+              field.nanos = new Array(field.values.length).fill(0);
+            }
+          });
+          const target = targets.find((t) => t.refId === frame.refId);
+          const edges = frameEdges(frame);
+          if (target && edges && !(dropped && scrolling(target))) {
+            recordPage(key(target), querySignature(target), edges, scrolling(target));
           }
         });
         return response;

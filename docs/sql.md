@@ -125,26 +125,38 @@ volume histogram. Grafana recognizes levels such as `error`, `warn` and
 words in the message, so a line that mentions an alert can show as critical. If
 the level is under another key, rename it, as in `args['severity'] AS level`.
 
-To load older lines as you scroll, keep `$__timeFilter(ts)`, `ORDER BY ts DESC`
-and a `LIMIT` in the query, with `ts` as the log time column. A query without
-them still shows its rows newest first, but each scroll loads the wrong rows.
-Infinite scrolling is on in Explore. In a dashboard, turn on the Logs panel's
+To load more lines as you scroll, keep `$__timeFilter(ts)`, an `ORDER BY ts`
+that matches the log order, and a `LIMIT` in the query, with `ts` as the log
+time column. Logs show newest first by default: use `ORDER BY ts DESC`, and
+scrolling loads older lines. In a panel set to oldest first, use
+`ORDER BY ts ASC`, and scrolling loads newer lines. A query without them still
+shows its rows in order, but each scroll loads the wrong rows. Infinite
+scrolling is on in Explore. In a dashboard, turn on the Logs panel's
 **Enable infinite scrolling** option.
 
-In Logs format, `$__timeTo()` and the end of `$__timeFilter(ts)` move to the
-end of their millisecond, up to 1 ms past the time picker, so scrolling does not
-skip older lines in that millisecond.
+Each scroll continues from the last line shown, to the nanosecond, so a
+millisecond that holds more lines than the `LIMIT` loads across scrolls. On the
+first page, the end of `$__timeFilter(ts)` moves to the end of its millisecond,
+up to 1 ms past the time picker. In Logs format, `$__timeFrom()` and
+`$__timeTo()` reach 1 ns past each end of `$__timeFilter(ts)`'s range, so a
+query that compares them with `<` or `>` keeps lines at the exact end.
 
 Limits:
 
 - Explore's volume histogram counts only the rows the query returned.
-- If one millisecond holds a full page of rows (the `LIMIT`), scrolling stops
-  at that millisecond.
-- Scrolling stops within one second of the start of the time range. If the
-  last page was full, lines in that second can be missing. To see them, start
-  the time range a few seconds earlier.
-- With the log order set to oldest first, scrolling can skip lines. Keep it
-  newest first.
+- If as many lines as the `LIMIT` share one exact time, scrolling stops there.
+  Raise the `LIMIT` to read past it. Lines stored with millisecond or coarser
+  times share a time with every line in that millisecond.
+- A query that compares `$__timeFrom()` or `$__timeTo()` with `<=`, `>=` or
+  `BETWEEN` also stops where as many lines as the `LIMIT` fall within two
+  consecutive nanoseconds. `$__timeFilter(ts)` does not.
+- Scrolling stops once the lines shown come within one second of the edge of
+  the time range. If the last page loaded filled the `LIMIT` and ended within
+  that second, any remaining lines are not shown, despite the panel saying "End
+  of the selected time range". To see them, start the time range a few seconds
+  earlier for newest first, or end it a few seconds later for oldest first.
+- In Explore, changing the log order does not run the query again. Change the
+  `ORDER BY` to match and run the query.
 - In a dashboard, the filter buttons in the Logs panel's log details have no
   effect on SQL queries.
 

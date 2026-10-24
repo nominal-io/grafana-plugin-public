@@ -21,6 +21,9 @@ export interface NominalQuery extends DataQuery {
   queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
   rawSql?: string;
   format?: SqlFormat;
+  // Set on log scroll requests: where the page's range starts or ends within its millisecond.
+  scrollStartNanos?: number;
+  scrollEndNanos?: number;
 
   // Template variables support
   templateVariables?: Record<string, any>;
