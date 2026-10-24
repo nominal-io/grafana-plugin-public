@@ -302,7 +302,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
-				result.LogLines.add(time.Unix(int64(ts.Seconds), int64(ts.Nanos)), val.Message, labelEncoder.encode(val.Args))
+				t := time.Unix(int64(ts.Seconds), int64(ts.Nanos))
+				labels := labelEncoder.encode(val.Args)
+				result.LogLines.add(t, val.Message, labels, &val.Id)
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
@@ -315,7 +317,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				return nil
 			}
 			result.LogLines = newLogLines(1)
-			result.LogLines.add(time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)), lp.Value.Message, marshalLogArgs(lp.Value.Args, qm.Channel))
+			t := time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos))
+			labels := marshalLogArgs(lp.Value.Args, qm.Channel)
+			result.LogLines.add(t, lp.Value.Message, labels, &lp.Value.Id)
 			result.IsLog = true
 			return nil
 		},

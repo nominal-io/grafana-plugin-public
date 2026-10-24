@@ -84,7 +84,7 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 				body = bodies.ValueStr(i)
 			}
 			t := timeAt(i)
-			lines.add(t, body, encoded)
+			lines.add(t, body, encoded, nil)
 		}
 	}
 	return logLinesFrame(name, &lines), nil

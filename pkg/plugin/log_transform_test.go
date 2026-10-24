@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
@@ -261,7 +262,7 @@ func TestLogPagedTransformation(t *testing.T) {
 			if got := frame.Fields[1].At(row).(string); got != messages[sourceIndex] {
 				t.Errorf("row %d body = %q, want %q", row, got, messages[sourceIndex])
 			}
-			wantPrefix := strconv.FormatInt(wantTime.UnixNano(), 10) + ":"
+			wantPrefix := strconv.FormatInt(wantTime.UnixNano(), 10) + ":" + (uuid.UUID{byte(sourceIndex)}).String() + ":"
 			if got := frame.Fields[2].At(row).(string); !strings.HasPrefix(got, wantPrefix) {
 				t.Errorf("row %d id = %q, want prefix %q", row, got, wantPrefix)
 			}
@@ -362,7 +363,7 @@ func TestLogLinesFrameKeepsSourceOrderForEqualTimes(t *testing.T) {
 	lines := newLogLines(100)
 	base := time.Unix(1704067200, 0)
 	for i := range 100 {
-		lines.add(base.Add(time.Duration(i%7)*time.Second), strconv.Itoa(i), nil)
+		lines.add(base.Add(time.Duration(i%7)*time.Second), strconv.Itoa(i), nil, nil)
 	}
 	frame := logLinesFrame("A", &lines)
 	for i := 1; i < frame.Rows(); i++ {
@@ -451,5 +452,34 @@ func TestLogFramesCarryDistinctChannelLabels(t *testing.T) {
 	}
 	if a == b {
 		t.Errorf("expected distinct nominal.channel labels, both were %q", a)
+	}
+}
+
+func TestLogPageRange(t *testing.T) {
+	from := time.Date(2026, 10, 12, 10, 0, 0, 5_000_000, time.UTC)
+	to := time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)
+	toEnd := to.Add(time.Millisecond - 1)
+	id := func(at time.Time) string { return strconv.FormatInt(at.UnixNano(), 10) + ":1f" }
+	for _, tc := range []struct {
+		name             string
+		id               string
+		newer            bool
+		wantFrom, wantTo time.Time
+	}{
+		{name: "covers the last millisecond", wantFrom: from, wantTo: toEnd},
+		{name: "ends at the oldest line", id: id(to.Add(345)), wantFrom: from, wantTo: to.Add(345)},
+		{name: "ends at a line past Grafana's range", id: id(to.Add(time.Second)), wantFrom: from, wantTo: to.Add(time.Second)},
+		{name: "starts at the newest line", id: id(from.Add(7)), newer: true, wantFrom: from.Add(7), wantTo: toEnd},
+		{name: "starts at a line before Grafana's range", id: id(from.Add(-time.Second)), newer: true, wantFrom: from.Add(-time.Second), wantTo: toEnd},
+		{name: "ignores an older line before the range", id: id(from.Add(-1)), wantFrom: from, wantTo: toEnd},
+		{name: "ignores a newer line after the range", id: id(toEnd.Add(1)), newer: true, wantFrom: from, wantTo: toEnd},
+		{name: "ignores an id without a time", id: "x:1f", wantFrom: from, wantTo: toEnd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := logPageRange(backend.TimeRange{From: from, To: to}, NominalQueryModel{ScrollID: tc.id, ScrollNewer: tc.newer})
+			if !got.From.Equal(tc.wantFrom) || !got.To.Equal(tc.wantTo) {
+				t.Errorf("logPageRange() = %v to %v; want %v to %v", got.From, got.To, tc.wantFrom, tc.wantTo)
+			}
+		})
 	}
 }

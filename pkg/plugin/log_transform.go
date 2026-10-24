@@ -8,9 +8,12 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
+	"github.com/palantir/pkg/uuid"
 )
 
 // logLines holds log entries as the columns of a log-lines frame.
@@ -38,13 +41,18 @@ func newLogLines(n int) logLines {
 	}
 }
 
-// add appends a line with the id <unix ns>:<hash>, where the hash covers what Grafana shows of the
-// line. Grafana drops a row whose id it has already shown, so repeats of a row are numbered. The
-// next page reads its boundary millisecond again in full, so the numbers match across pages.
-func (l *logLines) add(t time.Time, body string, labels json.RawMessage) {
-	hash := logEntryHash(t, body, labels)
+// add appends a line with the id <unix ns>:[<service id>:]<hash>. The service id is the source's own
+// id for the line, when it has one. The hash covers it and what Grafana shows of the line.
+// Grafana drops a row whose id it has already shown, so repeats of a line are numbered. Only lines
+// the service cannot tell apart share a count, and a page rereads all or none of those, which keeps
+// their numbers the same on every page that holds them.
+func (l *logLines) add(t time.Time, body string, labels json.RawMessage, serviceID *uuid.UUID) {
+	hash := logEntryHash(t, body, labels, serviceID)
 	var buf [96]byte
 	id := strconv.AppendInt(buf[:0], t.UnixNano(), 10)
+	if serviceID != nil {
+		id = append(append(id, ':'), serviceID.String()...)
+	}
 	id = strconv.AppendUint(append(id, ':'), hash, 16)
 	if n := l.repeats[hash]; n > 0 {
 		id = strconv.AppendInt(append(id, '_'), int64(n), 10)
@@ -58,12 +66,15 @@ func (l *logLines) add(t time.Time, body string, labels json.RawMessage) {
 
 // logEntryHash hashes a line so the same line gets the same id on every page, which Grafana uses to
 // drop lines repeated between pages.
-func logEntryHash(t time.Time, body string, labels []byte) uint64 {
+func logEntryHash(t time.Time, body string, labels []byte, serviceID *uuid.UUID) uint64 {
 	h := fnv.New64a()
 	h.Write(binary.BigEndian.AppendUint64(nil, uint64(t.UnixNano())))
 	h.Write([]byte(body))
 	h.Write([]byte{0})
 	h.Write(labels)
+	if serviceID != nil {
+		h.Write(serviceID[:])
+	}
 	return h.Sum64()
 }
 
@@ -188,4 +199,49 @@ func logLinesFrame(name string, lines *logLines) *data.Frame {
 		PreferredVisualization: data.VisTypeLogs,
 	}
 	return frame
+}
+
+// logPageRange returns a Logs query's range. Infinite scroll ends the next page at the oldest shown
+// line's millisecond, or for oldest-first panels starts it at the newest line's, so the range covers
+// the rest of its last millisecond. A page that continues from a line ends at that line's time
+// instead, or starts there when it reads newer lines, which can reach past Grafana's range: that
+// range is shared by every query of a panel, and another query's lines may have set it. A line on the
+// far side of the range, left from an earlier range, is ignored. Grafana drops lines read again by id.
+//
+// TODO: SQL scrolling still stops where as many lines as the LIMIT share one exact time, since
+// nothing in a row tells those lines apart.
+func logPageRange(r backend.TimeRange, qm NominalQueryModel) backend.TimeRange {
+	r.To = r.To.Truncate(time.Millisecond).Add(time.Millisecond - time.Nanosecond)
+	cursor, ok := parseLogLineID(qm.ScrollID)
+	switch {
+	case !ok:
+	case qm.ScrollNewer && !cursor.at.After(r.To):
+		r.From = cursor.at
+	case !qm.ScrollNewer && !cursor.at.Before(r.From):
+		r.To = cursor.at
+	}
+	return r
+}
+
+// logCursor is a line that a page continues from.
+type logCursor struct {
+	at time.Time
+	// serviceID is set for Compute lines, whose service orders lines that share a time by it.
+	serviceID *uuid.UUID
+}
+
+// parseLogLineID reads a line id made by logLines.add.
+func parseLogLineID(id string) (logCursor, bool) {
+	unixNano, rest, _ := strings.Cut(id, ":")
+	ns, err := strconv.ParseInt(unixNano, 10, 64)
+	if err != nil {
+		return logCursor{}, false
+	}
+	cursor := logCursor{at: time.Unix(0, ns)}
+	if serviceID, _, ok := strings.Cut(rest, ":"); ok {
+		if u, err := uuid.ParseUUID(serviceID); err == nil {
+			cursor.serviceID = &u
+		}
+	}
+	return cursor, true
 }

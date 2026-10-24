@@ -27,12 +27,15 @@ func TestInterpolateSQLMacros(t *testing.T) {
 		name     string
 		sql      string
 		interval time.Duration
+		format   sqlutil.FormatQueryOption
 		want     string
 	}{
 		{name: "time filter", sql: "WHERE $__timeFilter(ts)", want: "WHERE ts BETWEEN " + from + " AND " + to},
 		{name: "time filter on an expression", sql: "$__timeFilter(CAST(ts AS TIMESTAMP))", want: "CAST(ts AS TIMESTAMP) BETWEEN " + from + " AND " + to},
 		{name: "time bounds", sql: "$__timeFrom() AND $__timeTo()", want: from + " AND " + to},
 		{name: "time bounds without parentheses", sql: "$__timeFrom AND $__timeTo", want: from + " AND " + to},
+		{name: "logs time bounds", sql: "$__timeFrom() AND $__timeTo()", format: sqlutil.FormatOptionLogs, want: "TIMESTAMP '2026-09-17 19:00:00.249999999' AND TIMESTAMP '2026-09-17 20:00:00.000000002'"},
+		{name: "logs time filter", sql: "WHERE $__timeFilter(ts)", format: sqlutil.FormatOptionLogs, want: "WHERE ts BETWEEN " + from + " AND " + to},
 		{name: "panel interval", sql: "$__timeGroup(ts)", interval: 500 * time.Millisecond, want: "DATE_BIN(INTERVAL '0.5' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "missing panel interval", sql: "$__timeGroup(ts)", want: "DATE_BIN(INTERVAL '1' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
 		{name: "fixed interval", sql: "$__timeGroup(ts, 1m)", want: "DATE_BIN(INTERVAL '60' SECOND, ts, TIMESTAMP '1970-01-01 00:00:00')"},
@@ -43,7 +46,9 @@ func TestInterpolateSQLMacros(t *testing.T) {
 		{name: "SDK interval", sql: "$__interval", interval: 500 * time.Millisecond, want: "500ms"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := sqlutil.Interpolate(sqlMacroTestQuery(tc.interval).WithSQL(tc.sql), sqlMacros)
+			query := sqlMacroTestQuery(tc.interval).WithSQL(tc.sql)
+			query.Format = tc.format
+			got, err := sqlutil.Interpolate(query, sqlMacros)
 			if err != nil || got != tc.want {
 				t.Errorf("Interpolate(%q) = %q, %v; want %q", tc.sql, got, err, tc.want)
 			}
