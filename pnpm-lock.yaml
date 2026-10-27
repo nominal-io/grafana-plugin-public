@@ -159,7 +159,7 @@ importers:
         version: 16.0.8(sass@1.105.1)(webpack@5.101.0)
       semver:
         specifier: ^7.6.3
-        version: 7.7.3
+        version: 7.8.5
       style-loader:
         specifier: 3.3.3
         version: 3.3.3(webpack@5.101.0)
@@ -4128,8 +4128,8 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.7.3:
-    resolution: {integrity: sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==}
+  semver@7.8.5:
+    resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -5290,14 +5290,14 @@ snapshots:
   '@grafana/e2e-selectors@12.1.0':
     dependencies:
       '@grafana/tsconfig': 2.2.0
-      semver: 7.7.3
+      semver: 7.8.5
       tslib: 2.8.1
       typescript: 5.8.3
 
   '@grafana/e2e-selectors@12.1.10':
     dependencies:
       '@grafana/tsconfig': 2.2.0
-      semver: 7.7.3
+      semver: 7.8.5
       tslib: 2.8.1
       typescript: 5.8.3
 
@@ -5346,7 +5346,7 @@ snapshots:
     dependencies:
       '@grafana/e2e-selectors': 12.1.0
       '@playwright/test': 1.57.0
-      semver: 7.7.3
+      semver: 7.8.5
       uuid: 11.1.1
       yaml: 2.8.0
 
@@ -6434,7 +6434,7 @@ snapshots:
       '@typescript-eslint/visitor-keys': 8.71.2
       debug: 4.4.3
       minimatch: 10.2.4
-      semver: 7.7.3
+      semver: 7.8.5
       tinyglobby: 0.2.15
       ts-api-utils: 2.5.0(typescript@5.5.4)
       typescript: 5.5.4
@@ -7033,7 +7033,7 @@ snapshots:
       postcss-modules-scope: 3.2.1(postcss@8.5.23)
       postcss-modules-values: 4.0.0(postcss@8.5.23)
       postcss-value-parser: 4.2.0
-      semver: 7.7.3
+      semver: 7.8.5
     optionalDependencies:
       webpack: 5.101.0(@swc/core@1.13.3(@swc/helpers@0.5.17))(webpack-cli@5.1.4)
 
@@ -7509,7 +7509,7 @@ snapshots:
       eslint: 8.57.1
       esquery: 1.6.0
       is-builtin-module: 3.2.1
-      semver: 7.7.3
+      semver: 7.8.5
       spdx-expression-parse: 4.0.0
     transitivePeerDependencies:
       - supports-color
@@ -7739,7 +7739,7 @@ snapshots:
       minimatch: 3.1.5
       node-abort-controller: 3.1.1
       schema-utils: 3.3.0
-      semver: 7.7.3
+      semver: 7.8.5
       tapable: 2.2.2
       typescript: 5.5.4
       webpack: 5.101.0(@swc/core@1.13.3(@swc/helpers@0.5.17))(webpack-cli@5.1.4)
@@ -8187,7 +8187,7 @@ snapshots:
       '@babel/parser': 7.28.0
       '@istanbuljs/schema': 0.1.3
       istanbul-lib-coverage: 3.2.2
-      semver: 7.7.3
+      semver: 7.8.5
     transitivePeerDependencies:
       - supports-color
 
@@ -8492,7 +8492,7 @@ snapshots:
       jest-message-util: 30.5.1
       jest-util: 30.5.1
       pretty-format: 30.5.1
-      semver: 7.7.3
+      semver: 7.8.5
       synckit: 0.11.13
     transitivePeerDependencies:
       - supports-color
@@ -8679,7 +8679,7 @@ snapshots:
 
   make-dir@4.0.0:
     dependencies:
-      semver: 7.7.3
+      semver: 7.8.5
 
   make-error@1.3.6: {}
 
@@ -9543,7 +9543,7 @@ snapshots:
 
   semver@6.3.1: {}
 
-  semver@7.7.3: {}
+  semver@7.8.5: {}
 
   serialize-javascript@7.0.4: {}
 
