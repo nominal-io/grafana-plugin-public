@@ -34,6 +34,14 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
 		return h.handleChannelVariables(ctx, req, sender)
+	case "oauth/start":
+		return h.handleOAuthStart(ctx, req, sender)
+	case "oauth/callback":
+		return h.handleOAuthCallback(ctx, req, sender)
+	case "oauth/status":
+		return h.handleOAuthStatus(ctx, req, sender)
+	case "oauth/logout":
+		return h.handleOAuthLogout(ctx, req, sender)
 	// Old names kept for browser tabs holding a stale bundle.
 	case "search-assets", "scout/v1/search-assets":
 		return h.handleSearchAssets(ctx, req, sender)
@@ -86,11 +94,14 @@ func decodeOptionalResourceJSON(req *backend.CallResourceRequest, sender backend
 	return decodeResourceJSON(req.Body, sender, target, logMessage)
 }
 
-func loadResourceSettings(settings backend.DataSourceInstanceSettings, sender backend.CallResourceResponseSender, logMessage string) (*models.PluginSettings, bool, error) {
-	config, err := models.LoadPluginSettings(settings)
+func (d *Datasource) loadResourceSettings(ctx context.Context, sender backend.CallResourceResponseSender, logMessage string) (*models.PluginSettings, bool, error) {
+	config, err := models.LoadPluginSettings(d.settings)
 	if err != nil {
 		log.DefaultLogger.Error(logMessage, "error", err)
 		return nil, false, jsonErrorResponse(sender, http.StatusInternalServerError, "Failed to load settings")
+	}
+	if err := d.applyOAuthCredential(ctx, config); err != nil {
+		return nil, false, jsonErrorResponse(sender, http.StatusUnauthorized, err.Error())
 	}
 	return config, true, nil
 }
@@ -113,7 +124,7 @@ func (h *NominalResourceHandler) handleSearchAssets(ctx context.Context, req *ba
 	if search == nil {
 		return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid request body")
 	}
-	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "search-assets: failed to load settings")
+	config, ok, err := h.datasource.loadResourceSettings(ctx, sender, "search-assets: failed to load settings")
 	if !ok {
 		return err
 	}
@@ -137,7 +148,7 @@ func (h *NominalResourceHandler) handleAssetsByRid(ctx context.Context, req *bac
 			return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid asset RID")
 		}
 	}
-	config, ok, err := loadResourceSettings(h.datasource.settings, sender, "assets-by-rid: failed to load settings")
+	config, ok, err := h.datasource.loadResourceSettings(ctx, sender, "assets-by-rid: failed to load settings")
 	if !ok {
 		return err
 	}

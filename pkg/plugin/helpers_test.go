@@ -255,7 +255,7 @@ func withCatalog(ds *Datasource) *Datasource {
 func newTestQueryExecution(ds *Datasource, config *models.PluginSettings) *NominalQueryExecution {
 	if config == nil {
 		config = &models.PluginSettings{
-			Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+			Secrets: &models.SecretPluginSettings{AuthToken: "test-key"},
 		}
 	}
 	return newNominalQueryExecution(ds, config)

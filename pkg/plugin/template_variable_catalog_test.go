@@ -39,7 +39,7 @@ func TestTemplateVariableCatalogAssetsFiltersAndShapesMetricFindValues(t *testin
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 
@@ -76,7 +76,7 @@ func TestTemplateVariableCatalogDatascopesFiltersAndHandlesUnresolvedVariables(t
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 
@@ -128,7 +128,7 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 
