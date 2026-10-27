@@ -41,8 +41,8 @@
       dependencyDashboardApproval: false
     },
     {
-      // Prioritize Nominal API client updates - create PRs immediately
-      matchPackageNames: ["github.com/nominal-io/nominal-api-go", "github.com/nominal-io/nominal-api-protos-go"],
+      // Prioritize nominal-api-go updates - create PRs immediately
+      matchPackageNames: ["github.com/nominal-io/nominal-api-go"],
       prCreation: "immediate",
       reviewers: ["leundai"],
       labels: ["dependencies", "nominal-api-go"],
@@ -50,10 +50,15 @@
       groupSlug: "nominal-api-go"
     },
     {
-      // Group other Go dependency updates
+      // Group other Go dependency updates. nominal-api-protos-go and
+      // conjure-go-runtime keep their own PRs.
       matchManagers: ["gomod"],
       matchUpdateTypes: ["minor", "patch", "digest"],
-      matchPackageNames: ["!github.com/nominal-io/nominal-api-go", "!github.com/nominal-io/nominal-api-protos-go"],
+      matchPackageNames: [
+        "!github.com/nominal-io/nominal-api-go",
+        "!github.com/nominal-io/nominal-api-protos-go",
+        "!github.com/palantir/conjure-go-runtime/v2"
+      ],
       groupName: "go dependencies (non-major)",
       groupSlug: "go-non-major"
     },
