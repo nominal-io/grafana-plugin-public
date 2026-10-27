@@ -1,13 +1,70 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  extends: ["config:recommended", ":automergeMinor"],
+  extends: ["config:recommended"],
+  automerge: false,
   includePaths: [
     "go.mod",
     "go.sum",
+    "package.json",
+    "pnpm-lock.yaml",
     ".github/**"
   ],
   postUpdateOptions: ["gomodTidy"],
   packageRules: [
+    {
+      // Allow npm releases to age before proposing regular updates
+      matchDatasources: ["npm"],
+      matchUpdateTypes: ["major", "minor", "patch"],
+      minimumReleaseAge: "1 day"
+    },
+    {
+      // Group routine updates to security overrides
+      matchManagers: ["npm"],
+      matchDepTypes: ["pnpm.overrides"],
+      matchUpdateTypes: ["minor", "patch"],
+      groupName: "pnpm overrides",
+      groupSlug: "pnpm-overrides"
+    },
+    {
+      // Keep Grafana packages aligned and review minor and major updates
+      matchManagers: ["npm"],
+      matchPackageNames: ["@grafana/data", "@grafana/runtime", "@grafana/schema", "@grafana/ui"],
+      groupName: "Grafana frontend packages",
+      groupSlug: "grafana-frontend",
+      separateMinorPatch: true,
+      dependencyDashboardApproval: true
+    },
+    {
+      // Open patches for the current package minor version automatically
+      matchManagers: ["npm"],
+      matchUpdateTypes: ["patch"],
+      matchPackageNames: ["@grafana/data", "@grafana/runtime", "@grafana/schema", "@grafana/ui"],
+      dependencyDashboardApproval: false
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["devDependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      matchPackageNames: ["eslint", "eslint-*", "@typescript-eslint/**", "@stylistic/**", "@grafana/eslint-config", "prettier"],
+      groupName: "frontend lint and formatting",
+      groupSlug: "frontend-lint-format"
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["devDependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      matchPackageNames: ["jest", "jest-*", "@types/jest", "@testing-library/**", "@types/testing-library__jest-dom", "@playwright/test", "@grafana/plugin-e2e", "@swc/jest"],
+      groupName: "frontend testing",
+      groupSlug: "frontend-testing"
+    },
+    {
+      matchManagers: ["npm"],
+      matchDepTypes: ["devDependencies"],
+      matchUpdateTypes: ["minor", "patch"],
+      matchPackageNames: ["webpack", "webpack-*", "*-webpack-plugin", "*-loader", "@swc/core", "@swc/helpers"],
+      groupName: "frontend build tooling",
+      groupSlug: "frontend-build"
+    },
     {
       // Prioritize nominal-api-go updates - create PRs immediately
       matchPackageNames: ["github.com/nominal-io/nominal-api-go"],
@@ -15,8 +72,7 @@
       reviewers: ["leundai"],
       labels: ["dependencies", "nominal-api-go"],
       groupName: "nominal-api-go",
-      groupSlug: "nominal-api-go",
-      automerge: false
+      groupSlug: "nominal-api-go"
     },
     {
       // Group other Go dependency updates
@@ -32,6 +88,13 @@
       groupName: "github actions",
       groupSlug: "github-actions",
       separateMajorMinor: false
+    },
+    {
+      // Require approval for frontend majors. Grafana packages stay grouped;
+      // other majors open as separate PRs.
+      matchManagers: ["npm"],
+      matchUpdateTypes: ["major"],
+      dependencyDashboardApproval: true
     }
   ],
   schedule: ["at any time"],

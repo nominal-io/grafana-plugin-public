@@ -100,7 +100,8 @@
       "websocket-driver": ">=0.7.5",
       "postcss": ">=8.5.18",
       "uuid": "^11.1.1",
-      "browserslist": "^4.28.7"
+      "browserslist": "^4.28.7",
+      "dompurify": "^3.4.17"
     }
   }
 }
