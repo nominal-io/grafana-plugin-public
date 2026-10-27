@@ -4,5 +4,8 @@
   "channels": "channels",
   "assets": "assets",
   "datascopes": "datascopes",
-  "channelVariables": "channelvariables"
+  "channelVariables": "channelvariables",
+  "oauthStart": "oauth/start",
+  "oauthStatus": "oauth/status",
+  "oauthLogout": "oauth/logout"
 }

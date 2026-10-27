@@ -83,6 +83,8 @@ export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
   workspaceRid?: string;
   path?: string; // Legacy support
+  authMode?: 'apiKey' | 'oauth';
+  oauthClientId?: string;
 }
 
 /**
