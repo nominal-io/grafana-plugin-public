@@ -50,7 +50,7 @@ importers:
         version: 12.1.10(@types/react@19.2.9)(eslint@8.57.1)(react-dom@18.2.0(react@18.2.0))(react@18.2.0)(typescript@5.5.4)
       conjure-client:
         specifier: ^2.15.0
-        version: 2.15.0
+        version: 2.20.0
       react:
         specifier: 18.2.0
         version: 18.2.0
@@ -1933,8 +1933,8 @@ packages:
   concat-map@0.0.1:
     resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
 
-  conjure-client@2.15.0:
-    resolution: {integrity: sha512-AgB6kcgwQBjPAr/n6fghpmwR8ZX+5MSsmcbMFi3KQBhCg038JgLtS59O6WjVpi2IM35etF7DE/3I41k+GekTag==}
+  conjure-client@2.20.0:
+    resolution: {integrity: sha512-RALjipUkMldhIPKJYpD4zHTZwckyPI7uyHQVscwx41j/9xwM3fisPa4nTnez35qie450EXqhavmnSMIefWxpjg==}
 
   continuable-cache@0.3.1:
     resolution: {integrity: sha512-TF30kpKhTH8AGCG3dut0rdd/19B7Z+qCnrMoBLpyQu/2drZdNrrpcjPEoJeSVsQM+8KmWG5O56oPDjSSUsuTyA==}
@@ -6982,7 +6982,7 @@ snapshots:
 
   concat-map@0.0.1: {}
 
-  conjure-client@2.15.0:
+  conjure-client@2.20.0:
     dependencies:
       web-streams-polyfill: 3.3.3
 
