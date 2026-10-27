@@ -48,9 +48,6 @@ importers:
       '@grafana/ui':
         specifier: 12.1.10
         version: 12.1.10(@types/react@19.2.9)(eslint@8.57.1)(react-dom@18.2.0(react@18.2.0))(react@18.2.0)(typescript@5.5.4)
-      conjure-client:
-        specifier: ^2.15.0
-        version: 2.20.0
       react:
         specifier: 18.2.0
         version: 18.2.0
@@ -1932,9 +1929,6 @@ packages:
 
   concat-map@0.0.1:
     resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
-
-  conjure-client@2.20.0:
-    resolution: {integrity: sha512-RALjipUkMldhIPKJYpD4zHTZwckyPI7uyHQVscwx41j/9xwM3fisPa4nTnez35qie450EXqhavmnSMIefWxpjg==}
 
   continuable-cache@0.3.1:
     resolution: {integrity: sha512-TF30kpKhTH8AGCG3dut0rdd/19B7Z+qCnrMoBLpyQu/2drZdNrrpcjPEoJeSVsQM+8KmWG5O56oPDjSSUsuTyA==}
@@ -4650,10 +4644,6 @@ packages:
     resolution: {integrity: sha512-c5EGNOiyxxV5qmTtAB7rbiXxi1ooX1pQKMLX/MIabJjRA0SJBQOjKF+KSVfHkr9U1cADPon0mRiVe/riyaiDUA==}
     engines: {node: '>=10.13.0'}
 
-  web-streams-polyfill@3.3.3:
-    resolution: {integrity: sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw==}
-    engines: {node: '>= 8'}
-
   web-vitals@4.2.4:
     resolution: {integrity: sha512-r4DIlprAGwJ7YM11VZp4R884m0Vmgr6EAKe3P+kO0PPj3Unqyvv59rczf6UiGcb9Z8QxZVcqKNwv/g0WNdWwsw==}
 
@@ -6981,10 +6971,6 @@ snapshots:
   compute-scroll-into-view@3.1.1: {}
 
   concat-map@0.0.1: {}
-
-  conjure-client@2.20.0:
-    dependencies:
-      web-streams-polyfill: 3.3.3
 
   continuable-cache@0.3.1: {}
 
@@ -10129,8 +10115,6 @@ snapshots:
     dependencies:
       glob-to-regexp: 0.4.1
       graceful-fs: 4.2.11
-
-  web-streams-polyfill@3.3.3: {}
 
   web-vitals@4.2.4: {}
 
