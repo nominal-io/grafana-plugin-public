@@ -83,6 +83,8 @@ export interface NominalDataSourceOptions extends DataSourceJsonData {
   baseUrl?: string;
   workspaceRid?: string;
   path?: string; // Legacy support
+  authMode?: 'apiKey' | 'oauth';
+  oauthClientId?: string;
 }
 
 /**
@@ -90,6 +92,7 @@ export interface NominalDataSourceOptions extends DataSourceJsonData {
  */
 export interface NominalSecureJsonData {
   apiKey?: string;
+  oauthClientSecret?: string;
 }
 
 // Legacy type aliases for backward compatibility

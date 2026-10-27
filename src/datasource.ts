@@ -14,6 +14,7 @@ import resourceRoutes from './resourceRoutes.json';
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
+  usesOAuth: boolean;
 
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
@@ -31,8 +32,22 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         return target && { ...target, queryType: QUERY_TYPE_SQL, format: 'table' };
       },
     };
+    this.usesOAuth = instanceSettings.jsonData?.authMode === 'oauth';
   }
 
+  async getOAuthStatus(): Promise<boolean> {
+    const response = await this.postResource<{ signedIn: boolean }>(resourceRoutes.oauthStatus);
+    return response.signedIn;
+  }
+
+  async startOAuthSignIn(): Promise<string> {
+    const response = await this.postResource<{ authorizeUrl: string }>(resourceRoutes.oauthStart);
+    return response.authorizeUrl;
+  }
+
+  async signOutOAuth(): Promise<void> {
+    await this.postResource(resourceRoutes.oauthLogout);
+  }
 
 
   getDefaultQuery(_: CoreApp): Partial<NominalQuery> {

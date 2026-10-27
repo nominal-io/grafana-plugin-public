@@ -1,6 +1,6 @@
 import React, { ChangeEvent } from 'react';
 import { css } from '@emotion/css';
-import { InlineField, Input, SecretInput, useStyles2 } from '@grafana/ui';
+import { InlineField, Input, RadioButtonGroup, SecretInput, useStyles2 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, GrafanaTheme2 } from '@grafana/data';
 import { NominalDataSourceOptions, NominalSecureJsonData } from '../types';
 
@@ -48,6 +48,11 @@ export function ConfigEditor(props: Props) {
       },
     });
   };
+
+  const onJsonDataChange = (patch: Partial<NominalDataSourceOptions>) => {
+    onOptionsChange({ ...options, jsonData: { ...jsonData, ...patch } });
+  };
+  const usesOAuth = jsonData.authMode === 'oauth';
 
   const onWorkspaceRidChange = (event: ChangeEvent<HTMLInputElement>) => {
     onOptionsChange({
@@ -101,23 +106,65 @@ export function ConfigEditor(props: Props) {
       </InlineField>
 
 
-      <InlineField
-        label="API Key"
-        labelWidth={26}
-        interactive
-        tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
-      >
-        <SecretInput
-          required
-          id="config-editor-api-key"
-          isConfigured={secureJsonFields?.apiKey || false}
-          value={apiKey}
-          placeholder="Enter your Nominal API key"
-          width={40}
-          onReset={onResetAPIKey}
-          onChange={onAPIKeyChange}
+      <InlineField label="Authentication" labelWidth={26} tooltip="OAuth queries Nominal as each signed-in Grafana user">
+        <RadioButtonGroup<'apiKey' | 'oauth'>
+          value={usesOAuth ? 'oauth' : 'apiKey'}
+          options={[{ label: 'API key', value: 'apiKey' }, { label: 'Nominal sign-in (OAuth)', value: 'oauth' }]}
+          onChange={(authMode) => onJsonDataChange({ authMode })}
         />
       </InlineField>
+
+      {usesOAuth && (
+        <InlineField label="OAuth Client ID" labelWidth={26} tooltip="The client ID Nominal registered for this Grafana">
+          <Input
+            id="config-editor-oauth-client-id"
+            onChange={(event: ChangeEvent<HTMLInputElement>) => onJsonDataChange({ oauthClientId: event.target.value })}
+            value={jsonData.oauthClientId || ''}
+            width={40}
+          />
+        </InlineField>
+      )}
+
+      {usesOAuth && (
+        <InlineField label="OAuth Client Secret" labelWidth={26} tooltip="Required if Nominal registered this client with a secret">
+          <SecretInput
+            id="config-editor-oauth-client-secret"
+            isConfigured={secureJsonFields?.oauthClientSecret || false}
+            value={secureJsonData?.oauthClientSecret || ''}
+            width={40}
+            onReset={() =>
+              onOptionsChange({
+                ...options,
+                secureJsonFields: { ...options.secureJsonFields, oauthClientSecret: false },
+                secureJsonData: { ...options.secureJsonData, oauthClientSecret: '' },
+              })
+            }
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              onOptionsChange({ ...options, secureJsonData: { ...options.secureJsonData, oauthClientSecret: event.target.value } })
+            }
+          />
+        </InlineField>
+      )}
+
+      {!usesOAuth && (
+        <InlineField
+          label="API Key"
+          labelWidth={26}
+          interactive
+          tooltip={'Your Nominal API key (NOM_KEY) - this is stored securely and only sent to the backend'}
+        >
+          <SecretInput
+            required
+            id="config-editor-api-key"
+            isConfigured={secureJsonFields?.apiKey || false}
+            value={apiKey}
+            placeholder="Enter your Nominal API key"
+            width={40}
+            onReset={onResetAPIKey}
+            onChange={onAPIKeyChange}
+          />
+        </InlineField>
+      )}
 
 
       <InlineField
