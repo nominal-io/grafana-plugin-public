@@ -105,6 +105,8 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:        workspaceRid,
+		usesOAuth:           config.UsesOAuth(),
+		oauthSessions:       newSessionStore(),
 		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
 		sqlConn:             sqlConn,
 		sqlErr:              sqlErr,
@@ -127,14 +129,17 @@ type Datasource struct {
 	workspaceService  workspaceapi.WorkspaceServiceClient
 
 	workspaceRid *rids.WorkspaceRid
+	usesOAuth    bool
 	sqlService   sqlv1.SqlServiceClient
 	sqlConn      *grpc.ClientConn
 	// sqlErr explains why sqlService is nil, for example a plain http base URL.
 	sqlErr error
-	// defaultSQLWorkspace caches the API key's default workspace when no Workspace RID is set.
+	// defaultSQLWorkspace caches the default workspace of the API key, or of each user in OAuth mode,
+	// when no Workspace RID is set.
 	defaultSQLWorkspace *ttlCache[string]
 
 	resourceHTTPClient *http.Client
+	oauthSessions      *sessionStore
 
 	// Built once during construction. Every query shares these instances, so
 	// their caches are shared too.
@@ -211,6 +216,12 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 		return response, nil
 	}
+	if err := d.applyOAuthCredential(ctx, config); err != nil {
+		for _, q := range req.Queries {
+			response.Responses[q.RefID] = backend.ErrDataResponse(backend.StatusUnauthorized, err.Error())
+		}
+		return response, nil
+	}
 
 	return newNominalQueryExecution(d, config).Execute(ctx, req.Queries), nil
 }
@@ -246,6 +257,13 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: "Base URL is required",
+		}, nil
+	}
+
+	if err := d.applyOAuthCredential(ctxWithTimeout, config); err != nil {
+		return &backend.CheckHealthResult{
+			Status:  backend.HealthStatusError,
+			Message: "OAuth sign-in is enabled: " + err.Error() + " from a panel's query editor, then test again",
 		}, nil
 	}
 

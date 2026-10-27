@@ -13,8 +13,14 @@ type PluginSettings struct {
 	Path    string `json:"path"` // Legacy field
 	// WorkspaceRid is the workspace SQL queries run in and asset search is limited to. When empty,
 	// SQL uses the API key's default workspace and asset search covers every workspace.
-	WorkspaceRid string                `json:"workspaceRid"`
-	Secrets      *SecretPluginSettings `json:"-"`
+	WorkspaceRid  string                `json:"workspaceRid"`
+	AuthMode      string                `json:"authMode"`
+	OAuthClientID string                `json:"oauthClientId"`
+	Secrets       *SecretPluginSettings `json:"-"`
+}
+
+func (ps *PluginSettings) UsesOAuth() bool {
+	return ps.AuthMode == "oauth"
 }
 
 // GetAPIBaseURL returns the API base URL, preferring baseUrl over legacy path
