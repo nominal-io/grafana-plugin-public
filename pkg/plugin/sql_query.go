@@ -33,7 +33,7 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 	if d.workspaceRid != nil {
 		return d.workspaceRid.String(), nil
 	}
-	return d.defaultSQLWorkspace.get(ctx, "", func(ctx context.Context) (string, error) {
+	return d.defaultSQLWorkspace.get(ctx, oauthCacheKey(ctx, d.usesOAuth, ""), func(ctx context.Context) (string, error) {
 		workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
 		if err != nil {
 			return "", &workspaceLookupError{err}
