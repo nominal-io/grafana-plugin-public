@@ -18,12 +18,11 @@
       minimumReleaseAge: "1 day"
     },
     {
-      // Group routine updates to security overrides
+      // Group all non-major frontend updates, including pnpm overrides
       matchManagers: ["npm"],
-      matchDepTypes: ["pnpm.overrides"],
       matchUpdateTypes: ["minor", "patch"],
-      groupName: "pnpm overrides",
-      groupSlug: "pnpm-overrides"
+      groupName: "frontend dependencies (non-major)",
+      groupSlug: "frontend-non-major"
     },
     {
       // Keep Grafana packages aligned and review minor and major updates
@@ -42,32 +41,8 @@
       dependencyDashboardApproval: false
     },
     {
-      matchManagers: ["npm"],
-      matchDepTypes: ["devDependencies"],
-      matchUpdateTypes: ["minor", "patch"],
-      matchPackageNames: ["eslint", "eslint-*", "@typescript-eslint/**", "@stylistic/**", "@grafana/eslint-config", "prettier"],
-      groupName: "frontend lint and formatting",
-      groupSlug: "frontend-lint-format"
-    },
-    {
-      matchManagers: ["npm"],
-      matchDepTypes: ["devDependencies"],
-      matchUpdateTypes: ["minor", "patch"],
-      matchPackageNames: ["jest", "jest-*", "@types/jest", "@testing-library/**", "@types/testing-library__jest-dom", "@playwright/test", "@grafana/plugin-e2e", "@swc/jest"],
-      groupName: "frontend testing",
-      groupSlug: "frontend-testing"
-    },
-    {
-      matchManagers: ["npm"],
-      matchDepTypes: ["devDependencies"],
-      matchUpdateTypes: ["minor", "patch"],
-      matchPackageNames: ["webpack", "webpack-*", "*-webpack-plugin", "*-loader", "@swc/core", "@swc/helpers"],
-      groupName: "frontend build tooling",
-      groupSlug: "frontend-build"
-    },
-    {
-      // Prioritize nominal-api-go updates - create PRs immediately
-      matchPackageNames: ["github.com/nominal-io/nominal-api-go"],
+      // Prioritize Nominal API client updates - create PRs immediately
+      matchPackageNames: ["github.com/nominal-io/nominal-api-go", "github.com/nominal-io/nominal-api-protos-go"],
       prCreation: "immediate",
       reviewers: ["leundai"],
       labels: ["dependencies", "nominal-api-go"],
@@ -77,8 +52,8 @@
     {
       // Group other Go dependency updates
       matchManagers: ["gomod"],
-      matchUpdateTypes: ["minor", "patch"],
-      excludePackageNames: ["github.com/nominal-io/nominal-api-go"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      matchPackageNames: ["!github.com/nominal-io/nominal-api-go", "!github.com/nominal-io/nominal-api-protos-go"],
       groupName: "go dependencies (non-major)",
       groupSlug: "go-non-major"
     },
