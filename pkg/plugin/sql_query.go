@@ -61,6 +61,11 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	}
 	query := prepared.SQL
+	if query.Format == sqlutil.FormatOptionLogs {
+		paged := *query
+		paged.TimeRange = logPageRange(paged.TimeRange, prepared.Model.ScrollStartNanos, prepared.Model.ScrollEndNanos)
+		query = &paged
+	}
 	expanded, err := sqlutil.Interpolate(query, sqlMacros)
 	if err != nil {
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "Macro expansion failed: "+err.Error())

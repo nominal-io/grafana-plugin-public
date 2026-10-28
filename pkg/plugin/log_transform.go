@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 )
 
@@ -160,4 +161,27 @@ func logLinesFrame(name string, lines *logLines) *data.Frame {
 		PreferredVisualization: data.VisTypeLogs,
 	}
 	return frame
+}
+
+// logPageRange returns a Logs query's range. Infinite scroll ends the next page at the oldest shown
+// line's millisecond, or for oldest-first panels starts it at the newest line's, so the range covers
+// the rest of its last millisecond. A bound the frontend places at the line a scroll page continues
+// from stops the range at that line instead. Grafana drops lines read again by id.
+//
+// TODO: SQL scrolling still stops where as many lines as the LIMIT share one exact time, since
+// nothing in a row tells those lines apart.
+func logPageRange(r backend.TimeRange, startNanos, endNanos *int64) backend.TimeRange {
+	toMs := r.To.Truncate(time.Millisecond)
+	r.To = toMs.Add(time.Millisecond - time.Nanosecond)
+	if inMillisecond(endNanos) {
+		r.To = toMs.Add(time.Duration(*endNanos))
+	}
+	if inMillisecond(startNanos) {
+		r.From = r.From.Truncate(time.Millisecond).Add(time.Duration(*startNanos))
+	}
+	return r
+}
+
+func inMillisecond(nanos *int64) bool {
+	return nanos != nil && *nanos >= 0 && *nanos < int64(time.Millisecond)
 }

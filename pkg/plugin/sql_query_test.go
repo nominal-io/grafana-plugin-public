@@ -82,7 +82,9 @@ func sqlValueStream(t *testing.T, value float64) []byte {
 
 func executeTestSQLQuery(t *testing.T, ctx context.Context, e *NominalQueryExecution, queryJSON string) backend.DataResponse {
 	t.Helper()
-	prepared, response := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", JSON: []byte(queryJSON)})
+	// The range ends inside a millisecond, so a test can see whether a format moves the end.
+	timeRange := backend.TimeRange{To: time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)}
+	prepared, response := e.prepareQuery(context.Background(), backend.DataQuery{RefID: "A", TimeRange: timeRange, JSON: []byte(queryJSON)})
 	if response != nil {
 		t.Fatalf("prepareQuery() error = %v", response.Error)
 	}
@@ -236,29 +238,99 @@ func sqlSeriesStream(t *testing.T) []byte {
 	})
 }
 
-func TestExecuteSQLQueryPreferredVisualization(t *testing.T) {
+func TestExecuteSQLQueryFormats(t *testing.T) {
 	series := sqlSeriesStream(t)
+	const end = "SELECT TIMESTAMP '2026-10-12 10:00:00.123'"
 	for _, tc := range []struct {
 		name       string
 		payload    []byte
 		format     string
+		scroll     string
 		wantFrames int
 		wantVis    data.VisType
+		wantSQL    string
 	}{
-		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable},
-		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph},
-		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable},
+		{name: "table", payload: series, format: "table", wantFrames: 1, wantVis: data.VisTypeTable, wantSQL: end},
+		{name: "time series", payload: series, format: "timeseries", wantFrames: 2, wantVis: data.VisTypeGraph, wantSQL: end},
+		{name: "logs", payload: series, format: "logs", wantFrames: 1, wantVis: data.VisTypeLogs, wantSQL: "SELECT TIMESTAMP '2026-10-12 10:00:00.124'"},
+		{name: "time series format without a time column", payload: sqlValueStream(t, 42), format: "timeseries", wantFrames: 1, wantVis: data.VisTypeTable, wantSQL: end},
+		{name: "logs continuing from a line", payload: series, format: "logs", scroll: `,"scrollEndNanos":345`, wantFrames: 1, wantVis: data.VisTypeLogs, wantSQL: "SELECT TIMESTAMP '2026-10-12 10:00:00.123000346'"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := sqlTestExecution(t, sqlQueryService(t, sqlPayloadServer(tc.payload)))
-			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1","format":"`+tc.format+`"}`)
+			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT $__timeTo()","format":"`+tc.format+`"`+tc.scroll+`}`)
 			if response.Error != nil || len(response.Frames) != tc.wantFrames {
 				t.Fatalf("executeSQLQuery() = %v, %d frames; want %d frames", response.Error, len(response.Frames), tc.wantFrames)
 			}
 			for i, frame := range response.Frames {
-				if frame.RefID != "A" || frame.Meta.ExecutedQueryString != "SELECT 1" || frame.Meta.PreferredVisualization != tc.wantVis {
-					t.Errorf("frame %d RefID, meta = %q, %+v; want A with SELECT 1 and %s", i, frame.RefID, frame.Meta, tc.wantVis)
+				if frame.RefID != "A" || frame.Meta.ExecutedQueryString != tc.wantSQL || frame.Meta.PreferredVisualization != tc.wantVis {
+					t.Errorf("frame %d RefID, meta = %q, %+v; want A with %s and %s", i, frame.RefID, frame.Meta, tc.wantSQL, tc.wantVis)
 				}
+			}
+		})
+	}
+}
+
+// sqlLogLines serves lines at the given nanoseconds into 10:00:00.123 on the day executeTestSQLQuery's
+// range ends, newest first, up to limit. A line's message is its index. The query's last TIMESTAMP
+// literal bounds the lines: with < when the query compares with <, else inclusively.
+func sqlLogLines(t *testing.T, nanos []int, limit int) sqlQueryHandler {
+	base := time.Date(2026, 10, 12, 10, 0, 0, 123_000_000, time.UTC)
+	return func(req *sqlv1.SqlServiceQueryRequest, stream grpc.ServerStreamingServer[sqlv1.SqlServiceQueryResponse]) error {
+		_, literal, _ := strings.Cut(req.Query[strings.LastIndex(req.Query, "TIMESTAMP '"):], "'")
+		bound, err := time.Parse("2006-01-02 15:04:05.999999999", strings.TrimSuffix(literal, "'"))
+		if err != nil {
+			t.Errorf("time.Parse() error = %v", err)
+		}
+		strict := strings.Contains(req.Query, "< TIMESTAMP")
+		var lines []int
+		for i, n := range nanos {
+			if at := base.Add(time.Duration(n)); at.Before(bound) || (!strict && at.Equal(bound)) {
+				lines = append(lines, i)
+			}
+		}
+		slices.SortStableFunc(lines, func(a, b int) int { return nanos[b] - nanos[a] })
+		lines = lines[:min(limit, len(lines))]
+		times, messages := make([]string, len(lines)), make([]string, len(lines))
+		for i, line := range lines {
+			times[i], messages[i] = strconv.FormatInt(base.Add(time.Duration(nanos[line])).UnixNano(), 10), strconv.Quote(strconv.Itoa(line))
+		}
+		payload := logStream(t,
+			testLogColumn{name: "ts", typ: &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"}, values: "[" + strings.Join(times, ",") + "]"},
+			strColumn("message", "["+strings.Join(messages, ",")+"]"))
+		return stream.Send(&sqlv1.SqlServiceQueryResponse{QueryId: "q", Payload: payload})
+	}
+}
+
+func TestExecuteSQLQueryContinuesFromTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		filter    string
+		nanos     []int
+		limit     int
+		lineNanos int
+		want      []string
+	}{
+		// The line at 2 ns ended the last page; the line at 3 ns was shown before it.
+		{name: "BETWEEN with lines 1 ns apart", filter: "$__timeFilter(ts)", nanos: []int{3, 2, 1}, limit: 2, lineNanos: 2, want: []string{"1", "2"}},
+		// The last page ended with one of the two lines at 3 ns.
+		{name: "< keeps lines at the line's time", filter: "ts < $__timeTo()", nanos: []int{6, 3, 3, 1}, limit: 3, lineNanos: 3, want: []string{"1", "2", "3"}},
+		{name: "< at the last nanosecond of the millisecond", filter: "ts < $__timeTo()", nanos: []int{999_999, 999_999, 1}, limit: 3, lineNanos: 999_999, want: []string{"0", "1", "2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := sqlTestExecution(t, sqlQueryService(t, sqlLogLines(t, tc.nanos, tc.limit)))
+			response := executeTestSQLQuery(t, context.Background(), e, fmt.Sprintf(`{"queryType":"sql","format":"logs","rawSql":"SELECT ts, message FROM logs WHERE %s","scrollEndNanos":%d}`, tc.filter, tc.lineNanos))
+			if response.Error != nil || len(response.Frames) != 1 {
+				t.Fatalf("executeSQLQuery() = %v, %d frames; want 1 frame", response.Error, len(response.Frames))
+			}
+			var got []string
+			for i := range response.Frames[0].Rows() {
+				body, _, _ := logRow(response.Frames[0], i)
+				got = append(got, body)
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("lines = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -310,14 +382,11 @@ func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
 func TestExecuteSQLQueryErrors(t *testing.T) {
 	invalid := sqlStatusError(t, codes.InvalidArgument, "SQL query is invalid", "q-1", "bad query")
 	throttled := sqlStatusError(t, codes.ResourceExhausted, "throttled", "q-2", "")
-	nullTimeSchema := arrow.NewSchema([]arrow.Field{{Name: "ts", Type: arrow.FixedWidthTypes.Timestamp_us, Nullable: true}, {Name: "v", Type: arrow.PrimitiveTypes.Float64}}, nil)
-	nullTime := sqlArrowStream(t, nullTimeSchema, 1, func(b *array.RecordBuilder) {
-		b.Field(0).AppendNull()
-		b.Field(1).(*array.Float64Builder).Append(1)
-	})
+	nullTime := logStream(t, tsColumn("ts", `[null]`), strColumn("message", `["m"]`), testLogColumn{name: "v", typ: arrow.PrimitiveTypes.Float64, values: `[1]`})
 	for _, tc := range []struct {
 		name       string
 		handler    sqlQueryHandler
+		format     string
 		timeout    time.Duration
 		wantStatus backend.Status
 		wantMsg    string
@@ -353,6 +422,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 			wantMsg:    "SQL query timed out",
 		},
 		{name: "null time in a time series", handler: sqlPayloadServer(nullTime), wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
+		{name: "null time in logs", handler: sqlPayloadServer(nullTime), format: "logs", wantStatus: backend.StatusBadRequest, wantMsg: (&nullTimeError{column: "ts"}).Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -361,7 +431,7 @@ func TestExecuteSQLQueryErrors(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, tc.timeout)
 				defer cancel()
 			}
-			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)"}`)
+			response := executeTestSQLQuery(t, ctx, sqlTestExecution(t, sqlQueryService(t, tc.handler)), `{"queryType":"sql","rawSql":"SELECT x FROM t WHERE $__timeFilter(ts)","format":"`+tc.format+`"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
 				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
 			}
