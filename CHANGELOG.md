@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.16.1](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.16.0...nominal-grafana-plugin@0.16.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **deps:** bump golang.org/x/net to v0.62.0 ([#244](https://github.com/nominal-io/grafana-plugin-public/issues/244)) ([75ee564](https://github.com/nominal-io/grafana-plugin-public/commit/75ee564cade2645786eb4b37212d248e26dbcf1b))
+* **deps:** update go dependencies (non-major) ([#239](https://github.com/nominal-io/grafana-plugin-public/issues/239)) ([11dfa6c](https://github.com/nominal-io/grafana-plugin-public/commit/11dfa6c8da28abbcd2ebc41c6db430a37dfccbf6))
+* **deps:** update grafana frontend packages to v12.1.10 ([#225](https://github.com/nominal-io/grafana-plugin-public/issues/225)) ([a5ee40d](https://github.com/nominal-io/grafana-plugin-public/commit/a5ee40d8e476861b7ca836a554353d31330ea248))
+
+
+### Chores
+
+* **deps:** remove unused conjure-client ([#227](https://github.com/nominal-io/grafana-plugin-public/issues/227)) ([5d71e0f](https://github.com/nominal-io/grafana-plugin-public/commit/5d71e0f22c07034d7367c1adda94eed7d4a76cb0))
+* **deps:** update dependency @grafana/tsconfig to v2.2.0 ([#226](https://github.com/nominal-io/grafana-plugin-public/issues/226)) ([1146f8d](https://github.com/nominal-io/grafana-plugin-public/commit/1146f8dfb1c35994b256018a7b3de8f8c99a31a0))
+* **deps:** update dependency brace-expansion@&gt;&#x3d;3.0.0 &lt;5.0.11 to v5.0.12 [security] ([#221](https://github.com/nominal-io/grafana-plugin-public/issues/221)) ([e680ae7](https://github.com/nominal-io/grafana-plugin-public/commit/e680ae70d964264dc193220155e99d68fffe9a6e))
+* **deps:** update frontend dependencies and group Renovate updates ([#232](https://github.com/nominal-io/grafana-plugin-public/issues/232)) ([4a288dc](https://github.com/nominal-io/grafana-plugin-public/commit/4a288dcbc1bd0e388894f7c2f451dea97ee0d2cb))
+* **deps:** update pnpm overrides ([#224](https://github.com/nominal-io/grafana-plugin-public/issues/224)) ([565db7f](https://github.com/nominal-io/grafana-plugin-public/commit/565db7f8d77ab1d0c717466b0da4ef4456a4f617))
+* **deps:** update pnpm to v10.34.9 ([#235](https://github.com/nominal-io/grafana-plugin-public/issues/235)) ([779e184](https://github.com/nominal-io/grafana-plugin-public/commit/779e1847c20fef15a2d8a8ce3f751e815074c6ec))
+* **deps:** update SDK and address dependency vulnerabilities ([#219](https://github.com/nominal-io/grafana-plugin-public/issues/219)) ([fdcd4b5](https://github.com/nominal-io/grafana-plugin-public/commit/fdcd4b511dc3bceab17f05066fe79adacfb39e8e))
+
 ## [0.16.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.15.0...nominal-grafana-plugin@0.16.0) (2026-10-14)
 
 
