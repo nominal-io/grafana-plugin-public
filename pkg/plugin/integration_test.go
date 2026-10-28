@@ -23,6 +23,7 @@ import (
 	assetapi "github.com/nominal-io/nominal-api-go/scout/asset/api"
 	assetservice "github.com/nominal-io/nominal-api-go/scout/assets"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	writerapi "github.com/nominal-io/nominal-api-go/storage/writer/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
@@ -59,6 +60,7 @@ type liveNominalAPIClients struct {
 	http      *http.Client
 	token     bearertoken.Token
 	asset     assetservice.AssetServiceClient
+	writer    writerapi.NominalChannelWriterServiceClient
 }
 
 type liveNominalDataset struct {
@@ -300,6 +302,101 @@ func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 	}
 }
 
+func TestLiveNominalSQLLogsIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	clients, _, dataset := createTempLiveNominalDataset(t, ctx, settings)
+	ds := liveNominalDatasource(t, settings)
+
+	// The first two rows fall inside the same millisecond, both after its start.
+	base := time.Date(2024, 9, 5, 18, 0, 0, 0, time.UTC)
+	row := func(offset time.Duration, message string) writerapi.LogPoint {
+		args := map[string]string{"level": "error", "host": "h1"}
+		return writerapi.LogPoint{Timestamp: timestampFromTime(base.Add(offset)), Value: writerapi.LogValue{Message: message, Args: args}}
+	}
+	err := clients.writer.WriteLogs(ctx, clients.token, rids.NominalDataSourceOrDatasetRid(dataset.Rid), writerapi.WriteLogsRequest{
+		Channel: new(nominalapi.Channel("grafana-live-logs")),
+		Logs:    []writerapi.LogPoint{row(200*time.Microsecond, "first"), row(500*time.Microsecond, "second"), row(time.Second, "third")},
+	})
+	if err != nil {
+		t.Fatalf("failed to write live logs: %v", err)
+	}
+
+	query := backend.DataQuery{
+		RefID:     "A",
+		TimeRange: backend.TimeRange{From: base.Add(-time.Minute), To: base.Add(time.Minute)},
+		JSON: mustMarshal(map[string]string{
+			"queryType": queryTypeSQL, "format": "logs",
+			"rawSql": fmt.Sprintf("SELECT ts, channel, message, args FROM logs WHERE dataset_rid = '%s' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 10", dataset.Rid),
+		}),
+	}
+	req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{query}}
+
+	var response backend.DataResponse
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		resp, err := ds.QueryData(ctx, req)
+		if err != nil {
+			t.Fatalf("unexpected QueryData error: %v", err)
+		}
+		response = resp.Responses["A"]
+		if response.Error != nil && response.Status != backend.StatusNotFound {
+			t.Fatalf("unexpected SQL error: %+v", response)
+		}
+		if response.Error == nil {
+			if len(response.Frames) != 1 {
+				t.Fatalf("expected one frame, got %d", len(response.Frames))
+			}
+			rows := response.Frames[0].Rows()
+			if rows > 3 {
+				t.Fatalf("expected three log rows, got %d", rows)
+			}
+			if rows == 3 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("written logs did not become readable through SQL within 90s (last response: %+v)", response)
+		}
+		time.Sleep(3 * time.Second)
+	}
+
+	frame := response.Frames[0]
+	for i, wantBody := range []string{"third", "second", "first"} {
+		body, _, rawLabels := logRow(frame, i)
+		if body != wantBody {
+			t.Errorf("row %d body = %q, want %q (newest first)", i, body, wantBody)
+		}
+		labels := parseLogLabels(t, json.RawMessage(rawLabels))
+		for key, want := range map[string]string{"channel": "grafana-live-logs", "level": "error", "host": "h1"} {
+			if labels[key] != want {
+				t.Errorf("row %d label %q = %q, want %q", i, key, labels[key], want)
+			}
+		}
+	}
+
+	// Infinite scroll asks for the page after "second" with the end cut to the start of its
+	// millisecond, so both rows in it come back only because Logs queries extend the end.
+	nextPage := query
+	nextPage.TimeRange.To = base
+	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: req.PluginContext, Queries: []backend.DataQuery{nextPage}})
+	if err != nil {
+		t.Fatalf("unexpected QueryData error for the next page: %v", err)
+	}
+	next := resp.Responses["A"]
+	if next.Error != nil || len(next.Frames) != 1 || next.Frames[0].Rows() != 2 {
+		t.Fatalf("next page = %+v, want one frame with second and first", next)
+	}
+	for i := range 2 {
+		body, id, _ := logRow(next.Frames[0], i)
+		wantBody, wantID, _ := logRow(frame, i+1)
+		if body != wantBody || id != wantID {
+			t.Errorf("next page row %d = %q with id %s, want %q with id %s as on the first page", i, body, id, wantBody, wantID)
+		}
+	}
+}
+
 func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
 	t.Helper()
 
@@ -353,7 +450,9 @@ func liveNominalQueryBuckets(t *testing.T) int {
 	return buckets
 }
 
-func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {
+// createTempLiveNominalDataset builds API clients and creates a dataset that is archived when the
+// test ends. It skips first unless writes to the default base URL are explicitly allowed.
+func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings backend.DataSourceInstanceSettings) (liveNominalAPIClients, string, liveNominalDataset) {
 	t.Helper()
 
 	baseURL := liveNominalBaseURLFromSettings(t, settings)
@@ -361,13 +460,9 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 		t.Skip("live QueryData test creates temporary Nominal resources; set NOMINAL_BASE_URL explicitly or NOMINAL_ALLOW_DEFAULT_LIVE_WRITES=1 to use the default URL")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
 	clients := newLiveNominalAPIClients(t, settings)
 	name := fmt.Sprintf("grafana-plugin-live-%d", time.Now().UnixNano())
 	isV2Dataset := true
-
 	dataset, err := clients.createDataset(ctx, name, isV2Dataset)
 	if err != nil {
 		t.Fatalf("failed to create live Nominal dataset: %v", err)
@@ -379,6 +474,16 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 			t.Logf("failed to archive live Nominal dataset %s: %v", dataset.Rid, err)
 		}
 	})
+	return clients, name, dataset
+}
+
+func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	clients, name, dataset := createTempLiveNominalDataset(t, ctx, settings)
 
 	asset, err := clients.asset.CreateAsset(ctx, clients.token, assetapi.CreateAssetRequest{
 		Title:     name,
@@ -481,6 +586,7 @@ func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceS
 		http:      &http.Client{Timeout: 30 * time.Second},
 		token:     bearertoken.Token(apiKey),
 		asset:     assetservice.NewAssetServiceClient(conjureClient),
+		writer:    writerapi.NewNominalChannelWriterServiceClient(conjureClient),
 	}
 }
 

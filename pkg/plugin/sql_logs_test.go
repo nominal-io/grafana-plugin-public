@@ -17,6 +17,8 @@ import (
 
 var testTimestampType = &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}
 
+var dictString = &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}
+
 // testLogColumn is one nullable column of a Logs test result, with its Arrow JSON values.
 type testLogColumn struct {
 	name   string
@@ -30,6 +32,10 @@ func tsColumn(name, values string) testLogColumn {
 
 func strColumn(name, values string) testLogColumn {
 	return testLogColumn{name: name, typ: arrow.BinaryTypes.String, values: values}
+}
+
+func mapColumn(name, values string) testLogColumn {
+	return testLogColumn{name: name, typ: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String), values: values}
 }
 
 func logStream(t *testing.T, columns ...testLogColumn) []byte {
@@ -69,9 +75,34 @@ func TestSQLLogsBodyAndLabels(t *testing.T) {
 	}{
 		{"first string column", []testLogColumn{ts, strColumn("channel", `["c"]`), strColumn("msg", `["m"]`)}, "c", `{"msg":"m"}`},
 		{"case is ignored", []testLogColumn{ts, strColumn("MESSAGE", `["m"]`), strColumn("channel", `["c"]`)}, "m", `{"channel":"c"}`},
-		{"dictionary-encoded message", []testLogColumn{ts, strColumn("channel", `["c"]`), {name: "message", typ: &arrow.DictionaryType{IndexType: arrow.PrimitiveTypes.Int32, ValueType: arrow.BinaryTypes.String}, values: `["m"]`}}, "m", `{"channel":"c"}`},
+		{"dictionary-encoded message", []testLogColumn{ts, strColumn("channel", `["c"]`), {name: "message", typ: dictString, values: `["m"]`}}, "m", `{"channel":"c"}`},
 		{"non-string message is a label", []testLogColumn{ts, {name: "message", typ: arrow.PrimitiveTypes.Int64, values: `[7]`}, strColumn("text", `["t"]`)}, "t", `{"message":"7"}`},
-		{"null body", []testLogColumn{ts, strColumn("message", `[null]`)}, "", `{}`},
+		{"null body, null map and null map item", []testLogColumn{
+			ts,
+			strColumn("message", `[null]`),
+			mapColumn("args", `[null]`),
+			mapColumn("tags", `[[{"key":"a","value":null},{"key":"b","value":"1"}]]`),
+		}, "", `{"tags.b":"1"}`},
+		{"columns and map entries", []testLogColumn{
+			ts,
+			message,
+			strColumn("channel", `["c1"]`),
+			mapColumn("tags", `[[{"key":"host","value":"b"},{"key":"vehicle","value":"v"}]]`),
+			mapColumn("args", `[[{"key":"host","value":"a"},{"key":"channel","value":"x"}]]`),
+		}, "m", `{"args.channel":"x","channel":"c1","host":"a","tags.host":"b","tags.vehicle":"v"}`},
+		{"a column beats a prefixed map entry", []testLogColumn{
+			ts,
+			message,
+			strColumn("tags.host", `["column"]`),
+			mapColumn("tags", `[[{"key":"host","value":"map"}]]`),
+		}, "m", `{"tags.host":"column"}`},
+		{"dictionary-encoded map", []testLogColumn{ts, message, {name: "args", typ: arrow.MapOf(dictString, dictString), values: `[[{"key":"level","value":"error"},{"key":"host","value":null}]]`}}, "m", `{"level":"error"}`},
+		{"other maps are prefixed, and a map of nulls adds none", []testLogColumn{
+			ts,
+			message,
+			{name: "nullmap", typ: arrow.MapOf(arrow.BinaryTypes.String, arrow.Null), values: `[[{"key":"k","value":null}]]`},
+			mapColumn("tags", `[[{"key":"host","value":"b"}]]`),
+		}, "m", `{"tags.host":"b"}`},
 		{"types and nulls", []testLogColumn{
 			ts,
 			message,
@@ -80,7 +111,6 @@ func TestSQLLogsBodyAndLabels(t *testing.T) {
 			{name: "ok", typ: arrow.FixedWidthTypes.Boolean, values: `[true]`},
 			tsColumn("other", `[1700000000000000]`),
 			{name: "nothing", typ: arrow.Null, values: `[null]`},
-			{name: "nullmap", typ: arrow.MapOf(arrow.BinaryTypes.String, arrow.Null), values: `[[{"key":"k","value":null}]]`},
 		}, "m", `{"n":"42","ok":"true","other":"2023-11-14T22:13:20Z"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,16 +131,20 @@ func TestSQLLogsAcrossBatches(t *testing.T) {
 	batch := 0
 	stream := sqlArrowStream(t, schema, 2, func(b *array.RecordBuilder) {
 		batch++
-		b.Field(0).(*array.TimestampBuilder).Append(arrow.Timestamp(1700000000000000 + int64(batch)*1000000))
-		b.Field(1).(*array.StringBuilder).Append("batch" + strconv.Itoa(batch))
-		m := b.Field(2).(*array.MapBuilder)
-		m.Append(true)
-		m.KeyBuilder().(*array.StringBuilder).Append("n")
-		m.ItemBuilder().(*array.Int64Builder).Append(int64(batch * 10))
+		for n := batch * 10; n < batch*10+2; n++ {
+			b.Field(0).(*array.TimestampBuilder).Append(arrow.Timestamp(1700000000000000 + int64(n)*1000000))
+			b.Field(1).(*array.StringBuilder).Append("row" + strconv.Itoa(n))
+			m := b.Field(2).(*array.MapBuilder)
+			m.Append(true)
+			m.KeyBuilder().(*array.StringBuilder).Append("n")
+			m.ItemBuilder().(*array.Int64Builder).Append(int64(n))
+		}
 	})
 	frame := shapedLogFrame(t, stream)
-	// Newest first, so the second batch comes before the first.
-	for i, want := range []struct{ body, labels string }{{"batch2", `{}`}, {"batch1", `{}`}} {
+	// Newest first, so the second batch comes before the first and each batch's rows are reversed.
+	for i, want := range []struct{ body, labels string }{
+		{"row21", `{"counts.n":"21"}`}, {"row20", `{"counts.n":"20"}`}, {"row11", `{"counts.n":"11"}`}, {"row10", `{"counts.n":"10"}`},
+	} {
 		if body, _, labels := logRow(frame, i); body != want.body || labels != want.labels {
 			t.Errorf("row %d = %q, %s; want %q, %s", i, body, labels, want.body, want.labels)
 		}
