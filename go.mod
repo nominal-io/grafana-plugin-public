@@ -8,10 +8,10 @@ require (
 	github.com/nominal-io/nominal-api-go v0.0.0-20260924223320-cfbd3ba72831
 	github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
-	github.com/palantir/pkg/bearertoken v1.2.0
-	github.com/palantir/pkg/rid v1.2.0
-	github.com/palantir/pkg/safelong v1.3.0
-	github.com/palantir/pkg/uuid v1.3.0
+	github.com/palantir/pkg/bearertoken v1.3.0
+	github.com/palantir/pkg/rid v1.3.0
+	github.com/palantir/pkg/safelong v1.4.0
+	github.com/palantir/pkg/uuid v1.4.0
 	golang.org/x/sync v0.24.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e
 	google.golang.org/grpc v1.85.0
