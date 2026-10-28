@@ -31,6 +31,8 @@ interface Edges {
 interface Edge {
   ms: number;
   nanos: number;
+  // Compute log queries continue from a line by its time and id.
+  id: string;
 }
 const pageEdges = new Map<string, Edges & { query: string }>();
 // Dashboards start a new run, and so a new entry, on every refresh.
@@ -47,10 +49,10 @@ function scrollBounds(runKey: string, query: string, from: number, to: number): 
     return {};
   }
   if (to === run.oldest.ms) {
-    return { scrollEndNanos: run.oldest.nanos };
+    return { scrollEndNanos: run.oldest.nanos, scrollEndId: run.oldest.id };
   }
   if (from === run.newest.ms) {
-    return { scrollStartNanos: run.newest.nanos };
+    return { scrollStartNanos: run.newest.nanos, scrollStartId: run.newest.id };
   }
   return {};
 }
@@ -58,26 +60,31 @@ function scrollBounds(runKey: string, query: string, from: number, to: number): 
 // frameEdges returns a log frame's oldest and newest lines. Lines arrive newest first.
 function frameEdges(frame: DataFrame): Edges | undefined {
   const times = frame.fields.find((field) => field.type === FieldType.time);
-  if (!times || times.values.length === 0) {
+  const ids = frame.fields.find((field) => field.name === 'id');
+  if (!times || !ids || times.values.length === 0) {
     return undefined;
   }
-  const edge = (i: number) => ({ ms: times.values[i], nanos: times.nanos?.[i] ?? 0 });
+  const edge = (i: number) => ({ ms: times.values[i], nanos: times.nanos?.[i] ?? 0, id: ids.values[i] });
   return { oldest: edge(times.values.length - 1), newest: edge(0) };
 }
 
-// recordPage starts a run at a page's edges, or widens the run when the page continues it.
-function recordPage(runKey: string, query: string, edges: Edges, continues: boolean) {
+// recordPage starts a run at a page's edges, or widens the run when the page continues it. A page that
+// continued from an edge line moves only that edge: the service orders lines that share a time by id,
+// so a time comparison cannot tell which of two tied lines is further along.
+function recordPage(runKey: string, query: string, edges: Edges, continues: boolean, side?: keyof Edges) {
   const run = pageEdges.get(runKey);
   // Deleting first moves the run to the end of the map, so the cap evicts the least recently used.
   pageEdges.delete(runKey);
   pageEdges.set(
     runKey,
     continues && run && run.query === query
-      ? {
-          query,
-          oldest: isOlder(run.oldest, edges.oldest) ? run.oldest : edges.oldest,
-          newest: isOlder(edges.newest, run.newest) ? run.newest : edges.newest,
-        }
+      ? side
+        ? { ...run, [side]: edges[side] }
+        : {
+            query,
+            oldest: isOlder(run.oldest, edges.oldest) ? run.oldest : edges.oldest,
+            newest: isOlder(edges.newest, run.newest) ? run.newest : edges.newest,
+          }
       : { query, ...edges }
   );
   if (pageEdges.size > maxPageEdges) {
@@ -141,7 +148,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           const target = targets.find((t) => t.refId === frame.refId);
           const edges = frameEdges(frame);
           if (target && edges && !(dropped && scrolling(target))) {
-            recordPage(key(target), querySignature(target), edges, scrolling(target));
+            const side = target.scrollEndId ? 'oldest' : target.scrollStartId ? 'newest' : undefined;
+            recordPage(key(target), querySignature(target), edges, scrolling(target), side);
           }
         });
         return response;

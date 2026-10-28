@@ -43,6 +43,10 @@ type NominalQueryModel struct {
 	// its millisecond, at the line the page continues from. The frontend sets them.
 	ScrollStartNanos *int64 `json:"scrollStartNanos,omitempty"`
 	ScrollEndNanos   *int64 `json:"scrollEndNanos,omitempty"`
+	// ScrollStartID and ScrollEndID are the ids of those lines, for Compute log queries, which page
+	// from a line by its time and id.
+	ScrollStartID string `json:"scrollStartId,omitempty"`
+	ScrollEndID   string `json:"scrollEndId,omitempty"`
 
 	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
 	// json:"-" prevents inferred values from persisting into saved dashboards.

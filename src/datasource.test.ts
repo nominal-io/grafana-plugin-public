@@ -384,12 +384,12 @@ describe('query', () => {
       await lastValueFrom(
         ds.query({ app: 'dashboard', requestId: 'SQR1', ...request } as unknown as DataQueryRequest<any>)
       );
-      const { scrollStartNanos, scrollEndNanos } = mockBackendQuery.mock.calls.at(-1)[0].targets[0];
-      return { scrollStartNanos, scrollEndNanos };
+      const { scrollStartNanos, scrollStartId, scrollEndNanos, scrollEndId } = mockBackendQuery.mock.calls.at(-1)[0].targets[0];
+      return { scrollStartNanos, scrollStartId, scrollEndNanos, scrollEndId };
     };
-    const none = { scrollStartNanos: undefined, scrollEndNanos: undefined };
-    const older = { ...none, scrollEndNanos: 345 };
-    const newer = { ...none, scrollStartNanos: 7 };
+    const none = { scrollStartNanos: undefined, scrollStartId: undefined, scrollEndNanos: undefined, scrollEndId: undefined };
+    const older = { ...none, scrollEndNanos: 345, scrollEndId: 'oldest' };
+    const newer = { ...none, scrollStartNanos: 7, scrollStartId: 'newest' };
     const explore = { ...sql, supportingQueryType: 'infiniteScroll' };
     // A page older than page: its oldest line is at 1000 ms plus 9 ns.
     const olderPage = logPage([1500, 1000], [0, 9], ['older newest', 'older oldest']);
@@ -423,8 +423,8 @@ describe('query', () => {
     // A page newer than page: its newest line is at 4000 ms plus 11 ns.
     const newerPage = logPage([4000, 3500], [11, 0], ['newer newest', 'newer oldest']);
     it.each([
-      ['an older page', olderPage, range(0, 2000), range(3000, 9000), newer, range(0, 1000), { ...none, scrollEndNanos: 9 }],
-      ['a newer page', newerPage, range(3000, 9000), range(0, 2000), older, range(4000, 9000), { ...none, scrollStartNanos: 11 }],
+      ['an older page', olderPage, range(0, 2000), range(3000, 9000), newer, range(0, 1000), { ...none, scrollEndNanos: 9, scrollEndId: 'older oldest' }],
+      ['a newer page', newerPage, range(3000, 9000), range(0, 2000), older, range(4000, 9000), { ...none, scrollStartNanos: 11, scrollStartId: 'newer newest' }],
     ])('continues from the edges of every page in the run after %s', async (_, next, nextRange, keptRange, kept, movedRange, moved) => {
       const ds = createDataSource();
       await scroll(ds, { targets: [sql], range: range(0, 5000) });
@@ -449,7 +449,7 @@ describe('query', () => {
       await lastValueFrom(ds.query(request(5000) as any));
       await lastValueFrom(ds.query(request(2000) as any));
       const [a, b] = mockBackendQuery.mock.calls.at(-1)[0].targets;
-      expect([a.scrollEndNanos, b.scrollEndNanos]).toEqual([345, 111]);
+      expect([a.scrollEndId, b.scrollEndId]).toEqual(['oldest', 'b oldest']);
     });
 
     it('starts over when Explore reruns the query', async () => {
@@ -477,6 +477,18 @@ describe('query', () => {
       mockBackendQuery.mockReturnValue(of({ data: [logPage([], [], [])] }));
       await lastValueFrom(ds.query(explorePage({ targets: [sql], range: range(0, 5000) }) as any));
       expect(await scroll(ds, explorePage({ targets: [explore], range: range(0, 2000) }))).toEqual(none);
+    });
+
+    it('moves only the edge a page continued from when lines share a time', async () => {
+      const ds = createDataSource();
+      const request = (to: number, from = 0) => ({ app: 'dashboard', requestId: 'SQR1', targets: [sql], range: range(from, to) });
+      // Every line is at 3000 ms plus 7 ns; the service orders them by id. An oldest-first panel loads
+      // newer lines, then asks for older ones.
+      mockBackendQuery.mockReturnValue(of({ data: [logPage([3000, 3000], [7, 7], ['n4', 'n3'])] }));
+      await lastValueFrom(ds.query(request(5000) as any));
+      mockBackendQuery.mockReturnValue(of({ data: [logPage([3000, 3000], [7, 7], ['n6', 'n5'])] }));
+      await lastValueFrom(ds.query(request(9000, 3000) as any));
+      expect(await scroll(ds, request(3000))).toEqual({ ...none, scrollEndNanos: 7, scrollEndId: 'n3' });
     });
 
     it('continues a Compute log query', async () => {

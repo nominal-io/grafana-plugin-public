@@ -10,6 +10,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
+	"github.com/palantir/pkg/uuid"
 )
 
 // --- typed plan inspectors ---
@@ -54,15 +55,15 @@ func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value
 	return kind, value
 }
 
-// summarizationPageSize returns the page size when the strategy is a page strategy.
-func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrategy) (size int, isPage bool) {
+// summarizationPageInfo returns the page info when the strategy is a page strategy.
+func summarizationPageInfo(t *testing.T, strategy computeapi.SummarizationStrategy) (page computeapi.PageInfo, isPage bool) {
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
 		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
-				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
+				func(info computeapi.PageInfo) error { page, isPage = info, true; return nil },
 				func(string) error { return fmt.Errorf("unknown page strategy type") },
 			)
 		},
@@ -70,9 +71,9 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 		func(string) error { return fmt.Errorf("unknown summarization strategy type") },
 	)
 	if err != nil {
-		t.Fatalf("inspecting page size: %v", err)
+		t.Fatalf("inspecting page info: %v", err)
 	}
-	return size, isPage
+	return page, isPage
 }
 
 // isArrowV3 reports whether the SummarizeSeries output format is ARROW_V3.
@@ -550,12 +551,12 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("expected a summarization strategy for log path")
 	}
-	size, isPage := summarizationPageSize(t, *plan.SummarizationStrategy)
+	page, isPage := summarizationPageInfo(t, *plan.SummarizationStrategy)
 	if !isPage {
 		t.Error("expected a page strategy for log path")
 	}
-	if size != logPageSize {
-		t.Errorf("pageSize = %d, want %d (newest-first)", size, logPageSize)
+	if page.PageSize != logPageSize || page.PageToken != nil {
+		t.Errorf("page = %d with token %v, want %d without (newest-first)", page.PageSize, page.PageToken, logPageSize)
 	}
 }
 
@@ -573,5 +574,42 @@ func BenchmarkBuildComputeContext(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		newTestQueryExecution(ds, nil).buildComputeContext(qm)
+	}
+}
+
+func TestBuildComputeRequestContinuesLogScrollPages(t *testing.T) {
+	// The range ends in millisecond .123; a line 345 ns into it continues the page.
+	to := time.Date(2024, 1, 1, 1, 0, 0, 123_000_000, time.UTC)
+	from := time.Date(2024, 1, 1, 0, 0, 0, 5_000_000, time.UTC)
+	line := func(at time.Time) string { return computeLogID(at, uuid.UUID{1}) }
+	for _, tc := range []struct {
+		name      string
+		scroll    func(*NominalQueryModel)
+		wantSize  int
+		wantToken time.Time
+	}{
+		{name: "older page", scroll: func(qm *NominalQueryModel) {
+			qm.ScrollEndNanos, qm.ScrollEndID = new(int64(345)), line(to.Add(345))
+		}, wantSize: logPageSize, wantToken: to.Add(345)},
+		{name: "newer page", scroll: func(qm *NominalQueryModel) {
+			qm.ScrollStartNanos, qm.ScrollStartID = new(int64(7)), line(from.Add(7))
+		}, wantSize: -logPageSize, wantToken: from.Add(7)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog}
+			tc.scroll(&qm)
+			req := newTestQueryExecution(withCatalog(&Datasource{}), nil).buildComputeRequest(qm, backend.TimeRange{From: from, To: to})
+			page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Node).SummarizationStrategy)
+			var gotToken time.Time
+			if page.PageToken != nil {
+				_ = page.PageToken.AcceptFuncs(func(token computeapi.TimestampAndId) error {
+					gotToken = time.Unix(int64(token.Timestamp.Seconds), int64(token.Timestamp.Nanos))
+					return nil
+				}, func(string) error { return nil })
+			}
+			if page.PageSize != tc.wantSize || !gotToken.Equal(tc.wantToken) {
+				t.Errorf("page %d from %v; want %d from %v", page.PageSize, gotToken, tc.wantSize, tc.wantToken)
+			}
+		})
 	}
 }

@@ -24,6 +24,9 @@ export interface NominalQuery extends DataQuery {
   // Set on log scroll requests: where the page's range starts or ends within its millisecond.
   scrollStartNanos?: number;
   scrollEndNanos?: number;
+  // Set on log scroll requests: the ids of those lines, which Compute log queries page from.
+  scrollStartId?: string;
+  scrollEndId?: string;
 
   // Template variables support
   templateVariables?: Record<string, any>;
