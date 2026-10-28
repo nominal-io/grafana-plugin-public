@@ -83,6 +83,80 @@ Map columns such as `tags` are shown as `key=value` pairs, for example
 `satellite=GOCE-1`. Keys and values with special characters are quoted so
 Grafana's **Extract fields** transform can split them into fields.
 
+## Logs
+
+Set **Format** to **Logs** to show each row as a log line in Explore and in the
+Logs panel. In an empty editor, **Use logs example** inserts a starting query:
+
+```sql
+SELECT ts, channel, message, args
+FROM logs
+WHERE dataset_rid = '<your-dataset-rid>'
+  AND $__timeFilter(ts)
+ORDER BY ts DESC
+LIMIT 500
+```
+
+The first timestamp or date column is the log time, and a null value in it fails
+the query. The text is the string column named `message`, ignoring case, or else
+the first string column. A result with no timestamp or date column, or no string
+column, is shown as a table with a notice.
+
+Every other column is a label. A map column such as `args` or `tags` gives one
+label per entry instead. An `args` entry uses its key as the label name. An
+entry of another map gets the map's name in front, as in `tags.host`, and so
+does an `args` entry whose key is already the name of a label from a column.
+When two labels share a name, the first is kept, with columns before maps. Null
+values are left out, and numbers, booleans and timestamps appear as text. To
+drop the prefix, select the map as `args`, as in `tags AS args`, or select
+entries as columns, as in `tags['host'] AS host`.
+
+Every row is shown, even repeats. To merge them, use Grafana's deduplication
+option in the log view.
+
+Grafana colors rows by their `level` label, such as `error`, `warn` or `info`,
+and groups by it in Explore's volume histogram. Without a `level` label, Grafana
+guesses from words in the message, so a line that mentions an alert can show as
+critical. To use a level stored under another key, rename it, as in
+`args['severity'] AS level`.
+
+To load more lines as you scroll, keep `$__timeFilter(ts)`, a `LIMIT`, and an
+`ORDER BY ts` that matches the log order, with `ts` as the log time column. Use
+`ORDER BY ts DESC` for newest first, the default, where scrolling loads older
+lines, and `ORDER BY ts ASC` for oldest first, where it loads newer lines.
+Without them, the first page still shows, but scrolling loads the wrong rows.
+Infinite scrolling is on in Explore. In a dashboard, turn on the Logs panel's
+**Enable infinite scrolling** option.
+
+When you edit a dashboard Logs panel, the editor warns if the query's `ORDER BY`
+disagrees with the panel's **Order** option.
+
+Each scroll continues from the last line shown, to the nanosecond, so a
+millisecond with more lines than the `LIMIT` loads across scrolls. On the first
+page, the end of `$__timeFilter(ts)` moves to the end of its millisecond, up to
+1 ms past the time picker. In Logs format, `$__timeFrom()` and `$__timeTo()`
+reach 1 ns past each end of that range, so `<` and `>` comparisons keep lines at
+the exact end.
+
+Limits:
+
+- Explore's volume histogram counts only the rows the query returned.
+- If as many lines as the `LIMIT` share one exact time, scrolling stops there.
+  Raise the `LIMIT` to read past it. Lines stored with millisecond or coarser
+  times share a time with every line in that millisecond.
+- Comparing `$__timeFrom()` or `$__timeTo()` with `<=`, `>=` or `BETWEEN` also
+  stops scrolling where as many lines as the `LIMIT` fall within two consecutive
+  nanoseconds. `$__timeFilter(ts)` does not.
+- Scrolling stops once the lines shown come within one second of the edge of
+  the time range. If the last page loaded filled the `LIMIT` and ended within
+  that second, any remaining lines are not shown, despite the panel saying "End
+  of the selected time range". To see them, start the time range a few seconds
+  earlier for newest first, or end it a few seconds later for oldest first.
+- In Explore, changing the log order does not run the query again. Change the
+  `ORDER BY` to match and run it.
+- In a dashboard, the filter buttons in the Logs panel's log details have no
+  effect on SQL queries.
+
 ## Macros
 
 | Macro | Expands to |

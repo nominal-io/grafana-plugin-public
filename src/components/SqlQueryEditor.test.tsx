@@ -1,7 +1,10 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { SqlQueryEditor } from './SqlQueryEditor';
-import { NominalQuery } from '../types';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { LogSortOrderChangeEvent } from '@grafana/data';
+import { getAppEvents } from '@grafana/runtime';
+import { LogsSortOrder } from '@grafana/schema';
+import { SqlQueryEditor, sqlLogOrder } from './SqlQueryEditor';
+import { DEFAULT_SQL, LOGS_SQL_EXAMPLE, NominalQuery } from '../types';
 
 // Mirrors Monaco's keybinding resolution: the most recent matching registration wins, where
 // addCommand matches in every editor and addAction only in the editor that registered it.
@@ -99,11 +102,14 @@ describe('SqlQueryEditor', () => {
     expect(second.onChange).not.toHaveBeenCalled();
   });
 
-  it('switches format to table and runs the query', () => {
+  it.each([
+    ['Table', 'table'],
+    ['Logs', 'logs'],
+  ])('switches format to %s and runs the query', (label, format) => {
     const { onChange, onRunQuery } = renderEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
-    fireEvent.click(screen.getByRole('radio', { name: /table/i }));
+    fireEvent.click(screen.getByRole('radio', { name: label }));
 
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ format: 'table' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ format }));
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -114,19 +120,70 @@ describe('SqlQueryEditor', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rawSql: 'SELECT 2', format: 'table' }));
   });
 
-  it('inserts the time-series example into an empty query without running it', () => {
+  it.each([
+    ['time-series', DEFAULT_SQL, 'timeseries'],
+    ['logs', LOGS_SQL_EXAMPLE, 'logs'],
+  ])('inserts the %s example into an empty query without running it', (label, sql, format) => {
     const { editor, onChange, onRunQuery } = renderEditor({ refId: 'A', queryType: 'sql', format: 'table' });
-    fireEvent.click(screen.getByRole('button', { name: 'Use time-series example' }));
+    fireEvent.click(screen.getByRole('button', { name: `Use ${label} example` }));
 
-    expect((editor as HTMLTextAreaElement).value).toContain('$__timeGroup(ts)');
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', format: 'timeseries' }));
+    expect(editor).toHaveValue(sql);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', rawSql: sql, format }));
     expect(onRunQuery).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Use time-series example' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: `Use ${label} example` })).not.toBeInTheDocument();
   });
 
   it('keeps the example button hidden while an existing query is cleared', () => {
     const { editor } = renderEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
     fireEvent.change(editor, { target: { value: '' } });
     expect(screen.queryByRole('button', { name: 'Use time-series example' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Use logs example' })).not.toBeInTheDocument();
+  });
+});
+
+describe('sqlLogOrder', () => {
+  it.each([
+    ['SELECT ts FROM logs ORDER BY ts DESC LIMIT 5', LogsSortOrder.Descending],
+    ['select ts from logs order by ts desc', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY ts ASC LIMIT 5', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts LIMIT 5', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts, message DESC', LogsSortOrder.Ascending],
+    ['SELECT * FROM (SELECT ts FROM logs ORDER BY ts ASC) ORDER BY ts DESC', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY CAST(ts AS TIMESTAMP) DESC', LogsSortOrder.Descending],
+    ['SELECT ts FROM logs ORDER BY ts ASC -- choose DESC for newest first', LogsSortOrder.Ascending],
+    ['SELECT ts FROM logs ORDER BY ts /* or DESC */ ASC', LogsSortOrder.Ascending],
+    ["SELECT ts FROM logs ORDER BY ts = 'desc'", LogsSortOrder.Ascending],
+    ['SELECT ts, lag(ts) OVER (ORDER BY ts DESC) FROM logs ORDER BY ts', LogsSortOrder.Ascending],
+    ['SELECT * FROM (SELECT ts FROM logs ORDER BY ts DESC)', undefined],
+    ['SELECT ts FROM logs LIMIT 5', undefined],
+  ])('%s', (sql, want) => {
+    expect(sqlLogOrder(sql)).toBe(want);
+  });
+});
+
+describe('ORDER BY warning', () => {
+  const warning = /Query order may not match/;
+  const announce = (order: LogsSortOrder) => act(() => getAppEvents().publish(new LogSortOrderChangeEvent({ order })));
+
+  // Runs first: the panel order is module state, and the tests after it announce one.
+  it('waits for a panel to announce its order', () => {
+    renderEditor({ refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT ts FROM logs ORDER BY ts ASC' });
+    expect(screen.queryByText(warning)).toBeNull();
+  });
+
+  it.each([
+    ['a query sorted against the panel', 'logs', 'SELECT ts FROM logs ORDER BY ts ASC', true],
+    ['a query sorted with the panel', 'logs', 'SELECT ts FROM logs ORDER BY ts DESC', false],
+    ['a table query', 'table', 'SELECT ts FROM logs ORDER BY ts ASC', false],
+  ])('%s', (_, format, rawSql, shown) => {
+    renderEditor({ refId: 'A', queryType: 'sql', format: format as NominalQuery['format'], rawSql });
+    announce(LogsSortOrder.Descending);
+    expect(screen.queryByText(warning) !== null).toBe(shown);
+  });
+
+  it('warns in an editor that mounts after the panel announced its order', () => {
+    announce(LogsSortOrder.Ascending);
+    renderEditor({ refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT ts FROM logs ORDER BY ts DESC' });
+    expect(screen.queryByText(warning)).not.toBeNull();
   });
 });

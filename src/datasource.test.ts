@@ -1,10 +1,17 @@
 import { DataSource } from './datasource';
 import { NominalDataSourceOptions } from './types';
-import { DataSourceInstanceSettings } from '@grafana/data';
+import { DataFrameType, DataQueryRequest, DataQueryResponse, DataSourceInstanceSettings, dateTime, FieldType, toDataFrame } from '@grafana/data';
 import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { lastValueFrom, of } from 'rxjs';
+
+const mockBackendQuery = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {},
+  DataSourceWithBackend: class {
+    query(request: unknown) {
+      return mockBackendQuery(request);
+    }
+  },
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
 }));
@@ -325,5 +332,165 @@ describe('annotations', () => {
       prepare({ enable: true, name: 'a', iconColor: 'red', query: { kind: 'DataQuery', spec: { refId: 'Anno', rawSql: 'SELECT 1' } } })
     ).toEqual({ refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' });
     expect(prepare({ enable: true, name: 'a', iconColor: 'red' })).toBeUndefined();
+  });
+});
+
+describe('query', () => {
+  const range = (from: number, to: number) => ({ from: dateTime(from), to: dateTime(to), raw: { from: '', to: '' } });
+  const frame = (type: DataFrameType, nanos?: number[]) =>
+    toDataFrame({
+      meta: { type },
+      fields: [
+        { name: 'timestamp', type: FieldType.time, values: [1, 2], nanos },
+        { name: 'body', type: FieldType.string, values: ['a', 'b'] },
+      ],
+    });
+
+  it.each([
+    ['pads a log frame without nanos', DataFrameType.LogLines, undefined, [0, 0]],
+    ['keeps nanos a log frame already has', DataFrameType.LogLines, [5, 7], [5, 7]],
+    ['leaves other frames alone', DataFrameType.TimeSeriesMulti, undefined, undefined],
+  ])('%s', async (_, type, nanos, want) => {
+    const response: DataQueryResponse = { data: [frame(type, nanos)], key: 'k' };
+    mockBackendQuery.mockReturnValue(of(response));
+    const result = await lastValueFrom(createDataSource().query({ targets: [], range: range(0, 10), requestId: 'SQR1' } as unknown as DataQueryRequest<any>));
+    expect(result.data[0].fields[0].nanos).toEqual(want);
+    expect(result.key).toBe('k');
+  });
+
+  describe('continues a log page from its edge line', () => {
+    // The edges live in module state, so each test loads a fresh module.
+    let createDataSource: () => DataSource;
+    beforeEach(() => {
+      jest.isolateModules(() => {
+        const { DataSource: Fresh } = require('./datasource');
+        createDataSource = () => new Fresh({ uid: 'test-uid', jsonData: {} });
+      });
+    });
+    const sql = { refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT 1' };
+    // A page whose newest line is at 3000 ms plus 7 ns and oldest at 2000 ms plus 345 ns.
+    const logPage = (values: number[], nanos: number[], ids: string[]) =>
+      toDataFrame({
+        refId: 'A',
+        meta: { type: DataFrameType.LogLines },
+        fields: [
+          { name: 'timestamp', type: FieldType.time, values, nanos },
+          { name: 'id', type: FieldType.string, values: ids },
+        ],
+      });
+    const page = logPage([3000, 2000], [7, 345], ['newest', 'oldest']);
+    const scroll = async (ds: DataSource, request: object) => {
+      mockBackendQuery.mockReturnValue(of({ data: [page] }));
+      await lastValueFrom(
+        ds.query({ app: 'dashboard', requestId: 'SQR1', ...request } as unknown as DataQueryRequest<any>)
+      );
+      const { scrollStartNanos, scrollEndNanos } = mockBackendQuery.mock.calls.at(-1)[0].targets[0];
+      return { scrollStartNanos, scrollEndNanos };
+    };
+    const none = { scrollStartNanos: undefined, scrollEndNanos: undefined };
+    const older = { ...none, scrollEndNanos: 345 };
+    const newer = { ...none, scrollStartNanos: 7 };
+    const explore = { ...sql, supportingQueryType: 'infiniteScroll' };
+    // A page older than page: its oldest line is at 1000 ms plus 9 ns.
+    const olderPage = logPage([1500, 1000], [0, 9], ['older newest', 'older oldest']);
+
+    it.each([
+      ['the next older page', { targets: [sql], range: range(0, 2000) }, older],
+      ['the next newer page', { targets: [sql], range: range(3000, 9000) }, newer],
+      ['a range that ends elsewhere', { targets: [sql], range: range(0, 2001) }, none],
+      ['a range that starts elsewhere', { targets: [sql], range: range(1, 9000) }, none],
+      ['changed SQL', { targets: [{ ...sql, rawSql: 'SELECT 2' }], range: range(0, 2000) }, none],
+      ['a refreshed dashboard', { targets: [sql], range: range(0, 2000), requestId: 'SQR2' }, none],
+      ['a rerun in Explore', { targets: [sql], range: range(0, 2000), app: 'explore', requestId: 'explore_a' }, none],
+      [
+        'another Explore pane',
+        { targets: [explore], range: range(0, 2000), app: 'explore', requestId: 'explore_b' },
+        none,
+      ],
+      [
+        'the next page in Explore',
+        { targets: [explore], range: range(0, 2000), app: 'explore', requestId: 'explore_a' },
+        older,
+      ],
+    ])('%s', async (_, next, want) => {
+      const ds = createDataSource();
+      const first = next as { app?: string; requestId?: string };
+      const start = { app: first.app ?? 'dashboard', requestId: first.app ? 'explore_a' : 'SQR1' };
+      expect(await scroll(ds, { targets: [sql], range: range(0, 5000), ...start })).toEqual(none);
+      expect(await scroll(ds, next)).toEqual(want);
+    });
+
+    // A page newer than page: its newest line is at 4000 ms plus 11 ns.
+    const newerPage = logPage([4000, 3500], [11, 0], ['newer newest', 'newer oldest']);
+    it.each([
+      ['an older page', olderPage, range(0, 2000), range(3000, 9000), newer, range(0, 1000), { ...none, scrollEndNanos: 9 }],
+      ['a newer page', newerPage, range(3000, 9000), range(0, 2000), older, range(4000, 9000), { ...none, scrollStartNanos: 11 }],
+    ])('continues from the edges of every page in the run after %s', async (_, next, nextRange, keptRange, kept, movedRange, moved) => {
+      const ds = createDataSource();
+      await scroll(ds, { targets: [sql], range: range(0, 5000) });
+      mockBackendQuery.mockReturnValue(of({ data: [next] }));
+      await lastValueFrom(ds.query({ app: 'dashboard', requestId: 'SQR1', targets: [sql], range: nextRange } as any));
+      // The edge on the other side is still the first page's.
+      expect(await scroll(ds, { targets: [sql], range: keptRange })).toEqual(kept);
+      expect(await scroll(ds, { targets: [sql], range: movedRange })).toEqual(moved);
+    });
+
+    it('continues a run through another instance of the data source', async () => {
+      await scroll(createDataSource(), { targets: [sql], range: range(0, 5000) });
+      expect(await scroll(createDataSource(), { targets: [sql], range: range(0, 2000) })).toEqual(older);
+    });
+
+    it('keeps a run for each query of a request', async () => {
+      const ds = createDataSource();
+      const other = { ...sql, refId: 'B', rawSql: 'SELECT 2' };
+      const otherPage = { ...logPage([3000, 2000], [8, 111], ['b newest', 'b oldest']), refId: 'B' };
+      const request = (to: number) => ({ app: 'dashboard', requestId: 'SQR1', targets: [sql, other], range: range(0, to) });
+      mockBackendQuery.mockReturnValue(of({ data: [page, otherPage] }));
+      await lastValueFrom(ds.query(request(5000) as any));
+      await lastValueFrom(ds.query(request(2000) as any));
+      const [a, b] = mockBackendQuery.mock.calls.at(-1)[0].targets;
+      expect([a.scrollEndNanos, b.scrollEndNanos]).toEqual([345, 111]);
+    });
+
+    it('starts over when Explore reruns the query', async () => {
+      const ds = createDataSource();
+      const explorePage = (request: object) => ({ app: 'explore', requestId: 'explore_a', ...request });
+      mockBackendQuery.mockReturnValue(of({ data: [olderPage] }));
+      await lastValueFrom(ds.query(explorePage({ targets: [sql], range: range(0, 5000) }) as any));
+      await scroll(ds, explorePage({ targets: [sql], range: range(0, 5000) }));
+      expect(await scroll(ds, explorePage({ targets: [explore], range: range(0, 2000) }))).toEqual(older);
+    });
+
+    it('keeps the run when Explore drops a scroll page with an error', async () => {
+      const ds = createDataSource();
+      const explorePage = (request: object) => ({ app: 'explore', requestId: 'explore_a', ...request });
+      await scroll(ds, explorePage({ targets: [sql], range: range(0, 5000) }));
+      mockBackendQuery.mockReturnValue(of({ data: [olderPage], errors: [{ refId: 'B', message: 'timeout' }] }));
+      await lastValueFrom(ds.query(explorePage({ targets: [explore], range: range(0, 2000) }) as any));
+      expect(await scroll(ds, explorePage({ targets: [explore], range: range(0, 2000) }))).toEqual(older);
+    });
+
+    it('forgets the last run when Explore reruns the query without lines', async () => {
+      const ds = createDataSource();
+      const explorePage = (request: object) => ({ app: 'explore', requestId: 'explore_a', ...request });
+      await scroll(ds, explorePage({ targets: [sql], range: range(0, 5000) }));
+      mockBackendQuery.mockReturnValue(of({ data: [logPage([], [], [])] }));
+      await lastValueFrom(ds.query(explorePage({ targets: [sql], range: range(0, 5000) }) as any));
+      expect(await scroll(ds, explorePage({ targets: [explore], range: range(0, 2000) }))).toEqual(none);
+    });
+
+    it('continues a Compute log query', async () => {
+      const ds = createDataSource();
+      const compute = { refId: 'A', queryType: 'compute', assetRid: 'ri.asset', channel: 'app.logs', channelDataType: 'log' };
+      await scroll(ds, { targets: [compute], range: range(0, 5000) });
+      expect(await scroll(ds, { targets: [compute], range: range(0, 2000) })).toEqual(older);
+      expect(await scroll(ds, { targets: [{ ...compute, channel: 'other' }], range: range(0, 2000) })).toEqual(none);
+    });
+
+    it('continues a mixed-datasource panel, whose first request has a prefixed requestId', async () => {
+      const ds = createDataSource();
+      await scroll(ds, { targets: [sql], range: range(0, 5000), requestId: 'mixed-1-SQR1' });
+      expect(await scroll(ds, { targets: [sql], range: range(0, 2000) })).toEqual(older);
+    });
   });
 });
