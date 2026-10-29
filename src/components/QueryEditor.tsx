@@ -10,6 +10,7 @@ import {
   useStyles2,
 } from '@grafana/ui';
 import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
+import type { DataQuery } from '@grafana/schema';
 import type { DataSource } from '../datasource';
 import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
@@ -255,16 +256,60 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   );
 }
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
-  const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+type QueryAPI = NonNullable<NominalQuery['queryType']>;
 
-  const onQueryAPIChange = (api: 'compute' | 'sql') => {
-    if ((api === 'sql') === isSqlQuery) {
+// Which API owns each query field. A field added to NominalQuery fails typecheck until it is listed here.
+const FIELD_API = {
+  assetRid: QUERY_TYPE_COMPUTE,
+  channel: QUERY_TYPE_COMPUTE,
+  dataScopeName: QUERY_TYPE_COMPUTE,
+  channelDataType: QUERY_TYPE_COMPUTE,
+  aggregations: QUERY_TYPE_COMPUTE,
+  buckets: QUERY_TYPE_COMPUTE,
+  templateVariables: QUERY_TYPE_COMPUTE,
+  queryText: QUERY_TYPE_COMPUTE,
+  constant: QUERY_TYPE_COMPUTE,
+  rawSql: QUERY_TYPE_SQL,
+  format: QUERY_TYPE_SQL,
+} satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery>, QueryAPI>;
+
+function splitFields(query: NominalQuery, api: QueryAPI): [rest: NominalQuery, owned: Partial<NominalQuery>] {
+  const owned = ([key]: [string, unknown]) => FIELD_API[key as keyof typeof FIELD_API] === api;
+  const entries = Object.entries(query);
+  return [Object.fromEntries(entries.filter((entry) => !owned(entry))) as NominalQuery, Object.fromEntries(entries.filter(owned))];
+}
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
+
+  // Fields of the API not in use stay here, not in the saved query, so toggling back restores them until the
+  // editor unmounts. Grafana re-runs a panel when any variable in its saved query changes, so a leftover
+  // assetRid of '$asset' would re-run a SQL panel that never reads it. The editor can outlive its query (Explore
+  // history replaces it in place), so fields are only restored into the API they came from.
+  const inactiveFields = React.useRef<{ api: QueryAPI; fields: Partial<NominalQuery> }>(undefined);
+
+  // Older saved queries can still hold the other API's fields. Move them out on the next edit rather than on load,
+  // so opening the editor alone does not modify the dashboard.
+  const onEdit = React.useCallback(
+    (next: NominalQuery) => {
+      const inactiveAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
+      const [clean, stale] = splitFields(next, inactiveAPI);
+      if (Object.keys(stale).length > 0) {
+        inactiveFields.current = { api: inactiveAPI, fields: stale };
+      }
+      onChange(clean);
+    },
+    [activeAPI, onChange]
+  );
+
+  const onQueryAPIChange = (api: QueryAPI) => {
+    if (api === activeAPI) {
       return;
     }
-    onChange(api === 'sql'
-      ? { ...query, queryType: QUERY_TYPE_SQL, rawSql: query.rawSql ?? '', format: query.format ?? 'timeseries' }
-      : { ...query, queryType: QUERY_TYPE_COMPUTE });
+    const [shared, leaving] = splitFields(query, activeAPI);
+    const remembered = inactiveFields.current?.api === api ? inactiveFields.current.fields : {};
+    onChange({ ...remembered, ...shared, queryType: api });
+    inactiveFields.current = { api: activeAPI, fields: leaving };
   };
 
   return (
@@ -272,14 +317,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           aria-label="Query API"
-          value={isSqlQuery ? 'sql' : 'compute'}
-          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+          value={activeAPI}
+          options={[{ label: 'Compute', value: QUERY_TYPE_COMPUTE }, { label: 'SQL', value: QUERY_TYPE_SQL }]}
           onChange={onQueryAPIChange}
         />
       </InlineField>
-      {isSqlQuery
-        ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
+      {activeAPI === QUERY_TYPE_SQL
+        ? <SqlQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} />
+        : <BuilderQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} datasource={datasource} />}
     </Stack>
   );
 }
