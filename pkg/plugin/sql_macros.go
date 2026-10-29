@@ -20,8 +20,8 @@ var sqlMacros = sqlutil.Macros{
 		if len(args) != 1 || args[0] == "" {
 			return "", errors.New("$__timeFilter requires a column argument")
 		}
-		// BETWEEN is inclusive, as in Grafana's SQL data sources, and unlike >= and < it handles
-		// fractional-second bounds on every Nominal dataset.
+		// BETWEEN is inclusive, as in Grafana's SQL data sources. On metadata tables such as runs,
+		// >= and < round the column to the bound's precision, and BETWEEN does not.
 		return fmt.Sprintf("%s BETWEEN %s AND %s", args[0], sqlTimestampLiteral(q.TimeRange.From), sqlTimestampLiteral(q.TimeRange.To)), nil
 	},
 	"timeFrom": func(q *sqlutil.Query, args []string) (string, error) {
