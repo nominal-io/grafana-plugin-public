@@ -16,6 +16,7 @@ import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 import { SqlQueryEditor } from './SqlQueryEditor';
+import { NominalSignIn } from './NominalSignIn';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -269,6 +270,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   return (
     <Stack direction="column" gap={1}>
+      <NominalSignIn datasource={datasource} onSignedIn={onRunQuery} />
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           aria-label="Query API"
