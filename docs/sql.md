@@ -142,6 +142,9 @@ Limits:
 - With an `ORDER BY` against the log order, scrolling skips lines.
 - Scrolling stops when a page adds no line the view shows, as when a level
   filter hides every new line.
+- In a panel with several queries and a level filter, search filter or
+  deduplication, a query's lines within a second of the range's edge can stay
+  hidden.
 - If as many lines as the `LIMIT` share one exact time, scrolling stops there.
   Raise the `LIMIT` to read past it. Lines stored with millisecond or coarser
   times share a time with every line in that millisecond.
@@ -153,9 +156,13 @@ Limits:
   that second, any remaining lines are not shown, despite the panel saying "End
   of the selected time range". To see them, start the time range a few seconds
   earlier for newest first, or end it a few seconds later for oldest first.
-  In a panel with several queries, the first query to reach that second stops
-  scrolling for all of them, so the others' remaining lines are not shown
-  either.
+  In a panel with several queries, a query's lines in that second wait until
+  every query has reached it, so the first query to get there does not stop the
+  others. They also show when another query fails and the page has nothing
+  else new. A query whose first page already reaches that second still stops
+  scrolling for all of them. In Explore with several data sources, a line of
+  another data source within that second still stops scrolling, and lines
+  held back there do not show.
 - In Explore, changing the log order does not run the query again. Change the
   `ORDER BY` to match and run it.
 - In Explore on Grafana 12.3 and later, when another data source in the pane

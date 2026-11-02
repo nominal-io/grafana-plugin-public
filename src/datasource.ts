@@ -11,7 +11,7 @@ import {
   MetricFindValue
 } from '@grafana/data';
 import { map, Observable } from 'rxjs';
-import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
@@ -84,15 +84,17 @@ function continuesFrom(run: Run, q: QueryRun, newer: boolean, bound: number): Ed
   return undefined;
 }
 
-// frameEdges returns a log frame's oldest and newest lines. Lines arrive newest first.
-function frameEdges(frame: DataFrame): Edges | undefined {
+// lines returns a log frame's lines, which arrive newest first.
+function lines(frame: DataFrame): Edge[] {
   const times = frame.fields.find((field) => field.type === FieldType.time);
   const ids = frame.fields.find((field) => field.name === 'id');
-  if (!times || !ids || times.values.length === 0) {
-    return undefined;
-  }
-  const edge = (i: number) => ({ ms: times.values[i], nanos: times.nanos?.[i] ?? 0, id: ids.values[i] });
-  return { oldest: edge(times.values.length - 1), newest: edge(0) };
+  return times?.values.map((ms, i) => ({ ms, nanos: times.nanos?.[i] ?? 0, id: ids?.values[i] })) ?? [];
+}
+
+// frameEdges returns a log frame's oldest and newest lines.
+function frameEdges(frame: DataFrame): Edges | undefined {
+  const all = lines(frame);
+  return all.length ? { oldest: all[all.length - 1], newest: all[0] } : undefined;
 }
 
 // recordPage moves a query's run to take in a response's frame, and keeps page as the query's page to
@@ -120,20 +122,19 @@ function recordPage(run: Run, target: NominalQuery, frame: DataFrame | undefined
 // Grafana 12.1 and 12.2 ask again for a scroll page that Explore dropped because another data source
 // failed, and the query has moved past that page, so a repeated request sends the page again.
 function withLines(frame: DataFrame, page: DataFrame): DataFrame {
-  const ids = (df: DataFrame) => df.fields.find((field) => field.name === 'id')?.values ?? [];
-  const shown = new Set(ids(frame));
-  const missing = ids(page).flatMap((id, i) => (shown.has(id) ? [] : [i]));
-  const time = frame.fields.findIndex((field) => field.type === FieldType.time);
-  if (missing.length === 0 || time < 0) {
+  const rows = (df: DataFrame) => lines(df).map((line, i) => ({ line, row: [df, i] as const }));
+  const shown = new Set(lines(frame).map((line) => line.id));
+  const missing = rows(page).filter(({ line }) => !shown.has(line.id));
+  if (missing.length === 0) {
     return frame;
   }
-  const rows = [
-    ...frame.fields[time].values.map((_, i) => [frame, i] as const),
-    ...missing.map((i) => [page, i] as const),
-  ];
-  const ms = ([df, i]: (typeof rows)[number]) => df.fields[time].values[i];
-  const nanos = ([df, i]: (typeof rows)[number]) => df.fields[time].nanos?.[i] ?? 0;
-  rows.sort((a, b) => ms(b) - ms(a) || nanos(b) - nanos(a));
+  const all = [...rows(frame), ...missing].sort((a, b) => b.line.ms - a.line.ms || b.line.nanos - a.line.nanos);
+  const sorted = all.map((r) => r.row);
+  return withRows(frame, sorted);
+}
+
+// withRows returns a frame of the given rows, each a frame and a row index in it.
+function withRows(frame: DataFrame, rows: ReadonlyArray<readonly [DataFrame, number]>): DataFrame {
   return {
     ...frame,
     length: rows.length,
@@ -143,6 +144,41 @@ function withLines(frame: DataFrame, page: DataFrame): DataFrame {
       nanos: field.nanos && rows.map(([df, i]) => df.fields[f].nanos?.[i] ?? 0),
     })),
   };
+}
+
+// Grafana stops scrolling for good once the oldest line shown, or the newest in an oldest-first panel,
+// is within this many milliseconds of the range's edge (SCROLLING_THRESHOLD in Grafana's infinite scroll
+// component).
+const scrollStop = 1000;
+
+// lastSecond returns which lines a page of several queries holds back: those within scrollStop of the
+// range's edge, while another query's page still has new lines short of it, or a query of the page
+// failed and the page still shows a new line. A sparse query reaches that second long before a dense
+// one, and showing its lines there would end scrolling for every query. The held lines are past the
+// query's recorded edge, so its next page reads them again. A query in reread compares its page with
+// where it was before its last page, which Explore did not show.
+function lastSecond(run: Run, frames: DataFrame[], newer: boolean, edge: number, failed: boolean, reread: string[]) {
+  const inSecond = (ms: number) => (newer ? ms >= edge - scrollStop : ms <= edge + scrollStop);
+  const side = newer ? 'newest' : 'oldest';
+  const fresh = (frame: DataFrame, e: Edge) => {
+    const q = run.queries.get(frame.refId!);
+    const last = (reread.includes(frame.refId!) ? q?.before : q?.edges)?.[side];
+    return !last || (newer ? isOlder(last, e) : isOlder(e, last));
+  };
+  const waiting = frames.some((frame) => {
+    const end = frameEdges(frame)?.[side];
+    return end && fresh(frame, end) && !inSecond(end.ms);
+  });
+  // Holding on failure with no new line outside that second would add nothing and end scrolling.
+  const shows = frames.some((frame) => lines(frame).some((line) => !inSecond(line.ms) && fresh(frame, line)));
+  return waiting || (failed && shows) ? inSecond : undefined;
+}
+
+// without returns a frame without the lines whose time drop matches.
+function without(frame: DataFrame, drop: (ms: number) => boolean): DataFrame {
+  const all = lines(frame);
+  const keep = all.flatMap((line, i) => (drop(line.ms) ? [] : [[frame, i] as const]));
+  return keep.length === all.length ? frame : withRows(frame, keep);
 }
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -169,9 +205,13 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
 
   query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
-    // Mixed-datasource panels prefix each datasource's requestId; their scroll requests do not.
+    // Mixed-datasource panels prefix each datasource's requestId; their scroll requests do not, and go
+    // through the first query's instance. So a run is keyed by the data source that serves its queries,
+    // resolved as the backend query resolves it.
     const mixed = /^mixed-\d+-/;
-    const key = `${this.uid}|${request.requestId.replace(mixed, '')}`;
+    const ref = request.targets[0]?.datasource;
+    const served = ref ? getDataSourceSrv().getInstanceSettings(ref, request.scopedVars) : undefined;
+    const key = `${(served?.rawRef ?? served)?.uid ?? this.uid}|${request.requestId.replace(mixed, '')}`;
     const explore = request.app === CoreApp.Explore;
     // Explore keeps one requestId per pane for every run, so only its scroll pages, which Grafana marks,
     // continue a run.
@@ -199,22 +239,31 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       map((response) => {
         const repeated = explore && scroll && run.bound === `${newer} ${bound}`;
         run.bound = `${newer} ${bound}`;
-        response.data.filter(isLog).forEach((frame: DataFrame) =>
+        const logs: DataFrame[] = response.data.filter(isLog);
+        // Explore's page merge loses alignment when only some pages carry nanos.
+        logs.forEach((frame) =>
           frame.fields.forEach((field) => {
-            // Explore's page merge loses alignment when only some pages carry nanos.
             if (field.type === FieldType.time && !field.nanos) {
               field.nanos = new Array(field.values.length).fill(0);
             }
           })
         );
+        // A query that cannot continue from its line on a repeated request lost its last page, or a filter
+        // hides it, so the page reads that page again.
+        const reread = repeated ? targets.flatMap((t) => (t.scrollId ? [] : [t.refId])) : [];
+        const held =
+          run === last
+            ? lastSecond(run, logs, newer, newer ? to : from, Boolean(response.errors?.length), reread)
+            : undefined;
+        const data = response.data.map((frame: DataFrame) => (held && isLog(frame) ? without(frame, held) : frame));
         // Edges come from the response itself; a merged-in page past its edge would misplace them.
-        const merged = response.data.map((frame: DataFrame) => {
+        const merged = data.map((frame: DataFrame) => {
           const page = isLog(frame) && run.queries.get(frame.refId!)?.page;
           return repeated && page ? withLines(frame, page) : frame;
         });
         // Explore drops a whole scroll page when any query in it errors, so that page must not move a run.
         if (!(explore && scroll && response.state === LoadingState.Error)) {
-          const logFrames = response.data.filter(isLog);
+          const logFrames = data.filter(isLog);
           targets.forEach((target) =>
             recordPage(
               run,
@@ -225,7 +274,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           );
           // Only a run that recorded a log page is kept: requests without logs would evict the runs of
           // Logs panels that are mid-scroll. Re-inserting moves the run to the end of the map, so the
-          // cap evicts the least recently used.
+          // cap evicts the least recently used. A late scroll page of a replaced Explore run puts that
+          // run back on purpose: Grafana does not cancel it and shows it over the newer run.
           if (run.queries.size > 0) {
             runs.delete(key);
             runs.set(key, run);

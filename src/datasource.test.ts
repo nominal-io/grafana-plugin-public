@@ -18,10 +18,15 @@ const mockBackendQuery = jest.fn();
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {
+    uid: string;
+    constructor(settings: { uid: string }) {
+      this.uid = settings.uid;
+    }
     query(request: unknown) {
       return mockBackendQuery(request);
     }
   },
+  getDataSourceSrv: () => ({ getInstanceSettings: (ref: { uid: string }) => ({ uid: ref.uid }) }),
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
 }));
@@ -370,14 +375,21 @@ describe('query', () => {
 
   describe('continues a log page from its edge line', () => {
     // The runs live in module state, so each test loads a fresh module.
-    let createDataSource: () => DataSource;
+    let createDataSource: (uid?: string) => DataSource;
     beforeEach(() => {
       jest.isolateModules(() => {
         const { DataSource: Fresh } = require('./datasource');
-        createDataSource = () => new Fresh({ uid: 'test-uid', jsonData: {} });
+        createDataSource = (uid = 'test-uid') => new Fresh({ uid, jsonData: {} });
       });
     });
     const sql = { refId: 'A', queryType: 'sql', format: 'logs', rawSql: 'SELECT 1' };
+    const computeTarget = (refId: string, channel = refId) => ({
+      refId,
+      queryType: 'compute',
+      assetRid: 'ri.asset',
+      channel,
+      channelDataType: 'log',
+    });
     const logPage = (values: number[], nanos: number[], ids: string[], refId = 'A') =>
       toDataFrame({
         refId,
@@ -571,7 +583,7 @@ describe('query', () => {
 
     it('continues a Compute log query', async () => {
       const ds = createDataSource();
-      const compute = { refId: 'A', queryType: 'compute', assetRid: 'ri.asset', channel: 'app.logs', channelDataType: 'log' };
+      const compute = computeTarget('A', 'app.logs');
       await scroll(ds, { targets: [compute], range: range(0, 5000) });
       expect(await continues(ds, { targets: [compute], range: range(0, 2000) })).toEqual(older('oldest'));
       expect(await continues(ds, { targets: [{ ...compute, channel: 'other' }], range: range(0, 2000) })).toEqual(none);
@@ -583,6 +595,17 @@ describe('query', () => {
       expect(await continues(ds, { range: range(0, 2000) })).toEqual(older('oldest'));
     });
 
+    it("continues a mixed panel's query whose scroll page goes through another data source's instance", async () => {
+      const [a, b] = [createDataSource('a'), createDataSource('b')];
+      const on = (uid: string, refId: string) => ({ ...sql, refId, datasource: { type: 'nominal', uid } });
+      await scroll(a, { range: range(0, 5000), requestId: 'mixed-0-SQR1', targets: [on('a', 'A')] }, [olderPage]);
+      await scroll(b, { range: range(0, 5000), requestId: 'mixed-1-SQR1', targets: [on('b', 'B')] }, [
+        logPage([3000, 2000], [7, 345], ['newest', 'oldest'], 'B'),
+      ]);
+      // Grafana sends every scroll page through the first query's instance, and cuts the range at A's line.
+      expect(await continues(a, { range: range(0, 1000), targets: [on('b', 'B')] })).toEqual(older('oldest'));
+    });
+
     it('keeps a mid-scroll run while other requests without logs come and go', async () => {
       const ds = createDataSource();
       await scroll(ds, { range: range(0, 5000) });
@@ -590,6 +613,20 @@ describe('query', () => {
         await scroll(ds, { range: range(0, 5000), requestId: `other${i}` }, []);
       }
       expect(await continues(ds, { range: range(0, 2000) })).toEqual(older('oldest'));
+    });
+
+    it('keeps the newest runs and the run in use when Logs panels refresh past the cap', async () => {
+      const ds = createDataSource();
+      const refresh = (requestId: string) => scroll(ds, { range: range(0, 5000), requestId });
+      await refresh('SQR1');
+      for (let i = 0; i < 199; i++) {
+        await refresh(`other${i}`);
+      }
+      // A scroll page uses the run, so the next new run evicts other0 instead.
+      expect(await continues(ds, { range: range(0, 2000) }, [olderPage])).toEqual(older('oldest'));
+      await refresh('newest');
+      expect(await continues(ds, { range: range(0, 1000) })).toEqual(older('older oldest'));
+      expect(await continues(ds, { range: range(0, 2000), requestId: 'newest' })).toEqual(older('oldest'));
     });
 
     // Whole runs: a fake backend serves each query's pages, and a model of Explore's infinite scroll asks
@@ -617,24 +654,29 @@ describe('query', () => {
         target:
           kind === 'sql'
             ? { ...sql, refId, rawSql: `SELECT ${refId}` }
-            : { refId, queryType: 'compute', assetRid: 'ri.asset', channel: refId, channelDataType: 'log' },
+            : computeTarget(refId),
         compute: kind === 'compute',
         lines: lines.map(([ms, nanos = 0, sid = 0]) => ({ ms, nanos, sid, id: `${refId}${ms}.${nanos}.${sid}` })),
         size,
       });
 
-      // serve models the backend's page. SQL ends an older page at the line it continues from, inclusive and
-      // by time only. Compute pages strictly after the line by time and service id. Grafana's bound covers
-      // its whole millisecond.
-      const serve = (q: Query, from: number, to: number, scrollId?: string) => {
+      // serve models the backend's page. SQL ends a page at the line it continues from, inclusive and by
+      // time only. Compute pages strictly after the line by time and service id, as the compute API's page
+      // token does. Grafana's bound covers its whole millisecond. A page holds the newest lines, or the
+      // oldest when asc.
+      const serve = (q: Query, from: number, to: number, scrollId?: string, asc = false) => {
         const c = q.lines.find((l) => l.id === scrollId);
-        const start = from * 1e6;
-        const cursor = c && ns(c) >= start ? c : undefined;
-        const end = cursor ? ns(cursor) : to * 1e6 + 999999;
-        const rows = q.lines
-          .filter((l) => ns(l) >= start && ns(l) <= end && !(cursor && q.compute && newestFirst(cursor, l) >= 0))
-          .sort(newestFirst)
-          .slice(0, q.size);
+        let start = from * 1e6;
+        let end = to * 1e6 + 999999;
+        const cursor = c && (asc ? ns(c) <= end : ns(c) >= start) ? c : undefined;
+        if (cursor) {
+          [start, end] = asc ? [ns(cursor), end] : [start, ns(cursor)];
+        }
+        const past = (l: Line) => (asc ? newestFirst(l, cursor!) : newestFirst(cursor!, l)) < 0;
+        const inPage = q.lines
+          .filter((l) => ns(l) >= start && ns(l) <= end && !(cursor && q.compute && !past(l)))
+          .sort(newestFirst);
+        const rows = asc ? inPage.slice(-q.size) : inPage.slice(0, q.size);
         return logPage(
           rows.map((l) => l.ms),
           rows.map((l) => l.nanos),
@@ -646,20 +688,21 @@ describe('query', () => {
       // scrollAll loads a first page, then scroll pages bounded by the oldest line shown, until that line is
       // within a second of the range's start, nothing new shows for three requests, or 40 requests. Requests
       // numbered in drops are dropped by Explore because another data source failed. With latch, as in
-      // Grafana 12.3 and later, Explore stops asking once a page adds no line.
-      const scrollAll = async (queries: Query[], { drops = [] as number[], latch = false } = {}) => {
+      // Grafana 12.3 and later, Explore stops asking once a page adds no line. With asc the panel reads
+      // oldest first: pages are bounded by the newest line shown, up to the range's end.
+      const scrollAll = async (queries: Query[], { drops = [] as number[], latch = false, asc = false } = {}) => {
         const ds = createDataSource();
         const shown = new Map<string, number>();
         mockBackendQuery.mockImplementation((request) => {
           const { from, to } = request.range;
           const data = request.targets.map((t: any) =>
-            serve(queries.find((q) => q.target.refId === t.refId)!, from.valueOf(), to.valueOf(), t.scrollId)
+            serve(queries.find((q) => q.target.refId === t.refId)!, from.valueOf(), to.valueOf(), t.scrollId, asc)
           );
           return of({ data });
         });
-        const load = async (n: number, to: number) => {
+        const load = async (n: number, from: number, to: number) => {
           const targets = queries.map((q) => (n > 0 ? { ...q.target, supportingQueryType: 'infiniteScroll' } : q.target));
-          const response = await lastValueFrom(ds.query(inExplore({ targets, range: range(0, to) }) as any));
+          const response = await lastValueFrom(ds.query(inExplore({ targets, range: range(from, to) }) as any));
           const before = shown.size;
           if (!drops.includes(n)) {
             response.data.forEach(({ fields: [times, ids] }: DataFrame) =>
@@ -668,13 +711,13 @@ describe('query', () => {
           }
           return shown.size - before;
         };
-        await load(0, 60000);
+        await load(0, 0, 60000);
         for (let n = 1, idle = 0; n <= 40 && idle < 3; n++) {
-          const bound = Math.min(...shown.values());
-          if (bound <= 1000) {
+          const bound = asc ? Math.max(...shown.values()) : Math.min(...shown.values());
+          if (asc ? 60000 - bound <= 1000 : bound <= 1000) {
             break;
           }
-          const added = await load(n, bound);
+          const added = asc ? await load(n, bound, 60000) : await load(n, 0, bound);
           if (added === 0 && latch && !drops.includes(n)) {
             break;
           }
@@ -720,6 +763,150 @@ describe('query', () => {
         const tied = [9, 8, 7, 6, 5, 4, 3, 2, 1].map((sid) => [30000, 0, sid]);
         const q = [query('C', 'compute', [...tied, [20000], [10000]], 3)];
         expect(await scrollAll(q, { drops })).toEqual(ids(q));
+      });
+
+      // A is sparse and has a line in the range's first second, or last second when asc. B is dense or ends
+      // first, so A's lines there wait for it.
+      const sparseAndB = (a: number[], b: number[][]) => () => [
+        query('A', 'sql', a.map((ms) => [ms]), 2),
+        query('B', 'sql', b, 2),
+      ];
+      const dense = sparseAndB([59000, 30000, 20000, 500], every(2000, 59000, 2000));
+      // B's oldest line is older than A's, so B sets the range's bound.
+      const bounds = sparseAndB(
+        [59000, 30000, 500],
+        every(2000, 59000, 1000).filter(([ms]) => ms <= 20000 || ms >= 59000)
+      );
+      it.each([
+        ['A waits for B', dense, []],
+        ['A waits for B, the page that holds A back dropped', dense, [2]],
+        ['A waits for B, a later page dropped', dense, [5]],
+        ['A waits for B, which sets the bound', bounds, []],
+        ['A waits for B, which sets the bound, the holding page dropped', bounds, [1]],
+        [
+          'A waits for B, which sets the bound, B’s last page dropped',
+          sparseAndB([59000, 30000, 500], [[59000], [20000], [19000]]),
+          [1],
+        ],
+      ])('shows every line when %s', async (_, queries, drops) => {
+        const q = queries();
+        expect(await scrollAll(q, { drops })).toEqual(ids(q));
+      });
+
+      describe('oldest first', () => {
+        const sparseAndDense = () => [
+          query('S', 'sql', [[1000], [30000]], 5),
+          query('T', 'sql', every(500, 58000, 1000), 5),
+        ];
+        const holding = sparseAndB([1000, 30000, 40000, 59500], every(1000, 58000, 2000));
+        const endsEarly = sparseAndB([1000, 50000, 59500], [[1000], [20000], [30000]]);
+        const bSets = sparseAndB(
+          [1000, 30000, 59500],
+          every(1000, 58000, 1000).filter(([ms]) => ms >= 40000 || ms <= 1000)
+        );
+        it.each([
+          ['a sparse and a dense query', sparseAndDense, [], true],
+          ['A waits for B near the range end, the page that holds A back dropped', holding, [2], false],
+          ['A waits for B, which sets the bound, the holding page dropped', bSets, [1], false],
+          ['the query waited on ends on a repeated bound', endsEarly, [], true],
+        ])('shows every line when %s', async (_, queries, drops, latch) => {
+          const q = queries();
+          expect(await scrollAll(q, { drops, latch, asc: true })).toEqual(ids(q));
+        });
+      });
+    });
+
+    describe('near the edge of the range', () => {
+      const lines = (refId: string, times: number[]) =>
+        logPage(times, times.map(() => 0), times.map((t) => `${refId}${t}`), refId);
+      const targets = [sql, { ...sql, refId: 'B', rawSql: 'SELECT 2' }];
+      const shown = (response: DataQueryResponse) => response.data.map((f: DataFrame) => f.fields[1].values);
+
+      it.each([
+        ['reaches that second', [39000, 900], ['A39000', 'A900']],
+        ['has no more lines', [], []],
+      ])('holds back lines in the range’s first second until the other query %s', async (_, aTimes, aShown) => {
+        const ds = createDataSource();
+        await scroll(ds, { targets, range: range(0, 60000) }, [lines('A', [59000, 50000]), lines('B', [58000, 30000])]);
+        const held = await scroll(ds, { targets, range: range(0, 30000) }, [
+          lines('A', [49000, 40000]),
+          lines('B', [20000, 800, 300]),
+        ]);
+        expect(shown(held.response)).toEqual([['A49000', 'A40000'], ['B20000']]);
+        const { response } = await scroll(ds, { targets, range: range(0, 20000) }, [
+          lines('A', aTimes),
+          lines('B', [800, 300]),
+        ]);
+        expect(mockBackendQuery.mock.calls.at(-1)[0].targets[1].scrollId).toBe('B20000');
+        expect(shown(response)).toEqual([aShown, ['B800', 'B300']]);
+      });
+
+      it('holds back lines in that second when the other query fails, and retries it from its line', async () => {
+        const ds = createDataSource();
+        await scroll(ds, { targets, range: range(0, 60000) }, [lines('A', [59000, 50000]), lines('B', [58000, 30000])]);
+        const failed = { errors: [{ refId: 'B', message: 'timeout' }] };
+        const { response } = await scroll(ds, { targets, range: range(0, 30000) }, [lines('A', [20000, 800])], failed);
+        expect(shown(response)).toEqual([['A20000']]);
+        await scroll(ds, { targets, range: range(0, 20000) }, [lines('A', [800]), lines('B', [25000])]);
+        expect(mockBackendQuery.mock.calls.at(-1)[0].targets[1].scrollId).toBe('B30000');
+      });
+
+      it('shows lines in that second when the other query fails on every page', async () => {
+        const ds = createDataSource();
+        const failed = { errors: [{ refId: 'B', message: 'timeout' }] };
+        await scroll(ds, { targets, range: range(0, 60000) }, [lines('A', [59000, 50000])], failed);
+        const held = await scroll(ds, { targets, range: range(0, 50000) }, [lines('A', [20000, 800])], failed);
+        expect(shown(held.response)).toEqual([['A20000']]);
+        const { response } = await scroll(ds, { targets, range: range(0, 20000) }, [lines('A', [20000, 800])], failed);
+        expect(shown(response)).toEqual([['A20000', 'A800']]);
+      });
+
+      describe('when Explore asks for a page again', () => {
+        const scrolling = targets.map((t) => ({ ...t, supportingQueryType: 'infiniteScroll' }));
+        const page = (to: number) => inExplore({ targets: scrolling, range: range(0, to) });
+
+        // Grafana 12.1 and 12.2 ask again for a page Explore dropped because another data source failed.
+        it('holds back lines in the range’s first second again when the page that held them was dropped', async () => {
+          const ds = createDataSource();
+          await scroll(ds, inExplore({ targets, range: range(0, 60000) }), [
+            lines('A', [59000, 30000]),
+            lines('B', [59000, 20000]),
+          ]);
+          await scroll(ds, page(20000), [lines('A', [30000, 500]), lines('B', [20000, 19000])]);
+          const { response } = await scroll(ds, page(20000), [lines('A', [30000, 500]), lines('B', [20000, 19000])]);
+          expect(mockBackendQuery.mock.calls.at(-1)[0].targets[1].scrollId).toBeUndefined();
+          expect(shown(response)).toEqual([['A30000'], ['B20000', 'B19000']]);
+        });
+
+        // Every version asks again when a page leaves the oldest line's millisecond unchanged.
+        it('shows lines in that second once the other query has no more lines', async () => {
+          const ds = createDataSource();
+          await scroll(ds, inExplore({ targets, range: range(0, 60000) }), [
+            lines('A', [59000, 10000]),
+            lines('B', [59000, 40000]),
+          ]);
+          await scroll(ds, page(10000), [lines('A', [10000, 500]), lines('B', [40000, 30000])]);
+          const { response } = await scroll(ds, page(10000), [lines('A', [10000, 500]), lines('B', [30000])]);
+          expect(mockBackendQuery.mock.calls.at(-1)[0].targets[1].scrollId).toBe('B30000');
+          expect(shown(response)[0]).toEqual(['A10000', 'A500']);
+        });
+      });
+
+      it('holds back lines in the range’s last second in an oldest-first panel', async () => {
+        const ds = createDataSource();
+        await scroll(ds, { targets, range: range(0, 60000) }, [lines('A', [10000, 1000]), lines('B', [30000, 2000])]);
+        const { response } = await scroll(ds, { targets, range: range(30000, 60000) }, [
+          lines('A', [20000, 11000]),
+          lines('B', [59500, 40000]),
+        ]);
+        expect(shown(response)).toEqual([['A20000', 'A11000'], ['B40000']]);
+      });
+
+      it('shows a lone query’s lines in that second', async () => {
+        const ds = createDataSource();
+        await scroll(ds, { range: range(0, 60000) }, [lines('A', [59000, 30000])]);
+        const { response } = await scroll(ds, { range: range(0, 30000) }, [lines('A', [20000, 500])]);
+        expect(shown(response)).toEqual([['A20000', 'A500']]);
       });
     });
   });
