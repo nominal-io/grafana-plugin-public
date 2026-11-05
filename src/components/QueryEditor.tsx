@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
@@ -258,6 +258,12 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+  // Remounting the builder after sign-in reloads the asset, data scope and channel lookups that failed signed out.
+  const [signIns, setSignIns] = useState(0);
+  const onSignedIn = useCallback(() => {
+    setSignIns((n) => n + 1);
+    onRunQuery();
+  }, [onRunQuery]);
 
   const onQueryAPIChange = (api: 'compute' | 'sql') => {
     if ((api === 'sql') === isSqlQuery) {
@@ -270,7 +276,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
   return (
     <Stack direction="column" gap={1}>
-      <NominalSignIn datasource={datasource} onSignedIn={onRunQuery} />
+      <NominalSignIn datasource={datasource} onSignedIn={onSignedIn} />
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           aria-label="Query API"
@@ -281,7 +287,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       </InlineField>
       {isSqlQuery
         ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
+        : <BuilderQueryEditor key={signIns} query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
     </Stack>
   );
 }
