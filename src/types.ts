@@ -1,7 +1,7 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
-export type SqlFormat = 'timeseries' | 'table';
+export type SqlFormat = 'timeseries' | 'table' | 'logs';
 export const QUERY_TYPE_COMPUTE = 'compute' as const;
 export const QUERY_TYPE_SQL = 'sql' as const;
 
@@ -21,6 +21,10 @@ export interface NominalQuery extends DataQuery {
   queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
   rawSql?: string;
   format?: SqlFormat;
+  // Set on Logs scroll requests: the id of the line the page continues from, and whether the page
+  // reads newer lines.
+  scrollId?: string;
+  scrollNewer?: boolean;
 
   // Template variables support
   templateVariables?: Record<string, any>;
@@ -57,6 +61,13 @@ WHERE dataset_rid = '<dataset-rid>'
   AND $__timeFilter(ts)
 GROUP BY 1, 2
 ORDER BY 1`;
+
+export const LOGS_SQL_EXAMPLE = `SELECT ts, channel, message, args
+FROM logs
+WHERE dataset_rid = '<dataset-rid>'
+  AND $__timeFilter(ts)
+ORDER BY ts DESC
+LIMIT 500`;
 
 export interface DataPoint {
   Time: number;
