@@ -39,6 +39,11 @@ type NominalQueryModel struct {
 	QueryText string  `json:"queryText"`
 	Constant  float64 `json:"constant"`
 
+	// ScrollID names the line a Logs scroll page should continue from; the frontend sets it.
+	// ScrollNewer marks a page that reads newer lines.
+	ScrollID    string `json:"scrollId,omitempty"`
+	ScrollNewer bool   `json:"scrollNewer,omitempty"`
+
 	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
 	// json:"-" prevents inferred values from persisting into saved dashboards.
 	ChannelUnit string `json:"-"`

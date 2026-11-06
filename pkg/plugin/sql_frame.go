@@ -61,7 +61,12 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 	}
 	_ = r.Close()
 
-	frame, err := tableFrame(name, fields, batches, int(rows))
+	var frame *data.Frame
+	if format == sqlutil.FormatOptionLogs {
+		frame, err = sqlLogFrame(name, fields, batches, int(rows))
+	} else {
+		frame, err = tableFrame(name, fields, batches, int(rows))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +76,7 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 			Text:     fmt.Sprintf("Results have been limited to %d rows because the SQL row limit was reached", rowLimit),
 		})
 	}
-	if format == sqlutil.FormatOptionTable {
+	if format == sqlutil.FormatOptionTable || format == sqlutil.FormatOptionLogs {
 		return data.Frames{frame}, nil
 	}
 	return shapeSQLFrame(frame)

@@ -28,13 +28,13 @@ var sqlMacros = sqlutil.Macros{
 		if !noMacroArguments(args) {
 			return "", errors.New("$__timeFrom takes no arguments")
 		}
-		return sqlTimestampLiteral(q.TimeRange.From), nil
+		return sqlTimestampLiteral(q.TimeRange.From.Add(-strictMargin(q))), nil
 	},
 	"timeTo": func(q *sqlutil.Query, args []string) (string, error) {
 		if !noMacroArguments(args) {
 			return "", errors.New("$__timeTo takes no arguments")
 		}
-		return sqlTimestampLiteral(q.TimeRange.To), nil
+		return sqlTimestampLiteral(q.TimeRange.To.Add(strictMargin(q))), nil
 	},
 	"timeGroup": func(q *sqlutil.Query, args []string) (string, error) {
 		if len(args) < 1 || len(args) > 2 || args[0] == "" {
@@ -58,6 +58,16 @@ var sqlMacros = sqlutil.Macros{
 		seconds := strconv.FormatFloat(float64(micros)/1e6, 'f', -1, 64)
 		return fmt.Sprintf("DATE_BIN(INTERVAL '%s' SECOND, %s, %s)", seconds, args[0], sqlEpochLiteral), nil
 	},
+}
+
+// strictMargin widens $__timeFrom() and $__timeTo() by 1 ns in Logs format, whose range can stop at
+// the exact line a scroll page continues from. A query may compare them with < or >, which would
+// otherwise drop lines at that line's time; $__timeFilter's BETWEEN is inclusive and needs no margin.
+func strictMargin(q *sqlutil.Query) time.Duration {
+	if q.Format == sqlutil.FormatOptionLogs {
+		return time.Nanosecond
+	}
+	return 0
 }
 
 // noMacroArguments reports whether a macro was written as $__name or $__name().
