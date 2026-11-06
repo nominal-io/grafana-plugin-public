@@ -75,6 +75,11 @@ jest.mock('@grafana/ui', () => {
   };
 });
 
+jest.mock('./NominalSignIn', () => ({
+  NominalSignIn: ({ datasource, onSignedIn }: { datasource: DataSource; onSignedIn: () => void }) =>
+    datasource.usesOAuth ? <button onClick={onSignedIn}>Finish Nominal sign-in</button> : null,
+}));
+
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
   getBackendSrv: jest.fn(() => ({ post })),
@@ -263,6 +268,34 @@ describe('channel data type inference effect', () => {
     // ...and no by-RID asset fetch is attempted for the unresolved template.
     await settleEffects();
     expect(post.mock.calls.some((call) => call[0] === `${DATASOURCE_URL}/assets-by-rid`)).toBe(false);
+  });
+
+  it('reloads a saved query that failed while signed out once the user signs in', async () => {
+    let signedIn = false;
+    post.mockImplementation(async (url: string) => {
+      if (!signedIn) {
+        throw { status: 401, data: { message: 'sign in to Nominal' } };
+      }
+      if (url.endsWith('/assets-by-rid')) {
+        return { [ASSET_RID]: ASSET };
+      }
+      if (url.endsWith('/channels')) {
+        return { channels: [] };
+      }
+      return {};
+    });
+    const onRunQuery = jest.fn();
+    const oauthDatasource = { url: DATASOURCE_URL, usesOAuth: true } as unknown as DataSource;
+
+    render(<QueryEditor query={makeQuery()} onChange={jest.fn()} onRunQuery={onRunQuery} datasource={oauthDatasource} />);
+    await settleEffects();
+    expect(screen.getByTestId('asset-combobox')).not.toHaveValue('Test Asset');
+
+    signedIn = true;
+    fireEvent.click(screen.getByText('Finish Nominal sign-in'));
+
+    await waitFor(() => expect(screen.getByTestId('asset-combobox')).toHaveValue('Test Asset'));
+    expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
   it('fetches a saved template RID only once on mount (no restore/resolved double fetch)', async () => {
