@@ -56,7 +56,7 @@ Annotations can also run Nominal SQL. The query needs a `"time"` column and a te
 
 Most physical telemetry: temperatures, pressures, currents, vibration amplitudes.
 
-Numeric channels expose an **Aggregation(s)** picker with two groups. Under **Raw points**, **LTTB** (Largest-Triangle-Three-Buckets) returns a subset of the actual samples, chosen to keep the visual shape of the signal, including peaks and dips. Every returned value is a real sample at its real timestamp. LTTB can't be combined with bucket aggregations: selecting it clears them, and selecting a bucket aggregation clears LTTB.
+Numeric channels expose an **Aggregation(s)** picker with two groups. Under **Raw points**, **LTTB** (Largest-Triangle-Three-Buckets) returns a subset of the actual samples, chosen to keep the visual shape of the signal. Every returned value is a real sample at its real timestamp. LTTB can't be combined with bucket aggregations: selecting it clears them, and selecting a bucket aggregation clears LTTB.
 
 Under **Bucket aggregations**, each selected aggregation is computed per time bucket and returned as its own series:
 
