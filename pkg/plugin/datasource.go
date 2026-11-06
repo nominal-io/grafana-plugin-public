@@ -105,6 +105,8 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		workspaceRid:        workspaceRid,
+		usesOAuth:           config.UsesOAuth(),
+		oauthSessions:       newSessionStore(),
 		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
 		sqlConn:             sqlConn,
 		sqlErr:              sqlErr,
@@ -127,14 +129,17 @@ type Datasource struct {
 	workspaceService  workspaceapi.WorkspaceServiceClient
 
 	workspaceRid *rids.WorkspaceRid
+	usesOAuth    bool
 	sqlService   sqlv1.SqlServiceClient
 	sqlConn      *grpc.ClientConn
 	// sqlErr explains why sqlService is nil, for example a plain http base URL.
 	sqlErr error
-	// defaultSQLWorkspace caches the API key's default workspace when no Workspace RID is set.
+	// defaultSQLWorkspace caches the default workspace of the API key, or of each user in OAuth mode,
+	// when no Workspace RID is set.
 	defaultSQLWorkspace *ttlCache[string]
 
 	resourceHTTPClient *http.Client
+	oauthSessions      *sessionStore
 
 	// Built once during construction. Every query shares these instances, so
 	// their caches are shared too.
@@ -186,6 +191,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	// UA components live in ctx so any downstream HTTP picks them up; safe to set
 	// before validation because the error short-circuit below performs no I/O.
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ctx = withGrafanaUser(ctx, req.GetHTTPHeader(backend.GrafanaUserSignInTokenHeaderName))
 	response := backend.NewQueryDataResponse()
 
 	// Check if DataSourceInstanceSettings is available
@@ -211,6 +217,12 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		}
 		return response, nil
 	}
+	if err := d.applyOAuthCredential(ctx, config); err != nil {
+		for _, q := range req.Queries {
+			response.Responses[q.RefID] = backend.ErrDataResponseWithSource(backend.StatusUnauthorized, backend.ErrorSourceDownstream, err.Error())
+		}
+		return response, nil
+	}
 
 	return newNominalQueryExecution(d, config).Execute(ctx, req.Queries), nil
 }
@@ -218,6 +230,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 // CheckHealth handles health checks sent from Grafana to the plugin.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ctx = withGrafanaUser(ctx, req.GetHTTPHeader(backend.GrafanaUserSignInTokenHeaderName))
 	log.DefaultLogger.Debug("CheckHealth called")
 
 	if req.PluginContext.DataSourceInstanceSettings == nil {
@@ -249,7 +262,11 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 		}, nil
 	}
 
-	if config.Secrets.ApiKey == "" {
+	if err := d.applyOAuthCredential(ctxWithTimeout, config); err != nil {
+		return d.checkOAuthClient(ctxWithTimeout, config), nil
+	}
+
+	if config.Secrets.AuthToken == "" {
 		log.DefaultLogger.Debug("Health check failed: missing API key")
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
@@ -260,7 +277,7 @@ func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRe
 	// Test connection using generated client with timeout
 	log.DefaultLogger.Debug("Testing connection using nominal-api-go client")
 
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 	profile, err := d.authService.GetMyProfile(ctxWithTimeout, bearerToken)
 	if err != nil {
 		logErrorWithConjureFields("Health check failed", err)
@@ -338,6 +355,7 @@ func parseWorkspaceRid(s string) (*rids.WorkspaceRid, error) {
 // CallResource handles HTTP requests sent to the plugin.
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	ctx = contextWithPluginRequestIdentity(ctx, req.PluginContext)
+	ctx = withGrafanaUser(ctx, req.GetHTTPHeader(backend.GrafanaUserSignInTokenHeaderName))
 	log.DefaultLogger.Debug("=== CallResource called ===")
 	log.DefaultLogger.Debug("CallResource called", "path", req.Path, "method", req.Method, "url", req.URL)
 	return newNominalResourceHandler(d).Handle(ctx, req, sender)

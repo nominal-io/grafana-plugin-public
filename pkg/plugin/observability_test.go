@@ -144,7 +144,7 @@ func TestConnectionTestQuery_SurfacesInstanceID(t *testing.T) {
 	})
 	exec := &NominalQueryExecution{
 		datasource: ds,
-		config:     &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "x"}},
+		config:     &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "x"}},
 	}
 
 	resp := exec.handleConnectionTestQuery(context.Background())

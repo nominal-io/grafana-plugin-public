@@ -21,7 +21,7 @@ import (
 
 func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.T) {
 	ds := withCatalog(&Datasource{})
-	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 	query := backend.DataQuery{
 		RefID: "A",
 		JSON: mustMarshal(NominalQueryModel{
@@ -64,7 +64,7 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 
 func TestPrepareQueryAggregationRules(t *testing.T) {
 	ds := withCatalog(&Datasource{})
-	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 
 	tests := []struct {
 		name                  string
@@ -256,7 +256,7 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
 				Secrets: &models.SecretPluginSettings{
-					ApiKey: "test-key",
+					AuthToken: "test-key",
 				},
 			}
 			query := backend.DataQuery{
@@ -397,7 +397,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 			ds := withCatalog(&Datasource{datasourceService: mockDS, resourceHTTPClient: server.Client()})
 			config := &models.PluginSettings{
 				BaseUrl: server.URL,
-				Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+				Secrets: &models.SecretPluginSettings{AuthToken: "test-key"},
 			}
 			query := backend.DataQuery{
 				RefID: "A",

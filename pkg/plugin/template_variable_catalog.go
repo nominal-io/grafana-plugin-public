@@ -147,7 +147,7 @@ func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *
 		return []metricFindValue{}, nil
 	}
 
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids)
 	if err != nil {
 		return nil, &templateVariableCatalogError{kind: templateVariableChannelSearchError, err: err}

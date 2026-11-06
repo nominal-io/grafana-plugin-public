@@ -238,7 +238,7 @@ func (c *NominalCatalog) HasSupportedDataSource(asset AssetSearchResult) bool {
 // as nil. The returned value is a copy, so callers may mutate it without affecting
 // the cache or other callers.
 func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	asset, err := c.assetCache.get(ctx, assetRid, func(fetchCtx context.Context) (*SingleAssetResponse, error) {
+	asset, err := c.assetCache.get(ctx, oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, assetRid), func(fetchCtx context.Context) (*SingleAssetResponse, error) {
 		return c.fetchAssetByRidUncached(fetchCtx, config, assetRid)
 	})
 	if err != nil {
@@ -268,7 +268,7 @@ func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.Plu
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+config.Secrets.ApiKey)
+	req.Header.Set("Authorization", "Bearer "+config.Secrets.AuthToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	if c.resourceHTTPClient == nil {
@@ -380,7 +380,7 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	assetRid := qm.AssetRid
 	dataScopeName := qm.DataScopeName
 	channel := qm.Channel
-	entry, err := c.channelMetadataCache.get(ctx, cacheKey,
+	entry, err := c.channelMetadataCache.get(ctx, oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, cacheKey),
 		func(lookupCtx context.Context) (channelMetadataCacheEntry, error) {
 			return c.computeChannelMetadata(lookupCtx, config, assetRid, dataScopeName, channel)
 		})
@@ -415,7 +415,7 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return channelMetadataCacheEntry{}, errChannelMetadataUnavailable
 	}
 
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 	searchRequest := datasourceapi.SearchChannelsRequest{
 		ExactMatch:  []string{channel},
 		DataSources: dataSourceRids,

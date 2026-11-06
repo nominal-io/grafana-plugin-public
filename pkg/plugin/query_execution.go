@@ -167,7 +167,7 @@ func partitionPreparedQueries(prepared []preparedQuery) (queryBatch, queryBatch)
 
 func (e *NominalQueryExecution) executeBatchQuery(ctx context.Context, batch queryBatch) map[string]backend.DataResponse {
 	results := make(map[string]backend.DataResponse)
-	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(e.config.Secrets.AuthToken)
 
 	if len(batch.queries) != len(batch.models) {
 		for _, q := range batch.queries {
@@ -267,7 +267,7 @@ func (e *NominalQueryExecution) handleConnectionTestQuery(ctx context.Context) b
 
 	log.DefaultLogger.Debug("Processing connectionTest query")
 
-	bearerToken := bearertoken.Token(e.config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(e.config.Secrets.AuthToken)
 	profile, err := e.datasource.authService.GetMyProfile(ctx, bearerToken)
 	if err != nil {
 		logErrorWithConjureFields("Connection test failed", err)

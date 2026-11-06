@@ -33,7 +33,7 @@ func (d *Datasource) resolveSQLWorkspace(ctx context.Context, token bearertoken.
 	if d.workspaceRid != nil {
 		return d.workspaceRid.String(), nil
 	}
-	return d.defaultSQLWorkspace.get(ctx, "", func(ctx context.Context) (string, error) {
+	return d.defaultSQLWorkspace.get(ctx, oauthCacheKey(ctx, d.usesOAuth, string(token), ""), func(ctx context.Context) (string, error) {
 		workspace, err := d.workspaceService.GetDefaultWorkspace(ctx, token)
 		if err != nil {
 			return "", &workspaceLookupError{err}
@@ -80,7 +80,7 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 
 // runSQLQuery runs sql in the data source's workspace and decodes the Arrow result for format.
 func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql string, format sqlutil.FormatQueryOption) (data.Frames, error) {
-	token := bearertoken.Token(e.config.Secrets.ApiKey)
+	token := bearertoken.Token(e.config.Secrets.AuthToken)
 	workspace, err := e.datasource.resolveSQLWorkspace(ctx, token)
 	if err != nil {
 		return nil, err

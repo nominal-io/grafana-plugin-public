@@ -44,7 +44,7 @@ func sqlTestWorkspaceRid(t *testing.T) rids.WorkspaceRid {
 func sqlTestExecution(t *testing.T, service sqlv1.SqlServiceClient) *NominalQueryExecution {
 	t.Helper()
 	workspace := sqlTestWorkspaceRid(t)
-	return newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlService: service}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	return newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlService: service}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "k"}})
 }
 
 func sqlQueryService(t *testing.T, query sqlQueryHandler) sqlv1.SqlServiceClient {
@@ -295,7 +295,7 @@ func TestExecuteSQLQueryReportsWorkspaceLookupErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ds := &Datasource{workspaceService: tc.workspaces, defaultSQLWorkspace: newTTLCache[string](time.Minute), sqlService: sqlQueryService(t, sqlPayloadServer(sqlValueStream(t, 1)))}
-			e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+			e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "k"}})
 			response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
 			if response.Status != tc.wantStatus || response.ErrorSource != backend.ErrorSourceDownstream {
 				t.Errorf("status, source = %v, %q; want %v, downstream", response.Status, response.ErrorSource, tc.wantStatus)
@@ -413,7 +413,7 @@ func TestExecuteSQLQueryReportsUnusableBaseURL(t *testing.T) {
 		t.Fatal("dialSQL(http URL) error = nil, want an error")
 	}
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlErr: sqlErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{ApiKey: "k"}})
+	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlErr: sqlErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "k"}})
 	response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
 	if response.Status != backend.StatusBadRequest || response.ErrorSource != backend.ErrorSourceDownstream || response.Error == nil || response.Error.Error() != sqlErr.Error() {
 		t.Errorf("executeSQLQuery() = %v, %q, %v; want %v, downstream, %q", response.Status, response.ErrorSource, response.Error, backend.StatusBadRequest, sqlErr)

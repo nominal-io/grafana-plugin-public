@@ -44,12 +44,12 @@ func (h *NominalResourceHandler) handleChannelsSearch(ctx context.Context, req *
 		return err
 	}
 
-	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for channels search")
+	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for channels search")
 	if !ok {
 		return err
 	}
 
-	bearerToken := bearertoken.Token(config.Secrets.ApiKey)
+	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 
 	// Convert string RIDs to proper datasource RID types
 	var dataSourceRids []rids.DataSourceRid
@@ -113,7 +113,7 @@ func (h *NominalResourceHandler) handleAssetsVariable(ctx context.Context, req *
 		return err
 	}
 
-	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for assets variable")
+	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for assets variable")
 	if !ok {
 		return err
 	}
@@ -157,7 +157,7 @@ func (h *NominalResourceHandler) handleDatascopesVariable(ctx context.Context, r
 		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 
-	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for datascopes variable")
+	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for datascopes variable")
 	if !ok {
 		return err
 	}
@@ -201,7 +201,7 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 
-	config, ok, err := loadResourceSettings(d.settings, sender, "Failed to load settings for channel variables")
+	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for channel variables")
 	if !ok {
 		return err
 	}

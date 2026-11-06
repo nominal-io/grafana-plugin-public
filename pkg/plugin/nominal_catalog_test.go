@@ -229,7 +229,7 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
@@ -271,7 +271,7 @@ func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
@@ -318,7 +318,7 @@ func TestNominalCatalogFetchAssetByRidCachesNotFound(t *testing.T) {
 
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
-		Secrets: &models.SecretPluginSettings{ApiKey: "test-key"},
+		Secrets: &models.SecretPluginSettings{AuthToken: "test-key"},
 	}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
 
@@ -351,7 +351,7 @@ func TestNominalCatalogFetchAssetByRidSurfacesHTTPError(t *testing.T) {
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
@@ -378,7 +378,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 	catalog := newNominalCatalog(nil, &mockDatasourceService{})
@@ -443,7 +443,7 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	config := &models.PluginSettings{
 		BaseUrl: server.URL,
 		Secrets: &models.SecretPluginSettings{
-			ApiKey: "test-key",
+			AuthToken: "test-key",
 		},
 	}
 	catalog := newNominalCatalog(server.Client(), mockDS)
@@ -869,7 +869,7 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 		server.Close()
 	})
 
-	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
 	var canceled, survivor assetLookupResult
 	runSurvivingCallerScenario(t, blocker,
@@ -918,7 +918,7 @@ func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *te
 			}}}, nil
 		},
 	}
-	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 	catalog := newNominalCatalog(server.Client(), mockDS)
 	canceledModel := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
 	survivorModel := canceledModel
@@ -961,7 +961,7 @@ func TestNominalCatalogFetchAssetByRidSharesFailureAndRetriesAfter(t *testing.T)
 		server.Close()
 	})
 
-	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
 
 	results := make([]assetLookupResult, callers)
@@ -1043,7 +1043,7 @@ func TestNominalCatalogDoesNotDispatchPreCanceledMiss(t *testing.T) {
 				server.Close()
 			})
 			mockDS := &mockDatasourceService{}
-			config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{ApiKey: "test-key"}}
+			config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
 			catalog := newNominalCatalog(server.Client(), mockDS)
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
