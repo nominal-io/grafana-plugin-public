@@ -63,7 +63,7 @@ func (e *NominalQueryExecution) executeSQLQuery(ctx context.Context, prepared pr
 	query := prepared.SQL
 	if query.Format == sqlutil.FormatOptionLogs {
 		paged := *query
-		paged.TimeRange = logPageRange(paged.TimeRange, prepared.Model)
+		paged.TimeRange, _ = logPageRange(paged.TimeRange, prepared.Model)
 		query = &paged
 	}
 	expanded, err := sqlutil.Interpolate(query, sqlMacros)

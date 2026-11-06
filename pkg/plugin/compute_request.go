@@ -12,7 +12,7 @@ import (
 	"github.com/palantir/pkg/safelong"
 )
 
-const logPageSize = -250
+const logPageSize = 1000
 
 // assetRidVariableName is the compute-context variable that carries the asset RID.
 // AssetChannel binds the RID by this variable name; the value is supplied separately
@@ -21,7 +21,11 @@ const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
-	seriesPlan := e.buildSeriesPlan(qm)
+	var cursor *logCursor
+	if qm.ChannelDataType == ChannelDataTypeLog {
+		timeRange, cursor = logPageRange(timeRange, qm)
+	}
+	seriesPlan := e.buildSeriesPlan(qm, cursor)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
 	return computeapi1.ComputeNodeRequest{
@@ -35,7 +39,7 @@ func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRa
 // buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
-func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi1.SummarizeSeries {
+func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, cursor *logCursor) computeapi1.SummarizeSeries {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 
 	switch qm.ChannelDataType {
@@ -57,8 +61,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
 		series := computeapi1.NewSeriesFromLog(logSeries)
 
-		pageInfo := computeapi.PageInfo{PageSize: logPageSize}
-		pageStrategy := computeapi.NewPageStrategyFromPageInfo(pageInfo)
+		pageStrategy := computeapi.NewPageStrategyFromPageInfo(logPageInfo(qm.ScrollNewer, cursor))
 		summarizationStrategy := computeapi.NewSummarizationStrategyFromPage(pageStrategy)
 		return computeapi1.SummarizeSeries{
 			Input:                 series,
@@ -187,4 +190,18 @@ func timestampFromTime(value time.Time) api.Timestamp {
 		Seconds: safelong.SafeLong(value.Unix()),
 		Nanos:   safelong.SafeLong(value.Nanosecond()),
 	}
+}
+
+// logPageInfo pages a log query back from the end of its range, or forward from its start on a scroll
+// page that reads newer lines. A scroll page that continues from a line pages from that line.
+func logPageInfo(newer bool, cursor *logCursor) computeapi.PageInfo {
+	info := computeapi.PageInfo{PageSize: -logPageSize}
+	if newer {
+		info.PageSize = logPageSize
+	}
+	if cursor != nil && cursor.serviceID != nil {
+		token := computeapi.NewPageTokenFromTimestampAndId(computeapi.TimestampAndId{Timestamp: timestampFromTime(cursor.at), Id: cursor.serviceID})
+		info.PageToken = &token
+	}
+	return info
 }

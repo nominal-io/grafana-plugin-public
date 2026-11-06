@@ -207,20 +207,24 @@ func logLinesFrame(name string, lines *logLines) *data.Frame {
 // instead, or starts there when it reads newer lines, which can reach past Grafana's range: that
 // range is shared by every query of a panel, and another query's lines may have set it. A line on the
 // far side of the range, left from an earlier range, is ignored. Grafana drops lines read again by id.
+// The cursor is the line the page continues from, or nil when it does not.
 //
 // TODO: SQL scrolling still stops where as many lines as the LIMIT share one exact time, since
 // nothing in a row tells those lines apart.
-func logPageRange(r backend.TimeRange, qm NominalQueryModel) backend.TimeRange {
+func logPageRange(r backend.TimeRange, qm NominalQueryModel) (backend.TimeRange, *logCursor) {
 	r.To = r.To.Truncate(time.Millisecond).Add(time.Millisecond - time.Nanosecond)
 	cursor, ok := parseLogLineID(qm.ScrollID)
 	switch {
 	case !ok:
+		return r, nil
 	case qm.ScrollNewer && !cursor.at.After(r.To):
 		r.From = cursor.at
 	case !qm.ScrollNewer && !cursor.at.Before(r.From):
 		r.To = cursor.at
+	default:
+		return r, nil
 	}
-	return r
+	return r, &cursor
 }
 
 // logCursor is a line that a page continues from.
