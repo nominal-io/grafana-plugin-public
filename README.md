@@ -5,6 +5,7 @@
     - [Verify Plugin Installation](#verify-plugin-installation)
     - [Reviewer bootstrap](#reviewer-bootstrap)
   - [Installing Plugin on Existing Grafana Instances](#installing-plugin-on-existing-grafana-instances)
+  - [Nominal sign-in (OAuth)](#nominal-sign-in-oauth)
   - [API Testing](#api-testing)
 - [Docs and other references](#docs-and-other-references)
 
@@ -16,7 +17,7 @@ This repository contains **Nominal Grafana plugins** for integrating with the No
 
 This is a **production-ready Grafana data source plugin** with:
 
-- **Go backend**: Secure API key handling and server-side processing
+- **Go backend**: API key or per-user Nominal sign-in, and server-side processing
 - **TypeScript frontend**: Modern React-based query editor and configuration UI
 - **Full-stack integration**: Backend handles API calls, frontend provides intuitive interface
 - **Enterprise features**: Authentication, caching, and optimized performance
@@ -242,7 +243,39 @@ Then in Grafana UI:
 1. Go to **Configuration > Data sources**
 2. Click **Add data source**
 3. Search for **Nominal**
-4. Configure with your Nominal API key, base URL, and (recommended) workspace RID
+4. Configure with your Nominal API key, base URL, and (recommended) workspace RID. To query Nominal as each Grafana user instead of with an API key, see [Nominal sign-in (OAuth)](#nominal-sign-in-oauth).
+
+## Nominal sign-in (OAuth)
+
+With **Authentication** set to **Nominal sign-in (OAuth)**, each Grafana user signs in to Nominal and queries run as that user, instead of with a shared API key.
+
+Setup:
+
+1. Ask Nominal to register an OAuth client for your Grafana with this redirect URI, where the root URL is Grafana's `root_url` setting:
+
+   ```
+   <Grafana root URL>/api/datasources/uid/<data source UID>/resources/oauth/callback
+   ```
+
+2. In the data source settings, set **Authentication** to **Nominal sign-in (OAuth)** and enter the **OAuth Client ID**, plus the **OAuth Client Secret** if Nominal issued one. The Base URL must be `https`.
+
+To provision the data source instead:
+
+```yaml
+jsonData:
+  baseUrl: 'https://api.gov.nominal.io/api'
+  authMode: 'oauth'
+  oauthClientId: '<client ID>'
+secureJsonData:
+  oauthClientSecret: '<client secret>'
+```
+
+Signing in:
+
+- Each user signs in with **Sign in to Nominal** in the query editor. Queries that failed while signed out, including the asset, data scope and channel selectors, reload after sign-in.
+- Users must be signed in to Grafana; anonymous viewers can't sign in to Nominal.
+- Sign-ins are held in the plugin's memory. Restarting Grafana or saving the data source settings signs every user out.
+- An API key saved before switching to OAuth is never sent.
 
 ## API Testing
 
@@ -257,7 +290,7 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
 
 - Asset Search
 
-  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `search-assets`, and `assets-by-rid`. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
+  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `search-assets`, and `assets-by-rid`, plus `oauth/start`, `oauth/callback`, `oauth/status` and `oauth/logout` for Nominal sign-in. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
 
   ```sh
   curl -s -X POST "http://localhost:3000/api/datasources/uid/{UID}/resources/search-assets" \
