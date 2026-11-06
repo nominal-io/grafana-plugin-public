@@ -1064,6 +1064,26 @@ func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	return req
 }
 
+func TestBatchQueryPanicReturnsErrorResponses(t *testing.T) {
+	mockService := &mockComputeService{
+		batchComputeFunc: func(computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+			panic("batch exploded")
+		},
+	}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+
+	req := newBatchQueryRequest(2)
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, q := range req.Queries {
+		if e := resp.Responses[q.RefID].Error; e == nil || !strings.Contains(e.Error(), "Batch query failed unexpectedly") {
+			t.Errorf("expected panic error for %s, got %v", q.RefID, e)
+		}
+	}
+}
+
 func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
