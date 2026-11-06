@@ -2,15 +2,41 @@ import {
   DataSourceInstanceSettings,
   CoreApp,
   ScopedVars,
-  MetricFindValue
+  MetricFindValue,
+  DataQueryRequest,
+  DataQueryResponse,
+  createDataFrame,
 } from '@grafana/data';
-import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { DataSourceWithBackend, getTemplateSrv, getBackendSrv, config } from '@grafana/runtime';
+import { Observable, map } from 'rxjs';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
 import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
+import { navigateTo } from './utils/navigate';
+
+const SIGN_IN_REDIRECT_KEY = 'nominal-sign-in-redirect';
+const SIGN_IN_REDIRECT_INTERVAL_MS = 5 * 60 * 1000;
+
+// Signs in automatically only from a dashboard being viewed, where Grafana's unsaved-changes prompt still guards
+// edits, and at most once per interval per tab so a cancelled sign-in can't loop.
+function claimSignInRedirect(request: DataQueryRequest<NominalQuery>): boolean {
+  const params = new URLSearchParams(window.location.search);
+  if (request.app !== CoreApp.Dashboard || params.has('editPanel') || params.has('editview')) {
+    return false;
+  }
+  try {
+    if (Date.now() - Number(window.sessionStorage.getItem(SIGN_IN_REDIRECT_KEY)) < SIGN_IN_REDIRECT_INTERVAL_MS) {
+      return false;
+    }
+    window.sessionStorage.setItem(SIGN_IN_REDIRECT_KEY, String(Date.now()));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
@@ -47,6 +73,33 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
   async signOutOAuth(): Promise<void> {
     await this.postResource(resourceRoutes.oauthLogout);
+  }
+
+  query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
+    const response = super.query(request);
+    return this.usesOAuth ? response.pipe(map((r) => this.withSignInLink(request, r))) : response;
+  }
+
+  // A panel can't open the sign-in popup, so a signed-out query sends a viewed dashboard through a sign-in that
+  // returns to it, and otherwise links to that sign-in.
+  private withSignInLink(request: DataQueryRequest<NominalQuery>, response: DataQueryResponse): DataQueryResponse {
+    const signedOut = (response.errors ?? []).filter((error) => error.status === 401);
+    if (signedOut.length === 0) {
+      return response;
+    }
+    const returnTo = window.location.pathname + window.location.search;
+    const link = `${config.appSubUrl}${this.url}/${resourceRoutes.oauthLogin}?returnTo=${encodeURIComponent(returnTo)}`;
+    if (claimSignInRedirect(request)) {
+      navigateTo(link);
+    }
+    const notices = signedOut.map((error) =>
+      createDataFrame({
+        refId: error.refId,
+        fields: [],
+        meta: { notices: [{ severity: 'warning', text: 'Sign in to Nominal to see this data', link }] },
+      })
+    );
+    return { ...response, data: [...response.data, ...notices] };
   }
 
 

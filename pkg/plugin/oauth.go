@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -48,6 +49,8 @@ type oauthPendingLogin struct {
 	redirectURI string
 	user        string
 	expiry      time.Time
+	// returnTo is the Grafana path the callback redirects to; empty for a popup sign-in.
+	returnTo string
 }
 
 // sessionStore holds one data source instance's sign-ins. Grafana rebuilds the instance on a settings
@@ -322,27 +325,66 @@ func textResponse(sender backend.CallResourceResponseSender, status int, message
 	})
 }
 
-// handleOAuthStart builds the /oauth/v1/authorize URL and params for the UI to open.
+// handleOAuthStart builds the /oauth/v1/authorize URL for the UI to open in a popup.
 func (h *NominalResourceHandler) handleOAuthStart(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	if ok, err := requirePost(req, sender); !ok {
 		return err
 	}
+	authorizeURL, status, err := h.beginOAuthSignIn(ctx, "")
+	if err != nil {
+		return jsonErrorResponse(sender, status, err.Error())
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, map[string]string{"authorizeUrl": authorizeURL})
+}
+
+// handleOAuthLogin is a GET version of handleOAuthStart for panels: a panel notice can only link to a URL, so
+// this redirects the browser to Nominal sign-in instead of returning the URL, and back to returnTo once signed in.
+func (h *NominalResourceHandler) handleOAuthLogin(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if req.Method != http.MethodGet {
+		return textResponse(sender, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+	var returnTo string
+	if parsed, err := url.Parse(req.URL); err == nil {
+		returnTo = parsed.Query().Get("returnTo")
+	}
+	if !isGrafanaPath(returnTo) {
+		return textResponse(sender, http.StatusBadRequest, "returnTo must be a Grafana path")
+	}
+	authorizeURL, status, err := h.beginOAuthSignIn(ctx, returnTo)
+	if err != nil {
+		return textResponse(sender, status, err.Error())
+	}
+	return redirectResponse(sender, authorizeURL)
+}
+
+// isGrafanaPath reports whether returnTo is a path on this Grafana, so the callback can't redirect elsewhere.
+func isGrafanaPath(returnTo string) bool {
+	return strings.HasPrefix(returnTo, "/") && !strings.HasPrefix(returnTo, "//") && !strings.HasPrefix(returnTo, "/\\") &&
+		!strings.ContainsFunc(returnTo, unicode.IsControl)
+}
+
+func redirectResponse(sender backend.CallResourceResponseSender, location string) error {
+	return sender.Send(&backend.CallResourceResponse{Status: http.StatusFound, Headers: map[string][]string{"Location": {location}}})
+}
+
+// beginOAuthSignIn records a pending sign-in for the current user and returns the /oauth/v1/authorize URL.
+func (h *NominalResourceHandler) beginOAuthSignIn(ctx context.Context, returnTo string) (string, int, error) {
 	config, err := models.LoadPluginSettings(h.datasource.settings)
 	if err != nil || !config.UsesOAuth() || config.OAuthClientID == "" {
-		return jsonErrorResponse(sender, http.StatusBadRequest, "OAuth sign-in is not configured for this data source")
+		return "", http.StatusBadRequest, errors.New("OAuth sign-in is not configured for this data source")
 	}
 	origin, err := oauthOrigin(config)
 	if err != nil {
-		return jsonErrorResponse(sender, http.StatusBadRequest, err.Error())
+		return "", http.StatusBadRequest, err
 	}
 	user := oauthUser(ctx)
 	if user == "" {
-		return jsonErrorResponse(sender, http.StatusUnauthorized, "No signed-in Grafana user")
+		return "", http.StatusUnauthorized, errors.New("No signed-in Grafana user")
 	}
 	redirectURI, err := buildRedirectURI(ctx, h.datasource.settings.UID)
 	if err != nil {
 		log.DefaultLogger.FromContext(ctx).Error("Could not build OAuth redirect URI", "error", err)
-		return jsonErrorResponse(sender, http.StatusInternalServerError, "Could not build the sign-in redirect URI")
+		return "", http.StatusInternalServerError, errors.New("Could not build the sign-in redirect URI")
 	}
 
 	state, verifier := randomURLToken(), randomURLToken()
@@ -352,16 +394,16 @@ func (h *NominalResourceHandler) handleOAuthStart(ctx context.Context, req *back
 		redirectURI: redirectURI,
 		user:        user,
 		expiry:      time.Now().Add(10 * time.Minute),
+		returnTo:    returnTo,
 	})
-	authorizeURL := origin + "/oauth/v1/authorize?" + url.Values{
+	return origin + "/oauth/v1/authorize?" + url.Values{
 		"client_id":             {config.OAuthClientID},
 		"redirect_uri":          {redirectURI},
 		"response_type":         {"code"},
 		"state":                 {state},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
-	}.Encode()
-	return jsonMarshalResponse(sender, http.StatusOK, map[string]string{"authorizeUrl": authorizeURL})
+	}.Encode(), http.StatusOK, nil
 }
 
 // handleOAuthCallback handles the redirect back from Nominal after the user signs in to the IdP.
@@ -402,6 +444,9 @@ func (h *NominalResourceHandler) handleOAuthCallback(ctx context.Context, req *b
 	session := &oauthSession{}
 	session.updateAccessToken(tokens)
 	h.datasource.oauthSessions.putSession(user, session)
+	if pending.returnTo != "" {
+		return redirectResponse(sender, pending.returnTo)
+	}
 	return textResponse(sender, http.StatusOK, "Signed in to Nominal. You can close this window.")
 }
 
