@@ -605,6 +605,23 @@ func TestExtractArrowBucketedNumericSeriesFullyMaskedFirstPointRowsYieldEmptyVal
 	}
 }
 
+func TestExtractArrowRawNumericSeriesWithoutSharedTimestamp(t *testing.T) {
+	plot := computeapi.ArrowPlot{ArrowBinary: createTestArrowRawNumeric([]int64{100, 200, 300}, []float64{1, 2, 3})}
+	series, err := extractArrowBucketedNumericSeries(plot, []aggColumnSpec{aggSpecs[AggLTTB]})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 1 || series[0].Name != "lttb" || !series[0].CarriesChannelUnit {
+		t.Fatalf("series = %+v, want one lttb series carrying the channel unit", series)
+	}
+	if len(series[0].TimePoints) != 3 || !series[0].TimePoints[2].Equal(time.Unix(0, 300)) {
+		t.Fatalf("TimePoints = %v, want 3 points ending at 300ns", series[0].TimePoints)
+	}
+	if len(series[0].Values) != 3 || *series[0].Values[1] != 2 {
+		t.Fatalf("Values = %v, want [1 2 3]", series[0].Values)
+	}
+}
+
 // TestExtractColumnValuesAllocationsAreConstant guards the shared-backing-slice
 // optimization: allocations stay O(1) as row count grows.
 func TestExtractColumnValuesAllocationsAreConstant(t *testing.T) {
@@ -1207,6 +1224,7 @@ func TestAggSpecsCarriesChannelUnitFlag(t *testing.T) {
 		AggVariance:   false,
 		AggFirstPoint: true,
 		AggLastPoint:  true,
+		AggLTTB:       true,
 	}
 	for agg, wantCarries := range cases {
 		spec, ok := aggSpecs[agg]

@@ -1232,7 +1232,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
 						computeapi.ArrowPlot{ArrowBinary: arrow}),
 				)},
-				createMockComputeResult(nil),
+				createMockEnumComputeResult([]string{"on"}, []int{0}),
 			},
 		},
 	}
@@ -1243,7 +1243,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 		},
 		{
 			Query: backend.DataQuery{RefID: "healthy"},
-			Model: NominalQueryModel{Channel: "chan-healthy", ChannelDataType: ChannelDataTypeNumeric},
+			Model: NominalQueryModel{Channel: "chan-healthy", ChannelDataType: ChannelDataTypeString},
 		},
 	}
 	e := newTestQueryExecution(&Datasource{computeService: mock}, nil)

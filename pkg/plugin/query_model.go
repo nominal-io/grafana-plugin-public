@@ -25,8 +25,6 @@ type NominalQueryModel struct {
 	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
-	// RawLTTB is runtime-only; normalizeAggregations sets it and clears Aggregations.
-	RawLTTB bool `json:"-"`
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -155,9 +153,6 @@ func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 			response := backend.ErrDataResponse(backend.StatusBadRequest, "LTTB cannot be combined with bucket aggregations")
 			return &response
 		}
-		qm.RawLTTB = true
-		qm.Aggregations = nil
-		return nil
 	}
 
 	deduped, badAgg := validateAndDedup(qm.Aggregations)

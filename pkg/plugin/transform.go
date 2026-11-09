@@ -73,13 +73,9 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					}
 					response.Frames = append(response.Frames, frame)
 				}
-				dataPoints := 0
-				if len(result.AggSeries) > 0 {
-					dataPoints = len(result.AggSeries[0].TimePoints)
-				}
 				log.DefaultLogger.Debug("Successfully processed multi-agg query",
 					"series", len(result.AggSeries),
-					"dataPoints", dataPoints)
+					"dataPoints", len(result.AggSeries[0].TimePoints))
 			} else if result.IsEnum {
 				frame := data.NewFrame("response")
 				frame.Name = qm.Channel
@@ -107,30 +103,10 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
 				response.Frames = append(response.Frames, frame)
 			} else {
-				// Legacy numeric path (BucketedNumericPlot, NumericPlot)
-				frame := data.NewFrame("response")
-				displayName := qm.Channel
-				if qm.RawLTTB {
-					displayName = fmt.Sprintf("%s (lttb)", qm.Channel)
-				}
-				frame.Name = displayName
-				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
-					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, result.TimePoints),
-						valueField,
-					)
-				} else {
-					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, []time.Time{}),
-						valueField,
-					)
-				}
-				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
-				response.Frames = append(response.Frames, frame)
+				response = backend.ErrDataResponse(
+					backend.StatusInternal,
+					"Transform failed: compute response produced no series",
+				)
 			}
 
 			return nil
@@ -172,14 +148,11 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 }
 
 type TransformResult struct {
-	// Numeric aggregation series (Arrow bucketed path, one entry per requested field)
+	// Numeric series from an Arrow response, one entry per requested aggregation
 	AggSeries []AggregationSeries
 
-	// Legacy numeric path (non-Arrow), single series only
-	TimePoints    []time.Time
-	NumericValues []*float64
-
 	// Enum path
+	TimePoints   []time.Time
 	StringValues []string
 	IsEnum       bool
 
@@ -202,57 +175,40 @@ func unsupportedComputeResponseError(typeName string) error {
 var decodeArrowBucketedNumeric = extractArrowBucketedNumericSeries
 
 // transformNominalResponseFromClient converts a compute response into a
-// TransformResult. qm names the aggregation columns the Arrow bucketed arm reads.
+// TransformResult. qm names the aggregation columns the Arrow numeric arms read.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
 	var result TransformResult
+
+	// Raw (LTTB) and bucketed Arrow responses differ only in which columns the specs name.
+	arrowNumeric := func(plot computeapi.ArrowPlot) error {
+		var specs []aggColumnSpec
+		for _, agg := range qm.Aggregations {
+			specs = append(specs, aggColumnSpecFromEnum(agg))
+		}
+		if len(specs) == 0 {
+			return fmt.Errorf("no aggregation fields requested for Arrow numeric response")
+		}
+		series, err := decodeArrowBucketedNumeric(plot, specs)
+		if err != nil {
+			return err
+		}
+		result.AggSeries = series
+		return nil
+	}
 
 	// AcceptFuncs invokes a selected nil handler, so every arm needs one.
 	visitErr := response.AcceptFuncs(
 		unsupportedComputeResponse[[]computeapi.Range]("range"),
 		unsupportedComputeResponse[computeapi.RangesSummary]("rangesSummary"),
 		unsupportedComputeResponse[*computeapi.Range]("rangeValue"),
-		func(numeric computeapi.NumericPlot) error {
-			timePoints, values, err := e.extractNumericDataFromConjure(numeric)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.NumericValues = values
-			result.IsEnum = false
-			return nil
-		},
-		func(bucketed computeapi.BucketedNumericPlot) error {
-			timePoints, values, err := e.extractBucketedDataFromConjure(bucketed)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.NumericValues = values
-			result.IsEnum = false
-			return nil
-		},
+		unsupportedComputeResponse[computeapi.NumericPlot]("numeric"),
+		unsupportedComputeResponse[computeapi.BucketedNumericPlot]("bucketedNumeric"),
 		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
 		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowNumeric"),
-		// arrowBucketedNumericFunc: one AggregationSeries per requested aggregation field.
-		func(arrowBucketed computeapi.ArrowPlot) error {
-			var specs []aggColumnSpec
-			for _, agg := range qm.Aggregations {
-				specs = append(specs, aggColumnSpecFromEnum(agg))
-			}
-			if len(specs) == 0 {
-				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
-			}
-			series, err := decodeArrowBucketedNumeric(arrowBucketed, specs)
-			if err != nil {
-				return err
-			}
-			result.AggSeries = series
-			result.IsEnum = false
-			return nil
-		},
+		arrowNumeric,
+		arrowNumeric,
 		// enumFunc - maps integer indices to category strings
 		func(enum computeapi.EnumPlot) error {
 			timePoints, values, err := e.extractEnumDataFromConjure(enum)
@@ -351,43 +307,6 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 	return result, nil
 }
 
-func (e *NominalQueryExecution) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []*float64, error) {
-	var timePoints []time.Time
-	var values []*float64
-
-	for i := 0; i < len(numeric.Timestamps) && i < len(numeric.Values); i++ {
-		timestamp := numeric.Timestamps[i]
-		value := numeric.Values[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-		values = append(values, &value)
-	}
-
-	log.DefaultLogger.Debug("Extracted numeric data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
-func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []*float64, error) {
-	var timePoints []time.Time
-	var values []*float64
-
-	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
-		timestamp := bucketed.Timestamps[i]
-		bucket := bucketed.Buckets[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		values = append(values, bucket.Mean)
-	}
-
-	log.DefaultLogger.Debug("Extracted bucketed data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
 // extractEnumDataFromConjure maps EnumPlot indices to category strings.
 // Out-of-range indices become "unknown(N)".
 func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
@@ -460,8 +379,6 @@ func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed comp
 }
 
 // carriesChannelUnit is false for COUNT (dimensionless) and VARIANCE (unit²).
-// Non-aggregated call sites use fieldConfigForNumericWithChannelUnit so the
-// true is named at the call site.
 func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesChannelUnit bool) *data.FieldConfig {
 	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
 	if !carriesChannelUnit {
@@ -469,12 +386,6 @@ func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesCha
 	}
 	cfg.Unit = mapToGrafanaUnit(qm.ChannelUnit)
 	return cfg
-}
-
-// fieldConfigForNumericWithChannelUnit is for non-aggregated numeric frames,
-// which always carry the channel unit.
-func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName string) *data.FieldConfig {
-	return fieldConfigForNumeric(qm, displayName, true)
 }
 
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {

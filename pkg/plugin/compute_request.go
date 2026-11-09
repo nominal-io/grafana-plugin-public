@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -66,10 +67,11 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		}
 
 	default:
-		if qm.RawLTTB {
+		if slices.Contains(qm.Aggregations, AggLTTB) {
 			series := computeapi1.NewSeriesFromNumeric(computeapi1.NewNumericSeriesFromChannel(channelSeries))
 			strategy := computeapi.NewSummarizationStrategyFromLargestTriangleThreeBuckets(computeapi.LttbStrategy{MaxPointsPerGroup: qm.Points.Count})
-			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy}
+			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
+			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy, OutputFormat: &arrowFormat}
 		}
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
