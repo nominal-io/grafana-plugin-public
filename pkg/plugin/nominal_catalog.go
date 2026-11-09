@@ -475,9 +475,9 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 	return allChannelResults, nil
 }
 
-// SearchChannels scores matches with PostgreSQL trigram similarity, whose word-character
-// classification is database-locale-dependent. Restrict this ranking hint to portable
-// ASCII letters and digits so the minimum-score filter cannot remove the exact row.
+// fuzzySearchTextFor leaves the search text empty unless channel has an ASCII letter or
+// digit. A non-empty search text drops rows that score zero, and only those characters
+// score on every database locale.
 func fuzzySearchTextFor(channel string) string {
 	for _, r := range channel {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {

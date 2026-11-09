@@ -465,8 +465,6 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if got := mockDS.searchChannelsCallCount(); got != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
-	// The API orders results by similarity to FuzzySearchText; ExactMatch only
-	// filters. Both must carry the channel name or the wanted row can page out.
 	req := mockDS.searchChannelsRequestSnapshot()
 	if req.FuzzySearchText != "state" {
 		t.Fatalf("FuzzySearchText = %q, want %q", req.FuzzySearchText, "state")
