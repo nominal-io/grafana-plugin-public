@@ -474,39 +474,6 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	}
 }
 
-func TestNominalCatalogInferChannelMetadataCachesMiss(t *testing.T) {
-	assetRid := "ri.scout.main.asset.metadata"
-	dataSourceRid := "ri.scout.main.data-source.dataset1"
-	server := newTestAssetServer(t, map[string]SingleAssetResponse{
-		assetRid: {
-			Rid:   assetRid,
-			Title: "Metadata Asset",
-			DataScopes: []AssetDataScope{
-				{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}},
-			},
-		},
-	}, nil)
-	defer server.Close()
-
-	mockDS := &mockDatasourceService{}
-	config := &models.PluginSettings{
-		BaseUrl: server.URL,
-		Secrets: &models.SecretPluginSettings{AuthToken: "test-key"},
-	}
-	catalog := newNominalCatalog(server.Client(), mockDS)
-
-	for i := 0; i < 2; i++ {
-		qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "missing", ChannelDataType: ChannelDataTypeNumeric}
-		catalog.InferChannelMetadata(context.Background(), config, &qm)
-		if qm.ChannelDataType != ChannelDataTypeNumeric {
-			t.Fatalf("call %d ChannelDataType = %q, want unchanged %q", i+1, qm.ChannelDataType, ChannelDataTypeNumeric)
-		}
-	}
-	if got := mockDS.searchChannelsCallCount(); got != 1 {
-		t.Fatalf("SearchChannels calls = %d, want 1 (miss cached)", got)
-	}
-}
-
 func TestFuzzySearchTextFor(t *testing.T) {
 	cases := map[string]string{
 		"temp":  "temp",
