@@ -26,6 +26,9 @@ import (
 // catalogCacheTTL controls how long fetched assets and channel metadata are cached.
 const catalogCacheTTL = 5 * time.Minute
 
+// failedLookupCacheTTL keeps a failed channel metadata lookup from repeating on every refresh.
+const failedLookupCacheTTL = 30 * time.Second
+
 // A cache-miss load runs detached from its caller, so this is the only bound on
 // that work. For a metadata lookup it covers the asset fetch plus the channel
 // search.
@@ -39,10 +42,11 @@ type channelMetadataCacheEntry struct {
 	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
 }
 
-// ttlCacheEntry pairs a cached value with the time it was stored.
+// ttlCacheEntry is a cached load result, either a value or an error.
 type ttlCacheEntry[V any] struct {
 	value     V
-	fetchedAt time.Time
+	err       error
+	expiresAt time.Time
 }
 
 // ttlCache is a mutex-guarded cache whose entries expire ttl after they are
@@ -50,6 +54,8 @@ type ttlCacheEntry[V any] struct {
 // backend load.
 type ttlCache[V any] struct {
 	ttl time.Duration
+	// failureTTL is how long a failed load is cached; zero means not at all.
+	failureTTL time.Duration
 
 	mu      sync.Mutex
 	entries map[string]ttlCacheEntry[V] // guarded by mu
@@ -63,31 +69,35 @@ func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
 	}
 }
 
-// lookup returns the cached value for key if present and not yet expired.
-func (c *ttlCache[V]) lookup(key string) (V, bool) {
+// lookup returns the cached result for key if present and not yet expired.
+func (c *ttlCache[V]) lookup(key string) (ttlCacheEntry[V], bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || time.Since(entry.fetchedAt) >= c.ttl {
-		var zero V
-		return zero, false
+	if !ok || !time.Now().Before(entry.expiresAt) {
+		return ttlCacheEntry[V]{}, false
 	}
-	return entry.value, true
+	return entry, true
 }
 
-func (c *ttlCache[V]) store(key string, value V) {
+// store caches a load result: a value for ttl, a failure for failureTTL.
+func (c *ttlCache[V]) store(key string, value V, err error) {
+	ttl := c.ttl
+	if err != nil {
+		ttl = c.failureTTL
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = ttlCacheEntry[V]{value: value, fetchedAt: time.Now()}
+	c.entries[key] = ttlCacheEntry[V]{value: value, err: err, expiresAt: time.Now().Add(ttl)}
 }
 
-// get returns the cached value for key, coalescing concurrent misses for the
+// get returns the cached result for key, coalescing concurrent misses for the
 // same key into one load, detached from its callers and bounded by
-// detachedLookupTimeout. Errors are never cached, so the next miss retries.
+// detachedLookupTimeout.
 func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
 	var zero V
-	if v, hit := c.lookup(key); hit {
-		return v, nil
+	if entry, hit := c.lookup(key); hit {
+		return entry.value, entry.err
 	}
 
 	// Avoid starting detached work for an already-canceled caller.
@@ -96,17 +106,14 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 	}
 
 	ch := c.group.DoChan(key, func() (any, error) {
-		if v, hit := c.lookup(key); hit {
-			return v, nil
+		if entry, hit := c.lookup(key); hit {
+			return entry.value, entry.err
 		}
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
 		v, err := load(workCtx)
-		if err != nil {
-			return nil, err
-		}
-		c.store(key, v)
-		return v, nil
+		c.store(key, v, err)
+		return v, err
 	})
 
 	select {
@@ -129,11 +136,13 @@ type NominalCatalog struct {
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
+	channelMetadataCache := newTTLCache[channelMetadataCacheEntry](catalogCacheTTL)
+	channelMetadataCache.failureTTL = failedLookupCacheTTL
 	return &NominalCatalog{
 		resourceHTTPClient:   resourceHTTPClient,
 		datasourceService:    datasourceService,
 		assetCache:           newTTLCache[*SingleAssetResponse](catalogCacheTTL),
-		channelMetadataCache: newTTLCache[channelMetadataCacheEntry](catalogCacheTTL),
+		channelMetadataCache: channelMetadataCache,
 	}
 }
 
@@ -391,15 +400,13 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	applyChannelMetadata(qm, entry)
 }
 
-// errChannelMetadataUnavailable marks an exit taken before any channel search
-// ran. Returning an error keeps it out of the cache: a stale asset can hide a
-// scope that appears once the asset cache refreshes, so only a completed search
-// is worth caching.
+// errChannelMetadataUnavailable marks an exit before any channel search ran. It
+// is an error so it is cached only briefly: a stale asset can hide a scope.
 var errChannelMetadataUnavailable = errors.New("channel metadata unavailable")
 
 // computeChannelMetadata performs an uncached lookup. A completed search that
 // matches nothing returns an empty entry, which is cached so the search is not
-// repeated. The exits before that search return an error and stay uncached.
+// repeated. Every other exit returns an error, which is cached only briefly.
 func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
 	asset, err := c.FetchAssetByRid(ctx, config, assetRid)
 	if err != nil {
