@@ -372,29 +372,6 @@ func (m *mockComputeService) killCallsSnapshot() []killCall {
 	return append([]killCall(nil), m.killCalls...)
 }
 
-func createMockComputeResult(values []float64) computeapi.ComputeWithUnitsResult {
-	timestamps := make([]api.Timestamp, len(values))
-	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
-	for i := range timestamps {
-		timestamps[i] = api.Timestamp{
-			Seconds: safelong.SafeLong(baseTime + int64(i*60)),
-			Nanos:   safelong.SafeLong(0),
-		}
-	}
-
-	numericPlot := computeapi.NumericPlot{
-		Timestamps: timestamps,
-		Values:     values,
-	}
-
-	computeResponse := computeapi.NewComputeNodeResponseFromNumeric(numericPlot)
-	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
-
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
-}
-
 func createMockEnumComputeResult(categories []string, indices []int) computeapi.ComputeWithUnitsResult {
 	timestamps := make([]api.Timestamp, len(indices))
 	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
@@ -422,10 +399,19 @@ func createMockEnumComputeResult(categories []string, indices []int) computeapi.
 // Column order is reversed from production (timestamp first) on purpose, to
 // exercise name-based column lookup.
 func createTestArrowBucketedNumeric(timestamps []int64, means []float64, nullMask []bool) []byte {
+	return createTestArrowTwoColumn("end_bucket_timestamp", "mean", timestamps, means, nullMask)
+}
+
+// Raw-point schema returned for LTTB: timestamp and value, no end_bucket_timestamp.
+func createTestArrowRawNumeric(timestamps []int64, values []float64) []byte {
+	return createTestArrowTwoColumn("timestamp", "value", timestamps, values, nil)
+}
+
+func createTestArrowTwoColumn(tsName, valueName string, timestamps []int64, means []float64, nullMask []bool) []byte {
 	pool := memory.DefaultAllocator
 	schema := arrow.NewSchema([]arrow.Field{
-		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "mean", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: tsName, Type: arrow.PrimitiveTypes.Int64},
+		{Name: valueName, Type: arrow.PrimitiveTypes.Float64, Nullable: true},
 	}, nil)
 
 	tsBuilder := array.NewInt64Builder(pool)

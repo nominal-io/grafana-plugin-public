@@ -44,7 +44,7 @@ type AggregationSeries struct {
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
 // Standard aggregations (MEAN, MIN, etc.) have a single value column and use shared timestamps.
-// FIRST_POINT/LAST_POINT have a value column plus their own timestamp column.
+// FIRST_POINT/LAST_POINT and LTTB have a value column plus their own timestamp column.
 type aggColumnSpec struct {
 	Name         string // display name for the series (e.g. "mean", "first")
 	ValueCol     string // Arrow column name for values (e.g. "mean", "first_value")
@@ -69,12 +69,12 @@ var aggSpecs = map[string]aggColumnSpec{
 	AggVariance:   {Name: "variance", ValueCol: "variance"}, // unit² — channel unit would mislead
 	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp", CarriesChannelUnit: true},
 	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp", CarriesChannelUnit: true},
+	AggLTTB:       {Name: "lttb", ValueCol: "value", TimestampCol: "timestamp", CarriesChannelUnit: true},
 }
 
-// validAggregationNames lists aggSpecs plus LTTB for error messages.
+// validAggregationNames lists aggSpecs for error messages.
 func validAggregationNames() string {
-	names := append(slices.Sorted(maps.Keys(aggSpecs)), AggLTTB)
-	return strings.Join(names, ", ")
+	return strings.Join(slices.Sorted(maps.Keys(aggSpecs)), ", ")
 }
 
 // aggColumnSpecFromEnum looks up the Arrow column spec for an aggregation enum value.
@@ -108,12 +108,16 @@ type resolvedSpec struct {
 }
 
 // resolveArrowSchema locates the shared timestamp column and each spec's value/timestamp
-// columns in the Arrow schema. Returns the shared timestamp column index and one
-// resolvedSpec per input spec.
+// columns in the Arrow schema. Returns the shared timestamp column index (-1 when
+// every spec has its own timestamp column) and one resolvedSpec per input spec.
 func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsIdx int, resolved []resolvedSpec, err error) {
-	tsIdx := schema.FieldIndices("end_bucket_timestamp")
-	if len(tsIdx) == 0 {
-		return 0, nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
+	sharedTsIdx = -1
+	if slices.ContainsFunc(specs, func(s aggColumnSpec) bool { return s.TimestampCol == "" }) {
+		tsIdx := schema.FieldIndices("end_bucket_timestamp")
+		if len(tsIdx) == 0 {
+			return 0, nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
+		}
+		sharedTsIdx = tsIdx[0]
 	}
 
 	resolved = make([]resolvedSpec, len(specs))
@@ -134,7 +138,7 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 		}
 	}
 
-	return tsIdx[0], resolved, nil
+	return sharedTsIdx, resolved, nil
 }
 
 func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []resolvedSpec) error {
@@ -166,15 +170,6 @@ func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []r
 		}
 	}
 	return nil
-}
-
-func usesSharedTimestamps(resolved []resolvedSpec) bool {
-	for _, rs := range resolved {
-		if rs.tsIdx < 0 {
-			return true
-		}
-	}
-	return false
 }
 
 type rowSelection struct {
@@ -314,10 +309,9 @@ func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32
 	}
 }
 
-// extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
-// one AggregationSeries per aggColumnSpec. Standard aggregations share the
-// end_bucket_timestamp column. FIRST_POINT/LAST_POINT use their own timestamp
-// columns (first_timestamp, last_timestamp) so each series can have independent time axes.
+// extractArrowBucketedNumericSeries parses an Arrow IPC stream into one
+// AggregationSeries per aggColumnSpec. Despite the name, it also decodes raw
+// LTTB responses. Specs without a TimestampCol share end_bucket_timestamp.
 func extractArrowBucketedNumericSeries(
 	arrowPlot computeapi.ArrowPlot,
 	specs []aggColumnSpec,
@@ -333,11 +327,7 @@ func extractArrowBucketedNumericSeries(
 	if err != nil {
 		return nil, err
 	}
-	needsSharedTimestamps := usesSharedTimestamps(resolved)
-	sharedTsIdxForValidation := sharedTsIdx
-	if !needsSharedTimestamps {
-		sharedTsIdxForValidation = -1
-	}
+	needsSharedTimestamps := sharedTsIdx >= 0
 
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
 	seriesData := make([]AggregationSeries, len(specs))
@@ -360,7 +350,7 @@ func extractArrowBucketedNumericSeries(
 	for reader.Next() {
 		rec := reader.Record()
 		nRows := int(rec.NumRows())
-		if err := validateRecordColumnLengths(rec, sharedTsIdxForValidation, resolved); err != nil {
+		if err := validateRecordColumnLengths(rec, sharedTsIdx, resolved); err != nil {
 			return nil, err
 		}
 		for i := range recordSelections {
