@@ -22,21 +22,47 @@ const assetRidVariableName computeapi.VariableName = "assetRid"
 
 // buildComputeRequest constructs a ComputeNodeRequest from query model and time range.
 func (e *NominalQueryExecution) buildComputeRequest(qm NominalQueryModel, timeRange backend.TimeRange) computeapi1.ComputeNodeRequest {
-	seriesPlan := e.buildSeriesPlan(qm)
+	seriesPlan, requestRange := e.buildSeriesPlan(qm, timeRange)
 	node := computeapi1.NewComputableNodeFromSeries(seriesPlan)
 
 	return computeapi1.ComputeNodeRequest{
-		Start:   timestampFromTime(timeRange.From),
-		End:     timestampFromTime(timeRange.To),
+		Start:   timestampFromTime(requestRange.From),
+		End:     timestampFromTime(requestRange.To),
 		Node:    node,
 		Context: e.buildComputeContext(qm),
 	}
 }
 
+// alignedBucketRange returns a range of n buckets that covers timeRange and starts
+// on a multiple of the bucket width, so bucket end times sit on a fixed grid.
+func alignedBucketRange(timeRange backend.TimeRange, n int) (aligned backend.TimeRange, ok bool) {
+	from, to := timeRange.From.UnixNano(), timeRange.To.UnixNano()
+	// to-from <= 0 also catches a range too long for int64 nanoseconds. Every width
+	// divides 0, so with to at the epoch the loop below would never end.
+	if n < 2 || to-from <= 0 || to == 0 {
+		return timeRange, false
+	}
+	// Size n-1 buckets to the range so n still cover it after start rounds down.
+	width := (to - from + int64(n) - 2) / int64(n-1)
+	alignStart := func(width int64) int64 { return from - ((from%width)+width)%width }
+	start := alignStart(width)
+	// A bucket that starts exactly at to would hold only a sample at to, so keep to inside a bucket.
+	for (to-start)%width == 0 {
+		width++
+		start = alignStart(width)
+	}
+	// The aligned end always lies past to, so an end at or before to means it overflowed.
+	end := start + int64(n)*width
+	if end <= to {
+		return timeRange, false
+	}
+	return backend.TimeRange{From: time.Unix(0, start), To: time.Unix(0, end)}, true
+}
+
 // buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
-func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi1.SummarizeSeries {
+func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange backend.TimeRange) (computeapi1.SummarizeSeries, backend.TimeRange) {
 	channelSeries := computeapi.NewChannelSeriesFromAsset(e.buildAssetChannel(qm.Channel, qm.DataScopeName))
 
 	switch qm.ChannelDataType {
@@ -52,7 +78,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		return computeapi1.SummarizeSeries{
 			Input:   series,
 			Buckets: &buckets,
-		}
+		}, timeRange
 
 	case ChannelDataTypeLog:
 		logSeries := computeapi1.NewLogSeriesFromChannel(channelSeries)
@@ -64,23 +90,29 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 		return computeapi1.SummarizeSeries{
 			Input:                 series,
 			SummarizationStrategy: &summarizationStrategy,
-		}
+		}, timeRange
 
 	default:
 		if slices.Contains(qm.Aggregations, AggLTTB) {
 			series := computeapi1.NewSeriesFromNumeric(computeapi1.NewNumericSeriesFromChannel(channelSeries))
 			strategy := computeapi.NewSummarizationStrategyFromLargestTriangleThreeBuckets(computeapi.LttbStrategy{MaxPointsPerGroup: qm.Points.Count})
 			arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
-			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy, OutputFormat: &arrowFormat}
+			return computeapi1.SummarizeSeries{Input: series, SummarizationStrategy: &strategy, OutputFormat: &arrowFormat}, timeRange
 		}
 		numericTimeShiftSeries := computeapi1.NumericTimeShiftSeries{
 			Input:    computeapi1.NewNumericSeriesFromChannel(channelSeries),
 			Duration: zeroDurationConstant(),
 		}
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
+		buckets := qm.Points.Count
+		requestRange, aligned := alignedBucketRange(timeRange, buckets)
+		if aligned {
+			// The aligned range is wider; keep only panel-range data.
+			from, to := computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.From)), computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.To))
+			numericSeries = computeapi1.NewNumericSeriesFromTimeRangeFilter(computeapi1.NumericTimeRangeFilterSeries{Input: numericSeries, StartTime: &from, EndTime: &to})
+		}
 		series := computeapi1.NewSeriesFromNumeric(numericSeries)
 
-		buckets := qm.Points.Count
 		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V3)
 		outputFields := numericOutputFields(qm.Aggregations)
 		return computeapi1.SummarizeSeries{
@@ -88,7 +120,7 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel) computeapi
 			Buckets:             &buckets,
 			OutputFormat:        &arrowFormat,
 			NumericOutputFields: &outputFields,
-		}
+		}, requestRange
 	}
 }
 
