@@ -36,12 +36,13 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
   const aggregationsKey = getAggregationValue(query?.aggregations).join('|');
   const lastDebouncedAggregationsKeyRef = useRef(aggregationsKey);
 
-  // Trigger graph update when query is complete
+  // Trigger graph update when query is complete. onRunQuery is read through the ref:
+  // the alert rule editor passes a new one every render, and rerunning on that loops.
   useEffect(() => {
     if (shouldRunCompleteQuery(queryRef.current)) {
-      onRunQuery();
+      onRunQueryRef.current();
     }
-  }, [query?.assetRid, query?.channel, query?.dataScopeName, onRunQuery]);
+  }, [query?.assetRid, query?.channel, query?.dataScopeName]);
 
   // Debounced re-run on aggregation changes - coalesces rapid toggles into a single requery.
   // Compared by normalized value so logically identical aggregations in a new array
