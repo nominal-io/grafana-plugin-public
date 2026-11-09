@@ -1064,22 +1064,32 @@ func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	return req
 }
 
-func TestBatchQueryPanicReturnsErrorResponses(t *testing.T) {
+func TestBatchQueryPanicKeepsFinishedChunks(t *testing.T) {
+	calls := 0
 	mockService := &mockComputeService{
-		batchComputeFunc: func(computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
-			panic("batch exploded")
+		batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+			calls++
+			if calls == 2 {
+				panic("batch exploded")
+			}
+			return makeBatchComputeWithUnitsResponse(len(req.Requests)), nil
 		},
 	}
 	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
 
-	req := newBatchQueryRequest(2)
+	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
 	resp, err := ds.QueryData(context.Background(), req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, q := range req.Queries {
-		if e := resp.Responses[q.RefID].Error; e == nil || !strings.Contains(e.Error(), "Batch query failed unexpectedly") {
-			t.Errorf("expected panic error for %s, got %v", q.RefID, e)
+	for i, q := range req.Queries {
+		e := resp.Responses[q.RefID].Error
+		if i < maxBatchComputeSubrequests {
+			if e != nil {
+				t.Fatalf("query %s in the finished chunk got error %v, want its result", q.RefID, e)
+			}
+		} else if e == nil || !strings.Contains(e.Error(), "Batch query failed unexpectedly") {
+			t.Errorf("query %s in the panicking chunk got %v, want the panic error", q.RefID, e)
 		}
 	}
 }
