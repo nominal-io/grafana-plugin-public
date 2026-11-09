@@ -6,11 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	"github.com/palantir/pkg/safelong"
 )
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
@@ -78,6 +79,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					"series", len(result.AggSeries),
 					"dataPoints", len(result.AggSeries[0].TimePoints))
 			} else if result.IsEnum {
+				capTimes(result.TimePoints, qm.RangeEnd)
 				frame := data.NewFrame("response")
 				frame.Name = qm.Channel
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
@@ -210,17 +212,7 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
 		arrowNumeric,
 		arrowNumeric,
-		// enumFunc - maps integer indices to category strings
-		func(enum computeapi.EnumPlot) error {
-			timePoints, values, err := e.extractEnumDataFromConjure(enum)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.StringValues = values
-			result.IsEnum = true
-			return nil
-		},
+		unsupportedComputeResponse[computeapi.EnumPlot]("enum"),
 		// enumPointFunc - single-point enum response (value is already a resolved string)
 		func(ep *computeapi.EnumPoint) error {
 			if ep == nil {
@@ -234,19 +226,16 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = true
 			return nil
 		},
-		// bucketedEnumFunc - bucketed enum response (returned by SummarizeSeries with buckets)
-		func(bucketed computeapi.BucketedEnumPlot) error {
-			timePoints, values, err := e.extractBucketedEnumDataFromConjure(bucketed)
+		unsupportedComputeResponse[computeapi.BucketedEnumPlot]("bucketedEnum"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowEnum"),
+		func(plot computeapi.ArrowPlot) error {
+			timePoints, values, err := extractArrowBucketedEnum(plot)
 			if err != nil {
 				return err
 			}
-			result.TimePoints = timePoints
-			result.StringValues = values
-			result.IsEnum = true
+			result.TimePoints, result.StringValues, result.IsEnum = timePoints, values, true
 			return nil
 		},
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowEnum"),
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowBucketedEnum"),
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
 			if len(paged.Timestamps) != len(paged.Values) {
@@ -308,75 +297,71 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 	return result, nil
 }
 
-// extractEnumDataFromConjure maps EnumPlot indices to category strings.
-// Out-of-range indices become "unknown(N)".
-func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
-	n := min(len(enumPlot.Timestamps), len(enumPlot.Values))
-	timePoints := make([]time.Time, 0, n)
-	values := make([]string, 0, n)
-
-	for i := 0; i < n; i++ {
-		timestamp := enumPlot.Timestamps[i]
-		index := enumPlot.Values[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		if index >= 0 && index < len(enumPlot.Categories) {
-			values = append(values, enumPlot.Categories[index])
-		} else {
-			values = append(values, fmt.Sprintf("unknown(%d)", index))
-			log.DefaultLogger.Warn("Enum index out of bounds",
-				"index", index,
-				"categoriesLen", len(enumPlot.Categories),
-			)
+// extractArrowBucketedEnum takes each bucket's most frequent category as its
+// value. Count ties go to the bucket's last value when it is among them, and
+// otherwise to the category seen first in the response.
+func extractArrowBucketedEnum(plot computeapi.ArrowPlot) ([]time.Time, []string, error) {
+	var tsIdx, histIdx, lastIdx []int
+	open := func(schema *arrow.Schema) error {
+		tsIdx, histIdx, lastIdx = schema.FieldIndices("end_bucket_timestamp"), schema.FieldIndices("histogram"), schema.FieldIndices("last_value")
+		if len(tsIdx) == 0 || len(histIdx) == 0 || len(lastIdx) == 0 {
+			return fmt.Errorf("enum Arrow schema missing end_bucket_timestamp, histogram or last_value: have %v", schema.Fields())
 		}
+		return nil
 	}
 
-	log.DefaultLogger.Debug("Extracted enum data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
-// extractBucketedEnumDataFromConjure takes each bucket's histogram mode as its
-// value, the categorical counterpart of the numeric path's mean.
-func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
-	n := min(len(bucketed.Timestamps), len(bucketed.Buckets))
-	timePoints := make([]time.Time, 0, n)
-	values := make([]string, 0, n)
-
-	for i := 0; i < n; i++ {
-		timestamp := bucketed.Timestamps[i]
-		bucket := bucketed.Buckets[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		// Break count ties by lowest category index so Go's random map order
-		// cannot change the result. An empty histogram falls back to FirstPoint.
-		modeIndex := bucket.FirstPoint.Value
-		maxCount := safelong.SafeLong(0)
-		for idx, count := range bucket.Histogram {
-			if count > maxCount || (count == maxCount && count > 0 && idx < modeIndex) {
-				maxCount = count
-				modeIndex = idx
+	times, values := []time.Time{}, []string{}
+	// Category names are cloned once so values do not alias Arrow buffers.
+	rank := map[string]int{}
+	var names []string
+	each := func(rec arrow.RecordBatch) error {
+		ts, tsOK := rec.Column(tsIdx[0]).(*array.Int64)
+		hist, histOK := rec.Column(histIdx[0]).(*array.Map)
+		last, lastOK := rec.Column(lastIdx[0]).(*array.String)
+		if !tsOK || !histOK || !lastOK {
+			return fmt.Errorf("unexpected Arrow enum column types %T, %T, %T", rec.Column(tsIdx[0]), rec.Column(histIdx[0]), rec.Column(lastIdx[0]))
+		}
+		keys, keysOK := hist.Keys().(*array.String)
+		counts, countsOK := hist.Items().(*array.Uint64)
+		if !keysOK || !countsOK {
+			return fmt.Errorf("unexpected Arrow histogram types %T, %T", hist.Keys(), hist.Items())
+		}
+		for i := 0; i < ts.Len(); i++ {
+			start, end := hist.ValueOffsets(i)
+			mode, best := -1, uint64(0)
+			lastRank, lastCount := -1, uint64(0)
+			for j := int(start); j < int(end); j++ {
+				key := keys.Value(j)
+				r, ok := rank[key]
+				if !ok {
+					r = len(names)
+					name := strings.Clone(key)
+					rank[name] = r
+					names = append(names, name)
+				}
+				c := counts.Value(j)
+				if key == last.Value(i) {
+					lastRank, lastCount = r, c
+				}
+				if mode < 0 || c > best || (c == best && r < mode) {
+					mode, best = r, c
+				}
 			}
+			if lastRank >= 0 && lastCount == best {
+				mode = lastRank
+			}
+			if mode < 0 {
+				return fmt.Errorf("enum Arrow bucket at %d has an empty histogram", ts.Value(i))
+			}
+			times = append(times, time.Unix(0, ts.Value(i)))
+			values = append(values, names[mode])
 		}
-
-		if modeIndex >= 0 && modeIndex < len(bucketed.Categories) {
-			values = append(values, bucketed.Categories[modeIndex])
-		} else {
-			values = append(values, fmt.Sprintf("unknown(%d)", modeIndex))
-			log.DefaultLogger.Warn("Bucketed enum index out of bounds",
-				"index", modeIndex,
-				"categoriesLen", len(bucketed.Categories),
-			)
-		}
+		return nil
 	}
-
-	log.DefaultLogger.Debug("Extracted bucketed enum data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
+	if err := readArrowBatches(plot.ArrowBinary, open, each); err != nil {
+		return nil, nil, err
+	}
+	return times, values, nil
 }
 
 // carriesChannelUnit is false for COUNT (dimensionless) and VARIANCE (unit²).

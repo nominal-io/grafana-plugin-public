@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,17 +14,13 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	"github.com/palantir/pkg/safelong"
 )
 
 func TestEnumPlotTransformation(t *testing.T) {
 	ds := withCatalog(&Datasource{})
 
-	t.Run("maps indices to category strings", func(t *testing.T) {
-		categories := []string{"on", "off", "standby"}
-		indices := []int{0, 2, 1, 0}
-
-		result := createMockEnumComputeResult(categories, indices)
+	t.Run("renders one string value per bucket", func(t *testing.T) {
+		result := createMockEnumComputeResult("on", "standby", "off", "on")
 		qm := NominalQueryModel{
 			Channel:  "status",
 			AssetRid: "ri.nominal.asset.test",
@@ -59,42 +56,8 @@ func TestEnumPlotTransformation(t *testing.T) {
 		}
 	})
 
-	t.Run("handles out-of-bounds indices gracefully", func(t *testing.T) {
-		categories := []string{"on", "off"}
-		indices := []int{0, 5, 1} // index 5 is out of bounds
-
-		result := createMockEnumComputeResult(categories, indices)
-		qm := NominalQueryModel{
-			Channel:  "status",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if len(resp.Frames) != 1 {
-			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
-		}
-
-		frame := resp.Frames[0]
-		valueField := frame.Fields[1]
-		if valueField.Len() != 3 {
-			t.Fatalf("expected 3 values, got %d", valueField.Len())
-		}
-		if v := valueField.At(0).(string); v != "on" {
-			t.Errorf("index 0: expected %q, got %q", "on", v)
-		}
-		if v := valueField.At(1).(string); v != "unknown(5)" {
-			t.Errorf("index 1: expected %q, got %q", "unknown(5)", v)
-		}
-		if v := valueField.At(2).(string); v != "off" {
-			t.Errorf("index 2: expected %q, got %q", "off", v)
-		}
-	})
-
 	t.Run("handles empty enum response", func(t *testing.T) {
-		categories := []string{"on", "off"}
-		indices := []int{}
-
-		result := createMockEnumComputeResult(categories, indices)
+		result := createMockEnumComputeResult()
 		qm := NominalQueryModel{
 			Channel:  "status",
 			AssetRid: "ri.nominal.asset.test",
@@ -120,57 +83,6 @@ func TestEnumPlotTransformation(t *testing.T) {
 
 func TestExtractionTruncatesToShortestInput(t *testing.T) {
 	exec := newTestQueryExecution(&Datasource{}, nil)
-
-	t.Run("enum plot", func(t *testing.T) {
-		plot := computeapi.EnumPlot{
-			Timestamps: []api.Timestamp{
-				testTimestamp(1704067200),
-				testTimestamp(1704067260),
-				testTimestamp(1704067320),
-			},
-			Values:     []int{0},
-			Categories: []string{"idle"},
-		}
-
-		times, values, err := exec.extractEnumDataFromConjure(plot)
-		if err != nil {
-			t.Fatalf("extract enum data: %v", err)
-		}
-		if len(times) != 1 || len(values) != 1 {
-			t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
-		}
-		if values[0] != "idle" {
-			t.Fatalf("value = %q, want %q", values[0], "idle")
-		}
-	})
-
-	t.Run("bucketed enum plot", func(t *testing.T) {
-		plot := computeapi.BucketedEnumPlot{
-			Timestamps: []api.Timestamp{
-				testTimestamp(1704067200),
-				testTimestamp(1704067260),
-			},
-			Buckets: []computeapi.EnumBucket{{
-				Histogram: map[int]safelong.SafeLong{0: safelong.SafeLong(3)},
-				FirstPoint: computeapi.CompactEnumPoint{
-					Timestamp: testTimestamp(1704067200),
-					Value:     0,
-				},
-			}},
-			Categories: []string{"idle"},
-		}
-
-		times, values, err := exec.extractBucketedEnumDataFromConjure(plot)
-		if err != nil {
-			t.Fatalf("extract bucketed enum data: %v", err)
-		}
-		if len(times) != 1 || len(values) != 1 {
-			t.Fatalf("got %d times and %d values, want 1 each", len(times), len(values))
-		}
-		if values[0] != "idle" {
-			t.Fatalf("value = %q, want %q", values[0], "idle")
-		}
-	})
 
 	t.Run("paged log plot", func(t *testing.T) {
 		result := createMockPagedLogResult(
@@ -201,36 +113,74 @@ func TestExtractionTruncatesToShortestInput(t *testing.T) {
 	})
 }
 
-func TestBucketedEnumModeBreaksTiesByLowestIndex(t *testing.T) {
-	exec := newTestQueryExecution(&Datasource{}, nil)
-	plot := computeapi.BucketedEnumPlot{
-		Timestamps: []api.Timestamp{
-			testTimestamp(1704067200),
+func TestExtractArrowBucketedEnum(t *testing.T) {
+	row := func(ts int64, hist ...enumCount) enumRow { return enumRow{ts: ts, hist: hist} }
+	rowLast := func(ts int64, last string, hist ...enumCount) enumRow { return enumRow{ts: ts, hist: hist, last: last} }
+	tests := []struct {
+		name       string
+		body       []byte
+		wantTimes  []int64
+		wantValues []string
+		wantErr    string
+	}{
+		{
+			name:       "most frequent category per bucket",
+			body:       createTestArrowBucketedEnum([]enumRow{row(10, enumCount{"idle", 1}, enumCount{"run", 4}), row(20, enumCount{"idle", 3})}),
+			wantTimes:  []int64{10, 20},
+			wantValues: []string{"run", "idle"},
 		},
-		Buckets: []computeapi.EnumBucket{{
-			Histogram: map[int]safelong.SafeLong{
-				2: safelong.SafeLong(3),
-				0: safelong.SafeLong(3),
-				1: safelong.SafeLong(1),
-			},
-			FirstPoint: computeapi.CompactEnumPoint{
-				Timestamp: testTimestamp(1704067200),
-				Value:     1,
-			},
-		}},
-		Categories: []string{"idle", "ready", "running"},
+		{
+			name:       "ties go to the bucket's last value",
+			body:       createTestArrowBucketedEnum([]enumRow{rowLast(10, "run", enumCount{"idle", 2}, enumCount{"run", 2})}),
+			wantTimes:  []int64{10},
+			wantValues: []string{"run"},
+		},
+		{
+			// "run" is seen first (in the first bucket), so it wins the tie in the second,
+			// whose last value "off" is not among the tied categories.
+			name:       "other ties go to the category seen first",
+			body:       createTestArrowBucketedEnum([]enumRow{row(10, enumCount{"run", 1}), rowLast(20, "off", enumCount{"idle", 2}, enumCount{"run", 2}, enumCount{"off", 1})}),
+			wantTimes:  []int64{10, 20},
+			wantValues: []string{"run", "run"},
+		},
+		{
+			name:       "several record batches",
+			body:       createTestArrowBucketedEnum([]enumRow{row(10, enumCount{"a", 1})}, []enumRow{row(20, enumCount{"b", 1})}),
+			wantTimes:  []int64{10, 20},
+			wantValues: []string{"a", "b"},
+		},
+		{
+			name:       "schema-only stream",
+			body:       createTestArrowBucketedEnum(),
+			wantTimes:  []int64{},
+			wantValues: []string{},
+		},
+		{
+			name:    "missing histogram column",
+			body:    createTestArrowBucketedNumeric([]int64{10}, []float64{1}, nil),
+			wantErr: "missing end_bucket_timestamp, histogram or last_value",
+		},
 	}
-
-	// Run repeatedly: Go randomizes map iteration order, so a tie broken by
-	// iteration order would flip between "idle" and "running" across runs.
-	for i := 0; i < 50; i++ {
-		_, values, err := exec.extractBucketedEnumDataFromConjure(plot)
-		if err != nil {
-			t.Fatalf("extract bucketed enum data: %v", err)
-		}
-		if len(values) != 1 || values[0] != "idle" {
-			t.Fatalf("iteration %d: values = %v, want [idle]", i, values)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			times, values, err := extractArrowBucketedEnum(computeapi.ArrowPlot{ArrowBinary: tt.body})
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want it to contain %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotTimes := []int64{}
+			for _, tm := range times {
+				gotTimes = append(gotTimes, tm.UnixNano())
+			}
+			if !slices.Equal(gotTimes, tt.wantTimes) || !slices.Equal(values, tt.wantValues) {
+				t.Errorf("got %v %v, want %v %v", gotTimes, values, tt.wantTimes, tt.wantValues)
+			}
+		})
 	}
 }
 
@@ -599,9 +549,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 	})
 
 	t.Run("enum path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
-		categories := []string{"on", "off"}
-		indices := []int{0, 1}
-		result := createMockEnumComputeResult(categories, indices)
+		result := createMockEnumComputeResult("on", "off")
 		qm := NominalQueryModel{
 			Channel:  "mode",
 			AssetRid: "ri.nominal.asset.test",
@@ -628,7 +576,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 	})
 
 	t.Run("enum path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
-		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
+		result := createMockEnumComputeResult()
 		qm := NominalQueryModel{
 			Channel:  "state",
 			AssetRid: "ri.nominal.asset.test",
@@ -667,7 +615,7 @@ func TestFieldConfigUnit(t *testing.T) {
 	t.Run("enum path on Cel-tagged channel does NOT set Unit", func(t *testing.T) {
 		// Enum branch, data present. Even with ChannelUnit set, enum/string
 		// frames must not carry a unit; numeric formatting is meaningless.
-		result := createMockEnumComputeResult([]string{"on", "off"}, []int{0, 1})
+		result := createMockEnumComputeResult("on", "off")
 		qm := NominalQueryModel{
 			Channel:     "engine_state",
 			AssetRid:    "ri.nominal.asset.test",
@@ -690,7 +638,7 @@ func TestFieldConfigUnit(t *testing.T) {
 
 	t.Run("enum path with empty data does NOT set Unit", func(t *testing.T) {
 		// Enum branch, no data.
-		result := createMockEnumComputeResult([]string{"on", "off"}, []int{})
+		result := createMockEnumComputeResult()
 		qm := NominalQueryModel{
 			Channel:     "engine_state",
 			AssetRid:    "ri.nominal.asset.test",

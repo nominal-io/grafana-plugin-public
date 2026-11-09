@@ -626,9 +626,9 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
-				createMockEnumComputeResult([]string{"b"}, []int{1}),
-				createMockEnumComputeResult([]string{"c"}, []int{2}),
+				createMockEnumComputeResult("a"),
+				createMockEnumComputeResult("b"),
+				createMockEnumComputeResult("c"),
 			},
 		},
 	}
@@ -695,7 +695,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult("a"),
 			},
 		},
 	}
@@ -759,7 +759,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult("a"),
 			},
 		},
 	}

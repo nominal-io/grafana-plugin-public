@@ -76,9 +76,8 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 	return size, isPage
 }
 
-// isArrowV3 reports whether the SummarizeSeries output format is ARROW_V3.
-func isArrowV3(format *computeapi.OutputFormat) bool {
-	return format != nil && format.Value() == computeapi.OutputFormat_ARROW_V3
+func isArrowFormat(format *computeapi.OutputFormat, want computeapi.OutputFormat_Value) bool {
+	return format != nil && format.Value() == want
 }
 
 // summarizeSeriesFromNode unwraps a ComputableNode to the SummarizeSeries it carries,
@@ -526,7 +525,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 		}
 		plan := seriesPlanFor(qe, qm)
 
-		if !isArrowV3(plan.OutputFormat) {
+		if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
 		}
 		if plan.NumericOutputFields == nil || len(*plan.NumericOutputFields) == 0 {
@@ -542,12 +541,12 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := seriesPlanFor(qe, qm); !isArrowV3(plan.OutputFormat) {
+		if plan := seriesPlanFor(qe, qm); !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
 
-	t.Run("string ChannelDataType stays LEGACY (no outputFormat)", func(t *testing.T) {
+	t.Run("string ChannelDataType gets Arrow format without numeric fields", func(t *testing.T) {
 		qm := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "status",
@@ -557,13 +556,38 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 		}
 		plan := seriesPlanFor(qe, qm)
 
-		if plan.OutputFormat != nil {
-			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
+		if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V4) {
+			t.Errorf("outputFormat = %v, want ARROW_V4", plan.OutputFormat)
 		}
 		if plan.NumericOutputFields != nil {
 			t.Errorf("numericOutputFields = %v, want nil for enum path", plan.NumericOutputFields)
 		}
 	})
+}
+
+func TestBuildSeriesPlanEnumKeepsRangeEndInsideABucket(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		from, to time.Time
+		n, want  int
+	}{
+		// 300 s / 30 = 10 s and to is a multiple of 10 s; 29 buckets give a width that is not.
+		{"to on the grid", base, base.Add(300 * time.Second), 30, 29},
+		{"to off the grid", base.Add(3500 * time.Millisecond), base.Add(303500 * time.Millisecond), 30, 30},
+		{"one bucket", base, base.Add(time.Minute), 1, 1},
+		{"range ends at the epoch", time.Unix(0, 0).Add(-time.Hour), time.Unix(0, 0), 30, 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qm := NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: tt.n}}
+			plan, _ := qe.buildSeriesPlan(qm, backend.TimeRange{From: tt.from, To: tt.to})
+			if got := *plan.Buckets; got != tt.want {
+				t.Errorf("buckets = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
@@ -577,7 +601,7 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
-	if !isArrowV3(plan.OutputFormat) {
+	if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 		t.Fatalf("LTTB must request ARROW_V3: %+v", plan.OutputFormat)
 	}
 	if plan.Buckets != nil || plan.NumericOutputFields != nil {

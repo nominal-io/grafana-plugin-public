@@ -378,7 +378,7 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"idle", "active"}, []int{0, 1}),
+				createMockEnumComputeResult("idle", "active"),
 			},
 		},
 	}
@@ -491,7 +491,7 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot),
 				)},
-				createMockEnumComputeResult([]string{"idle", "active"}, []int{0, 1}),
+				createMockEnumComputeResult("idle", "active"),
 			},
 		},
 	}
@@ -560,17 +560,17 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	if kind := seriesKind(t, numericSeries.Input); kind != "numeric" {
 		t.Errorf("expected numeric series, got kind %q", kind)
 	}
-	if !isArrowV3(numericSeries.OutputFormat) {
+	if !isArrowFormat(numericSeries.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 		t.Errorf("expected numeric request with ARROW_V3 output format, got %v", numericSeries.OutputFormat)
 	}
 
-	// The string query (state) gets an enum request with no output format.
+	// The string query (state) gets an enum request in Arrow format.
 	enumSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[1].Node)
 	if kind := seriesKind(t, enumSeries.Input); kind != "enum" {
 		t.Errorf("expected enum series, got kind %q", kind)
 	}
-	if enumSeries.OutputFormat != nil {
-		t.Errorf("expected enum request without output format, got %v", enumSeries.OutputFormat)
+	if !isArrowFormat(enumSeries.OutputFormat, computeapi.OutputFormat_ARROW_V4) {
+		t.Errorf("expected enum request with ARROW_V4 output format, got %v", enumSeries.OutputFormat)
 	}
 }
 
@@ -1232,7 +1232,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
 						computeapi.ArrowPlot{ArrowBinary: arrow}),
 				)},
-				createMockEnumComputeResult([]string{"on"}, []int{0}),
+				createMockEnumComputeResult("on"),
 			},
 		},
 	}
@@ -1275,24 +1275,40 @@ func TestBatchQueryCapsBucketTimesAtRangeEnd(t *testing.T) {
 		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
 	}
 	inRange, pastEnd := timeRange.To.Add(-time.Minute), timeRange.To.Add(30*time.Second)
-	arrowBytes := createTestArrowBucketedNumeric([]int64{inRange.UnixNano(), pastEnd.UnixNano()}, []float64{1, 2}, nil)
-	mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
-		Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
-			computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: arrowBytes}))}},
-	}}
-	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
-	query := backend.DataQuery{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1"}), TimeRange: timeRange, MaxDataPoints: 100}
+	numericBytes := createTestArrowBucketedNumeric([]int64{inRange.UnixNano(), pastEnd.UnixNano()}, []float64{1, 2}, nil)
+	enumBytes := createTestArrowBucketedEnum([]enumRow{
+		{ts: inRange.UnixNano(), hist: []enumCount{{"on", 1}}},
+		{ts: pastEnd.UnixNano(), hist: []enumCount{{"off", 1}}},
+	})
+	tests := []struct {
+		name            string
+		channelDataType string
+		response        computeapi.ComputeNodeResponse
+	}{
+		{"numeric", ChannelDataTypeNumeric, computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: numericBytes})},
+		{"enum", ChannelDataTypeString, computeapi.NewComputeNodeResponseFromArrowBucketedEnum(computeapi.ArrowPlot{ArrowBinary: enumBytes})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+				Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(tt.response)}},
+			}}
+			ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+			qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: tt.channelDataType}
+			query := backend.DataQuery{RefID: "A", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 100}
 
-	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{query}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	frames := resp.Responses["A"].Frames
-	if len(frames) != 1 {
-		t.Fatalf("frames = %d, want 1", len(frames))
-	}
-	times := frames[0].Fields[0]
-	if got := []time.Time{times.At(0).(time.Time), times.At(1).(time.Time)}; !got[0].Equal(inRange) || !got[1].Equal(timeRange.To) {
-		t.Errorf("times = %v, want [%v %v]", got, inRange, timeRange.To)
+			resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{query}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			frames := resp.Responses["A"].Frames
+			if len(frames) != 1 {
+				t.Fatalf("frames = %d, want 1 (error %v)", len(frames), resp.Responses["A"].Error)
+			}
+			times := frames[0].Fields[0]
+			if got := []time.Time{times.At(0).(time.Time), times.At(1).(time.Time)}; !got[0].Equal(inRange) || !got[1].Equal(timeRange.To) {
+				t.Errorf("times = %v, want [%v %v]", got, inRange, timeRange.To)
+			}
+		})
 	}
 }
