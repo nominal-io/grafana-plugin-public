@@ -1,6 +1,7 @@
 import React from 'react';
 // eslint-disable-next-line @typescript-eslint/no-deprecated
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { CoreApp } from '@grafana/data';
 import { QueryEditor } from './QueryEditor';
 import { NominalQuery } from '../types';
 import { DataSource } from '../datasource';
@@ -182,16 +183,107 @@ describe('query API selection', () => {
     expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'compute', assetRid: '$asset' });
   });
 
-  it('does not restore remembered fields into a query replaced from outside the editor', async () => {
-    const onChange = jest.fn();
-    const props = { onChange, onRunQuery: jest.fn(), datasource: mockDatasource };
-    const { rerender } = render(<QueryEditor {...props} query={{ refId: 'A', queryType: 'compute', assetRid: 'ri.scout.main.asset.old' }} />);
-    await settleEffects();
-    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-    rerender(<QueryEditor {...props} query={{ refId: 'A', queryType: 'compute', assetRid: ASSET_RID }} />);
-    await settleEffects();
-    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-    expect(onChange).toHaveBeenLastCalledWith({ refId: 'A', queryType: 'sql' });
+  describe('restoring the other API after the query changes', () => {
+    const numeric: NominalQuery = { refId: 'A', queryType: 'compute', assetRid: ASSET_RID, dataScopeName: 'default', channel: 'temp', channelDataType: 'numeric', buckets: 50 };
+    let current: NominalQuery;
+    let replaceQuery: (query: NominalQuery) => void;
+
+    // Holds the query as Grafana would. merge applies onChange the way the alert rule editor does.
+    function Host({ initial, app, merge = false }: { initial: NominalQuery; app?: CoreApp; merge?: boolean }) {
+      const [query, setQuery] = React.useState(initial);
+      current = query;
+      replaceQuery = setQuery;
+      return <QueryEditor query={query} app={app} onChange={(next) => setQuery((prev) => (merge ? { ...prev, ...next } : next))} onRunQuery={jest.fn()} datasource={mockDatasource} />;
+    }
+    const pick = async (name: 'Compute' | 'SQL') => {
+      fireEvent.click(screen.getByRole('radio', { name }));
+      await settleEffects();
+    };
+    const typeSql = (text: string) => {
+      const editor = screen.getByTestId('sql-code-editor').querySelector('textarea')!;
+      fireEvent.change(editor, { target: { value: text } });
+      fireEvent.blur(editor);
+    };
+    const replace = async (query: NominalQuery) => {
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
+      act(() => replaceQuery(query));
+      await settleEffects();
+    };
+    const setAggregations = async (values: string[]) => {
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
+      act(() => mockMultiComboboxProps.mock.calls.at(-1)![0].onChange(values.map((value) => ({ value }))));
+      await settleEffects();
+    };
+    const withoutUndefined = (query: NominalQuery) => JSON.parse(JSON.stringify(query));
+
+    beforeEach(() => {
+      post.mockImplementation(async (url: string) => {
+        if (url.endsWith('/assets-by-rid')) { return { [ASSET_RID]: ASSET }; }
+        if (url.endsWith('/channels')) { return { channels: [{ name: 'app.logs', dataType: 'log' }, { name: 'temp', dataType: 'numeric' }] }; }
+        return { results: [] };
+      });
+    });
+
+    it.each([
+      ['nothing happens in between', true, async () => {}],
+      ['the Compute query is edited', true, () => setAggregations(['MIN'])],
+      ['the query is hidden', true, () => replace({ ...current, hide: true })],
+      ['a different query replaces it', false, () => replace({ refId: 'A', queryType: 'compute', assetRid: 'ri.scout.main.asset.other' })],
+      ['a different query replaces it and is then edited', false, async () => {
+        await replace({ ...numeric, buckets: 99 });
+        await setAggregations(['MIN']);
+      }],
+      ['a different query replaces it and its channel type is inferred', false, () => replace({ ...numeric, channel: '$logChan', channelDataType: undefined })],
+    ])('switching back to SQL after %s restores the SQL: %s', async (_, restores, between) => {
+      render(<Host initial={numeric} />);
+      await settleEffects();
+      await pick('SQL');
+      typeSql('SELECT x');
+      await pick('Compute');
+      await between();
+      await pick('SQL');
+      expect(current.rawSql).toBe(restores ? 'SELECT x' : undefined);
+    });
+
+    it.each([
+      ['a SQL query', { refId: 'A', queryType: 'sql', rawSql: 'SELECT y' }, 'Compute'],
+      ['an empty Compute query', { refId: 'A', queryType: 'compute' }, 'SQL'],
+    ] as const)('does not restore fields into %s picked while in SQL', async (_, picked, target) => {
+      render(<Host initial={numeric} />);
+      await settleEffects();
+      await pick('SQL');
+      await replace(picked);
+      await pick(target);
+      expect(withoutUndefined(current)).toEqual({ refId: 'A', queryType: target === 'SQL' ? 'sql' : 'compute' });
+    });
+
+    it('moves SQL fields out of a saved Compute query on its first edit and restores them in SQL', async () => {
+      render(<Host initial={{ ...numeric, rawSql: 'SELECT 1', format: 'table' }} />);
+      await settleEffects();
+      await setAggregations(['MIN']);
+      expect(current).toEqual({ ...numeric, aggregations: ['MIN'] });
+      await pick('SQL');
+      expect(current).toMatchObject({ rawSql: 'SELECT 1', format: 'table' });
+    });
+
+    it('leaves removed fields out of the query outside the alert rule editor', async () => {
+      render(<Host initial={numeric} />);
+      await settleEffects();
+      await pick('SQL');
+      expect(Object.keys(current).sort()).toEqual(['queryType', 'refId']);
+    });
+
+    it('removes the other API fields in the alert rule editor, which merges each change into the stored model', async () => {
+      render(<Host initial={numeric} app={CoreApp.UnifiedAlerting} merge />);
+      await settleEffects();
+      await pick('SQL');
+      expect(withoutUndefined(current)).toEqual({ refId: 'A', queryType: 'sql' });
+      typeSql('SELECT x');
+      await pick('Compute');
+      expect(withoutUndefined(current)).toEqual(numeric);
+      await pick('SQL');
+      expect(withoutUndefined(current)).toEqual({ refId: 'A', queryType: 'sql', rawSql: 'SELECT x' });
+    });
   });
 });
 

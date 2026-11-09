@@ -51,12 +51,14 @@ interface Run {
   bound?: string;
   queries: Map<string, QueryRun>;
 }
+
 // A query as sent for a Logs scroll page: the id of the line the page continues from, and whether
 // the page reads newer lines. Only request copies carry these; saved queries never do.
 interface PageQuery extends NominalQuery {
   scrollId?: string;
   scrollNewer?: boolean;
 }
+
 const runs = new Map<string, Run>();
 // Dashboard Logs panels start a new run, and so a new entry, on every refresh that records a log page.
 const maxRuns = 200;

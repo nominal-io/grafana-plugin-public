@@ -9,7 +9,7 @@ import {
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
-import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
+import { CoreApp, type GrafanaTheme2, type QueryEditorProps } from '@grafana/data';
 import type { DataQuery } from '@grafana/schema';
 import type { DataSource } from '../datasource';
 import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
@@ -273,33 +273,48 @@ const FIELD_API = {
   format: QUERY_TYPE_SQL,
 } satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery>, QueryAPI>;
 
+// A field whose value is undefined was already removed, so it is not moved or restored.
 function splitFields(query: NominalQuery, api: QueryAPI): [rest: NominalQuery, owned: Partial<NominalQuery>] {
   const owned = ([key]: [string, unknown]) => FIELD_API[key as keyof typeof FIELD_API] === api;
-  const entries = Object.entries(query);
+  const entries = Object.entries(query).filter(([, value]) => value !== undefined);
   return [Object.fromEntries(entries.filter((entry) => !owned(entry))) as NominalQuery, Object.fromEntries(entries.filter(owned))];
 }
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
-  const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
+// The query's API and that API's field values, to tell whether a query is the one the editor last sent. Grafana
+// adds its own fields (hide, datasource) and may reorder keys, so the whole query cannot be compared.
+const ownedValues = (query: NominalQuery, api: QueryAPI) =>
+  JSON.stringify([api, ...Object.entries(FIELD_API).map(([key, owner]) => (owner === api ? query[key as keyof typeof FIELD_API] : null))]);
 
-  // Fields of the API not in use stay here, not in the saved query, so toggling back restores them until the
-  // editor unmounts. Grafana re-runs a panel when any variable in its saved query changes, so a leftover
-  // assetRid of '$asset' would re-run a SQL panel that never reads it. The editor can outlive its query (Explore
-  // history replaces it in place), so fields are only restored into the API they came from.
-  const inactiveFields = React.useRef<{ api: QueryAPI; fields: Partial<NominalQuery> }>(undefined);
+// The alert rule editor merges onChange into its stored model, so a removed field must be sent as undefined there.
+// Elsewhere it is left out: Explore would see the undefined field as a change and run the query again.
+const removedFields = (fields: Partial<NominalQuery>, app?: CoreApp) =>
+  app === CoreApp.UnifiedAlerting ? Object.fromEntries(Object.keys(fields).map((key) => [key, undefined])) : {};
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
+  const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
+  const inactiveAPI: QueryAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
+
+  // Fields of the API not in use, kept out of the saved query so a leftover such as assetRid '$asset' cannot
+  // re-run a SQL panel, and restored on switching back. Explore can replace the query while the editor stays
+  // mounted, so they are dropped once a query arrives that the editor did not send.
+  const inactive = React.useRef<{ fields: Partial<NominalQuery>; sent: string }>(undefined);
+  const latest = React.useRef(query);
+  latest.current = query;
+  const remembered = React.useCallback(
+    () => (inactive.current?.sent === ownedValues(latest.current, activeAPI) ? inactive.current.fields : undefined),
+    [activeAPI]
+  );
 
   // Older saved queries can still hold the other API's fields. Move them out on the next edit rather than on load,
   // so opening the editor alone does not modify the dashboard.
   const onEdit = React.useCallback(
     (next: NominalQuery) => {
-      const inactiveAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
       const [clean, stale] = splitFields(next, inactiveAPI);
-      if (Object.keys(stale).length > 0) {
-        inactiveFields.current = { api: inactiveAPI, fields: stale };
-      }
-      onChange(clean);
+      const fields = Object.keys(stale).length > 0 ? stale : remembered();
+      inactive.current = fields && { fields, sent: ownedValues(clean, activeAPI) };
+      onChange({ ...removedFields(stale, app), ...clean });
     },
-    [activeAPI, onChange]
+    [activeAPI, inactiveAPI, app, onChange, remembered]
   );
 
   const onQueryAPIChange = (api: QueryAPI) => {
@@ -307,9 +322,9 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     const [shared, leaving] = splitFields(query, activeAPI);
-    const remembered = inactiveFields.current?.api === api ? inactiveFields.current.fields : {};
-    onChange({ ...remembered, ...shared, queryType: api });
-    inactiveFields.current = { api: activeAPI, fields: leaving };
+    const next = { ...remembered(), ...shared, queryType: api };
+    inactive.current = { fields: leaving, sent: ownedValues(next, api) };
+    onChange({ ...removedFields(leaving, app), ...next });
   };
 
   return (
