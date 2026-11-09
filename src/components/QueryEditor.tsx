@@ -9,7 +9,8 @@ import {
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
-import type { GrafanaTheme2, QueryEditorProps } from '@grafana/data';
+import { CoreApp, type GrafanaTheme2, type QueryEditorProps } from '@grafana/data';
+import type { DataQuery } from '@grafana/schema';
 import type { DataSource } from '../datasource';
 import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
 import { getSupportedScopeNames } from '../utils/api';
@@ -255,16 +256,75 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   );
 }
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
-  const isSqlQuery = query.queryType === QUERY_TYPE_SQL;
+type QueryAPI = NonNullable<NominalQuery['queryType']>;
 
-  const onQueryAPIChange = (api: 'compute' | 'sql') => {
-    if ((api === 'sql') === isSqlQuery) {
+// Which API owns each query field. A field added to NominalQuery fails typecheck until it is listed here.
+const FIELD_API = {
+  assetRid: QUERY_TYPE_COMPUTE,
+  channel: QUERY_TYPE_COMPUTE,
+  dataScopeName: QUERY_TYPE_COMPUTE,
+  channelDataType: QUERY_TYPE_COMPUTE,
+  aggregations: QUERY_TYPE_COMPUTE,
+  buckets: QUERY_TYPE_COMPUTE,
+  templateVariables: QUERY_TYPE_COMPUTE,
+  queryText: QUERY_TYPE_COMPUTE,
+  constant: QUERY_TYPE_COMPUTE,
+  rawSql: QUERY_TYPE_SQL,
+  format: QUERY_TYPE_SQL,
+} satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery>, QueryAPI>;
+
+// A field whose value is undefined was already removed, so it is not moved or restored.
+function splitFields(query: NominalQuery, api: QueryAPI): [rest: NominalQuery, owned: Partial<NominalQuery>] {
+  const owned = ([key]: [string, unknown]) => FIELD_API[key as keyof typeof FIELD_API] === api;
+  const entries = Object.entries(query).filter(([, value]) => value !== undefined);
+  return [Object.fromEntries(entries.filter((entry) => !owned(entry))) as NominalQuery, Object.fromEntries(entries.filter(owned))];
+}
+
+// The query's API and that API's field values, to tell whether a query is the one the editor last sent. Grafana
+// adds its own fields (hide, datasource) and may reorder keys, so the whole query cannot be compared.
+const ownedValues = (query: NominalQuery, api: QueryAPI) =>
+  JSON.stringify([api, ...Object.entries(FIELD_API).map(([key, owner]) => (owner === api ? query[key as keyof typeof FIELD_API] : null))]);
+
+// The alert rule editor merges onChange into its stored model, so a removed field must be sent as undefined there.
+// Elsewhere it is left out: Explore would see the undefined field as a change and run the query again.
+const removedFields = (fields: Partial<NominalQuery>, app?: CoreApp) =>
+  app === CoreApp.UnifiedAlerting ? Object.fromEntries(Object.keys(fields).map((key) => [key, undefined])) : {};
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
+  const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
+  const inactiveAPI: QueryAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
+
+  // Fields of the API not in use, kept out of the saved query so a leftover such as assetRid '$asset' cannot
+  // re-run a SQL panel, and restored on switching back. Explore can replace the query while the editor stays
+  // mounted, so they are dropped once a query arrives that the editor did not send.
+  const inactive = React.useRef<{ fields: Partial<NominalQuery>; sent: string }>(undefined);
+  const latest = React.useRef(query);
+  latest.current = query;
+  const remembered = React.useCallback(
+    () => (inactive.current?.sent === ownedValues(latest.current, activeAPI) ? inactive.current.fields : undefined),
+    [activeAPI]
+  );
+
+  // Older saved queries can still hold the other API's fields. Move them out on the next edit rather than on load,
+  // so opening the editor alone does not modify the dashboard.
+  const onEdit = React.useCallback(
+    (next: NominalQuery) => {
+      const [clean, stale] = splitFields(next, inactiveAPI);
+      const fields = Object.keys(stale).length > 0 ? stale : remembered();
+      inactive.current = fields && { fields, sent: ownedValues(clean, activeAPI) };
+      onChange({ ...removedFields(stale, app), ...clean });
+    },
+    [activeAPI, inactiveAPI, app, onChange, remembered]
+  );
+
+  const onQueryAPIChange = (api: QueryAPI) => {
+    if (api === activeAPI) {
       return;
     }
-    onChange(api === 'sql'
-      ? { ...query, queryType: QUERY_TYPE_SQL, rawSql: query.rawSql ?? '', format: query.format ?? 'timeseries' }
-      : { ...query, queryType: QUERY_TYPE_COMPUTE });
+    const [shared, leaving] = splitFields(query, activeAPI);
+    const next = { ...remembered(), ...shared, queryType: api };
+    inactive.current = { fields: leaving, sent: ownedValues(next, api) };
+    onChange({ ...removedFields(leaving, app), ...next });
   };
 
   return (
@@ -272,14 +332,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           aria-label="Query API"
-          value={isSqlQuery ? 'sql' : 'compute'}
-          options={[{ label: 'Compute', value: 'compute' }, { label: 'SQL', value: 'sql' }]}
+          value={activeAPI}
+          options={[{ label: 'Compute', value: QUERY_TYPE_COMPUTE }, { label: 'SQL', value: QUERY_TYPE_SQL }]}
           onChange={onQueryAPIChange}
         />
       </InlineField>
-      {isSqlQuery
-        ? <SqlQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor query={query} onChange={onChange} onRunQuery={onRunQuery} datasource={datasource} />}
+      {activeAPI === QUERY_TYPE_SQL
+        ? <SqlQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} />
+        : <BuilderQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} datasource={datasource} />}
     </Stack>
   );
 }
