@@ -16,82 +16,6 @@ import (
 	"github.com/palantir/pkg/safelong"
 )
 
-func TestTransformBatchResultLegacyNumeric(t *testing.T) {
-	ds := withCatalog(&Datasource{})
-
-	t.Run("numeric batch result produces float64 value fields", func(t *testing.T) {
-		values := []float64{1.5, 2.5, 3.5, 4.5}
-		result := createMockComputeResult(values)
-		qm := NominalQueryModel{
-			Channel:  "temperature",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		if len(resp.Frames) != 1 {
-			t.Fatalf("expected 1 frame, got %d", len(resp.Frames))
-		}
-
-		frame := resp.Frames[0]
-		if len(frame.Fields) != 2 {
-			t.Fatalf("expected 2 fields, got %d", len(frame.Fields))
-		}
-		valueField := frame.Fields[1]
-		if valueField.Len() != len(values) {
-			t.Fatalf("expected %d values, got %d", len(values), valueField.Len())
-		}
-		for i := 0; i < valueField.Len(); i++ {
-			v, ok := valueField.At(i).(*float64)
-			if !ok {
-				t.Errorf("value at index %d is not *float64, got %T", i, valueField.At(i))
-			}
-			if v == nil || *v != values[i] {
-				t.Errorf("value at index %d: expected %f, got %v", i, values[i], v)
-			}
-		}
-	})
-
-	t.Run("numeric frame does not have table type metadata", func(t *testing.T) {
-		values := []float64{10.0, 20.0}
-		result := createMockComputeResult(values)
-		qm := NominalQueryModel{
-			Channel:  "pressure",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		frame := resp.Frames[0]
-		// Numeric frames should NOT have FrameTypeTable metadata (that's for enum frames)
-		if frame.Meta != nil && frame.Meta.Type == data.FrameTypeTable {
-			t.Error("numeric frame should not have FrameTypeTable metadata")
-		}
-	})
-
-	t.Run("numeric frame name includes channel name", func(t *testing.T) {
-		values := []float64{5.0}
-		result := createMockComputeResult(values)
-		qm := NominalQueryModel{
-			Channel:  "velocity",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		frame := resp.Frames[0]
-		if !strings.Contains(frame.Name, "velocity") {
-			t.Errorf("expected frame name to contain 'velocity', got: %s", frame.Name)
-		}
-	})
-}
-
 func TestEnumPlotTransformation(t *testing.T) {
 	ds := withCatalog(&Datasource{})
 
@@ -606,10 +530,11 @@ func TestDisplayNameFromDS(t *testing.T) {
 
 	t.Run("numeric path with data sets DisplayNameFromDS to channel name", func(t *testing.T) {
 		values := []float64{1.0, 2.0}
-		result := createMockComputeResult(values)
+		result := createMockArrowComputeResult(values)
 		qm := NominalQueryModel{
-			Channel:  "temperature",
-			AssetRid: "ri.nominal.asset.test",
+			Channel:      "temperature",
+			AssetRid:     "ri.nominal.asset.test",
+			Aggregations: []string{AggMean},
 		}
 
 		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
@@ -633,8 +558,13 @@ func TestDisplayNameFromDS(t *testing.T) {
 	})
 
 	t.Run("LTTB path suffixes the display name like explicit aggregations", func(t *testing.T) {
-		result := createMockComputeResult([]float64{1.0, 2.0})
-		qm := NominalQueryModel{Channel: "temperature", AssetRid: "ri.nominal.asset.test", RawLTTB: true}
+		result := computeapi.ComputeWithUnitsResult{
+			ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+				computeapi.NewComputeNodeResponseFromArrowNumeric(
+					computeapi.ArrowPlot{ArrowBinary: createTestArrowRawNumeric([]int64{100, 200}, []float64{1.0, 2.0})}),
+			),
+		}
+		qm := NominalQueryModel{Channel: "temperature", AssetRid: "ri.nominal.asset.test", ExplicitAggregations: true, Aggregations: []string{AggLTTB}}
 
 		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
 		if resp.Error != nil {
@@ -647,10 +577,11 @@ func TestDisplayNameFromDS(t *testing.T) {
 	})
 
 	t.Run("numeric path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
-		result := createMockComputeResult([]float64{})
+		result := createMockArrowComputeResult([]float64{})
 		qm := NominalQueryModel{
-			Channel:  "pressure",
-			AssetRid: "ri.nominal.asset.test",
+			Channel:      "pressure",
+			AssetRid:     "ri.nominal.asset.test",
+			Aggregations: []string{AggMean},
 		}
 
 		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
@@ -732,67 +663,6 @@ func TestFieldConfigUnit(t *testing.T) {
 			t.Errorf("time field must have no Unit, got %q", cfg.Unit)
 		}
 	}
-
-	t.Run("legacy numeric path on Cel channel sets FieldConfig.Unit=celsius", func(t *testing.T) {
-		// Legacy single-numeric branch, data present.
-		result := createMockComputeResult([]float64{1.0, 2.0})
-		qm := NominalQueryModel{
-			Channel:     "engine_temp",
-			AssetRid:    "ri.nominal.asset.test",
-			ChannelUnit: "Cel",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		valueField := resp.Frames[0].Fields[1]
-		if valueField.Config.Unit != "celsius" {
-			t.Errorf("Unit = %q, want %q", valueField.Config.Unit, "celsius")
-		}
-		if valueField.Config.DisplayNameFromDS != "engine_temp" {
-			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "engine_temp")
-		}
-		assertTimeFieldUnitFree(t, resp.Frames[0])
-	})
-
-	t.Run("legacy numeric path with empty data still sets Unit=celsius", func(t *testing.T) {
-		// Legacy single-numeric branch, no data.
-		result := createMockComputeResult([]float64{})
-		qm := NominalQueryModel{
-			Channel:     "engine_temp",
-			AssetRid:    "ri.nominal.asset.test",
-			ChannelUnit: "Cel",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		valueField := resp.Frames[0].Fields[1]
-		if valueField.Config.Unit != "celsius" {
-			t.Errorf("Unit = %q, want %q", valueField.Config.Unit, "celsius")
-		}
-		assertTimeFieldUnitFree(t, resp.Frames[0])
-	})
-
-	t.Run("legacy numeric path with empty ChannelUnit leaves Unit empty", func(t *testing.T) {
-		result := createMockComputeResult([]float64{1.0})
-		qm := NominalQueryModel{
-			Channel:  "engine_temp",
-			AssetRid: "ri.nominal.asset.test",
-		}
-
-		resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
-		if resp.Error != nil {
-			t.Fatalf("unexpected error: %v", resp.Error)
-		}
-		valueField := resp.Frames[0].Fields[1]
-		if valueField.Config.Unit != "" {
-			t.Errorf("Unit = %q, want empty", valueField.Config.Unit)
-		}
-		assertTimeFieldUnitFree(t, resp.Frames[0])
-	})
 
 	t.Run("enum path on Cel-tagged channel does NOT set Unit", func(t *testing.T) {
 		// Enum branch, data present. Even with ChannelUnit set, enum/string

@@ -488,15 +488,18 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	qm := NominalQueryModel{
 		AssetRid: "ri.nominal.asset.test", Channel: "temperature", DataScopeName: "default",
-		ChannelDataType: ChannelDataTypeNumeric, RawLTTB: true, Buckets: 5000,
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 5000,
 		Points: pointBudget{Count: 500},
 	}
 	plan := qe.buildSeriesPlan(qm)
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
-	if plan.Buckets != nil || plan.OutputFormat != nil || plan.NumericOutputFields != nil {
-		t.Fatalf("LTTB must not request bucket aggregation or Arrow fields: %+v", plan)
+	if !isArrowV3(plan.OutputFormat) {
+		t.Fatalf("LTTB must request ARROW_V3: %+v", plan.OutputFormat)
+	}
+	if plan.Buckets != nil || plan.NumericOutputFields != nil {
+		t.Fatalf("LTTB must not request buckets or output fields: %+v", plan)
 	}
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("LTTB strategy is missing")
