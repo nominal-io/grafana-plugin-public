@@ -51,6 +51,12 @@ interface Run {
   bound?: string;
   queries: Map<string, QueryRun>;
 }
+// A query as sent for a Logs scroll page: the id of the line the page continues from, and whether
+// the page reads newer lines. Only request copies carry these; saved queries never do.
+interface PageQuery extends NominalQuery {
+  scrollId?: string;
+  scrollNewer?: boolean;
+}
 const runs = new Map<string, Run>();
 // Dashboard Logs panels start a new run, and so a new entry, on every refresh that records a log page.
 const maxRuns = 200;
@@ -100,7 +106,7 @@ function frameEdges(frame: DataFrame): Edges | undefined {
 // recordPage moves a query's run to take in a response's frame, and keeps page as the query's page to
 // send again. A frame that continued from a line moves only that edge: lines that share a time cannot
 // be ordered by time, so a time comparison cannot tell which of two tied lines is further along.
-function recordPage(run: Run, target: NominalQuery, frame: DataFrame | undefined, page?: DataFrame) {
+function recordPage(run: Run, target: PageQuery, frame: DataFrame | undefined, page?: DataFrame) {
   const query = querySignature(target);
   const last = run.queries.get(target.refId);
   const q = last?.query === query ? last : undefined;
@@ -228,7 +234,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
     const newer = from > run.from;
     const bound = newer ? from : to;
-    const targets = request.targets.map((target) => {
+    const targets = request.targets.map((target): PageQuery => {
       const q = run.queries.get(target.refId);
       if (run !== last || !q || q.query !== querySignature(target)) {
         return target;
