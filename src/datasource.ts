@@ -165,13 +165,23 @@ const scrollStop = 1000;
 // one, and showing its lines there would end scrolling for every query. The held lines are past the
 // query's recorded edge, so its next page reads them again. A query in reread compares its page with
 // where it was before its last page, which Explore did not show.
-function lastSecond(run: Run, frames: DataFrame[], newer: boolean, edge: number, failed: boolean, reread: string[]) {
+function lastSecond(
+  run: Run,
+  frames: DataFrame[],
+  newer: boolean,
+  edge: number,
+  failed: boolean,
+  reread: string[],
+  strict: string[]
+) {
   const inSecond = (ms: number) => (newer ? ms >= edge - scrollStop : ms <= edge + scrollStop);
   const side = newer ? 'newest' : 'oldest';
   const fresh = (frame: DataFrame, e: Edge) => {
     const q = run.queries.get(frame.refId!);
     const last = (reread.includes(frame.refId!) ? q?.before : q?.edges)?.[side];
-    return !last || (newer ? isOlder(last, e) : isOlder(e, last));
+    return (
+      !last || (strict.includes(frame.refId!) && e.id !== last.id) || (newer ? isOlder(last, e) : isOlder(e, last))
+    );
   };
   const waiting = frames.some((frame) => {
     const end = frameEdges(frame)?.[side];
@@ -259,9 +269,11 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         // A query that cannot continue from its line on a repeated request lost its last page, or a filter
         // hides it, so the page reads that page again.
         const reread = repeated ? targets.flatMap((t) => (t.scrollId ? [] : [t.refId])) : [];
+        // A Compute page that continues from a line holds only lines past it, and maybe that line again.
+        const strict = targets.flatMap((t) => (t.scrollId && t.queryType !== QUERY_TYPE_SQL ? [t.refId] : []));
         const held =
           run === last
-            ? lastSecond(run, logs, newer, newer ? to : from, Boolean(response.errors?.length), reread)
+            ? lastSecond(run, logs, newer, newer ? to : from, Boolean(response.errors?.length), reread, strict)
             : undefined;
         const data = response.data.map((frame: DataFrame) => (held && isLog(frame) ? without(frame, held) : frame));
         // Edges come from the response itself; a merged-in page past its edge would misplace them.

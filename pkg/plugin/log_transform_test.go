@@ -476,9 +476,10 @@ func TestLogPageRange(t *testing.T) {
 		{name: "ignores an id without a time", id: "x:1f", wantFrom: from, wantTo: toEnd},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := logPageRange(backend.TimeRange{From: from, To: to}, NominalQueryModel{ScrollID: tc.id, ScrollNewer: tc.newer})
-			if !got.From.Equal(tc.wantFrom) || !got.To.Equal(tc.wantTo) {
-				t.Errorf("logPageRange() = %v to %v; want %v to %v", got.From, got.To, tc.wantFrom, tc.wantTo)
+			got, cursor := logPageRange(backend.TimeRange{From: from, To: to}, NominalQueryModel{ScrollID: tc.id, ScrollNewer: tc.newer})
+			wantContinues := tc.id != "" && (!got.From.Equal(from) || !got.To.Equal(toEnd))
+			if !got.From.Equal(tc.wantFrom) || !got.To.Equal(tc.wantTo) || (cursor != nil) != wantContinues {
+				t.Errorf("logPageRange() = %v to %v, %v; want %v to %v, %v", got.From, got.To, cursor != nil, tc.wantFrom, tc.wantTo, wantContinues)
 			}
 		})
 	}
