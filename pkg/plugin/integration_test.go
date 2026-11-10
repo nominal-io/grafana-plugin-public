@@ -34,6 +34,10 @@ import (
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
 const liveNominalDataScopeName = "primary"
 const liveNominalChannelName = "temperature"
+const liveNominalLogChannel = "grafana-live-logs"
+
+var liveNominalLogBase = time.Date(2024, 9, 5, 18, 0, 0, 0, time.UTC)
+
 const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity,state
 2024-09-05T18:00:00Z,0,20,50,idle
 2024-09-05T18:01:00Z,1,21,49,idle
@@ -156,16 +160,24 @@ func TestLiveNominalCheckHealthIntegration(t *testing.T) {
 	}
 }
 
-func TestLiveNominalQueryDataIntegration(t *testing.T) {
+// TestLiveNominalQueries writes every fixture to one temporary dataset before waiting for ingest,
+// so a run waits for ingest once.
+func TestLiveNominalQueries(t *testing.T) {
 	settings := liveNominalSettings(t)
-
-	target, ok := liveNominalQueryTargetFromEnv(t)
-	if !ok {
-		target = createLiveNominalQueryTarget(t, settings)
-	}
-
-	buckets := liveNominalQueryBuckets(t)
+	target := createLiveNominalQueryTarget(t, settings)
 	ds := liveNominalDatasource(t, settings)
+	t.Run("Numeric", func(t *testing.T) { testLiveNominalNumeric(t, settings, ds, target) })
+	t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target) })
+	t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target) })
+	t.Run("SQL", func(t *testing.T) { testLiveNominalSQL(t, settings, ds, target) })
+	t.Run("SQLLogs", func(t *testing.T) { testLiveNominalSQLLogs(t, settings, ds, target) })
+}
+
+func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
+	if envTarget, ok := liveNominalQueryTargetFromEnv(t); ok {
+		target = envTarget
+	}
+	buckets := liveNominalQueryBuckets(t)
 	query := NominalQueryModel{
 		AssetRid:      target.assetRid,
 		Channel:       target.channel,
@@ -201,10 +213,7 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 	assertLiveNominalNumericResponse(t, response, target.channel, expected)
 }
 
-func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
-	settings := liveNominalSettings(t)
-	target := createLiveNominalQueryTarget(t, settings)
-	ds := liveNominalDatasource(t, settings)
+func testLiveNominalLTTB(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
 	query := NominalQueryModel{
 		AssetRid: target.assetRid, Channel: target.channel, DataScopeName: target.dataScopeName,
 		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 4,
@@ -250,33 +259,35 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 	}
 }
 
-func TestLiveNominalStringChannelIntegration(t *testing.T) {
-	settings := liveNominalSettings(t)
-	target := createLiveNominalQueryTarget(t, settings)
-	ds := liveNominalDatasource(t, settings)
+func testLiveNominalString(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
 	// 20 buckets over 11 minutes are 33 s wide, so each one-per-minute sample has its own bucket.
 	query := NominalQueryModel{
 		AssetRid: target.assetRid, Channel: "state", DataScopeName: target.dataScopeName,
 		ChannelDataType: ChannelDataTypeString, Buckets: 20,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{
+	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
 		Queries: []backend.DataQuery{{
 			RefID: "A", JSON: mustMarshal(query),
 			TimeRange: backend.TimeRange{From: target.from, To: target.to}, MaxDataPoints: 20,
 		}},
-	})
-	if err != nil {
-		t.Fatalf("string QueryData failed: %v", err)
 	}
-	response, ok := resp.Responses["A"]
-	if !ok || response.Error != nil || len(response.Frames) != 1 || len(response.Frames[0].Fields) != 2 {
-		t.Fatalf("string response missing or failed: %+v", response)
-	}
-	timeField, valueField := response.Frames[0].Fields[0], response.Frames[0].Fields[1]
 	want := []string{"idle", "idle", "idle", "idle", "idle", "run", "run", "run", "run", "run"}
+	response := pollLiveQuery(t, ds, request, func(responses backend.Responses) error {
+		response := responses["A"]
+		if response.Error != nil || len(response.Frames) != 1 || len(response.Frames[0].Fields) != 2 {
+			return fmt.Errorf("%d frames, error: %v", len(response.Frames), response.Error)
+		}
+		rows := response.Frames[0].Rows()
+		if rows > len(want) {
+			t.Fatalf("string query returned %d values, want %d", rows, len(want))
+		}
+		if rows < len(want) {
+			return fmt.Errorf("%d of %d string values", rows, len(want))
+		}
+		return nil
+	})["A"]
+	timeField, valueField := response.Frames[0].Fields[0], response.Frames[0].Fields[1]
 	var got []string
 	for i := 0; i < valueField.Len(); i++ {
 		got = append(got, valueField.At(i).(string))
@@ -289,11 +300,7 @@ func TestLiveNominalStringChannelIntegration(t *testing.T) {
 	}
 }
 
-func TestLiveNominalSQLQueryIntegration(t *testing.T) {
-	settings := liveNominalSettings(t)
-	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.
-	target := createLiveNominalQueryTarget(t, settings)
-	ds := liveNominalDatasource(t, settings)
+func testLiveNominalSQL(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
 	// The first point at 18:00 must be excluded, and 18:02 must be included.
 	// Rounding either bound to seconds makes the row-count assertion fail.
 	start := time.Date(2024, 9, 5, 18, 0, 0, 500000000, time.UTC)
@@ -324,30 +331,11 @@ func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 	}
 }
 
-func TestLiveNominalSQLLogsIntegration(t *testing.T) {
-	settings := liveNominalSettings(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-	clients, _, dataset := createTempLiveNominalDataset(t, ctx, settings)
-	ds := liveNominalDatasource(t, settings)
-
-	// The first two rows fall inside the same millisecond, both after its start.
-	base := time.Date(2024, 9, 5, 18, 0, 0, 0, time.UTC)
-	row := func(offset time.Duration, message string) writerapi.LogPoint {
-		args := map[string]string{"level": "error", "host": "h1"}
-		return writerapi.LogPoint{Timestamp: timestampFromTime(base.Add(offset)), Value: writerapi.LogValue{Message: message, Args: args}}
-	}
-	err := clients.writer.WriteLogs(ctx, clients.token, rids.NominalDataSourceOrDatasetRid(dataset.Rid), writerapi.WriteLogsRequest{
-		Channel: new(nominalapi.Channel("grafana-live-logs")),
-		Logs:    []writerapi.LogPoint{row(200*time.Microsecond, "first"), row(500*time.Microsecond, "second"), row(time.Second, "third")},
-	})
-	if err != nil {
-		t.Fatalf("failed to write live logs: %v", err)
-	}
-
+func testLiveNominalSQLLogs(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
+	base := liveNominalLogBase
 	queryJSON := map[string]string{
 		"queryType": queryTypeSQL, "format": "logs",
-		"rawSql": fmt.Sprintf("SELECT ts, channel, message, args FROM logs WHERE dataset_rid = '%s' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 10", dataset.Rid),
+		"rawSql": fmt.Sprintf("SELECT ts, channel, message, args FROM logs WHERE dataset_rid = '%s' AND $__timeFilter(ts) ORDER BY ts DESC LIMIT 10", target.datasetRid),
 	}
 	query := backend.DataQuery{
 		RefID:     "A",
@@ -363,7 +351,7 @@ func TestLiveNominalSQLLogsIntegration(t *testing.T) {
 			t.Errorf("row %d body = %q, want %q (newest first)", i, body, wantBody)
 		}
 		labels := parseLogLabels(t, json.RawMessage(rawLabels))
-		for key, want := range map[string]string{"channel": "grafana-live-logs", "level": "error", "host": "h1"} {
+		for key, want := range map[string]string{"channel": liveNominalLogChannel, "level": "error", "host": "h1"} {
 			if labels[key] != want {
 				t.Errorf("row %d label %q = %q, want %q", i, key, labels[key], want)
 			}
@@ -506,6 +494,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	}
 
 	fileID := ingestLiveNominalCSV(t, ctx, clients, dataset.Rid)
+	writeLiveNominalLogs(t, ctx, clients, dataset.Rid)
 	waitForLiveNominalIngest(t, ctx, clients, dataset.Rid, fileID)
 
 	from, to := liveNominalCSVTimeRange(t)
@@ -516,6 +505,23 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 		dataScopeName: liveNominalDataScopeName,
 		from:          from,
 		to:            to,
+	}
+}
+
+// writeLiveNominalLogs writes three log lines. The first two fall inside the same millisecond, both
+// after its start.
+func writeLiveNominalLogs(t *testing.T, ctx context.Context, clients liveNominalAPIClients, datasetRid rid.ResourceIdentifier) {
+	t.Helper()
+	row := func(offset time.Duration, message string) writerapi.LogPoint {
+		args := map[string]string{"level": "error", "host": "h1"}
+		return writerapi.LogPoint{Timestamp: timestampFromTime(liveNominalLogBase.Add(offset)), Value: writerapi.LogValue{Message: message, Args: args}}
+	}
+	err := clients.writer.WriteLogs(ctx, clients.token, rids.NominalDataSourceOrDatasetRid(datasetRid), writerapi.WriteLogsRequest{
+		Channel: new(nominalapi.Channel(liveNominalLogChannel)),
+		Logs:    []writerapi.LogPoint{row(200*time.Microsecond, "first"), row(500*time.Microsecond, "second"), row(time.Second, "third")},
+	})
+	if err != nil {
+		t.Fatalf("failed to write live logs: %v", err)
 	}
 }
 

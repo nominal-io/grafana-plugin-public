@@ -82,9 +82,11 @@ go test -count=1 ./pkg/plugin -run TestLiveNominalCheckHealthIntegration -v
 ```
 
 To also run the live `QueryData` and SQL integration paths, point the test at staging.
-The test creates a temporary asset, data scope, dataset, and numeric CSV channel,
-queries that channel through the plugin, and archives the temporary asset and
-dataset during cleanup.
+The test creates a temporary asset, data scope, and dataset, ingests a CSV with numeric
+and string channels, writes a log channel, waits once for the data to become queryable,
+runs every query check against it, and archives the temporary asset and dataset
+during cleanup. Waits stop a minute before the `go test` deadline, which covers
+the whole run, so raise `-timeout` when ingest is slow.
 
 ```sh
 set -a
@@ -93,7 +95,7 @@ set +a
 
 NOMINAL_LIVE_TESTS=1 \
 NOMINAL_BASE_URL=https://api-staging.gov.nominal.io/api \
-go test -count=1 ./pkg/plugin -run 'TestLiveNominal(QueryData|SQLQuery)Integration' -v
+go test -count=1 ./pkg/plugin -run TestLiveNominalQueries -v
 ```
 
 Optional query controls:
@@ -103,8 +105,8 @@ Optional query controls:
 
 - `NOMINAL_QUERY_BUCKETS`: bucket count, default `100`.
 - `NOMINAL_QUERY_ASSET_RID`, `NOMINAL_QUERY_DATA_SCOPE_NAME`, and
-  `NOMINAL_QUERY_CHANNEL`: use an existing query target instead of creating
-  temporary test data. Set all three together.
+  `NOMINAL_QUERY_CHANNEL`: run the numeric query check against an existing
+  target instead of the temporary data. Set all three together.
 - `NOMINAL_QUERY_FROM` and `NOMINAL_QUERY_TO`: RFC3339 timestamps, default to
   the temporary CSV range for self-provisioned data or the last 15 minutes for
   an existing query target.
