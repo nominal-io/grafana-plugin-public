@@ -316,19 +316,6 @@ func extractArrowBucketedNumericSeries(
 	arrowPlot computeapi.ArrowPlot,
 	specs []aggColumnSpec,
 ) ([]AggregationSeries, error) {
-	buf := bytes.NewReader(arrowPlot.ArrowBinary)
-	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Arrow IPC reader: %w", err)
-	}
-	defer reader.Release()
-
-	sharedTsIdx, resolved, err := resolveArrowSchema(reader.Schema(), specs)
-	if err != nil {
-		return nil, err
-	}
-	needsSharedTimestamps := sharedTsIdx >= 0
-
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
 	seriesData := make([]AggregationSeries, len(specs))
 	for i, spec := range specs {
@@ -347,20 +334,25 @@ func extractArrowBucketedNumericSeries(
 	}
 	recordSelections := make([]rowSelection, len(specs))
 
-	for reader.Next() {
-		rec := reader.Record()
+	var sharedTsIdx int
+	var resolved []resolvedSpec
+	open := func(schema *arrow.Schema) (err error) {
+		sharedTsIdx, resolved, err = resolveArrowSchema(schema, specs)
+		return err
+	}
+	each := func(rec arrow.RecordBatch) error {
 		nRows := int(rec.NumRows())
 		if err := validateRecordColumnLengths(rec, sharedTsIdx, resolved); err != nil {
-			return nil, err
+			return err
 		}
 		for i := range recordSelections {
 			recordSelections[i] = allRows(nRows)
 		}
 
-		if needsSharedTimestamps {
+		if sharedTsIdx >= 0 {
 			tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
 			if !ok {
-				return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
+				return fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
 			}
 			// Shared timestamps include every row; grow once per record.
 			sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
@@ -378,12 +370,12 @@ func extractArrowBucketedNumericSeries(
 			}
 			perTsCol, ok := rec.Column(rs.tsIdx).(*array.Int64)
 			if !ok {
-				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
+				return fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
 			var err error
 			perSeriesTime[si], recordSelections[si], err = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
 			if err != nil {
-				return nil, fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
+				return fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
 			}
 		}
 
@@ -392,13 +384,13 @@ func extractArrowBucketedNumericSeries(
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
 			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), recordSelections[fi], nRows); err != nil {
-				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
+				return fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
 			}
 		}
+		return nil
 	}
-
-	if err := reader.Err(); err != nil {
-		return nil, fmt.Errorf("Arrow IPC read error: %w", err)
+	if err := readArrowBatches(arrowPlot.ArrowBinary, open, each); err != nil {
+		return nil, err
 	}
 
 	// Assign timestamps: per-series for FIRST/LAST, shared for everything else.
@@ -411,4 +403,26 @@ func extractArrowBucketedNumericSeries(
 	}
 
 	return seriesData, nil
+}
+
+// readArrowBatches opens an Arrow IPC stream, passes its schema to open, then
+// passes each record batch to each.
+func readArrowBatches(binary []byte, open func(*arrow.Schema) error, each func(arrow.RecordBatch) error) error {
+	reader, err := ipc.NewReader(bytes.NewReader(binary), ipc.WithAllocator(memory.DefaultAllocator))
+	if err != nil {
+		return fmt.Errorf("failed to create Arrow IPC reader: %w", err)
+	}
+	defer reader.Release()
+	if err := open(reader.Schema()); err != nil {
+		return err
+	}
+	for reader.Next() {
+		if err := each(reader.RecordBatch()); err != nil {
+			return err
+		}
+	}
+	if err := reader.Err(); err != nil {
+		return fmt.Errorf("failed to read Arrow IPC stream: %w", err)
+	}
+	return nil
 }
