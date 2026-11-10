@@ -59,6 +59,23 @@ func alignedBucketRange(timeRange backend.TimeRange, n int) (aligned backend.Tim
 	return backend.TimeRange{From: time.Unix(0, start), To: time.Unix(0, end)}, true
 }
 
+// enumBucketCount lowers n until to falls strictly inside a bucket. Enum buckets
+// sit at multiples of (to - from) / n since the epoch, and a bucket starting
+// exactly at to would hold only a sample at to.
+func enumBucketCount(timeRange backend.TimeRange, n int) int {
+	from, to := timeRange.From.UnixNano(), timeRange.To.UnixNano()
+	// Every width divides 0, so with to at the epoch the loop would drop to one bucket.
+	if to == 0 {
+		return n
+	}
+	for ; n > 1; n-- {
+		if width := (to - from) / int64(n); width == 0 || to%width != 0 {
+			break
+		}
+	}
+	return n
+}
+
 // buildSeriesPlan builds the full summarized series for a channel kind: it owns both the
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
@@ -74,10 +91,12 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		enumSeries := computeapi1.NewEnumSeriesFromTimeShift(enumTimeShiftSeries)
 		series := computeapi1.NewSeriesFromEnum(enumSeries)
 
-		buckets := qm.Points.Count
+		buckets := enumBucketCount(timeRange, qm.Points.Count)
+		arrowFormat := computeapi.New_OutputFormat(computeapi.OutputFormat_ARROW_V4)
 		return computeapi1.SummarizeSeries{
-			Input:   series,
-			Buckets: &buckets,
+			Input:        series,
+			Buckets:      &buckets,
+			OutputFormat: &arrowFormat,
 		}, timeRange
 
 	case ChannelDataTypeLog:

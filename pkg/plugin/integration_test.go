@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,17 +34,17 @@ import (
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
 const liveNominalDataScopeName = "primary"
 const liveNominalChannelName = "temperature"
-const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity
-2024-09-05T18:00:00Z,0,20,50
-2024-09-05T18:01:00Z,1,21,49
-2024-09-05T18:02:00Z,2,22,48
-2024-09-05T18:03:00Z,3,23,47
-2024-09-05T18:04:00Z,4,24,46
-2024-09-05T18:05:00Z,5,25,45
-2024-09-05T18:06:00Z,6,26,44
-2024-09-05T18:07:00Z,7,27,43
-2024-09-05T18:08:00Z,8,28,42
-2024-09-05T18:09:00Z,9,29,41
+const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity,state
+2024-09-05T18:00:00Z,0,20,50,idle
+2024-09-05T18:01:00Z,1,21,49,idle
+2024-09-05T18:02:00Z,2,22,48,idle
+2024-09-05T18:03:00Z,3,23,47,idle
+2024-09-05T18:04:00Z,4,24,46,idle
+2024-09-05T18:05:00Z,5,25,45,run
+2024-09-05T18:06:00Z,6,26,44,run
+2024-09-05T18:07:00Z,7,27,43,run
+2024-09-05T18:08:00Z,8,28,42,run
+2024-09-05T18:09:00Z,9,29,41,run
 `
 
 type liveNominalQueryTarget struct {
@@ -261,6 +262,45 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 		if err != nil || value != want {
 			t.Fatalf("LTTB returned %v (%v) at %v, want raw CSV value %v", value, err, pointTime, want)
 		}
+	}
+}
+
+func TestLiveNominalStringChannelIntegration(t *testing.T) {
+	settings := liveNominalSettings(t)
+	target := createLiveNominalQueryTarget(t, settings)
+	ds := liveNominalDatasource(t, settings)
+	// 20 buckets over 11 minutes are 33 s wide, so each one-per-minute sample has its own bucket.
+	query := NominalQueryModel{
+		AssetRid: target.assetRid, Channel: "state", DataScopeName: target.dataScopeName,
+		ChannelDataType: ChannelDataTypeString, Buckets: 20,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
+		Queries: []backend.DataQuery{{
+			RefID: "A", JSON: mustMarshal(query),
+			TimeRange: backend.TimeRange{From: target.from, To: target.to}, MaxDataPoints: 20,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("string QueryData failed: %v", err)
+	}
+	response, ok := resp.Responses["A"]
+	if !ok || response.Error != nil || len(response.Frames) != 1 || len(response.Frames[0].Fields) != 2 {
+		t.Fatalf("string response missing or failed: %+v", response)
+	}
+	timeField, valueField := response.Frames[0].Fields[0], response.Frames[0].Fields[1]
+	want := []string{"idle", "idle", "idle", "idle", "idle", "run", "run", "run", "run", "run"}
+	var got []string
+	for i := 0; i < valueField.Len(); i++ {
+		got = append(got, valueField.At(i).(string))
+		if tm := timeField.At(i).(time.Time); tm.After(target.to) {
+			t.Errorf("row %d at %v is after the range end %v", i, tm, target.to)
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("values = %v, want %v", got, want)
 	}
 }
 

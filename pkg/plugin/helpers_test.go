@@ -372,28 +372,68 @@ func (m *mockComputeService) killCallsSnapshot() []killCall {
 	return append([]killCall(nil), m.killCalls...)
 }
 
-func createMockEnumComputeResult(categories []string, indices []int) computeapi.ComputeWithUnitsResult {
-	timestamps := make([]api.Timestamp, len(indices))
-	baseTime := int64(1704067200) // 2024-01-01 00:00:00 UTC
-	for i := range timestamps {
-		timestamps[i] = api.Timestamp{
-			Seconds: safelong.SafeLong(baseTime + int64(i*60)),
-			Nanos:   safelong.SafeLong(0),
+// createMockEnumComputeResult returns an Arrow bucketed enum response with one
+// bucket per value, 60 s apart, each holding only that value.
+func createMockEnumComputeResult(values ...string) computeapi.ComputeWithUnitsResult {
+	var rows []enumRow
+	for i, v := range values {
+		rows = append(rows, enumRow{ts: 1704067200_000000000 + int64(i)*60_000000000, hist: []enumCount{{v, 1}}})
+	}
+	plot := computeapi.ArrowPlot{ArrowBinary: createTestArrowBucketedEnum(rows)}
+	return computeapi.ComputeWithUnitsResult{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+		computeapi.NewComputeNodeResponseFromArrowBucketedEnum(plot))}
+}
+
+type enumCount struct {
+	key string
+	n   uint64
+}
+
+// enumRow is one bucket: its end time, its histogram in wire order, and its
+// last value, which defaults to the last histogram key.
+type enumRow struct {
+	ts   int64
+	hist []enumCount
+	last string
+}
+
+// createTestArrowBucketedEnum writes one zstd record batch per argument.
+// No batches gives a schema-only stream, as an empty range returns.
+func createTestArrowBucketedEnum(batches ...[]enumRow) []byte {
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "end_bucket_timestamp", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "histogram", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.PrimitiveTypes.Uint64)},
+		{Name: "last_value", Type: arrow.BinaryTypes.String},
+	}, nil)
+	var buf bytes.Buffer
+	w := ipc.NewWriter(&buf, ipc.WithSchema(schema), ipc.WithZstd())
+	for _, rows := range batches {
+		rb := array.NewRecordBuilder(memory.DefaultAllocator, schema)
+		ts, hist, last := rb.Field(0).(*array.Int64Builder), rb.Field(1).(*array.MapBuilder), rb.Field(2).(*array.StringBuilder)
+		keys, counts := hist.KeyBuilder().(*array.StringBuilder), hist.ItemBuilder().(*array.Uint64Builder)
+		for _, row := range rows {
+			ts.Append(row.ts)
+			hist.Append(true)
+			for _, c := range row.hist {
+				keys.Append(c.key)
+				counts.Append(c.n)
+			}
+			if row.last == "" && len(row.hist) > 0 {
+				row.last = row.hist[len(row.hist)-1].key
+			}
+			last.Append(row.last)
 		}
+		rec := rb.NewRecordBatch()
+		if err := w.Write(rec); err != nil {
+			panic(err)
+		}
+		rec.Release()
+		rb.Release()
 	}
-
-	enumPlot := computeapi.EnumPlot{
-		Timestamps: timestamps,
-		Values:     indices,
-		Categories: categories,
+	if err := w.Close(); err != nil {
+		panic(err)
 	}
-
-	computeResponse := computeapi.NewComputeNodeResponseFromEnum(enumPlot)
-	computeResult := computeapi.NewComputeNodeResultFromSuccess(computeResponse)
-
-	return computeapi.ComputeWithUnitsResult{
-		ComputeResult: computeResult,
-	}
+	return buf.Bytes()
 }
 
 // Column order is reversed from production (timestamp first) on purpose, to
