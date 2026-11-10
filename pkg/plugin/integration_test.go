@@ -174,10 +174,8 @@ func TestLiveNominalQueries(t *testing.T) {
 }
 
 func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
-	if envTarget, ok := liveNominalQueryTargetFromEnv(t); ok {
-		target = envTarget
-	}
-	buckets := liveNominalQueryBuckets(t)
+	// 100 buckets over 11 minutes are under 7 s wide, so each one-per-minute sample has its own bucket.
+	const buckets = 100
 	query := NominalQueryModel{
 		AssetRid:      target.assetRid,
 		Channel:       target.channel,
@@ -375,59 +373,6 @@ func testLiveNominalSQLLogs(t *testing.T, settings backend.DataSourceInstanceSet
 	if body != wantBody || id != wantID {
 		t.Errorf("next page row = %q with id %s, want %q with id %s as on the first page", body, id, wantBody, wantID)
 	}
-}
-
-func liveNominalQueryTargetFromEnv(t *testing.T) (liveNominalQueryTarget, bool) {
-	t.Helper()
-
-	assetRid := os.Getenv("NOMINAL_QUERY_ASSET_RID")
-	channel := os.Getenv("NOMINAL_QUERY_CHANNEL")
-	dataScopeName := os.Getenv("NOMINAL_QUERY_DATA_SCOPE_NAME")
-	if assetRid == "" && channel == "" && dataScopeName == "" {
-		return liveNominalQueryTarget{}, false
-	}
-	if assetRid == "" || channel == "" || dataScopeName == "" {
-		t.Fatalf("NOMINAL_QUERY_ASSET_RID, NOMINAL_QUERY_CHANNEL, and NOMINAL_QUERY_DATA_SCOPE_NAME must be set together")
-	}
-
-	to := time.Now().UTC()
-	from := to.Add(-15 * time.Minute)
-	if rawFrom := os.Getenv("NOMINAL_QUERY_FROM"); rawFrom != "" {
-		parsedFrom, err := time.Parse(time.RFC3339, rawFrom)
-		if err != nil {
-			t.Fatalf("NOMINAL_QUERY_FROM must be RFC3339: %v", err)
-		}
-		from = parsedFrom
-	}
-	if rawTo := os.Getenv("NOMINAL_QUERY_TO"); rawTo != "" {
-		parsedTo, err := time.Parse(time.RFC3339, rawTo)
-		if err != nil {
-			t.Fatalf("NOMINAL_QUERY_TO must be RFC3339: %v", err)
-		}
-		to = parsedTo
-	}
-
-	return liveNominalQueryTarget{
-		assetRid:      assetRid,
-		channel:       channel,
-		dataScopeName: dataScopeName,
-		from:          from,
-		to:            to,
-	}, true
-}
-
-func liveNominalQueryBuckets(t *testing.T) int {
-	t.Helper()
-
-	buckets := 100
-	if rawBuckets := os.Getenv("NOMINAL_QUERY_BUCKETS"); rawBuckets != "" {
-		parsedBuckets, err := strconv.Atoi(rawBuckets)
-		if err != nil {
-			t.Fatalf("NOMINAL_QUERY_BUCKETS must be an integer: %v", err)
-		}
-		buckets = parsedBuckets
-	}
-	return buckets
 }
 
 // createTempLiveNominalDataset builds API clients and creates a dataset that is archived when the
