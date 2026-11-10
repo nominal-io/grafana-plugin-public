@@ -186,45 +186,19 @@ func TestLiveNominalQueryDataIntegration(t *testing.T) {
 		},
 	}
 
-	// Ingested data may not be queryable immediately. Leave time for cleanup
-	// before the test deadline, since a test timeout prevents cleanup.
-	const queryTimeout = 30 * time.Second
-	deadline, hasDeadline := t.Deadline()
-	if !hasDeadline {
-		deadline = time.Now().Add(5 * time.Minute)
-	}
-	deadline = deadline.Add(-time.Minute)
-	start := time.Now()
 	_, expected := liveNominalCSVSamples(t)
-	attempts := 0
-	lastValues := 0
-	var lastErr error
-	for time.Until(deadline) >= queryTimeout {
-		attempts++
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-		resp, err := ds.QueryData(ctx, request)
-		cancel()
-		if err != nil {
-			t.Fatalf("unexpected QueryData error: %v", err)
-		}
-		response, ok := resp.Responses["A"]
-		if !ok {
-			t.Fatalf("missing response for query A; got refs %v", responseRefs(resp))
-		}
+	response := pollLiveQuery(t, ds, request, func(responses backend.Responses) error {
+		response := responses["A"]
 		values := liveNominalValues(t, response)
 		if len(values) > len(expected) {
 			t.Fatalf("live query returned %d non-null values but the fixture ingested %d; the extra points come from upstream of the plugin", len(values), len(expected))
 		}
-		if response.Error == nil && len(values) == len(expected) {
-			assertLiveNominalNumericResponse(t, response, target.channel, expected)
-			return
+		if response.Error != nil || len(values) < len(expected) {
+			return fmt.Errorf("%d of %d non-null values, error: %v", len(values), len(expected), response.Error)
 		}
-		lastValues, lastErr = len(values), response.Error
-		t.Logf("live query not ready yet, retrying: values=%d/%d error=%v", len(values), len(expected), response.Error)
-		time.Sleep(10 * time.Second)
-	}
-	t.Fatalf("live query never returned data: %d attempts over %s; last response had %d of %d non-null values, error: %v",
-		attempts, time.Since(start).Round(time.Second), lastValues, len(expected), lastErr)
+		return nil
+	})["A"]
+	assertLiveNominalNumericResponse(t, response, target.channel, expected)
 }
 
 func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
@@ -235,8 +209,6 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 		AssetRid: target.assetRid, Channel: target.channel, DataScopeName: target.dataScopeName,
 		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 4,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
-	defer cancel()
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
 		Queries: []backend.DataQuery{{
@@ -244,26 +216,13 @@ func TestLiveNominalLTTBRawPointsIntegration(t *testing.T) {
 			TimeRange: backend.TimeRange{From: target.from, To: target.to}, MaxDataPoints: 4,
 		}},
 	}
-	var response backend.DataResponse
-	for {
-		resp, err := ds.QueryData(ctx, request)
-		if err != nil {
-			t.Fatalf("LTTB QueryData failed: %v", err)
+	response := pollLiveQuery(t, ds, request, func(responses backend.Responses) error {
+		response := responses["A"]
+		if values := liveNominalValues(t, response); response.Error != nil || len(values) == 0 {
+			return fmt.Errorf("no LTTB points, error: %v", response.Error)
 		}
-		var ok bool
-		response, ok = resp.Responses["A"]
-		if !ok || response.Error != nil {
-			t.Fatalf("LTTB response missing or failed: %v", response.Error)
-		}
-		if len(response.Frames) > 0 && len(response.Frames[0].Fields) > 1 && response.Frames[0].Fields[1].Len() > 0 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatalf("LTTB returned no points after ingest became complete: %v", ctx.Err())
-		case <-time.After(2 * time.Second):
-		}
-	}
+		return nil
+	})["A"]
 	frame := response.Frames[0]
 	if want := target.channel + " (lttb)"; frame.Name != want {
 		t.Fatalf("LTTB frame name %q, want %q", frame.Name, want)
@@ -335,8 +294,6 @@ func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 	// SQL needs a dataset selector, so this test deliberately reuses the self-provisioned target.
 	target := createLiveNominalQueryTarget(t, settings)
 	ds := liveNominalDatasource(t, settings)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	// The first point at 18:00 must be excluded, and 18:02 must be included.
 	// Rounding either bound to seconds makes the row-count assertion fail.
 	start := time.Date(2024, 9, 5, 18, 0, 0, 500000000, time.UTC)
@@ -351,14 +308,12 @@ func TestLiveNominalSQLQueryIntegration(t *testing.T) {
 			"rawSql": fmt.Sprintf("SELECT $__timeGroup(ts) AS \"time\", channel, AVG(value) AS \"value\" FROM points_double WHERE dataset_rid = '%s' AND channel IN ('temperature') AND $__timeFilter(ts) GROUP BY 1, 2 ORDER BY 1", target.datasetRid),
 		})},
 	}
-	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: queries})
-	if err != nil {
-		t.Fatalf("unexpected QueryData error: %v", err)
-	}
+	req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: queries}
+	responses := pollLiveQuery(t, ds, req, liveSQLRowsReady(t, 2))
 	for _, ref := range []string{"A", "B"} {
-		response := resp.Responses[ref]
-		if response.Error != nil || len(response.Frames) != 1 || response.Frames[0].Rows() != 2 || response.Frames[0].RefID != ref {
-			t.Fatalf("expected exactly two SQL points inside fractional bounds for %s: %+v", ref, response)
+		response := responses[ref]
+		if got := response.Frames[0].RefID; got != ref {
+			t.Fatalf("frame for %s has RefID %q", ref, got)
 		}
 		for i, want := range []float64{21, 22} {
 			got, valid := response.Frames[0].Fields[1].ConcreteAt(i)
@@ -401,36 +356,7 @@ func TestLiveNominalSQLLogsIntegration(t *testing.T) {
 	}
 	req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{query}}
 
-	var response backend.DataResponse
-	deadline := time.Now().Add(90 * time.Second)
-	for {
-		resp, err := ds.QueryData(ctx, req)
-		if err != nil {
-			t.Fatalf("unexpected QueryData error: %v", err)
-		}
-		response = resp.Responses["A"]
-		if response.Error != nil && response.Status != backend.StatusNotFound {
-			t.Fatalf("unexpected SQL error: %+v", response)
-		}
-		if response.Error == nil {
-			if len(response.Frames) != 1 {
-				t.Fatalf("expected one frame, got %d", len(response.Frames))
-			}
-			rows := response.Frames[0].Rows()
-			if rows > 3 {
-				t.Fatalf("expected three log rows, got %d", rows)
-			}
-			if rows == 3 {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("written logs did not become readable through SQL within 90s (last response: %+v)", response)
-		}
-		time.Sleep(3 * time.Second)
-	}
-
-	frame := response.Frames[0]
+	frame := pollLiveQuery(t, ds, req, liveSQLRowsReady(t, 3))["A"].Frames[0]
 	for i, wantBody := range []string{"third", "second", "first"} {
 		body, _, rawLabels := logRow(frame, i)
 		if body != wantBody {
@@ -454,15 +380,9 @@ func TestLiveNominalSQLLogsIntegration(t *testing.T) {
 	nextJSON := maps.Clone(queryJSON)
 	nextJSON["scrollId"] = firstID
 	nextPage.JSON = mustMarshal(nextJSON)
-	resp, err := ds.QueryData(ctx, &backend.QueryDataRequest{PluginContext: req.PluginContext, Queries: []backend.DataQuery{nextPage}})
-	if err != nil {
-		t.Fatalf("unexpected QueryData error for the next page: %v", err)
-	}
-	next := resp.Responses["A"]
-	if next.Error != nil || len(next.Frames) != 1 || next.Frames[0].Rows() != 1 {
-		t.Fatalf("next page = %+v, want one frame with only first", next)
-	}
-	body, id, _ := logRow(next.Frames[0], 0)
+	nextReq := &backend.QueryDataRequest{PluginContext: req.PluginContext, Queries: []backend.DataQuery{nextPage}}
+	next := pollLiveQuery(t, ds, nextReq, liveSQLRowsReady(t, 1))["A"].Frames[0]
+	body, id, _ := logRow(next, 0)
 	wantBody, wantID, _ := logRow(frame, 2)
 	if body != wantBody || id != wantID {
 		t.Errorf("next page row = %q with id %s, want %q with id %s as on the first page", body, id, wantBody, wantID)
@@ -596,6 +516,75 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 		dataScopeName: liveNominalDataScopeName,
 		from:          from,
 		to:            to,
+	}
+}
+
+// pollLiveQuery repeats req until ready returns nil and returns those responses. A query right
+// after a write may not see it yet, and a later query may. Polling stops a minute before the test
+// deadline, since a test timeout skips t.Cleanup and leaks the temporary resources.
+func pollLiveQuery(t *testing.T, ds *Datasource, req *backend.QueryDataRequest, ready func(backend.Responses) error) backend.Responses {
+	t.Helper()
+	const queryTimeout = 30 * time.Second
+	const interval = 5 * time.Second
+	deadline, ok := t.Deadline()
+	if !ok {
+		deadline = time.Now().Add(5 * time.Minute)
+	}
+	deadline = deadline.Add(-time.Minute)
+	start := time.Now()
+	attempts := 0
+	var notReady error
+	for time.Until(deadline) >= queryTimeout {
+		attempts++
+		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		resp, err := ds.QueryData(ctx, req)
+		timedOut := ctx.Err() != nil
+		cancel()
+		switch {
+		case timedOut:
+			notReady = fmt.Errorf("attempt exceeded %s", queryTimeout)
+		case err != nil:
+			t.Fatalf("unexpected QueryData error: %v", err)
+		default:
+			for _, query := range req.Queries {
+				if _, ok := resp.Responses[query.RefID]; !ok {
+					t.Fatalf("missing response for query %s; got refs %v", query.RefID, responseRefs(resp))
+				}
+			}
+			if notReady = ready(resp.Responses); notReady == nil {
+				return resp.Responses
+			}
+		}
+		t.Logf("live query attempt %d not ready, retrying in %s: %v", attempts, interval, notReady)
+		time.Sleep(interval)
+	}
+	t.Fatalf("live query not ready after %d attempts over %s: %v", attempts, time.Since(start).Round(time.Second), notReady)
+	return nil
+}
+
+// liveSQLRowsReady accepts SQL responses once each has one frame with want rows. Not found is
+// retried, since a new dataset may not be queryable yet. Any other error, or more rows than want,
+// fails at once.
+func liveSQLRowsReady(t *testing.T, want int) func(backend.Responses) error {
+	return func(responses backend.Responses) error {
+		for _, ref := range slices.Sorted(maps.Keys(responses)) {
+			response := responses[ref]
+			if response.Error != nil {
+				if response.Status != backend.StatusNotFound {
+					t.Fatalf("unexpected SQL error for %s (status %d): %v", ref, response.Status, response.Error)
+				}
+				return fmt.Errorf("%s: %v", ref, response.Error)
+			}
+			if len(response.Frames) != 1 {
+				t.Fatalf("expected one frame for %s, got %d", ref, len(response.Frames))
+			}
+			if rows := response.Frames[0].Rows(); rows > want {
+				t.Fatalf("%s returned %d rows, want %d", ref, rows, want)
+			} else if rows < want {
+				return fmt.Errorf("%s: %d of %d rows", ref, rows, want)
+			}
+		}
+		return nil
 	}
 }
 
