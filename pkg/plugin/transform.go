@@ -50,6 +50,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
+					capTimes(agg.TimePoints, qm.RangeEnd)
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
 					if qm.ExplicitAggregations {
@@ -390,4 +391,12 @@ func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesCha
 
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+}
+
+// capTimes caps times at end: a last bucket that runs past the range carries its
+// own end time, though its data stops at end. Times ascend, so only the tail is scanned.
+func capTimes(times []time.Time, end time.Time) {
+	for i := len(times) - 1; i >= 0 && !end.IsZero() && times[i].After(end); i-- {
+		times[i] = end
+	}
 }

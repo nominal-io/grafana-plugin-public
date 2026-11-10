@@ -1268,3 +1268,31 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
 	}
 }
+
+func TestBatchQueryCapsBucketTimesAtRangeEnd(t *testing.T) {
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	inRange, pastEnd := timeRange.To.Add(-time.Minute), timeRange.To.Add(30*time.Second)
+	arrowBytes := createTestArrowBucketedNumeric([]int64{inRange.UnixNano(), pastEnd.UnixNano()}, []float64{1, 2}, nil)
+	mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+		Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+			computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: arrowBytes}))}},
+	}}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+	query := backend.DataQuery{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1"}), TimeRange: timeRange, MaxDataPoints: 100}
+
+	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{query}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := resp.Responses["A"].Frames
+	if len(frames) != 1 {
+		t.Fatalf("frames = %d, want 1", len(frames))
+	}
+	times := frames[0].Fields[0]
+	if got := []time.Time{times.At(0).(time.Time), times.At(1).(time.Time)}; !got[0].Equal(inRange) || !got[1].Equal(timeRange.To) {
+		t.Errorf("times = %v, want [%v %v]", got, inRange, timeRange.To)
+	}
+}

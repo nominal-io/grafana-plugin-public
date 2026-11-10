@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 )
@@ -281,42 +282,123 @@ func TestNumericOutputFields(t *testing.T) {
 	}
 }
 
-// TestBuildComputeRequest is the integration-level test: it exercises the full
-// buildComputeRequest path (time range -> node wrapping -> context), while the detailed
-// per-kind plan shape is covered by the buildSeriesPlan tests below.
-func TestBuildComputeRequest(t *testing.T) {
-	ds := withCatalog(&Datasource{})
-
-	qm := NominalQueryModel{
-		AssetRid:      "ri.nominal.asset.12345",
-		Channel:       "temperature",
-		DataScopeName: "default",
-		Buckets:       100,
+func TestAlignedBucketRange(t *testing.T) {
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		from, to time.Time
+		n        int
+	}{
+		{"unaligned 10 minutes", base.Add(3500 * time.Millisecond), base.Add(603500 * time.Millisecond), 60},
+		{"quarter second", base.Add(7), base.Add(250*time.Millisecond + 7), 1000},
+		{"two buckets", base.Add(time.Second), base.Add(time.Minute), 2},
+		{"range end on the grid", base, base.Add(time.Minute), 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			aligned, ok := alignedBucketRange(backend.TimeRange{From: tt.from, To: tt.to}, tt.n)
+			start, end, n := aligned.From.UnixNano(), aligned.To.UnixNano(), int64(tt.n)
+			width := (end - start) / n
+			if !ok || (end-start)%n != 0 || start%width != 0 {
+				t.Fatalf("grid not exact: ok=%v start=%d end=%d n=%d", ok, start, end, n)
+			}
+			from, to := tt.from.UnixNano(), tt.to.UnixNano()
+			if start > from || start+width <= from {
+				t.Errorf("first bucket [%d, %d) does not contain from %d", start, start+width, from)
+			}
+			if end < to || (to-start)%width == 0 {
+				t.Errorf("to %d is not strictly inside a bucket: start=%d end=%d width=%d", to, start, end, width)
+			}
+		})
 	}
 
-	timeRange := backend.TimeRange{
-		From: time.Unix(1704067200, 100_000_000), // 2024-01-01 00:00:00.100 UTC
-		To:   time.Unix(1704067200, 900_000_000), // 2024-01-01 00:00:00.900 UTC
+	epoch := time.Unix(0, 0)
+	year := func(y int) time.Time { return time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC) }
+	unchanged := []struct {
+		name     string
+		from, to time.Time
+		n        int
+	}{
+		{"zero buckets", base.Add(time.Second), base.Add(time.Minute), 0},
+		{"one bucket", base.Add(time.Second), base.Add(time.Minute), 1},
+		{"reversed range", base.Add(time.Minute), base, 10},
+		{"range ends at the epoch", epoch.Add(-time.Hour), epoch, 1000},
+		{"aligned end past int64 nanoseconds", epoch, year(2200), 2},
+		{"range longer than int64 nanoseconds", year(1700), year(2200), 1000},
 	}
+	for _, tt := range unchanged {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := backend.TimeRange{From: tt.from, To: tt.to}
+			if got, ok := alignedBucketRange(tr, tt.n); ok || got != tr {
+				t.Errorf("got %v ok=%v, want the range unchanged", got, ok)
+			}
+		})
+	}
+}
 
-	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange)
+func TestBuildComputeRequestAlignsOnlyBucketedNumeric(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	tr := backend.TimeRange{
+		From: time.Date(2026, 11, 1, 0, 0, 3, 500_000_000, time.UTC),
+		To:   time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC),
+	}
+	tests := []struct {
+		name        string
+		qm          NominalQueryModel
+		wantAligned bool
+	}{
+		{"numeric buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggMean}, Points: pointBudget{Count: 100}}, true},
+		{"enum buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: 100}}, false},
+		{"LTTB", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Points: pointBudget{Count: 100}}, false},
+	}
+	asTime := func(ts api.Timestamp) time.Time { return time.Unix(int64(ts.Seconds), int64(ts.Nanos)) }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := qe.buildComputeRequest(tt.qm, tr)
+			start, end := asTime(req.Start), asTime(req.End)
+			raw, err := json.Marshal(req.Node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var node struct {
+				Series struct {
+					Input struct {
+						Numeric struct {
+							TimeRangeFilter *struct {
+								StartTime, EndTime struct{ Literal api.Timestamp }
+							}
+						}
+					}
+				}
+			}
+			if err := json.Unmarshal(raw, &node); err != nil {
+				t.Fatal(err)
+			}
+			filter := node.Series.Input.Numeric.TimeRangeFilter
 
-	if int64(req.Start.Seconds) != 1704067200 {
-		t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, 1704067200)
+			if !tt.wantAligned {
+				if !start.Equal(tr.From) || !end.Equal(tr.To) || filter != nil {
+					t.Errorf("request [%v, %v], filter %v; want the panel range and no filter", start, end, filter)
+				}
+				return
+			}
+			if start.Equal(tr.From) || filter == nil {
+				t.Fatalf("start = %v, filter = %v; want an aligned start and a filter", start, filter)
+			}
+			if from, to := asTime(filter.StartTime.Literal), asTime(filter.EndTime.Literal); !from.Equal(tr.From) || !to.Equal(tr.To) {
+				t.Errorf("filter = [%v, %v], want the panel range [%v, %v]", from, to, tr.From, tr.To)
+			}
+			if got := *summarizeSeriesFromNode(t, req.Node).Buckets; got != tt.qm.Points.Count {
+				t.Errorf("buckets = %d, want %d", got, tt.qm.Points.Count)
+			}
+		})
 	}
-	if int64(req.Start.Nanos) != 100_000_000 {
-		t.Errorf("Start.Nanos = %d, want %d", req.Start.Nanos, 100_000_000)
-	}
-	if int64(req.End.Seconds) != 1704067200 {
-		t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, 1704067200)
-	}
-	if int64(req.End.Nanos) != 900_000_000 {
-		t.Errorf("End.Nanos = %d, want %d", req.End.Nanos, 900_000_000)
-	}
-	// The series plan must be wrapped into a node.
-	if req.Node == (computeapi1.ComputableNode{}) {
-		t.Error("expected non-zero ComputableNode")
-	}
+}
+
+// seriesPlanFor builds a plan with an empty time range, which no plan aligns.
+func seriesPlanFor(qe *NominalQueryExecution, qm NominalQueryModel) computeapi1.SummarizeSeries {
+	plan, _ := qe.buildSeriesPlan(qm, backend.TimeRange{})
+	return plan
 }
 
 func TestBuildAssetChannel(t *testing.T) {
@@ -388,7 +470,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := baseQM
 			qm.ChannelDataType = tt.dataType
-			plan := qe.buildSeriesPlan(qm)
+			plan := seriesPlanFor(qe, qm)
 			if got := seriesKind(t, plan.Input); got != tt.wantKind {
 				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
 			}
@@ -401,8 +483,8 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		numericQM := baseQM
 		numericQM.ChannelDataType = ChannelDataTypeNumeric
 
-		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM).Input)
-		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM).Input)
+		stringKind := seriesKind(t, seriesPlanFor(qe, stringQM).Input)
+		numericKind := seriesKind(t, seriesPlanFor(qe, numericQM).Input)
 		if stringKind == numericKind {
 			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
@@ -421,7 +503,7 @@ func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
 				Buckets:         1000,
 				Points:          pointBudget{Count: 750},
 			}
-			plan := qe.buildSeriesPlan(qm)
+			plan := seriesPlanFor(qe, qm)
 			if plan.Buckets == nil || *plan.Buckets != 750 {
 				t.Errorf("buckets = %v, want 750", plan.Buckets)
 			}
@@ -442,7 +524,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{AggMean},
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := seriesPlanFor(qe, qm)
 
 		if !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
@@ -460,7 +542,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := qe.buildSeriesPlan(qm); !isArrowV3(plan.OutputFormat) {
+		if plan := seriesPlanFor(qe, qm); !isArrowV3(plan.OutputFormat) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
@@ -473,7 +555,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := seriesPlanFor(qe, qm)
 
 		if plan.OutputFormat != nil {
 			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
@@ -491,7 +573,7 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 5000,
 		Points: pointBudget{Count: 500},
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := seriesPlanFor(qe, qm)
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
@@ -535,7 +617,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		DataScopeName:   "default",
 		Buckets:         1000,
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := seriesPlanFor(qe, qm)
 
 	if got := seriesKind(t, plan.Input); got != "log" {
 		t.Errorf("series kind = %q, want \"log\"", got)
