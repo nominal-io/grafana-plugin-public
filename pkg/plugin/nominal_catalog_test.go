@@ -522,6 +522,30 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	if got := mockDS.searchChannelsCallCount(); got != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", got)
 	}
+	req := mockDS.searchChannelsRequestSnapshot()
+	if req.FuzzySearchText != "state" {
+		t.Fatalf("FuzzySearchText = %q, want %q", req.FuzzySearchText, "state")
+	}
+	if len(req.ExactMatch) != 1 || req.ExactMatch[0] != "state" {
+		t.Fatalf("ExactMatch = %v, want [state]", req.ExactMatch)
+	}
+}
+
+func TestFuzzySearchTextFor(t *testing.T) {
+	cases := map[string]string{
+		"temp":  "temp",
+		"a-b_1": "a-b_1",
+		"---":   "",
+		"___":   "",
+		"é":     "",
+		"温度":    "",
+		"温度-1":  "温度-1",
+	}
+	for channel, want := range cases {
+		if got := fuzzySearchTextFor(channel); got != want {
+			t.Errorf("fuzzySearchTextFor(%q) = %q, want %q", channel, got, want)
+		}
+	}
 }
 
 func TestChannelMetadataEntryForExactMatch(t *testing.T) {
