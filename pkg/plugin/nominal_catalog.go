@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -111,7 +112,7 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 		}
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
-		v, err := load(workCtx)
+		v, err := recoverLoad(workCtx, load)
 		c.store(key, v, err)
 		return v, err
 	})
@@ -125,6 +126,18 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 		}
 		return res.Val.(V), nil
 	}
+}
+
+// recoverLoad returns a panic in load as its error, so the cache stores it like any
+// failure. singleflight would re-panic it on a new goroutine and stop the plugin.
+func recoverLoad[V any](ctx context.Context, load func(context.Context) (V, error)) (v V, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.FromContext(ctx).Error("Catalog lookup panicked", "panic", r, "stack", string(debug.Stack()))
+			err = errors.New("catalog lookup failed unexpectedly")
+		}
+	}()
+	return load(ctx)
 }
 
 type NominalCatalog struct {

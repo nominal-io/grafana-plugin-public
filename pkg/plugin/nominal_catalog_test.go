@@ -471,6 +471,26 @@ func TestNominalCatalogInferChannelMetadataCachesFailedSearch(t *testing.T) {
 	}
 }
 
+func TestTTLCacheLoadPanicIsCachedLikeAFailure(t *testing.T) {
+	cache := newTTLCache[string](catalogCacheTTL)
+	cache.failureTTL = failedLookupCacheTTL
+
+	_, err := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		panic("boom")
+	})
+	if err == nil {
+		t.Fatal("get with a panicking load returned nil error")
+	}
+
+	loaded := false
+	if _, again := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		loaded = true
+		return "ok", nil
+	}); loaded || again == nil || again.Error() != err.Error() {
+		t.Fatalf("second get: loaded = %v, err = %v; want the cached panic error %q", loaded, again, err)
+	}
+}
+
 func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	assetRid := "ri.scout.main.asset.metadata"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
