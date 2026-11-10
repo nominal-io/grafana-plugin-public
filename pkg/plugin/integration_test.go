@@ -472,7 +472,7 @@ func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings ba
 func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithDeadline(context.Background(), liveDeadline(t))
 	defer cancel()
 
 	clients, name, dataset := createTempLiveNominalDataset(t, ctx, settings)
@@ -519,18 +519,23 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	}
 }
 
-// pollLiveQuery repeats req until ready returns nil and returns those responses. A query right
-// after a write may not see it yet, and a later query may. Polling stops a minute before the test
-// deadline, since a test timeout skips t.Cleanup and leaks the temporary resources.
-func pollLiveQuery(t *testing.T, ds *Datasource, req *backend.QueryDataRequest, ready func(backend.Responses) error) backend.Responses {
-	t.Helper()
-	const queryTimeout = 30 * time.Second
-	const interval = 5 * time.Second
+// liveDeadline is when live waits must stop: a minute before the test deadline, since a test
+// timeout skips t.Cleanup and leaks the temporary resources.
+func liveDeadline(t *testing.T) time.Time {
 	deadline, ok := t.Deadline()
 	if !ok {
 		deadline = time.Now().Add(5 * time.Minute)
 	}
-	deadline = deadline.Add(-time.Minute)
+	return deadline.Add(-time.Minute)
+}
+
+// pollLiveQuery repeats req until ready returns nil and returns those responses. A query right
+// after a write may not see it yet, and a later query may.
+func pollLiveQuery(t *testing.T, ds *Datasource, req *backend.QueryDataRequest, ready func(backend.Responses) error) backend.Responses {
+	t.Helper()
+	const queryTimeout = 30 * time.Second
+	const interval = 5 * time.Second
+	deadline := liveDeadline(t)
 	start := time.Now()
 	attempts := 0
 	var notReady error
@@ -785,7 +790,8 @@ func ingestLiveNominalCSV(t *testing.T, ctx context.Context, clients liveNominal
 func waitForLiveNominalIngest(t *testing.T, ctx context.Context, clients liveNominalAPIClients, datasetRid rid.ResourceIdentifier, fileID nominaldatasource.DatasetFileId) {
 	t.Helper()
 
-	deadline := time.Now().Add(90 * time.Second)
+	start := time.Now()
+	var lastStatus string
 	var lastErr error
 	for {
 		file, err := clients.getDatasetFile(ctx, datasetRid, fileID)
@@ -795,19 +801,18 @@ func waitForLiveNominalIngest(t *testing.T, ctx context.Context, clients liveNom
 				t.Fatalf("live Nominal ingest failed: %v", statusErr)
 			}
 			if complete {
+				t.Logf("live Nominal CSV ingest completed after %s", time.Since(start).Round(time.Second))
 				return
 			}
+			lastStatus = file.IngestStatus.Type
 		} else {
 			lastErr = err
 		}
 
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for live Nominal CSV ingest to complete; last error: %v", lastErr)
-		}
-
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for live Nominal CSV ingest to complete: %v", ctx.Err())
+			t.Fatalf("live Nominal CSV ingest not complete after %s; last status %q, last error: %v",
+				time.Since(start).Round(time.Second), lastStatus, lastErr)
 		case <-time.After(2 * time.Second):
 		}
 	}
