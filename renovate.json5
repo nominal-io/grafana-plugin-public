@@ -50,6 +50,15 @@
       groupSlug: "nominal-api-go"
     },
     {
+      // Bump the go directive on Go releases. CI builds with the version
+      // in go.mod, and the plugin validator's govulncheck fails the release
+      // build when that Go version has known vulnerabilities.
+      matchManagers: ["gomod"],
+      matchDepNames: ["go"],
+      matchDepTypes: ["golang"],
+      rangeStrategy: "bump"
+    },
+    {
       // Group other Go dependency updates. nominal-api-protos-go and
       // conjure-go-runtime keep their own PRs.
       matchManagers: ["gomod"],
@@ -61,6 +70,16 @@
       ],
       groupName: "go dependencies (non-major)",
       groupSlug: "go-non-major"
+    },
+    {
+      // New Go releases (1.27 to 1.28) get their own PR. Go patch releases
+      // stay in the group above.
+      matchManagers: ["gomod"],
+      matchDepNames: ["go"],
+      matchDepTypes: ["golang"],
+      matchUpdateTypes: ["minor", "major"],
+      groupName: "go version",
+      groupSlug: "go-version"
     },
     {
       // Group GitHub Actions updates
