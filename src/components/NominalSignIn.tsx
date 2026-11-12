@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { Alert, Button, Stack } from '@grafana/ui';
 import type { DataSource } from '../datasource';
 
@@ -9,17 +9,17 @@ interface Props {
 
 const POLL_INTERVAL_MS = 1000;
 
-// Prompts for a per-user Nominal sign-in when the data source uses OAuth.
+// Prompts for a per-user Nominal sign-in when the data source uses OAuth. onSignedIn fires only in the instance
+// that ran the sign-in; the others pick the new state up from the data source.
 export function NominalSignIn({ datasource, onSignedIn }: Props) {
-  const [signedIn, setSignedIn] = useState<boolean | undefined>(undefined);
+  const { signedIn } = useSyncExternalStore(datasource.subscribeOAuthState, datasource.getOAuthState);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!datasource.usesOAuth) {
-      return;
+    if (datasource.usesOAuth && datasource.getOAuthState().signedIn === undefined) {
+      datasource.refreshOAuthStatus();
     }
-    datasource.getOAuthStatus().then(setSignedIn, () => setSignedIn(false));
   }, [datasource]);
 
   const signIn = useCallback(async () => {
@@ -40,13 +40,12 @@ export function NominalSignIn({ datasource, onSignedIn }: Props) {
     }
     const timer = window.setInterval(async () => {
       const closed = popup.closed;
-      const nowSignedIn = await datasource.getOAuthStatus().catch(() => false);
+      const nowSignedIn = await datasource.refreshOAuthStatus();
       if (!nowSignedIn && !closed) {
         return;
       }
       window.clearInterval(timer);
       setPending(false);
-      setSignedIn(nowSignedIn);
       if (nowSignedIn) {
         popup.close();
         onSignedIn();
@@ -56,7 +55,6 @@ export function NominalSignIn({ datasource, onSignedIn }: Props) {
 
   const signOut = useCallback(async () => {
     await datasource.signOutOAuth();
-    setSignedIn(false);
   }, [datasource]);
 
   if (!datasource.usesOAuth || signedIn === undefined) {

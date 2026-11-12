@@ -76,9 +76,40 @@ jest.mock('@grafana/ui', () => {
 });
 
 jest.mock('./NominalSignIn', () => ({
-  NominalSignIn: ({ datasource, onSignedIn }: { datasource: DataSource; onSignedIn: () => void }) =>
-    datasource.usesOAuth ? <button onClick={onSignedIn}>Finish Nominal sign-in</button> : null,
+  NominalSignIn: ({ datasource, onSignedIn }: { datasource: any; onSignedIn: () => void }) =>
+    datasource.usesOAuth ? (
+      <button
+        onClick={() => {
+          datasource.completeSignIn();
+          onSignedIn();
+        }}
+      >
+        Finish Nominal sign-in
+      </button>
+    ) : null,
 }));
+
+const signedOutState = { signedIn: undefined, signIns: 0 };
+const oauthStub = { subscribeOAuthState: () => () => {}, getOAuthState: () => signedOutState };
+
+// A data source whose sign-in state is shared by every editor rendered with it.
+function makeOAuthDatasource() {
+  let state = { signedIn: false as boolean | undefined, signIns: 0 };
+  const listeners = new Set<() => void>();
+  return {
+    url: DATASOURCE_URL,
+    usesOAuth: true,
+    subscribeOAuthState: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getOAuthState: () => state,
+    completeSignIn: () => {
+      state = { signedIn: true, signIns: state.signIns + 1 };
+      listeners.forEach((listener) => listener());
+    },
+  } as unknown as DataSource;
+}
 
 jest.mock('@grafana/runtime', () => ({
   DataSourceWithBackend: class {},
@@ -133,7 +164,7 @@ async function settleEffects(): Promise<void> {
 }
 
 describe('query API selection', () => {
-  const mockDatasource = { url: DATASOURCE_URL } as DataSource;
+  const mockDatasource = { url: DATASOURCE_URL, ...oauthStub } as unknown as DataSource;
 
   function EditableQuery({ initialQuery, onChange = jest.fn() }: { initialQuery: NominalQuery; onChange?: jest.Mock }) {
     const [query, setQuery] = React.useState(initialQuery);
@@ -183,7 +214,7 @@ describe('channel data type inference effect', () => {
   let channelsResponse: unknown = { channels: [{ name: 'app.logs', dataType: 'log' }] };
   let channelsShouldReject = false;
 
-  const mockDatasource = { url: DATASOURCE_URL } as unknown as DataSource;
+  const mockDatasource = { url: DATASOURCE_URL, ...oauthStub } as unknown as DataSource;
 
   function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
     return {
@@ -285,17 +316,26 @@ describe('channel data type inference effect', () => {
       return {};
     });
     const onRunQuery = jest.fn();
-    const oauthDatasource = { url: DATASOURCE_URL, usesOAuth: true } as unknown as DataSource;
+    const otherOnRunQuery = jest.fn();
+    const oauthDatasource = makeOAuthDatasource();
 
-    render(<QueryEditor query={makeQuery()} onChange={jest.fn()} onRunQuery={onRunQuery} datasource={oauthDatasource} />);
+    render(
+      <>
+        <QueryEditor query={makeQuery()} onChange={jest.fn()} onRunQuery={onRunQuery} datasource={oauthDatasource} />
+        <QueryEditor query={makeQuery()} onChange={jest.fn()} onRunQuery={otherOnRunQuery} datasource={oauthDatasource} />
+      </>
+    );
     await settleEffects();
-    expect(screen.getByTestId('asset-combobox')).not.toHaveValue('Test Asset');
+    screen.getAllByTestId('asset-combobox').forEach((combobox) => expect(combobox).not.toHaveValue('Test Asset'));
 
     signedIn = true;
-    fireEvent.click(screen.getByText('Finish Nominal sign-in'));
+    fireEvent.click(screen.getAllByText('Finish Nominal sign-in')[0]);
 
-    await waitFor(() => expect(screen.getByTestId('asset-combobox')).toHaveValue('Test Asset'));
+    await waitFor(() =>
+      screen.getAllByTestId('asset-combobox').forEach((combobox) => expect(combobox).toHaveValue('Test Asset'))
+    );
     expect(onRunQuery).toHaveBeenCalledTimes(1);
+    expect(otherOnRunQuery).not.toHaveBeenCalled();
   });
 
   it('fetches a saved template RID only once on mount (no restore/resolved double fetch)', async () => {
