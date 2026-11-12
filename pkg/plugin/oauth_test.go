@@ -124,6 +124,47 @@ func oauthCallback(t *testing.T, ctx context.Context, ds *Datasource, query url.
 	})
 }
 
+func TestOAuthLoginRedirectsBackToTheGrafanaPath(t *testing.T) {
+	auth := &fakeNominalAuth{respond: func(url.Values) (int, string) {
+		return http.StatusOK, `{"access_token":"alice-nominal-token","refresh_token":"r1","expires_in":3600}`
+	}}
+	srv := auth.start(t)
+	ds := newOAuthTestDatasource("oauth-login", srv.URL, srv.Client())
+	alice := oauthTestContext("alice")
+	returnTo := "/d/abc/flight-test?orgId=1&var-asset=a"
+
+	resp := callResourceWithContext(t, alice, ds, &backend.CallResourceRequest{
+		Path: "oauth/login", Method: http.MethodGet, URL: "oauth/login?" + url.Values{"returnTo": {returnTo}}.Encode(),
+	})
+	if resp.Status != http.StatusFound {
+		t.Fatalf("oauth/login returned %d: %s", resp.Status, resp.Body)
+	}
+	authorizeURL, err := url.Parse(resp.Headers["Location"][0])
+	if err != nil || authorizeURL.Scheme+"://"+authorizeURL.Host+authorizeURL.Path != srv.URL+"/oauth/v1/authorize" {
+		t.Fatalf("oauth/login redirected to %q", resp.Headers["Location"])
+	}
+
+	resp = oauthCallback(t, alice, ds, url.Values{"code": {"code-1"}, "state": {authorizeURL.Query().Get("state")}})
+	if resp.Status != http.StatusFound || resp.Headers["Location"][0] != returnTo {
+		t.Fatalf("callback returned %d %v, want a redirect to %q", resp.Status, resp.Headers["Location"], returnTo)
+	}
+	if ds.oauthSessions.getSession(oauthUser(alice)) == nil {
+		t.Fatal("alice should be signed in")
+	}
+}
+
+func TestOAuthLoginRejectsReturnToOutsideGrafana(t *testing.T) {
+	ds := newOAuthTestDatasource("oauth-login-reject", "https://unused.test", http.DefaultClient)
+	for _, returnTo := range []string{"", "d/abc", "https://evil.test/d/abc", "//evil.test/d/abc", "/\\evil.test/d/abc", "/d/abc\r\nSet-Cookie: x=1"} {
+		resp := callResourceWithContext(t, oauthTestContext("alice"), ds, &backend.CallResourceRequest{
+			Path: "oauth/login", Method: http.MethodGet, URL: "oauth/login?" + url.Values{"returnTo": {returnTo}}.Encode(),
+		})
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("returnTo %q returned %d, want 400", returnTo, resp.Status)
+		}
+	}
+}
+
 func TestOAuthSignInQueriesAsTheSignedInUser(t *testing.T) {
 	auth := &fakeNominalAuth{respond: func(url.Values) (int, string) {
 		return http.StatusOK, `{"access_token":"alice-nominal-token","refresh_token":"r1","expires_in":3600}`

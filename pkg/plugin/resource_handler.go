@@ -38,6 +38,8 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleEventLabels(ctx, req, sender)
 	case "oauth/start":
 		return h.handleOAuthStart(ctx, req, sender)
+	case "oauth/login":
+		return h.handleOAuthLogin(ctx, req, sender)
 	case "oauth/callback":
 		return h.handleOAuthCallback(ctx, req, sender)
 	case "oauth/status":

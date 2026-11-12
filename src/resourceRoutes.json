@@ -7,6 +7,7 @@
   "channelVariables": "channelvariables",
   "eventLabels": "event-labels",
   "oauthStart": "oauth/start",
+  "oauthLogin": "oauth/login",
   "oauthStatus": "oauth/status",
   "oauthLogout": "oauth/logout"
 }
