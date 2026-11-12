@@ -9,8 +9,9 @@ interface Props {
 
 const POLL_INTERVAL_MS = 1000;
 
-// Prompts for a per-user Nominal sign-in when the data source uses OAuth. onSignedIn fires only in the instance
-// that ran the sign-in; the others pick the new state up from the data source.
+// Prompts for a per-user Nominal sign-in when the data source uses OAuth. The sign-in state is kept per browser
+// session on the data source and shared by all query editors in it. onSignedIn fires only for the editor whose
+// button ran the sign-in.
 export function NominalSignIn({ datasource, onSignedIn }: Props) {
   const { signedIn } = useSyncExternalStore(datasource.subscribeOAuthState, datasource.getOAuthState);
   const [pending, setPending] = useState(false);
