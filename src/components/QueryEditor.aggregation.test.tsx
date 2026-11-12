@@ -17,7 +17,12 @@ jest.mock('@grafana/runtime', () => ({
   getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
 }));
 
-const mockDatasource = { url: '/api/datasources/uid/test/resources' } as unknown as DataSource;
+const signedOutState = { signedIn: undefined, signIns: 0 };
+const mockDatasource = {
+  url: '/api/datasources/uid/test/resources',
+  subscribeOAuthState: () => () => {},
+  getOAuthState: () => signedOutState,
+} as unknown as DataSource;
 
 class IntersectionObserverMock {
   disconnect() {}

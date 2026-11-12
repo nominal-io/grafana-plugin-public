@@ -14,7 +14,7 @@ async function resetApiKey(page: any) {
   if (await resetButton.isVisible().catch(() => false)) {
     await resetButton.click();
   }
-  await expect(page.getByLabel('API Key')).toBeEnabled();
+  await expect(page.getByRole('textbox', { name: 'API Key' })).toBeEnabled();
 }
 
 async function saveConfiguration(page: any, uid: string) {
@@ -31,7 +31,7 @@ test('smoke: should render config editor', async ({ createDataSourceConfigPage, 
   await createDataSourceConfigPage({ type: ds.type });
   await dismissWhatsNewModal(page);
   await expect(page.getByLabel('Base URL')).toBeVisible();
-  await expect(page.getByLabel('API Key')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'API Key' })).toBeVisible();
 });
 
 test('"Save & test" should fail when configuration has invalid API key', async ({
@@ -45,7 +45,7 @@ test('"Save & test" should fail when configuration has invalid API key', async (
   await page.getByLabel('Base URL').fill(ds.jsonData.baseUrl ?? 'https://api.gov.nominal.io');
   await page.keyboard.press('Tab');
   await resetApiKey(page);
-  await page.getByLabel('API Key').fill('invalid-test-api-key');
+  await page.getByRole('textbox', { name: 'API Key' }).fill('invalid-test-api-key');
   await page.keyboard.press('Tab');
 
   const saveResponse = await saveConfiguration(page, configPage.datasource.uid);

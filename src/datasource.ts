@@ -199,8 +199,14 @@ function without(frame: DataFrame, drop: (ms: number) => boolean): DataFrame {
   return keep.length === all.length ? frame : withRows(frame, keep);
 }
 
+interface OAuthState {
+  signedIn: boolean | undefined;
+  signIns: number;
+}
+
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
   url: string;
+  usesOAuth: boolean;
 
 
   constructor(instanceSettings: DataSourceInstanceSettings<NominalDataSourceOptions>) {
@@ -218,8 +224,59 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         return target && { ...target, queryType: QUERY_TYPE_SQL, format: 'table' };
       },
     };
+    this.usesOAuth = instanceSettings.jsonData?.authMode === 'oauth';
   }
 
+  // Sign-in state shared by every query editor of this data source. `signIns` counts signed-out to signed-in
+  // transitions so editors can reload the lookups that failed while signed out.
+  private oauthState: OAuthState = { signedIn: undefined, signIns: 0 };
+  private oauthListeners = new Set<() => void>();
+  private oauthStatusRequest?: Promise<boolean>;
+
+  subscribeOAuthState = (listener: () => void) => {
+    this.oauthListeners.add(listener);
+    return () => {
+      this.oauthListeners.delete(listener);
+    };
+  };
+
+  getOAuthState = () => this.oauthState;
+
+  private setOAuthSignedIn(signedIn: boolean) {
+    if (signedIn === this.oauthState.signedIn) {
+      return;
+    }
+    const signIns = this.oauthState.signedIn === false && signedIn ? this.oauthState.signIns + 1 : this.oauthState.signIns;
+    this.oauthState = { signedIn, signIns };
+    this.oauthListeners.forEach((listener) => listener());
+  }
+
+  // Concurrent callers (one per query in a panel) share one request.
+  refreshOAuthStatus(): Promise<boolean> {
+    this.oauthStatusRequest ??= this.postResource<{ signedIn: boolean }>(resourceRoutes.oauthStatus)
+      .then(
+        (response) => response.signedIn,
+        () => false
+      )
+      .then((signedIn) => {
+        this.setOAuthSignedIn(signedIn);
+        return signedIn;
+      })
+      .finally(() => {
+        this.oauthStatusRequest = undefined;
+      });
+    return this.oauthStatusRequest;
+  }
+
+  async startOAuthSignIn(): Promise<string> {
+    const response = await this.postResource<{ authorizeUrl: string }>(resourceRoutes.oauthStart);
+    return response.authorizeUrl;
+  }
+
+  async signOutOAuth(): Promise<void> {
+    await this.postResource(resourceRoutes.oauthLogout);
+    this.setOAuthSignedIn(false);
+  }
 
 
   query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {

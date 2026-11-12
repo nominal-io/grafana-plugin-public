@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { css, keyframes } from '@emotion/css';
 import {
   Combobox,
@@ -17,6 +17,7 @@ import { getSupportedScopeNames } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 import { SqlQueryEditor } from './SqlQueryEditor';
+import { NominalSignIn } from './NominalSignIn';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -292,6 +293,8 @@ const removedFields = (fields: Partial<NominalQuery>, app?: CoreApp) =>
 
 export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
   const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
+  // Remounting the builder after sign-in reloads the asset, data scope and channel lookups that failed signed out.
+  const { signIns } = useSyncExternalStore(datasource.subscribeOAuthState, datasource.getOAuthState);
   const inactiveAPI: QueryAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
 
   // Fields of the API not in use, kept out of the saved query so a leftover such as assetRid '$asset' cannot
@@ -329,6 +332,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
 
   return (
     <Stack direction="column" gap={1}>
+      <NominalSignIn datasource={datasource} onSignedIn={onRunQuery} />
       <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
         <RadioButtonGroup
           aria-label="Query API"
@@ -339,7 +343,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
       </InlineField>
       {activeAPI === QUERY_TYPE_SQL
         ? <SqlQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} datasource={datasource} />}
+        : <BuilderQueryEditor key={signIns} query={query} onChange={onEdit} onRunQuery={onRunQuery} datasource={datasource} />}
     </Stack>
   );
 }
