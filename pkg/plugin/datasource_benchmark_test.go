@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -9,7 +11,7 @@ import (
 	sdklog "github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	"github.com/palantir/pkg/safelong"
+	"github.com/palantir/conjure-go-runtime/v2/conjure-go-contract/codecs"
 )
 
 var benchmarkSinkTransformResult TransformResult
@@ -34,46 +36,6 @@ const (
 	benchmarkLogArgsPopulated
 	benchmarkLogArgsWithNominalChannel
 )
-
-func benchmarkEnumPlot(rows int) computeapi.EnumPlot {
-	timestamps := make([]api.Timestamp, rows)
-	values := make([]int, rows)
-	categories := []string{"idle", "ready", "running", "fault"}
-	for i := 0; i < rows; i++ {
-		timestamps[i] = testTimestamp(1704067200 + int64(i))
-		values[i] = i % len(categories)
-	}
-	return computeapi.EnumPlot{
-		Timestamps: timestamps,
-		Values:     values,
-		Categories: categories,
-	}
-}
-
-func benchmarkBucketedEnumPlot(rows int) computeapi.BucketedEnumPlot {
-	timestamps := make([]api.Timestamp, rows)
-	buckets := make([]computeapi.EnumBucket, rows)
-	categories := []string{"idle", "ready", "running", "fault"}
-	for i := 0; i < rows; i++ {
-		category := i % len(categories)
-		timestamps[i] = testTimestamp(1704067200 + int64(i))
-		buckets[i] = computeapi.EnumBucket{
-			Histogram: map[int]safelong.SafeLong{
-				category:                         safelong.SafeLong(5),
-				(category + 1) % len(categories): safelong.SafeLong(1),
-			},
-			FirstPoint: computeapi.CompactEnumPoint{
-				Timestamp: timestamps[i],
-				Value:     category,
-			},
-		}
-	}
-	return computeapi.BucketedEnumPlot{
-		Timestamps: timestamps,
-		Buckets:    buckets,
-		Categories: categories,
-	}
-}
 
 func benchmarkLogArgs(kind benchmarkLogArgsKind, i int) map[string]string {
 	switch kind {
@@ -158,56 +120,35 @@ func BenchmarkMarshalLogArgsPopulated(b *testing.B) {
 	}
 }
 
-func BenchmarkExtractEnumDataFromConjure(b *testing.B) {
+func BenchmarkEnumResponse(b *testing.B) {
 	suppressBenchmarkLogs()
 	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
-	for _, rows := range []int{250, 1000, 10000} {
-		plot := benchmarkEnumPlot(rows)
-		b.Run(fmt.Sprintf("rows_%d", rows), func(b *testing.B) {
-			gotTimes, gotValues, err := exec.extractEnumDataFromConjure(plot)
-			if err != nil {
-				b.Fatalf("extract enum data: %v", err)
+	categories := []string{"idle", "ready", "running", "fault", "standby", "boot", "shutdown", "error", "warn", "ok"}
+	for _, n := range []int{1000, 10000} {
+		rows := make([]enumRow, n)
+		for i := range rows {
+			rows[i].ts = 1704067200_000000000 + int64(i)*1_000_000_000
+			for j := 0; j < 4; j++ {
+				rows[i].hist = append(rows[i].hist, enumCount{categories[(i+j)%len(categories)], uint64(1 + (i*7+j*3)%5)})
 			}
-			if len(gotTimes) != rows || len(gotValues) != rows {
-				b.Fatalf("got %d times and %d values, want %d", len(gotTimes), len(gotValues), rows)
-			}
-
+		}
+		arrowBytes := createTestArrowBucketedEnum(rows)
+		// ArrowPlot.arrowBinary is base64 on the wire; build the wire JSON directly.
+		body := []byte(fmt.Sprintf(`{"type":"arrowBucketedEnum","arrowBucketedEnum":{"arrowBinary":%q}}`, base64.StdEncoding.EncodeToString(arrowBytes)))
+		b.Run(fmt.Sprintf("rows=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
-			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				gotTimes, gotValues, err = exec.extractEnumDataFromConjure(plot)
-				if err != nil {
-					b.Fatalf("extract enum data: %v", err)
+				var resp computeapi.ComputeNodeResponse
+				if err := codecs.JSON.Decode(bytes.NewReader(body), &resp); err != nil {
+					b.Fatal(err)
 				}
-			}
-			benchmarkSinkTransformResult = TransformResult{TimePoints: gotTimes, StringValues: gotValues, IsEnum: true}
-		})
-	}
-}
-
-func BenchmarkExtractBucketedEnumDataFromConjure(b *testing.B) {
-	suppressBenchmarkLogs()
-	exec := newTestQueryExecution(withCatalog(&Datasource{}), nil)
-	for _, rows := range []int{250, 1000, 10000} {
-		plot := benchmarkBucketedEnumPlot(rows)
-		b.Run(fmt.Sprintf("rows_%d", rows), func(b *testing.B) {
-			gotTimes, gotValues, err := exec.extractBucketedEnumDataFromConjure(plot)
-			if err != nil {
-				b.Fatalf("extract bucketed enum data: %v", err)
-			}
-			if len(gotTimes) != rows || len(gotValues) != rows {
-				b.Fatalf("got %d times and %d values, want %d", len(gotTimes), len(gotValues), rows)
-			}
-
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				gotTimes, gotValues, err = exec.extractBucketedEnumDataFromConjure(plot)
-				if err != nil {
-					b.Fatalf("extract bucketed enum data: %v", err)
+				res, err := exec.transformNominalResponseFromClient(resp, NominalQueryModel{})
+				if err != nil || len(res.StringValues) != n {
+					b.Fatalf("got %d values, err %v; want %d", len(res.StringValues), err, n)
 				}
+				benchmarkSinkTransformResult = res
 			}
-			benchmarkSinkTransformResult = TransformResult{TimePoints: gotTimes, StringValues: gotValues, IsEnum: true}
+			b.ReportMetric(float64(len(body)), "wire-B/op")
 		})
 	}
 }

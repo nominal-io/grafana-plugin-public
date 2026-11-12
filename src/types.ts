@@ -1,7 +1,7 @@
 import { DataSourceJsonData } from '@grafana/data';
 import { DataQuery } from '@grafana/schema';
 
-export type SqlFormat = 'timeseries' | 'table';
+export type SqlFormat = 'timeseries' | 'table' | 'logs';
 export const QUERY_TYPE_COMPUTE = 'compute' as const;
 export const QUERY_TYPE_SQL = 'sql' as const;
 
@@ -57,6 +57,13 @@ WHERE dataset_rid = '<dataset-rid>'
   AND $__timeFilter(ts)
 GROUP BY 1, 2
 ORDER BY 1`;
+
+export const LOGS_SQL_EXAMPLE = `SELECT ts, channel, message, args
+FROM logs
+WHERE dataset_rid = '<dataset-rid>'
+  AND $__timeFilter(ts)
+ORDER BY ts DESC
+LIMIT 500`;
 
 export interface DataPoint {
   Time: number;

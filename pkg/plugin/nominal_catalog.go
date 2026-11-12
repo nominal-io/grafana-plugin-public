@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,9 @@ import (
 // catalogCacheTTL controls how long fetched assets and channel metadata are cached.
 const catalogCacheTTL = 5 * time.Minute
 
+// failedLookupCacheTTL keeps a failed channel metadata lookup from repeating on every refresh.
+const failedLookupCacheTTL = 30 * time.Second
+
 // A cache-miss load runs detached from its caller, so this is the only bound on
 // that work. For a metadata lookup it covers the asset fetch plus the channel
 // search.
@@ -39,10 +43,11 @@ type channelMetadataCacheEntry struct {
 	unit            string // raw Nominal canonical unit symbol; "" if Unit was nil or missing
 }
 
-// ttlCacheEntry pairs a cached value with the time it was stored.
+// ttlCacheEntry is a cached load result, either a value or an error.
 type ttlCacheEntry[V any] struct {
 	value     V
-	fetchedAt time.Time
+	err       error
+	expiresAt time.Time
 }
 
 // ttlCache is a mutex-guarded cache whose entries expire ttl after they are
@@ -50,6 +55,8 @@ type ttlCacheEntry[V any] struct {
 // backend load.
 type ttlCache[V any] struct {
 	ttl time.Duration
+	// failureTTL is how long a failed load is cached; zero means not at all.
+	failureTTL time.Duration
 
 	mu      sync.Mutex
 	entries map[string]ttlCacheEntry[V] // guarded by mu
@@ -63,31 +70,35 @@ func newTTLCache[V any](ttl time.Duration) *ttlCache[V] {
 	}
 }
 
-// lookup returns the cached value for key if present and not yet expired.
-func (c *ttlCache[V]) lookup(key string) (V, bool) {
+// lookup returns the cached result for key if present and not yet expired.
+func (c *ttlCache[V]) lookup(key string) (ttlCacheEntry[V], bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	entry, ok := c.entries[key]
-	if !ok || time.Since(entry.fetchedAt) >= c.ttl {
-		var zero V
-		return zero, false
+	if !ok || !time.Now().Before(entry.expiresAt) {
+		return ttlCacheEntry[V]{}, false
 	}
-	return entry.value, true
+	return entry, true
 }
 
-func (c *ttlCache[V]) store(key string, value V) {
+// store caches a load result: a value for ttl, a failure for failureTTL.
+func (c *ttlCache[V]) store(key string, value V, err error) {
+	ttl := c.ttl
+	if err != nil {
+		ttl = c.failureTTL
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = ttlCacheEntry[V]{value: value, fetchedAt: time.Now()}
+	c.entries[key] = ttlCacheEntry[V]{value: value, err: err, expiresAt: time.Now().Add(ttl)}
 }
 
-// get returns the cached value for key, coalescing concurrent misses for the
+// get returns the cached result for key, coalescing concurrent misses for the
 // same key into one load, detached from its callers and bounded by
-// detachedLookupTimeout. Errors are never cached, so the next miss retries.
+// detachedLookupTimeout.
 func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
 	var zero V
-	if v, hit := c.lookup(key); hit {
-		return v, nil
+	if entry, hit := c.lookup(key); hit {
+		return entry.value, entry.err
 	}
 
 	// Avoid starting detached work for an already-canceled caller.
@@ -96,17 +107,14 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 	}
 
 	ch := c.group.DoChan(key, func() (any, error) {
-		if v, hit := c.lookup(key); hit {
-			return v, nil
+		if entry, hit := c.lookup(key); hit {
+			return entry.value, entry.err
 		}
 		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
 		defer cancel()
-		v, err := load(workCtx)
-		if err != nil {
-			return nil, err
-		}
-		c.store(key, v)
-		return v, nil
+		v, err := recoverLoad(workCtx, load)
+		c.store(key, v, err)
+		return v, err
 	})
 
 	select {
@@ -120,6 +128,18 @@ func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Con
 	}
 }
 
+// recoverLoad returns a panic in load as its error, so the cache stores it like any
+// failure. singleflight would re-panic it on a new goroutine and stop the plugin.
+func recoverLoad[V any](ctx context.Context, load func(context.Context) (V, error)) (v V, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.DefaultLogger.FromContext(ctx).Error("Catalog lookup panicked", "panic", r, "stack", string(debug.Stack()))
+			err = errors.New("catalog lookup failed unexpectedly")
+		}
+	}()
+	return load(ctx)
+}
+
 type NominalCatalog struct {
 	resourceHTTPClient *http.Client
 	datasourceService  datasourceservice.DataSourceServiceClient
@@ -129,11 +149,13 @@ type NominalCatalog struct {
 }
 
 func newNominalCatalog(resourceHTTPClient *http.Client, datasourceService datasourceservice.DataSourceServiceClient) *NominalCatalog {
+	channelMetadataCache := newTTLCache[channelMetadataCacheEntry](catalogCacheTTL)
+	channelMetadataCache.failureTTL = failedLookupCacheTTL
 	return &NominalCatalog{
 		resourceHTTPClient:   resourceHTTPClient,
 		datasourceService:    datasourceService,
 		assetCache:           newTTLCache[*SingleAssetResponse](catalogCacheTTL),
-		channelMetadataCache: newTTLCache[channelMetadataCacheEntry](catalogCacheTTL),
+		channelMetadataCache: channelMetadataCache,
 	}
 }
 
@@ -391,15 +413,13 @@ func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *model
 	applyChannelMetadata(qm, entry)
 }
 
-// errChannelMetadataUnavailable marks an exit taken before any channel search
-// ran. Returning an error keeps it out of the cache: a stale asset can hide a
-// scope that appears once the asset cache refreshes, so only a completed search
-// is worth caching.
+// errChannelMetadataUnavailable marks an exit before any channel search ran. It
+// is an error so it is cached only briefly: a stale asset can hide a scope.
 var errChannelMetadataUnavailable = errors.New("channel metadata unavailable")
 
 // computeChannelMetadata performs an uncached lookup. A completed search that
 // matches nothing returns an empty entry, which is cached so the search is not
-// repeated. The exits before that search return an error and stay uncached.
+// repeated. Every other exit returns an error, which is cached only briefly.
 func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *models.PluginSettings, assetRid, dataScopeName, channel string) (channelMetadataCacheEntry, error) {
 	asset, err := c.FetchAssetByRid(ctx, config, assetRid)
 	if err != nil {
@@ -417,8 +437,11 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 
 	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
 	searchRequest := datasourceapi.SearchChannelsRequest{
-		ExactMatch:  []string{channel},
-		DataSources: dataSourceRids,
+		// The API filters on ExactMatch (case-insensitive contains) but orders by
+		// similarity to FuzzySearchText. Without it the wanted row can page out.
+		FuzzySearchText: fuzzySearchTextFor(channel),
+		ExactMatch:      []string{channel},
+		DataSources:     dataSourceRids,
 	}
 	channelsResponse, err := c.datasourceService.SearchChannels(ctx, bearerToken, searchRequest)
 	if err != nil {
@@ -430,6 +453,9 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 		return entry, nil
 	}
 
+	// Absent, paged out, or present without a data type or unit.
+	log.DefaultLogger.Debug("No usable channel metadata for inference",
+		"assetRid", assetRid, "channel", channel, "results", len(channelsResponse.Results))
 	return channelMetadataCacheEntry{}, nil
 }
 
@@ -467,6 +493,18 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
+}
+
+// fuzzySearchTextFor leaves the search text empty unless channel has an ASCII letter or
+// digit. A non-empty search text drops rows that score zero, and only those characters
+// score on every database locale.
+func fuzzySearchTextFor(channel string) string {
+	for _, r := range channel {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return channel
+		}
+	}
+	return ""
 }
 
 func channelMetadataEntryForExactMatch(channels []datasourceapi.ChannelMetadata, channelName string) (channelMetadataCacheEntry, bool) {

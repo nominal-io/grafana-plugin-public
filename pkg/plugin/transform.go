@@ -6,11 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
-	"github.com/palantir/pkg/safelong"
 )
 
 // transformBatchResult converts a single batch result to a Grafana DataResponse.
@@ -50,6 +51,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
 				for _, agg := range result.AggSeries {
+					capTimes(agg.TimePoints, qm.RangeEnd)
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
 					if qm.ExplicitAggregations {
@@ -73,14 +75,11 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					}
 					response.Frames = append(response.Frames, frame)
 				}
-				dataPoints := 0
-				if len(result.AggSeries) > 0 {
-					dataPoints = len(result.AggSeries[0].TimePoints)
-				}
 				log.DefaultLogger.Debug("Successfully processed multi-agg query",
 					"series", len(result.AggSeries),
-					"dataPoints", dataPoints)
+					"dataPoints", len(result.AggSeries[0].TimePoints))
 			} else if result.IsEnum {
+				capTimes(result.TimePoints, qm.RangeEnd)
 				frame := data.NewFrame("response")
 				frame.Name = qm.Channel
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
@@ -107,30 +106,10 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				log.DefaultLogger.Debug("Successfully processed enum query", "dataPoints", len(result.TimePoints))
 				response.Frames = append(response.Frames, frame)
 			} else {
-				// Legacy numeric path (BucketedNumericPlot, NumericPlot)
-				frame := data.NewFrame("response")
-				displayName := qm.Channel
-				if qm.RawLTTB {
-					displayName = fmt.Sprintf("%s (lttb)", qm.Channel)
-				}
-				frame.Name = displayName
-				if len(result.TimePoints) > 0 && len(result.NumericValues) > 0 {
-					valueField := data.NewField("value", nil, result.NumericValues)
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, result.TimePoints),
-						valueField,
-					)
-				} else {
-					valueField := data.NewField("value", nil, []*float64{})
-					valueField.Config = fieldConfigForNumericWithChannelUnit(&qm, displayName)
-					frame.Fields = append(frame.Fields,
-						data.NewField("time", nil, []time.Time{}),
-						valueField,
-					)
-				}
-				log.DefaultLogger.Debug("Successfully processed query", "dataPoints", len(result.TimePoints))
-				response.Frames = append(response.Frames, frame)
+				response = backend.ErrDataResponse(
+					backend.StatusInternal,
+					"Transform failed: compute response produced no series",
+				)
 			}
 
 			return nil
@@ -172,14 +151,11 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 }
 
 type TransformResult struct {
-	// Numeric aggregation series (Arrow bucketed path, one entry per requested field)
+	// Numeric series from an Arrow response, one entry per requested aggregation
 	AggSeries []AggregationSeries
 
-	// Legacy numeric path (non-Arrow), single series only
-	TimePoints    []time.Time
-	NumericValues []*float64
-
 	// Enum path
+	TimePoints   []time.Time
 	StringValues []string
 	IsEnum       bool
 
@@ -202,68 +178,41 @@ func unsupportedComputeResponseError(typeName string) error {
 var decodeArrowBucketedNumeric = extractArrowBucketedNumericSeries
 
 // transformNominalResponseFromClient converts a compute response into a
-// TransformResult. qm names the aggregation columns the Arrow bucketed arm reads.
+// TransformResult. qm names the aggregation columns the Arrow numeric arms read.
 func (e *NominalQueryExecution) transformNominalResponseFromClient(response computeapi.ComputeNodeResponse, qm NominalQueryModel) (TransformResult, error) {
 	log.DefaultLogger.Debug("Transforming conjure client response")
 
 	var result TransformResult
+
+	// Raw (LTTB) and bucketed Arrow responses differ only in which columns the specs name.
+	arrowNumeric := func(plot computeapi.ArrowPlot) error {
+		var specs []aggColumnSpec
+		for _, agg := range qm.Aggregations {
+			specs = append(specs, aggColumnSpecFromEnum(agg))
+		}
+		if len(specs) == 0 {
+			return fmt.Errorf("no aggregation fields requested for Arrow numeric response")
+		}
+		series, err := decodeArrowBucketedNumeric(plot, specs)
+		if err != nil {
+			return err
+		}
+		result.AggSeries = series
+		return nil
+	}
 
 	// AcceptFuncs invokes a selected nil handler, so every arm needs one.
 	visitErr := response.AcceptFuncs(
 		unsupportedComputeResponse[[]computeapi.Range]("range"),
 		unsupportedComputeResponse[computeapi.RangesSummary]("rangesSummary"),
 		unsupportedComputeResponse[*computeapi.Range]("rangeValue"),
-		func(numeric computeapi.NumericPlot) error {
-			timePoints, values, err := e.extractNumericDataFromConjure(numeric)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.NumericValues = values
-			result.IsEnum = false
-			return nil
-		},
-		func(bucketed computeapi.BucketedNumericPlot) error {
-			timePoints, values, err := e.extractBucketedDataFromConjure(bucketed)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.NumericValues = values
-			result.IsEnum = false
-			return nil
-		},
+		unsupportedComputeResponse[computeapi.NumericPlot]("numeric"),
+		unsupportedComputeResponse[computeapi.BucketedNumericPlot]("bucketedNumeric"),
 		unsupportedComputeResponse[*computeapi.NumericPoint]("numericPoint"),
 		unsupportedComputeResponse[*computeapi.SinglePoint]("singlePoint"),
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowNumeric"),
-		// arrowBucketedNumericFunc: one AggregationSeries per requested aggregation field.
-		func(arrowBucketed computeapi.ArrowPlot) error {
-			var specs []aggColumnSpec
-			for _, agg := range qm.Aggregations {
-				specs = append(specs, aggColumnSpecFromEnum(agg))
-			}
-			if len(specs) == 0 {
-				return fmt.Errorf("no aggregation fields requested for ArrowBucketedNumericPlot response")
-			}
-			series, err := decodeArrowBucketedNumeric(arrowBucketed, specs)
-			if err != nil {
-				return err
-			}
-			result.AggSeries = series
-			result.IsEnum = false
-			return nil
-		},
-		// enumFunc - maps integer indices to category strings
-		func(enum computeapi.EnumPlot) error {
-			timePoints, values, err := e.extractEnumDataFromConjure(enum)
-			if err != nil {
-				return err
-			}
-			result.TimePoints = timePoints
-			result.StringValues = values
-			result.IsEnum = true
-			return nil
-		},
+		arrowNumeric,
+		arrowNumeric,
+		unsupportedComputeResponse[computeapi.EnumPlot]("enum"),
 		// enumPointFunc - single-point enum response (value is already a resolved string)
 		func(ep *computeapi.EnumPoint) error {
 			if ep == nil {
@@ -277,19 +226,16 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			result.IsEnum = true
 			return nil
 		},
-		// bucketedEnumFunc - bucketed enum response (returned by SummarizeSeries with buckets)
-		func(bucketed computeapi.BucketedEnumPlot) error {
-			timePoints, values, err := e.extractBucketedEnumDataFromConjure(bucketed)
+		unsupportedComputeResponse[computeapi.BucketedEnumPlot]("bucketedEnum"),
+		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowEnum"),
+		func(plot computeapi.ArrowPlot) error {
+			timePoints, values, err := extractArrowBucketedEnum(plot)
 			if err != nil {
 				return err
 			}
-			result.TimePoints = timePoints
-			result.StringValues = values
-			result.IsEnum = true
+			result.TimePoints, result.StringValues, result.IsEnum = timePoints, values, true
 			return nil
 		},
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowEnum"),
-		unsupportedComputeResponse[computeapi.ArrowPlot]("arrowBucketedEnum"),
 		func(paged computeapi.PagedLogPlot) error {
 			n := min(len(paged.Timestamps), len(paged.Values))
 			if len(paged.Timestamps) != len(paged.Values) {
@@ -298,11 +244,15 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 			}
 			result.LogLines = newLogLines(n)
 			labelEncoder := newLogLabelEncoder(qm.Channel)
-			for i := 0; i < n; i++ {
+			// Newest first, so lines at one time keep the service's order and the last line is the
+			// cursor for the page before.
+			for i := n - 1; i >= 0; i-- {
 				ts := paged.Timestamps[i]
 				val := paged.Values[i]
 
-				result.LogLines.add(time.Unix(int64(ts.Seconds), int64(ts.Nanos)), val.Message, val.Id.String(), labelEncoder.encode(val.Args))
+				t := time.Unix(int64(ts.Seconds), int64(ts.Nanos))
+				labels := labelEncoder.encode(val.Args)
+				result.LogLines.add(t, val.Message, labels, &val.Id)
 			}
 			result.IsLog = true
 			log.DefaultLogger.Debug("Extracted paged log data",
@@ -315,7 +265,9 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 				return nil
 			}
 			result.LogLines = newLogLines(1)
-			result.LogLines.add(time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos)), lp.Value.Message, lp.Value.Id.String(), marshalLogArgs(lp.Value.Args, qm.Channel))
+			t := time.Unix(int64(lp.Timestamp.Seconds), int64(lp.Timestamp.Nanos))
+			labels := marshalLogArgs(lp.Value.Args, qm.Channel)
+			result.LogLines.add(t, lp.Value.Message, labels, &lp.Value.Id)
 			result.IsLog = true
 			return nil
 		},
@@ -347,117 +299,74 @@ func (e *NominalQueryExecution) transformNominalResponseFromClient(response comp
 	return result, nil
 }
 
-func (e *NominalQueryExecution) extractNumericDataFromConjure(numeric computeapi.NumericPlot) ([]time.Time, []*float64, error) {
-	var timePoints []time.Time
-	var values []*float64
-
-	for i := 0; i < len(numeric.Timestamps) && i < len(numeric.Values); i++ {
-		timestamp := numeric.Timestamps[i]
-		value := numeric.Values[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-		values = append(values, &value)
-	}
-
-	log.DefaultLogger.Debug("Extracted numeric data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
-func (e *NominalQueryExecution) extractBucketedDataFromConjure(bucketed computeapi.BucketedNumericPlot) ([]time.Time, []*float64, error) {
-	var timePoints []time.Time
-	var values []*float64
-
-	for i := 0; i < len(bucketed.Timestamps) && i < len(bucketed.Buckets); i++ {
-		timestamp := bucketed.Timestamps[i]
-		bucket := bucketed.Buckets[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		values = append(values, bucket.Mean)
-	}
-
-	log.DefaultLogger.Debug("Extracted bucketed data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
-// extractEnumDataFromConjure maps EnumPlot indices to category strings.
-// Out-of-range indices become "unknown(N)".
-func (e *NominalQueryExecution) extractEnumDataFromConjure(enumPlot computeapi.EnumPlot) ([]time.Time, []string, error) {
-	n := min(len(enumPlot.Timestamps), len(enumPlot.Values))
-	timePoints := make([]time.Time, 0, n)
-	values := make([]string, 0, n)
-
-	for i := 0; i < n; i++ {
-		timestamp := enumPlot.Timestamps[i]
-		index := enumPlot.Values[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		if index >= 0 && index < len(enumPlot.Categories) {
-			values = append(values, enumPlot.Categories[index])
-		} else {
-			values = append(values, fmt.Sprintf("unknown(%d)", index))
-			log.DefaultLogger.Warn("Enum index out of bounds",
-				"index", index,
-				"categoriesLen", len(enumPlot.Categories),
-			)
+// extractArrowBucketedEnum takes each bucket's most frequent category as its
+// value. Count ties go to the bucket's last value when it is among them, and
+// otherwise to the category seen first in the response.
+func extractArrowBucketedEnum(plot computeapi.ArrowPlot) ([]time.Time, []string, error) {
+	var tsIdx, histIdx, lastIdx []int
+	open := func(schema *arrow.Schema) error {
+		tsIdx, histIdx, lastIdx = schema.FieldIndices("end_bucket_timestamp"), schema.FieldIndices("histogram"), schema.FieldIndices("last_value")
+		if len(tsIdx) == 0 || len(histIdx) == 0 || len(lastIdx) == 0 {
+			return fmt.Errorf("enum Arrow schema missing end_bucket_timestamp, histogram or last_value: have %v", schema.Fields())
 		}
+		return nil
 	}
 
-	log.DefaultLogger.Debug("Extracted enum data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
-}
-
-// extractBucketedEnumDataFromConjure takes each bucket's histogram mode as its
-// value, the categorical counterpart of the numeric path's mean.
-func (e *NominalQueryExecution) extractBucketedEnumDataFromConjure(bucketed computeapi.BucketedEnumPlot) ([]time.Time, []string, error) {
-	n := min(len(bucketed.Timestamps), len(bucketed.Buckets))
-	timePoints := make([]time.Time, 0, n)
-	values := make([]string, 0, n)
-
-	for i := 0; i < n; i++ {
-		timestamp := bucketed.Timestamps[i]
-		bucket := bucketed.Buckets[i]
-
-		seconds := int64(timestamp.Seconds)
-		nanos := int64(timestamp.Nanos)
-		timePoints = append(timePoints, time.Unix(seconds, nanos))
-
-		// Break count ties by lowest category index so Go's random map order
-		// cannot change the result. An empty histogram falls back to FirstPoint.
-		modeIndex := bucket.FirstPoint.Value
-		maxCount := safelong.SafeLong(0)
-		for idx, count := range bucket.Histogram {
-			if count > maxCount || (count == maxCount && count > 0 && idx < modeIndex) {
-				maxCount = count
-				modeIndex = idx
+	times, values := []time.Time{}, []string{}
+	// Category names are cloned once so values do not alias Arrow buffers.
+	rank := map[string]int{}
+	var names []string
+	each := func(rec arrow.RecordBatch) error {
+		ts, tsOK := rec.Column(tsIdx[0]).(*array.Int64)
+		hist, histOK := rec.Column(histIdx[0]).(*array.Map)
+		last, lastOK := rec.Column(lastIdx[0]).(*array.String)
+		if !tsOK || !histOK || !lastOK {
+			return fmt.Errorf("unexpected Arrow enum column types %T, %T, %T", rec.Column(tsIdx[0]), rec.Column(histIdx[0]), rec.Column(lastIdx[0]))
+		}
+		keys, keysOK := hist.Keys().(*array.String)
+		counts, countsOK := hist.Items().(*array.Uint64)
+		if !keysOK || !countsOK {
+			return fmt.Errorf("unexpected Arrow histogram types %T, %T", hist.Keys(), hist.Items())
+		}
+		for i := 0; i < ts.Len(); i++ {
+			start, end := hist.ValueOffsets(i)
+			mode, best := -1, uint64(0)
+			lastRank, lastCount := -1, uint64(0)
+			for j := int(start); j < int(end); j++ {
+				key := keys.Value(j)
+				r, ok := rank[key]
+				if !ok {
+					r = len(names)
+					name := strings.Clone(key)
+					rank[name] = r
+					names = append(names, name)
+				}
+				c := counts.Value(j)
+				if key == last.Value(i) {
+					lastRank, lastCount = r, c
+				}
+				if mode < 0 || c > best || (c == best && r < mode) {
+					mode, best = r, c
+				}
 			}
+			if lastRank >= 0 && lastCount == best {
+				mode = lastRank
+			}
+			if mode < 0 {
+				return fmt.Errorf("enum Arrow bucket at %d has an empty histogram", ts.Value(i))
+			}
+			times = append(times, time.Unix(0, ts.Value(i)))
+			values = append(values, names[mode])
 		}
-
-		if modeIndex >= 0 && modeIndex < len(bucketed.Categories) {
-			values = append(values, bucketed.Categories[modeIndex])
-		} else {
-			values = append(values, fmt.Sprintf("unknown(%d)", modeIndex))
-			log.DefaultLogger.Warn("Bucketed enum index out of bounds",
-				"index", modeIndex,
-				"categoriesLen", len(bucketed.Categories),
-			)
-		}
+		return nil
 	}
-
-	log.DefaultLogger.Debug("Extracted bucketed enum data from conjure", "timePoints", len(timePoints), "values", len(values))
-	return timePoints, values, nil
+	if err := readArrowBatches(plot.ArrowBinary, open, each); err != nil {
+		return nil, nil, err
+	}
+	return times, values, nil
 }
 
 // carriesChannelUnit is false for COUNT (dimensionless) and VARIANCE (unit²).
-// Non-aggregated call sites use fieldConfigForNumericWithChannelUnit so the
-// true is named at the call site.
 func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesChannelUnit bool) *data.FieldConfig {
 	cfg := &data.FieldConfig{DisplayNameFromDS: displayName}
 	if !carriesChannelUnit {
@@ -467,12 +376,14 @@ func fieldConfigForNumeric(qm *NominalQueryModel, displayName string, carriesCha
 	return cfg
 }
 
-// fieldConfigForNumericWithChannelUnit is for non-aggregated numeric frames,
-// which always carry the channel unit.
-func fieldConfigForNumericWithChannelUnit(qm *NominalQueryModel, displayName string) *data.FieldConfig {
-	return fieldConfigForNumeric(qm, displayName, true)
-}
-
 func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
+}
+
+// capTimes caps times at end: a last bucket that runs past the range carries its
+// own end time, though its data stops at end. Times ascend, so only the tail is scanned.
+func capTimes(times []time.Time, end time.Time) {
+	for i := len(times) - 1; i >= 0 && !end.IsZero() && times[i].After(end); i-- {
+		times[i] = end
+	}
 }

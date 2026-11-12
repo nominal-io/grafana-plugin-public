@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -394,7 +395,7 @@ func TestNominalCatalogFetchAssetByRidRequiresResourceHTTPClient(t *testing.T) {
 func TestTTLCacheExpiredEntryReloads(t *testing.T) {
 	cache := newTTLCache[string](catalogCacheTTL)
 	cache.mu.Lock()
-	cache.entries["key"] = ttlCacheEntry[string]{value: "stale", fetchedAt: time.Now().Add(-catalogCacheTTL)}
+	cache.entries["key"] = ttlCacheEntry[string]{value: "stale", expiresAt: time.Now()}
 	cache.mu.Unlock()
 
 	loads := 0
@@ -411,6 +412,82 @@ func TestTTLCacheExpiredEntryReloads(t *testing.T) {
 	}
 	if loads != 1 {
 		t.Fatalf("loads = %d, want 1: the expired entry must reload once and then serve from cache", loads)
+	}
+}
+
+func TestTTLCacheCachesFailureForFailureTTL(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cache := newTTLCache[string](catalogCacheTTL)
+		cache.failureTTL = failedLookupCacheTTL
+		loads := 0
+		get := func() error {
+			_, err := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+				loads++
+				return "", errors.New("upstream down")
+			})
+			return err
+		}
+
+		for range 2 {
+			if get() == nil {
+				t.Fatal("get returned nil error, want the load failure")
+			}
+		}
+		if loads != 1 {
+			t.Fatalf("loads = %d, want 1: the failure must be served from cache", loads)
+		}
+		time.Sleep(failedLookupCacheTTL)
+		_ = get()
+		if loads != 2 {
+			t.Fatalf("loads = %d, want 2: the cached failure must expire after failureTTL", loads)
+		}
+	})
+}
+
+func TestNominalCatalogInferChannelMetadataCachesFailedSearch(t *testing.T) {
+	assetRid := "ri.scout.main.asset.metadata"
+	dataSourceRid := "ri.scout.main.data-source.dataset1"
+	server, _ := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		assetRid: {
+			Rid:        assetRid,
+			DataScopes: []AssetDataScope{{DataScopeName: "scope-a", DataSource: AssetDataSource{Type: "dataset", Dataset: &dataSourceRid}}},
+		},
+	}, nil)
+	defer server.Close()
+
+	mockDS := &mockDatasourceService{searchChannelsError: errors.New("status 429")}
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), mockDS)
+
+	for range 2 {
+		qm := NominalQueryModel{AssetRid: assetRid, DataScopeName: "scope-a", Channel: "state", ChannelDataType: ChannelDataTypeNumeric}
+		catalog.InferChannelMetadata(context.Background(), config, &qm)
+		if qm.ChannelDataType != ChannelDataTypeNumeric {
+			t.Fatalf("ChannelDataType = %q, want stored %q kept on failure", qm.ChannelDataType, ChannelDataTypeNumeric)
+		}
+	}
+	if got := mockDS.searchChannelsCallCount(); got != 1 {
+		t.Fatalf("SearchChannels calls = %d, want 1: the failed lookup must not repeat on the next refresh", got)
+	}
+}
+
+func TestTTLCacheLoadPanicIsCachedLikeAFailure(t *testing.T) {
+	cache := newTTLCache[string](catalogCacheTTL)
+	cache.failureTTL = failedLookupCacheTTL
+
+	_, err := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		panic("boom")
+	})
+	if err == nil {
+		t.Fatal("get with a panicking load returned nil error")
+	}
+
+	loaded := false
+	if _, again := cache.get(context.Background(), "key", func(context.Context) (string, error) {
+		loaded = true
+		return "ok", nil
+	}); loaded || again == nil || again.Error() != err.Error() {
+		t.Fatalf("second get: loaded = %v, err = %v; want the cached panic error %q", loaded, again, err)
 	}
 }
 
@@ -464,6 +541,30 @@ func TestNominalCatalogInferChannelMetadataUsesOwnCache(t *testing.T) {
 	}
 	if got := mockDS.searchChannelsCallCount(); got != 1 {
 		t.Fatalf("SearchChannels calls = %d, want 1", got)
+	}
+	req := mockDS.searchChannelsRequestSnapshot()
+	if req.FuzzySearchText != "state" {
+		t.Fatalf("FuzzySearchText = %q, want %q", req.FuzzySearchText, "state")
+	}
+	if len(req.ExactMatch) != 1 || req.ExactMatch[0] != "state" {
+		t.Fatalf("ExactMatch = %v, want [state]", req.ExactMatch)
+	}
+}
+
+func TestFuzzySearchTextFor(t *testing.T) {
+	cases := map[string]string{
+		"temp":  "temp",
+		"a-b_1": "a-b_1",
+		"---":   "",
+		"___":   "",
+		"é":     "",
+		"温度":    "",
+		"温度-1":  "温度-1",
+	}
+	for channel, want := range cases {
+		if got := fuzzySearchTextFor(channel); got != want {
+			t.Errorf("fuzzySearchTextFor(%q) = %q, want %q", channel, got, want)
+		}
 	}
 }
 
@@ -569,9 +670,9 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
-				createMockEnumComputeResult([]string{"b"}, []int{1}),
-				createMockEnumComputeResult([]string{"c"}, []int{2}),
+				createMockEnumComputeResult("a"),
+				createMockEnumComputeResult("b"),
+				createMockEnumComputeResult("c"),
 			},
 		},
 	}
@@ -638,7 +739,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult("a"),
 			},
 		},
 	}
@@ -702,7 +803,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"a"}, []int{0}),
+				createMockEnumComputeResult("a"),
 			},
 		},
 	}

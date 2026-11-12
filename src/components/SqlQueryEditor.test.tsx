@@ -1,7 +1,7 @@
 import React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { SqlQueryEditor } from './SqlQueryEditor';
-import { NominalQuery } from '../types';
+import { DEFAULT_SQL, LOGS_SQL_EXAMPLE, NominalQuery } from '../types';
 
 // Mirrors Monaco's keybinding resolution: the most recent matching registration wins, where
 // addCommand matches in every editor and addAction only in the editor that registered it.
@@ -99,11 +99,14 @@ describe('SqlQueryEditor', () => {
     expect(second.onChange).not.toHaveBeenCalled();
   });
 
-  it('switches format to table and runs the query', () => {
+  it.each([
+    ['Table', 'table'],
+    ['Logs', 'logs'],
+  ])('switches format to %s and runs the query', (label, format) => {
     const { onChange, onRunQuery } = renderEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
-    fireEvent.click(screen.getByRole('radio', { name: /table/i }));
+    fireEvent.click(screen.getByRole('radio', { name: label }));
 
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ format: 'table' }));
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ format }));
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -114,19 +117,23 @@ describe('SqlQueryEditor', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ rawSql: 'SELECT 2', format: 'table' }));
   });
 
-  it('inserts the time-series example into an empty query without running it', () => {
+  it.each([
+    ['time-series', DEFAULT_SQL, 'timeseries'],
+    ['logs', LOGS_SQL_EXAMPLE, 'logs'],
+  ])('inserts the %s example into an empty query without running it', (label, sql, format) => {
     const { editor, onChange, onRunQuery } = renderEditor({ refId: 'A', queryType: 'sql', format: 'table' });
-    fireEvent.click(screen.getByRole('button', { name: 'Use time-series example' }));
+    fireEvent.click(screen.getByRole('button', { name: `Use ${label} example` }));
 
-    expect((editor as HTMLTextAreaElement).value).toContain('$__timeGroup(ts)');
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', format: 'timeseries' }));
+    expect(editor).toHaveValue(sql);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryType: 'sql', rawSql: sql, format }));
     expect(onRunQuery).not.toHaveBeenCalled();
-    expect(screen.queryByRole('button', { name: 'Use time-series example' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: `Use ${label} example` })).not.toBeInTheDocument();
   });
 
   it('keeps the example button hidden while an existing query is cleared', () => {
     const { editor } = renderEditor({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1' });
     fireEvent.change(editor, { target: { value: '' } });
     expect(screen.queryByRole('button', { name: 'Use time-series example' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Use logs example' })).not.toBeInTheDocument();
   });
 });

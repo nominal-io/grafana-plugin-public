@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -25,8 +26,6 @@ type NominalQueryModel struct {
 	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
-	// RawLTTB is runtime-only; normalizeAggregations sets it and clears Aggregations.
-	RawLTTB bool `json:"-"`
 
 	// Query parameters
 	Buckets   int    `json:"buckets"`
@@ -39,12 +38,20 @@ type NominalQueryModel struct {
 	QueryText string  `json:"queryText"`
 	Constant  float64 `json:"constant"`
 
+	// ScrollID names the line a Logs scroll page should continue from; the frontend sets it.
+	// ScrollNewer marks a page that reads newer lines.
+	ScrollID    string `json:"scrollId,omitempty"`
+	ScrollNewer bool   `json:"scrollNewer,omitempty"`
+
 	// ChannelUnit is runtime-only; populated by inferChannelMetadata at QueryData time.
 	// json:"-" prevents inferred values from persisting into saved dashboards.
 	ChannelUnit string `json:"-"`
 
 	// Points is runtime-only, set by resolvePointBudget.
 	Points pointBudget `json:"-"`
+
+	// RangeEnd is runtime-only: the end of the query's time range.
+	RangeEnd time.Time `json:"-"`
 }
 
 // ChannelDataType values. These are produced by getChannelDataType (normalizing the
@@ -129,6 +136,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 			return preparedQuery{}, &response
 		}
 		qm.Points = points
+		qm.RangeEnd = q.TimeRange.To
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryBatchable}, nil
 	}
 
@@ -150,9 +158,6 @@ func normalizeAggregations(qm *NominalQueryModel) *backend.DataResponse {
 			response := backend.ErrDataResponse(backend.StatusBadRequest, "LTTB cannot be combined with bucket aggregations")
 			return &response
 		}
-		qm.RawLTTB = true
-		qm.Aggregations = nil
-		return nil
 	}
 
 	deduped, badAgg := validateAndDedup(qm.Aggregations)

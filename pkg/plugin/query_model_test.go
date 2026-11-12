@@ -73,7 +73,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 		wantAggregations      []string
 		wantExplicit          bool
 		wantPreparedQueryKind preparedQueryKind
-		wantRawLTTB           bool
 	}{
 		{
 			name: "explicit numeric aggregations are deduped in order",
@@ -99,7 +98,7 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				Aggregations:    []string{"BOGUS"},
 				Buckets:         100,
 			},
-			wantErr: "unsupported aggregation \"BOGUS\"; valid options are COUNT, FIRST_POINT, LAST_POINT, MAX, MEAN, MIN, VARIANCE, LTTB",
+			wantErr: "unsupported aggregation \"BOGUS\"; valid options are COUNT, FIRST_POINT, LAST_POINT, LTTB, MAX, MEAN, MIN, VARIANCE",
 		},
 		{
 			name:    "buckets above the API limit are rejected",
@@ -107,14 +106,14 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			wantErr: "buckets must be at most 10000, got 10001",
 		},
 		{
-			name:        "LTTB is accepted as a raw numeric selection",
-			model:       NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}, Buckets: 100},
-			wantRawLTTB: true, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
+			name:             "LTTB is accepted as a raw numeric selection",
+			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}, Buckets: 100},
+			wantAggregations: []string{AggLTTB}, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
 		},
 		{
-			name:        "repeated LTTB is accepted",
-			model:       NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB, AggLTTB}, Buckets: 100},
-			wantRawLTTB: true, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
+			name:             "repeated LTTB is accepted",
+			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB, AggLTTB}, Buckets: 100},
+			wantAggregations: []string{AggLTTB}, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
 		},
 		{
 			name:    "LTTB cannot be combined with bucket aggregation",
@@ -200,9 +199,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			}
 			if prepared.Model.ExplicitAggregations != tt.wantExplicit {
 				t.Errorf("ExplicitAggregations = %v, want %v", prepared.Model.ExplicitAggregations, tt.wantExplicit)
-			}
-			if prepared.Model.RawLTTB != tt.wantRawLTTB {
-				t.Errorf("RawLTTB = %v, want %v", prepared.Model.RawLTTB, tt.wantRawLTTB)
 			}
 			if fmt.Sprint(prepared.Model.Aggregations) != fmt.Sprint(tt.wantAggregations) {
 				t.Errorf("Aggregations = %v, want %v", prepared.Model.Aggregations, tt.wantAggregations)

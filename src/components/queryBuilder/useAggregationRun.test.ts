@@ -24,6 +24,18 @@ describe('useAggregationRun', () => {
     expect(onRunQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('does not rerun when only the onRunQuery identity changes', () => {
+    // Grafana's alert rule editor passes a new onRunQuery arrow on every render.
+    const run = jest.fn();
+    const query = makeQuery();
+    const { rerender } = renderHook(
+      ({ onRunQuery }) => useAggregationRun({ query, onChange: jest.fn(), onRunQuery }),
+      { initialProps: { onRunQuery: () => run() } }
+    );
+    rerender({ onRunQuery: () => run() });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('does not run an incomplete query', () => {
     const onRunQuery = jest.fn();
     renderHook(() => useAggregationRun({ query: makeQuery({ channel: '' }), onChange: jest.fn(), onRunQuery }));

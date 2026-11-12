@@ -3,13 +3,16 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/nominal-io/nominal-api-go/io/nominal/api"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
+	"github.com/palantir/pkg/uuid"
 )
 
 // --- typed plan inspectors ---
@@ -54,15 +57,15 @@ func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value
 	return kind, value
 }
 
-// summarizationPageSize returns the page size when the strategy is a page strategy.
-func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrategy) (size int, isPage bool) {
+// summarizationPageInfo returns the page info when the strategy is a page strategy.
+func summarizationPageInfo(t *testing.T, strategy computeapi.SummarizationStrategy) (page computeapi.PageInfo, isPage bool) {
 	t.Helper()
 	err := strategy.AcceptFuncs(
 		func(computeapi.DecimateStrategy) error { return nil },
 		func(computeapi.LttbStrategy) error { return nil },
 		func(p computeapi.PageStrategy) error {
 			return p.AcceptFuncs(
-				func(info computeapi.PageInfo) error { size, isPage = info.PageSize, true; return nil },
+				func(info computeapi.PageInfo) error { page, isPage = info, true; return nil },
 				func(string) error { return fmt.Errorf("unknown page strategy type") },
 			)
 		},
@@ -70,14 +73,13 @@ func summarizationPageSize(t *testing.T, strategy computeapi.SummarizationStrate
 		func(string) error { return fmt.Errorf("unknown summarization strategy type") },
 	)
 	if err != nil {
-		t.Fatalf("inspecting page size: %v", err)
+		t.Fatalf("inspecting page info: %v", err)
 	}
-	return size, isPage
+	return page, isPage
 }
 
-// isArrowV3 reports whether the SummarizeSeries output format is ARROW_V3.
-func isArrowV3(format *computeapi.OutputFormat) bool {
-	return format != nil && format.Value() == computeapi.OutputFormat_ARROW_V3
+func isArrowFormat(format *computeapi.OutputFormat, want computeapi.OutputFormat_Value) bool {
+	return format != nil && format.Value() == want
 }
 
 // summarizeSeriesFromNode unwraps a ComputableNode to the SummarizeSeries it carries,
@@ -281,42 +283,123 @@ func TestNumericOutputFields(t *testing.T) {
 	}
 }
 
-// TestBuildComputeRequest is the integration-level test: it exercises the full
-// buildComputeRequest path (time range -> node wrapping -> context), while the detailed
-// per-kind plan shape is covered by the buildSeriesPlan tests below.
-func TestBuildComputeRequest(t *testing.T) {
-	ds := withCatalog(&Datasource{})
-
-	qm := NominalQueryModel{
-		AssetRid:      "ri.nominal.asset.12345",
-		Channel:       "temperature",
-		DataScopeName: "default",
-		Buckets:       100,
+func TestAlignedBucketRange(t *testing.T) {
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		from, to time.Time
+		n        int
+	}{
+		{"unaligned 10 minutes", base.Add(3500 * time.Millisecond), base.Add(603500 * time.Millisecond), 60},
+		{"quarter second", base.Add(7), base.Add(250*time.Millisecond + 7), 1000},
+		{"two buckets", base.Add(time.Second), base.Add(time.Minute), 2},
+		{"range end on the grid", base, base.Add(time.Minute), 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			aligned, ok := alignedBucketRange(backend.TimeRange{From: tt.from, To: tt.to}, tt.n)
+			start, end, n := aligned.From.UnixNano(), aligned.To.UnixNano(), int64(tt.n)
+			width := (end - start) / n
+			if !ok || (end-start)%n != 0 || start%width != 0 {
+				t.Fatalf("grid not exact: ok=%v start=%d end=%d n=%d", ok, start, end, n)
+			}
+			from, to := tt.from.UnixNano(), tt.to.UnixNano()
+			if start > from || start+width <= from {
+				t.Errorf("first bucket [%d, %d) does not contain from %d", start, start+width, from)
+			}
+			if end < to || (to-start)%width == 0 {
+				t.Errorf("to %d is not strictly inside a bucket: start=%d end=%d width=%d", to, start, end, width)
+			}
+		})
 	}
 
-	timeRange := backend.TimeRange{
-		From: time.Unix(1704067200, 100_000_000), // 2024-01-01 00:00:00.100 UTC
-		To:   time.Unix(1704067200, 900_000_000), // 2024-01-01 00:00:00.900 UTC
+	epoch := time.Unix(0, 0)
+	year := func(y int) time.Time { return time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC) }
+	unchanged := []struct {
+		name     string
+		from, to time.Time
+		n        int
+	}{
+		{"zero buckets", base.Add(time.Second), base.Add(time.Minute), 0},
+		{"one bucket", base.Add(time.Second), base.Add(time.Minute), 1},
+		{"reversed range", base.Add(time.Minute), base, 10},
+		{"range ends at the epoch", epoch.Add(-time.Hour), epoch, 1000},
+		{"aligned end past int64 nanoseconds", epoch, year(2200), 2},
+		{"range longer than int64 nanoseconds", year(1700), year(2200), 1000},
 	}
+	for _, tt := range unchanged {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := backend.TimeRange{From: tt.from, To: tt.to}
+			if got, ok := alignedBucketRange(tr, tt.n); ok || got != tr {
+				t.Errorf("got %v ok=%v, want the range unchanged", got, ok)
+			}
+		})
+	}
+}
 
-	req := newTestQueryExecution(ds, nil).buildComputeRequest(qm, timeRange)
+func TestBuildComputeRequestAlignsOnlyBucketedNumeric(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	tr := backend.TimeRange{
+		From: time.Date(2026, 11, 1, 0, 0, 3, 500_000_000, time.UTC),
+		To:   time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC),
+	}
+	tests := []struct {
+		name        string
+		qm          NominalQueryModel
+		wantAligned bool
+	}{
+		{"numeric buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggMean}, Points: pointBudget{Count: 100}}, true},
+		{"enum buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: 100}}, false},
+		{"LTTB", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Points: pointBudget{Count: 100}}, false},
+	}
+	asTime := func(ts api.Timestamp) time.Time { return time.Unix(int64(ts.Seconds), int64(ts.Nanos)) }
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := qe.buildComputeRequest(tt.qm, tr)
+			start, end := asTime(req.Start), asTime(req.End)
+			raw, err := json.Marshal(req.Node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var node struct {
+				Series struct {
+					Input struct {
+						Numeric struct {
+							TimeRangeFilter *struct {
+								StartTime, EndTime struct{ Literal api.Timestamp }
+							}
+						}
+					}
+				}
+			}
+			if err := json.Unmarshal(raw, &node); err != nil {
+				t.Fatal(err)
+			}
+			filter := node.Series.Input.Numeric.TimeRangeFilter
 
-	if int64(req.Start.Seconds) != 1704067200 {
-		t.Errorf("Start.Seconds = %d, want %d", req.Start.Seconds, 1704067200)
+			if !tt.wantAligned {
+				if !start.Equal(tr.From) || !end.Equal(tr.To) || filter != nil {
+					t.Errorf("request [%v, %v], filter %v; want the panel range and no filter", start, end, filter)
+				}
+				return
+			}
+			if start.Equal(tr.From) || filter == nil {
+				t.Fatalf("start = %v, filter = %v; want an aligned start and a filter", start, filter)
+			}
+			if from, to := asTime(filter.StartTime.Literal), asTime(filter.EndTime.Literal); !from.Equal(tr.From) || !to.Equal(tr.To) {
+				t.Errorf("filter = [%v, %v], want the panel range [%v, %v]", from, to, tr.From, tr.To)
+			}
+			if got := *summarizeSeriesFromNode(t, req.Node).Buckets; got != tt.qm.Points.Count {
+				t.Errorf("buckets = %d, want %d", got, tt.qm.Points.Count)
+			}
+		})
 	}
-	if int64(req.Start.Nanos) != 100_000_000 {
-		t.Errorf("Start.Nanos = %d, want %d", req.Start.Nanos, 100_000_000)
-	}
-	if int64(req.End.Seconds) != 1704067200 {
-		t.Errorf("End.Seconds = %d, want %d", req.End.Seconds, 1704067200)
-	}
-	if int64(req.End.Nanos) != 900_000_000 {
-		t.Errorf("End.Nanos = %d, want %d", req.End.Nanos, 900_000_000)
-	}
-	// The series plan must be wrapped into a node.
-	if req.Node == (computeapi1.ComputableNode{}) {
-		t.Error("expected non-zero ComputableNode")
-	}
+}
+
+// seriesPlanFor builds a plan with an empty time range, which no plan aligns.
+func seriesPlanFor(qe *NominalQueryExecution, qm NominalQueryModel) computeapi1.SummarizeSeries {
+	plan, _ := qe.buildSeriesPlan(qm, backend.TimeRange{})
+	return plan
 }
 
 func TestBuildAssetChannel(t *testing.T) {
@@ -388,7 +471,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			qm := baseQM
 			qm.ChannelDataType = tt.dataType
-			plan := qe.buildSeriesPlan(qm)
+			plan := seriesPlanFor(qe, qm)
 			if got := seriesKind(t, plan.Input); got != tt.wantKind {
 				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
 			}
@@ -401,8 +484,8 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		numericQM := baseQM
 		numericQM.ChannelDataType = ChannelDataTypeNumeric
 
-		stringKind := seriesKind(t, qe.buildSeriesPlan(stringQM).Input)
-		numericKind := seriesKind(t, qe.buildSeriesPlan(numericQM).Input)
+		stringKind := seriesKind(t, seriesPlanFor(qe, stringQM).Input)
+		numericKind := seriesKind(t, seriesPlanFor(qe, numericQM).Input)
 		if stringKind == numericKind {
 			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
 		}
@@ -421,7 +504,7 @@ func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
 				Buckets:         1000,
 				Points:          pointBudget{Count: 750},
 			}
-			plan := qe.buildSeriesPlan(qm)
+			plan := seriesPlanFor(qe, qm)
 			if plan.Buckets == nil || *plan.Buckets != 750 {
 				t.Errorf("buckets = %v, want 750", plan.Buckets)
 			}
@@ -442,9 +525,9 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:         1000,
 			Aggregations:    []string{AggMean},
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := seriesPlanFor(qe, qm)
 
-		if !isArrowV3(plan.OutputFormat) {
+		if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 			t.Errorf("outputFormat = %v, want ARROW_V3", plan.OutputFormat)
 		}
 		if plan.NumericOutputFields == nil || len(*plan.NumericOutputFields) == 0 {
@@ -460,12 +543,12 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Buckets:       1000,
 			Aggregations:  []string{AggMean},
 		}
-		if plan := qe.buildSeriesPlan(qm); !isArrowV3(plan.OutputFormat) {
+		if plan := seriesPlanFor(qe, qm); !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 			t.Errorf("outputFormat = %v, want ARROW_V3 for default numeric path", plan.OutputFormat)
 		}
 	})
 
-	t.Run("string ChannelDataType stays LEGACY (no outputFormat)", func(t *testing.T) {
+	t.Run("string ChannelDataType gets Arrow format without numeric fields", func(t *testing.T) {
 		qm := NominalQueryModel{
 			AssetRid:        "ri.nominal.asset.123",
 			Channel:         "status",
@@ -473,10 +556,10 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			DataScopeName:   "default",
 			Buckets:         1000,
 		}
-		plan := qe.buildSeriesPlan(qm)
+		plan := seriesPlanFor(qe, qm)
 
-		if plan.OutputFormat != nil {
-			t.Errorf("outputFormat = %v, want nil for enum path", plan.OutputFormat)
+		if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V4) {
+			t.Errorf("outputFormat = %v, want ARROW_V4", plan.OutputFormat)
 		}
 		if plan.NumericOutputFields != nil {
 			t.Errorf("numericOutputFields = %v, want nil for enum path", plan.NumericOutputFields)
@@ -484,19 +567,47 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 	})
 }
 
+func TestBuildSeriesPlanEnumKeepsRangeEndInsideABucket(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		from, to time.Time
+		n, want  int
+	}{
+		// 300 s / 30 = 10 s and to is a multiple of 10 s; 29 buckets give a width that is not.
+		{"to on the grid", base, base.Add(300 * time.Second), 30, 29},
+		{"to off the grid", base.Add(3500 * time.Millisecond), base.Add(303500 * time.Millisecond), 30, 30},
+		{"one bucket", base, base.Add(time.Minute), 1, 1},
+		{"range ends at the epoch", time.Unix(0, 0).Add(-time.Hour), time.Unix(0, 0), 30, 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			qm := NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: tt.n}}
+			plan, _ := qe.buildSeriesPlan(qm, backend.TimeRange{From: tt.from, To: tt.to})
+			if got := *plan.Buckets; got != tt.want {
+				t.Errorf("buckets = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	qm := NominalQueryModel{
 		AssetRid: "ri.nominal.asset.test", Channel: "temperature", DataScopeName: "default",
-		ChannelDataType: ChannelDataTypeNumeric, RawLTTB: true, Buckets: 5000,
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 5000,
 		Points: pointBudget{Count: 500},
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := seriesPlanFor(qe, qm)
 	if got := seriesKind(t, plan.Input); got != "numeric" {
 		t.Fatalf("series kind = %q, want numeric", got)
 	}
-	if plan.Buckets != nil || plan.OutputFormat != nil || plan.NumericOutputFields != nil {
-		t.Fatalf("LTTB must not request bucket aggregation or Arrow fields: %+v", plan)
+	if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
+		t.Fatalf("LTTB must request ARROW_V3: %+v", plan.OutputFormat)
+	}
+	if plan.Buckets != nil || plan.NumericOutputFields != nil {
+		t.Fatalf("LTTB must not request buckets or output fields: %+v", plan)
 	}
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("LTTB strategy is missing")
@@ -532,7 +643,7 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		DataScopeName:   "default",
 		Buckets:         1000,
 	}
-	plan := qe.buildSeriesPlan(qm)
+	plan := seriesPlanFor(qe, qm)
 
 	if got := seriesKind(t, plan.Input); got != "log" {
 		t.Errorf("series kind = %q, want \"log\"", got)
@@ -550,12 +661,39 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	if plan.SummarizationStrategy == nil {
 		t.Fatal("expected a summarization strategy for log path")
 	}
-	size, isPage := summarizationPageSize(t, *plan.SummarizationStrategy)
+	page, isPage := summarizationPageInfo(t, *plan.SummarizationStrategy)
 	if !isPage {
 		t.Error("expected a page strategy for log path")
 	}
-	if size != logPageSize {
-		t.Errorf("pageSize = %d, want %d (newest-first)", size, logPageSize)
+	if page.PageSize != -logPageSize || page.PageToken != nil {
+		t.Errorf("page = %d with token %v, want %d without (newest-first)", page.PageSize, page.PageToken, -logPageSize)
+	}
+}
+
+func TestBuildComputeRequestLogPage(t *testing.T) {
+	from := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	lineID := func(at time.Time) string {
+		return strconv.FormatInt(at.UnixNano(), 10) + ":" + uuid.UUID{7}.String() + ":1f"
+	}
+	for _, tc := range []struct {
+		name     string
+		id       string
+		newer    bool
+		wantSize int
+	}{
+		{name: "forward from the start for newer lines", newer: true, wantSize: logPageSize},
+		{name: "back from the end when the line is before the range", id: lineID(from.Add(-1)), wantSize: -logPageSize},
+		{name: "forward from the start when the line is after the range", id: lineID(from.Add(2 * time.Minute)), newer: true, wantSize: logPageSize},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+			qm := NominalQueryModel{Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog, ScrollID: tc.id, ScrollNewer: tc.newer}
+			req := qe.buildComputeRequest(qm, backend.TimeRange{From: from, To: from.Add(time.Minute)})
+			page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Node).SummarizationStrategy)
+			if page.PageSize != tc.wantSize || page.PageToken != nil {
+				t.Errorf("page = %d with token %v; want %d without a token", page.PageSize, page.PageToken, tc.wantSize)
+			}
+		})
 	}
 }
 

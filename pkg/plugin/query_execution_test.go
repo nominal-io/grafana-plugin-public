@@ -1,16 +1,19 @@
 package plugin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
@@ -378,7 +381,7 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 	mockCompute := &mockComputeService{
 		batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
 			Results: []computeapi.ComputeWithUnitsResult{
-				createMockEnumComputeResult([]string{"idle", "active"}, []int{0, 1}),
+				createMockEnumComputeResult("idle", "active"),
 			},
 		},
 	}
@@ -491,7 +494,7 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 				{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(arrowPlot),
 				)},
-				createMockEnumComputeResult([]string{"idle", "active"}, []int{0, 1}),
+				createMockEnumComputeResult("idle", "active"),
 			},
 		},
 	}
@@ -560,17 +563,17 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 	if kind := seriesKind(t, numericSeries.Input); kind != "numeric" {
 		t.Errorf("expected numeric series, got kind %q", kind)
 	}
-	if !isArrowV3(numericSeries.OutputFormat) {
+	if !isArrowFormat(numericSeries.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 		t.Errorf("expected numeric request with ARROW_V3 output format, got %v", numericSeries.OutputFormat)
 	}
 
-	// The string query (state) gets an enum request with no output format.
+	// The string query (state) gets an enum request in Arrow format.
 	enumSeries := summarizeSeriesFromNode(t, mockCompute.lastBatchRequest.Requests[1].Node)
 	if kind := seriesKind(t, enumSeries.Input); kind != "enum" {
 		t.Errorf("expected enum series, got kind %q", kind)
 	}
-	if enumSeries.OutputFormat != nil {
-		t.Errorf("expected enum request without output format, got %v", enumSeries.OutputFormat)
+	if !isArrowFormat(enumSeries.OutputFormat, computeapi.OutputFormat_ARROW_V4) {
+		t.Errorf("expected enum request with ARROW_V4 output format, got %v", enumSeries.OutputFormat)
 	}
 }
 
@@ -1064,6 +1067,36 @@ func newBatchQueryRequest(queryCount int) *backend.QueryDataRequest {
 	return req
 }
 
+func TestBatchQueryPanicKeepsFinishedChunks(t *testing.T) {
+	calls := 0
+	mockService := &mockComputeService{
+		batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+			calls++
+			if calls == 2 {
+				panic("batch exploded")
+			}
+			return makeBatchComputeWithUnitsResponse(len(req.Requests)), nil
+		},
+	}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+
+	req := newBatchQueryRequest(maxBatchComputeSubrequests + 1)
+	resp, err := ds.QueryData(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i, q := range req.Queries {
+		e := resp.Responses[q.RefID].Error
+		if i < maxBatchComputeSubrequests {
+			if e != nil {
+				t.Fatalf("query %s in the finished chunk got error %v, want its result", q.RefID, e)
+			}
+		} else if e == nil || !strings.Contains(e.Error(), "Batch query failed unexpectedly") {
+			t.Errorf("query %s in the panicking chunk got %v, want the panic error", q.RefID, e)
+		}
+	}
+}
+
 func TestBatchComputeStampsSharedRequestID(t *testing.T) {
 	mockService := &mockComputeService{
 		batchComputeResponse: makeBatchComputeWithUnitsResponse(3),
@@ -1232,7 +1265,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(
 						computeapi.ArrowPlot{ArrowBinary: arrow}),
 				)},
-				createMockComputeResult(nil),
+				createMockEnumComputeResult("on"),
 			},
 		},
 	}
@@ -1243,7 +1276,7 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 		},
 		{
 			Query: backend.DataQuery{RefID: "healthy"},
-			Model: NominalQueryModel{Channel: "chan-healthy", ChannelDataType: ChannelDataTypeNumeric},
+			Model: NominalQueryModel{Channel: "chan-healthy", ChannelDataType: ChannelDataTypeString},
 		},
 	}
 	e := newTestQueryExecution(&Datasource{computeService: mock}, nil)
@@ -1266,5 +1299,167 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if len(healthyResp.Frames) != 1 {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
+	}
+}
+
+func TestBatchQueryCapsBucketTimesAtRangeEnd(t *testing.T) {
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	inRange, pastEnd := timeRange.To.Add(-time.Minute), timeRange.To.Add(30*time.Second)
+	numericBytes := createTestArrowBucketedNumeric([]int64{inRange.UnixNano(), pastEnd.UnixNano()}, []float64{1, 2}, nil)
+	enumBytes := createTestArrowBucketedEnum([]enumRow{
+		{ts: inRange.UnixNano(), hist: []enumCount{{"on", 1}}},
+		{ts: pastEnd.UnixNano(), hist: []enumCount{{"off", 1}}},
+	})
+	tests := []struct {
+		name            string
+		channelDataType string
+		response        computeapi.ComputeNodeResponse
+	}{
+		{"numeric", ChannelDataTypeNumeric, computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: numericBytes})},
+		{"enum", ChannelDataTypeString, computeapi.NewComputeNodeResponseFromArrowBucketedEnum(computeapi.ArrowPlot{ArrowBinary: enumBytes})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+				Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(tt.response)}},
+			}}
+			ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+			qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: tt.channelDataType}
+			query := backend.DataQuery{RefID: "A", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 100}
+
+			resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{query}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			frames := resp.Responses["A"].Frames
+			if len(frames) != 1 {
+				t.Fatalf("frames = %d, want 1 (error %v)", len(frames), resp.Responses["A"].Error)
+			}
+			times := frames[0].Fields[0]
+			if got := []time.Time{times.At(0).(time.Time), times.At(1).(time.Time)}; !got[0].Equal(inRange) || !got[1].Equal(timeRange.To) {
+				t.Errorf("times = %v, want [%v %v]", got, inRange, timeRange.To)
+			}
+		})
+	}
+}
+
+// computeLogStore serves log lines like the compute service: the lines in the request's range,
+// ordered by time and id, ascending, up to the page size of them after the page token, or before it
+// for a negative page size. With no token a page starts from the end of the range it pages from.
+// With inclusive set a page also returns the token's line, as the service's in-memory pager does.
+// Lines are nanoseconds after 01:00:00 on 2024-01-01, a line's index is its id, and its time is its
+// message, so lines that share a time differ only by id.
+func computeLogStore(t *testing.T, nanos []int, inclusive bool) *mockComputeService {
+	base := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	at := func(ts api.Timestamp) int { return int(time.Unix(int64(ts.Seconds), int64(ts.Nanos)).Sub(base)) }
+	compare := func(i int, key [2]int) int { return cmp.Or(cmp.Compare(nanos[i], key[0]), cmp.Compare(i, key[1])) }
+	sorted := make([]int, len(nanos))
+	for i := range sorted {
+		sorted[i] = i
+	}
+	slices.SortFunc(sorted, func(a, b int) int { return compare(a, [2]int{nanos[b], b}) })
+	return &mockComputeService{batchComputeFunc: func(req computeapi1.BatchComputeWithUnitsRequest) (computeapi.BatchComputeWithUnitsResponse, error) {
+		page, _ := summarizationPageInfo(t, *summarizeSeriesFromNode(t, req.Requests[0].Node).SummarizationStrategy)
+		from, to := at(req.Requests[0].Start), at(req.Requests[0].End)
+		var lines []int
+		for _, i := range sorted {
+			if from <= nanos[i] && nanos[i] <= to {
+				lines = append(lines, i)
+			}
+		}
+		before, after := lines, lines
+		if page.PageToken != nil {
+			_ = page.PageToken.AcceptFuncs(func(token computeapi.TimestampAndId) error {
+				p, found := slices.BinarySearchFunc(lines, [2]int{at(token.Timestamp), int(token.Id[0]) | int(token.Id[1])<<8}, compare)
+				q := p
+				if found {
+					q++
+				}
+				if inclusive {
+					p, q = q, p
+				}
+				before, after = lines[:p], lines[q:]
+				return nil
+			}, func(string) error { return nil })
+		}
+		if page.PageSize < 0 {
+			lines = before[max(0, len(before)+page.PageSize):]
+		} else {
+			lines = after[:min(page.PageSize, len(after))]
+		}
+		paged := computeapi.PagedLogPlot{}
+		for _, i := range lines {
+			paged.Timestamps = append(paged.Timestamps, timestampFromTime(base.Add(time.Duration(nanos[i]))))
+			paged.Values = append(paged.Values, computeapi.LogValue{Message: strconv.Itoa(nanos[i]), Id: [16]byte{byte(i), byte(i >> 8)}})
+		}
+		result := computeapi.NewComputeNodeResultFromSuccess(computeapi.NewComputeNodeResponseFromPagedLog(paged))
+		return computeapi.BatchComputeWithUnitsResponse{Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: result}}}, nil
+	}}
+}
+
+func TestComputeLogScrollPageContinuesFromItsLine(t *testing.T) {
+	// More lines than a page share one nanosecond in millisecond .123; two older lines follow.
+	const ms123, ms122 = 123_000_000, 122_000_000
+	nanos := []int{ms122 + 1, ms122 + 2}
+	for range 50 + logPageSize {
+		nanos = append(nanos, ms123+1)
+	}
+	at := func(ns int) time.Time { return time.Date(2024, 1, 1, 1, 0, 0, ns, time.UTC) }
+	for _, inclusive := range []bool{false, true} {
+		for _, newestFirst := range []bool{true, false} {
+			t.Run(fmt.Sprintf("service repeats the cursor line: %v, newest first: %v", inclusive, newestFirst), func(t *testing.T) {
+				service := computeLogStore(t, nanos, inclusive)
+				ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: service})
+				query := func(model NominalQueryModel, from, to time.Time) *data.Frame {
+					resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{{
+						RefID:     "A",
+						JSON:      mustMarshal(model),
+						TimeRange: backend.TimeRange{From: from, To: to},
+					}}))
+					if err != nil || resp.Responses["A"].Error != nil || len(resp.Responses["A"].Frames) != 1 || resp.Responses["A"].Frames[0].Rows() == 0 {
+						t.Fatalf("QueryData() = %v, %v; want one frame with lines", err, resp.Responses["A"])
+					}
+					return resp.Responses["A"].Frames[0]
+				}
+				model := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeLog}
+				// Grafana asks for older lines with a range ending at the oldest line's millisecond, and for
+				// newer lines, on oldest-first panels, with one starting at the newest line's.
+				older := func(frame *data.Frame) *data.Frame {
+					last := frame.Rows() - 1
+					oldest := frame.Fields[0].At(last).(time.Time)
+					m := model
+					m.ScrollID = frame.Fields[2].At(last).(string)
+					return query(m, at(0), oldest.Truncate(time.Millisecond))
+				}
+				newer := func(frame *data.Frame) *data.Frame {
+					newest := frame.Fields[0].At(0).(time.Time)
+					m := model
+					m.ScrollID, m.ScrollNewer = frame.Fields[2].At(0).(string), true
+					return query(m, newest.Truncate(time.Millisecond), at(999_000_000))
+				}
+				var pages []*data.Frame
+				if newestFirst {
+					first := query(model, at(0), at(ms123))
+					pages = []*data.Frame{first, older(first)}
+				} else {
+					first := query(model, at(0), at(ms122))
+					second := newer(first)
+					pages = []*data.Frame{first, second, newer(second)}
+				}
+
+				seen := map[string]bool{}
+				for _, frame := range pages {
+					for i := range frame.Rows() {
+						seen[frame.Fields[2].At(i).(string)] = true
+					}
+				}
+				if len(service.batchRequests) != len(pages) || len(seen) != len(nanos) {
+					t.Errorf("calls, distinct lines = %d, %d; want %d, %d", len(service.batchRequests), len(seen), len(pages), len(nanos))
+				}
+			})
+		}
 	}
 }

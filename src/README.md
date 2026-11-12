@@ -46,7 +46,7 @@ GROUP BY 1, 2
 ORDER BY 1
 ```
 
-`$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Without a numeric column, a string column named `value` gives one series per label set for a State timeline panel. Write `channel IN (${channel:sqlstring})` to use a variable in SQL. It works whether the variable is single-value, multi-value, or has Include All, but a value that contains a double quote does not match. Plain `$channel` is unquoted for a single value but quoted for multi-value or Include All.
+`$__timeFilter(ts)` limits a timestamp column to the panel time range, `$__timeGroup(ts)` buckets it at the panel interval, and `$__timeFrom()` and `$__timeTo()` return the range bounds. Choose **Time series** to plot numeric columns, with string columns as series labels, or **Table** to see the rows as returned. Without a numeric column, a string column named `value` gives one series per label set for a State timeline panel. Choose **Logs** to show each row as a log line. See [Logs](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#logs) for the columns and limits. Write `channel IN (${channel:sqlstring})` to use a variable in SQL. It works whether the variable is single-value, multi-value, or has Include All, but a value that contains a double quote does not match. Plain `$channel` is unquoted for a single value but quoted for multi-value or Include All.
 
 Annotations can also run Nominal SQL. The query needs a `"time"` column and a text column, and the annotation editor's **Use events example** inserts a starting query. See [Annotations](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#annotations) for the columns and more patterns.
 
@@ -56,7 +56,9 @@ Annotations can also run Nominal SQL. The query needs a `"time"` column and a te
 
 Most physical telemetry: temperatures, pressures, currents, vibration amplitudes.
 
-Numeric channels expose an **Aggregation(s)** picker. Each selected aggregation is computed per time bucket and returned as its own series:
+Numeric channels expose an **Aggregation(s)** picker with two groups. Under **Raw points**, **LTTB** (Largest-Triangle-Three-Buckets) returns a subset of the actual samples, chosen to keep the visual shape of the signal. Every returned value is a real sample at its real timestamp. LTTB can't be combined with bucket aggregations: selecting it clears them, and selecting a bucket aggregation clears LTTB.
+
+Under **Bucket aggregations**, each selected aggregation is computed per time bucket and returned as its own series:
 
 - **Mean** — overall shape and trend. The default, and what most line charts want.
 - **Min** / **Max** — catch extrema that a mean smooths away. Pair with Mean to render a banded series (min/max envelope around the mean).
@@ -79,6 +81,8 @@ A **State Timeline** panel colors each segment by string value over time, making
 ### Log
 
 Event-style records with a message field. Grafana's **Logs** panel renders Nominal log records inline with other telemetry from the same dashboard; pair it with a numeric or string panel for an at-a-glance correlation between signals and logs.
+
+A log channel query loads the newest 1,000 lines in the time range, and scrolling loads older ones. With the log order set to oldest first, scrolling loads only newer lines, so lines older than the first 1,000 do not load. Use newest first, or shorten the time range. Scrolling stops once the lines shown come within one second of the range's start, so if the last page loaded ended within that second, the lines left in it do not show. Start the time range a few seconds earlier to see them.
 
 ## Dashboards and template variables
 

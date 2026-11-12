@@ -44,7 +44,7 @@ type AggregationSeries struct {
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
 // Standard aggregations (MEAN, MIN, etc.) have a single value column and use shared timestamps.
-// FIRST_POINT/LAST_POINT have a value column plus their own timestamp column.
+// FIRST_POINT/LAST_POINT and LTTB have a value column plus their own timestamp column.
 type aggColumnSpec struct {
 	Name         string // display name for the series (e.g. "mean", "first")
 	ValueCol     string // Arrow column name for values (e.g. "mean", "first_value")
@@ -69,12 +69,12 @@ var aggSpecs = map[string]aggColumnSpec{
 	AggVariance:   {Name: "variance", ValueCol: "variance"}, // unit² — channel unit would mislead
 	AggFirstPoint: {Name: "first", ValueCol: "first_value", TimestampCol: "first_timestamp", CarriesChannelUnit: true},
 	AggLastPoint:  {Name: "last", ValueCol: "last_value", TimestampCol: "last_timestamp", CarriesChannelUnit: true},
+	AggLTTB:       {Name: "lttb", ValueCol: "value", TimestampCol: "timestamp", CarriesChannelUnit: true},
 }
 
-// validAggregationNames lists aggSpecs plus LTTB for error messages.
+// validAggregationNames lists aggSpecs for error messages.
 func validAggregationNames() string {
-	names := append(slices.Sorted(maps.Keys(aggSpecs)), AggLTTB)
-	return strings.Join(names, ", ")
+	return strings.Join(slices.Sorted(maps.Keys(aggSpecs)), ", ")
 }
 
 // aggColumnSpecFromEnum looks up the Arrow column spec for an aggregation enum value.
@@ -108,12 +108,16 @@ type resolvedSpec struct {
 }
 
 // resolveArrowSchema locates the shared timestamp column and each spec's value/timestamp
-// columns in the Arrow schema. Returns the shared timestamp column index and one
-// resolvedSpec per input spec.
+// columns in the Arrow schema. Returns the shared timestamp column index (-1 when
+// every spec has its own timestamp column) and one resolvedSpec per input spec.
 func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsIdx int, resolved []resolvedSpec, err error) {
-	tsIdx := schema.FieldIndices("end_bucket_timestamp")
-	if len(tsIdx) == 0 {
-		return 0, nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
+	sharedTsIdx = -1
+	if slices.ContainsFunc(specs, func(s aggColumnSpec) bool { return s.TimestampCol == "" }) {
+		tsIdx := schema.FieldIndices("end_bucket_timestamp")
+		if len(tsIdx) == 0 {
+			return 0, nil, fmt.Errorf("Arrow schema missing end_bucket_timestamp: have %v", schema.Fields())
+		}
+		sharedTsIdx = tsIdx[0]
 	}
 
 	resolved = make([]resolvedSpec, len(specs))
@@ -134,7 +138,7 @@ func resolveArrowSchema(schema *arrow.Schema, specs []aggColumnSpec) (sharedTsId
 		}
 	}
 
-	return tsIdx[0], resolved, nil
+	return sharedTsIdx, resolved, nil
 }
 
 func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []resolvedSpec) error {
@@ -166,15 +170,6 @@ func validateRecordColumnLengths(rec arrow.Record, sharedTsIdx int, resolved []r
 		}
 	}
 	return nil
-}
-
-func usesSharedTimestamps(resolved []resolvedSpec) bool {
-	for _, rs := range resolved {
-		if rs.tsIdx < 0 {
-			return true
-		}
-	}
-	return false
 }
 
 type rowSelection struct {
@@ -314,31 +309,13 @@ func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32
 	}
 }
 
-// extractArrowBucketedNumericSeries parses an Arrow IPC stream and extracts
-// one AggregationSeries per aggColumnSpec. Standard aggregations share the
-// end_bucket_timestamp column. FIRST_POINT/LAST_POINT use their own timestamp
-// columns (first_timestamp, last_timestamp) so each series can have independent time axes.
+// extractArrowBucketedNumericSeries parses an Arrow IPC stream into one
+// AggregationSeries per aggColumnSpec. Despite the name, it also decodes raw
+// LTTB responses. Specs without a TimestampCol share end_bucket_timestamp.
 func extractArrowBucketedNumericSeries(
 	arrowPlot computeapi.ArrowPlot,
 	specs []aggColumnSpec,
 ) ([]AggregationSeries, error) {
-	buf := bytes.NewReader(arrowPlot.ArrowBinary)
-	reader, err := ipc.NewReader(buf, ipc.WithAllocator(memory.DefaultAllocator))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Arrow IPC reader: %w", err)
-	}
-	defer reader.Release()
-
-	sharedTsIdx, resolved, err := resolveArrowSchema(reader.Schema(), specs)
-	if err != nil {
-		return nil, err
-	}
-	needsSharedTimestamps := usesSharedTimestamps(resolved)
-	sharedTsIdxForValidation := sharedTsIdx
-	if !needsSharedTimestamps {
-		sharedTsIdxForValidation = -1
-	}
-
 	// Initialize result slices — always non-nil so callers don't depend on nil semantics.
 	seriesData := make([]AggregationSeries, len(specs))
 	for i, spec := range specs {
@@ -357,20 +334,25 @@ func extractArrowBucketedNumericSeries(
 	}
 	recordSelections := make([]rowSelection, len(specs))
 
-	for reader.Next() {
-		rec := reader.Record()
+	var sharedTsIdx int
+	var resolved []resolvedSpec
+	open := func(schema *arrow.Schema) (err error) {
+		sharedTsIdx, resolved, err = resolveArrowSchema(schema, specs)
+		return err
+	}
+	each := func(rec arrow.RecordBatch) error {
 		nRows := int(rec.NumRows())
-		if err := validateRecordColumnLengths(rec, sharedTsIdxForValidation, resolved); err != nil {
-			return nil, err
+		if err := validateRecordColumnLengths(rec, sharedTsIdx, resolved); err != nil {
+			return err
 		}
 		for i := range recordSelections {
 			recordSelections[i] = allRows(nRows)
 		}
 
-		if needsSharedTimestamps {
+		if sharedTsIdx >= 0 {
 			tsCol, ok := rec.Column(sharedTsIdx).(*array.Int64)
 			if !ok {
-				return nil, fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
+				return fmt.Errorf("expected Int64 for end_bucket_timestamp, got %T", rec.Column(sharedTsIdx))
 			}
 			// Shared timestamps include every row; grow once per record.
 			sharedTimePoints = slices.Grow(sharedTimePoints, nRows)
@@ -388,12 +370,12 @@ func extractArrowBucketedNumericSeries(
 			}
 			perTsCol, ok := rec.Column(rs.tsIdx).(*array.Int64)
 			if !ok {
-				return nil, fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
+				return fmt.Errorf("expected Int64 for %s, got %T", specs[si].TimestampCol, rec.Column(rs.tsIdx))
 			}
 			var err error
 			perSeriesTime[si], recordSelections[si], err = appendNonNullTimestamps(perSeriesTime[si], perTsCol)
 			if err != nil {
-				return nil, fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
+				return fmt.Errorf("invalid timestamp column %s: %w", specs[si].TimestampCol, err)
 			}
 		}
 
@@ -402,13 +384,13 @@ func extractArrowBucketedNumericSeries(
 		// skipped so that TimePoints and Values stay the same length.
 		for fi, rs := range resolved {
 			if err := extractColumnValues(&seriesData[fi], rec.Column(rs.valueIdx), recordSelections[fi], nRows); err != nil {
-				return nil, fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
+				return fmt.Errorf("unsupported column type for %s: %w", specs[fi].ValueCol, err)
 			}
 		}
+		return nil
 	}
-
-	if err := reader.Err(); err != nil {
-		return nil, fmt.Errorf("Arrow IPC read error: %w", err)
+	if err := readArrowBatches(arrowPlot.ArrowBinary, open, each); err != nil {
+		return nil, err
 	}
 
 	// Assign timestamps: per-series for FIRST/LAST, shared for everything else.
@@ -421,4 +403,26 @@ func extractArrowBucketedNumericSeries(
 	}
 
 	return seriesData, nil
+}
+
+// readArrowBatches opens an Arrow IPC stream, passes its schema to open, then
+// passes each record batch to each.
+func readArrowBatches(binary []byte, open func(*arrow.Schema) error, each func(arrow.RecordBatch) error) error {
+	reader, err := ipc.NewReader(bytes.NewReader(binary), ipc.WithAllocator(memory.DefaultAllocator))
+	if err != nil {
+		return fmt.Errorf("failed to create Arrow IPC reader: %w", err)
+	}
+	defer reader.Release()
+	if err := open(reader.Schema()); err != nil {
+		return err
+	}
+	for reader.Next() {
+		if err := each(reader.RecordBatch()); err != nil {
+			return err
+		}
+	}
+	if err := reader.Err(); err != nil {
+		return fmt.Errorf("failed to read Arrow IPC stream: %w", err)
+	}
+	return nil
 }
