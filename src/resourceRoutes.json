@@ -6,6 +6,7 @@
   "datascopes": "datascopes",
   "channelVariables": "channelvariables",
   "oauthStart": "oauth/start",
+  "oauthLogin": "oauth/login",
   "oauthStatus": "oauth/status",
   "oauthLogout": "oauth/logout"
 }

@@ -24,12 +24,13 @@ func TestFrontendResourceRoutesAreRegistered(t *testing.T) {
 	}
 	for name, path := range routes {
 		t.Run(name, func(t *testing.T) {
-			// GET returns 405 for registered POST routes, without calling Nominal.
+			// Plugin routes only accept GET or POST, so a registered route answers PATCH with 405 and an
+			// unregistered one returns 404.
 			resp := callResourceAndCapture(t, &Datasource{}, &backend.CallResourceRequest{
-				Path: path, Method: http.MethodGet,
+				Path: path, Method: http.MethodPatch,
 			})
 			if resp.Status != http.StatusMethodNotAllowed {
-				t.Fatalf("frontend route %q returned %d, want 405 from a registered POST handler; add or fix its CallResource registration", path, resp.Status)
+				t.Fatalf("frontend route %q returned %d, want 405 from a registered handler; add or fix its CallResource registration", path, resp.Status)
 			}
 		})
 	}

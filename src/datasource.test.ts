@@ -1,6 +1,7 @@
 import { DataSource } from './datasource';
 import { NominalDataSourceOptions } from './types';
 import {
+  CoreApp,
   DataFrame,
   DataFrameType,
   DataQueryRequest,
@@ -29,6 +30,7 @@ jest.mock('@grafana/runtime', () => ({
   getDataSourceSrv: () => ({ getInstanceSettings: (ref: { uid: string }) => ({ uid: ref.uid }) }),
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
+  config: { appSubUrl: '/grafana' },
 }));
 
 const mockTemplateSrv = { replace: jest.fn((v: string) => v) };
@@ -48,6 +50,56 @@ function createDataSource(): DataSource {
   } as DataSourceInstanceSettings<NominalDataSourceOptions>;
   return new DataSource(settings);
 }
+
+describe('signed-out OAuth queries', () => {
+  const assign = jest.spyOn(DataSource.prototype, 'navigate').mockImplementation(() => {});
+  const signedOut: DataQueryResponse = { data: [], errors: [{ refId: 'A', status: 401, message: 'sign in to Nominal' }] };
+  const signInLink = '/grafana/api/datasources/uid/test-uid/resources/oauth/login?returnTo=%2Fd%2Fabc%3ForgId%3D1';
+
+  function query(app: string, response = signedOut): Promise<DataQueryResponse> {
+    mockBackendQuery.mockReturnValue(of(response));
+    const ds = new DataSource({ uid: 'test-uid', jsonData: { authMode: 'oauth' } } as DataSourceInstanceSettings<NominalDataSourceOptions>);
+    const range = { from: dateTime(0), to: dateTime(10), raw: { from: '', to: '' } };
+    return lastValueFrom(ds.query({ app, targets: [], range, requestId: 'R1' } as unknown as DataQueryRequest<any>));
+  }
+
+  function openPage(search: string) {
+    window.history.pushState({}, '', '/d/abc' + search);
+  }
+
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    openPage('?orgId=1');
+  });
+
+  it('sends a viewed dashboard through sign-in once and links to it', async () => {
+    const response = await query(CoreApp.Dashboard);
+    await query(CoreApp.Dashboard);
+
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith(signInLink);
+    expect(response.data[0].meta.notices[0].link).toBe(signInLink);
+  });
+
+  it('only links to sign-in from Explore, the panel editor and dashboard settings', async () => {
+    await query(CoreApp.Explore);
+    await query(CoreApp.PanelEditor);
+    openPage('?orgId=1&editPanel=2');
+    await query(CoreApp.Dashboard);
+    openPage('?orgId=1&editview=settings');
+    const response = await query(CoreApp.Dashboard);
+
+    expect(assign).not.toHaveBeenCalled();
+    expect(response.data[0].meta.notices[0].link).toContain('/oauth/login?returnTo=');
+  });
+
+  it('leaves other errors alone', async () => {
+    const failed: DataQueryResponse = { data: [], errors: [{ refId: 'A', status: 500, message: 'boom' }] };
+
+    expect(await query(CoreApp.Dashboard, failed)).toEqual(failed);
+    expect(assign).not.toHaveBeenCalled();
+  });
+});
 
 describe('backend health check routing', () => {
   it('does not override the backend health check with a frontend testDatasource method', () => {
