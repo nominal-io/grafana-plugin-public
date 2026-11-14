@@ -8,16 +8,36 @@ import {
   FieldType,
   LoadingState,
   ScopedVars,
-  MetricFindValue
+  MetricFindValue,
+  createDataFrame,
 } from '@grafana/data';
 import { map, Observable } from 'rxjs';
-import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv, config } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
 import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
+
+const SIGN_IN_REDIRECT_KEY = 'nominal-sign-in-redirect';
+const SIGN_IN_REDIRECT_INTERVAL_MS = 5 * 60 * 1000;
+
+function shouldRedirectToLogin(request: DataQueryRequest<NominalQuery>): boolean {
+  const params = new URLSearchParams(window.location.search);
+  if (request.app !== CoreApp.Dashboard || params.has('editPanel') || params.has('editview')) {
+    return false;
+  }
+  try {
+    if (Date.now() - Number(window.sessionStorage.getItem(SIGN_IN_REDIRECT_KEY)) < SIGN_IN_REDIRECT_INTERVAL_MS) {
+      return false;
+    }
+    window.sessionStorage.setItem(SIGN_IN_REDIRECT_KEY, String(Date.now()));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Grafana asks for the next page of logs with a range that ends at the millisecond of the oldest line
 // it shows, or for oldest-first panels starts at the newest one's, and every query of the panel gets
@@ -278,8 +298,37 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     this.setOAuthSignedIn(false);
   }
 
-
   query(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
+    const response = this.pagedQuery(request);
+    return this.usesOAuth ? response.pipe(map((r) => this.withSignInLink(request, r))) : response;
+  }
+
+  // A method so tests can stub full-page navigation.
+  navigate(url: string) {
+    window.location.assign(url);
+  }
+
+  private withSignInLink(request: DataQueryRequest<NominalQuery>, response: DataQueryResponse): DataQueryResponse {
+    const signedOut = (response.errors ?? []).filter((error) => error.status === 401);
+    if (signedOut.length === 0) {
+      return response;
+    }
+    const returnTo = window.location.pathname + window.location.search;
+    const link = `${config.appSubUrl}${this.url}/${resourceRoutes.oauthLogin}?returnTo=${encodeURIComponent(returnTo)}`;
+    if (shouldRedirectToLogin(request)) {
+      this.navigate(link);
+    }
+    const notices = signedOut.map((error) =>
+      createDataFrame({
+        refId: error.refId,
+        fields: [],
+        meta: { notices: [{ severity: 'warning', text: 'Sign in to Nominal to see this data', link }] },
+      })
+    );
+    return { ...response, data: [...response.data, ...notices] };
+  }
+
+  private pagedQuery(request: DataQueryRequest<NominalQuery>): Observable<DataQueryResponse> {
     // Mixed-datasource panels prefix each datasource's requestId; their scroll requests do not, and go
     // through the first query's instance. So a run is keyed by the data source that serves its queries,
     // resolved as the backend query resolves it.
