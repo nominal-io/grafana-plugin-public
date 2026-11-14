@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.17.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.16.0...nominal-grafana-plugin@0.17.0) (2026-11-14)
+
+
+### Features
+
+* add a Sign in to Nominal button for OAuth data sources ([#243](https://github.com/nominal-io/grafana-plugin-public/issues/243)) ([6ed2802](https://github.com/nominal-io/grafana-plugin-public/commit/6ed28029d406f007569c551c14a9bb84211942ca))
+* add log labels from SQL map columns ([#204](https://github.com/nominal-io/grafana-plugin-public/issues/204)) ([ee105a3](https://github.com/nominal-io/grafana-plugin-public/commit/ee105a3a8f6490ff17e62ac99de52aec684bfd72))
+* decode bucketed string channels as Arrow ([#253](https://github.com/nominal-io/grafana-plugin-public/issues/253)) ([d1fd8c5](https://github.com/nominal-io/grafana-plugin-public/commit/d1fd8c50ebe7826a4155d71752b95ff1b11808cf))
+* enable LTTB ([#248](https://github.com/nominal-io/grafana-plugin-public/issues/248)) ([6a4ab99](https://github.com/nominal-io/grafana-plugin-public/commit/6a4ab99c1e724ad27edd6aece4fdca89f35ac0a8))
+* logs format for SQL queries ([#201](https://github.com/nominal-io/grafana-plugin-public/issues/201)) ([5ccb89c](https://github.com/nominal-io/grafana-plugin-public/commit/5ccb89c77098531e84eb18ad1306466dd410a851))
+* logs format in the SQL editor ([#202](https://github.com/nominal-io/grafana-plugin-public/issues/202)) ([1922c1e](https://github.com/nominal-io/grafana-plugin-public/commit/1922c1e2dbf6b07140625e1fd4750466709c9384))
+* sign in to Nominal per Grafana user through Nominal OAuth ([#242](https://github.com/nominal-io/grafana-plugin-public/issues/242)) ([44b4466](https://github.com/nominal-io/grafana-plugin-public/commit/44b446632a4f157d0f04995b3a989cd1b97a4b75))
+
+
+### Bug Fixes
+
+* align bucketed numeric requests to a fixed grid ([#251](https://github.com/nominal-io/grafana-plugin-public/issues/251)) ([12c99e3](https://github.com/nominal-io/grafana-plugin-public/commit/12c99e31ca99c064bebf2375868e41320487a8b3))
+* cache failed channel metadata lookups for 30s ([#192](https://github.com/nominal-io/grafana-plugin-public/issues/192)) ([14cbbea](https://github.com/nominal-io/grafana-plugin-public/commit/14cbbeaba45242ae2c32dba47fea3b10d3564c84))
+* **deps:** bump github.com/klauspost/compress to v1.20.3 ([#249](https://github.com/nominal-io/grafana-plugin-public/issues/249)) ([024b88f](https://github.com/nominal-io/grafana-plugin-public/commit/024b88f935d79a7cd2d946a7513104f810557466))
+* **deps:** bump golang.org/x/net to v0.62.0 ([#244](https://github.com/nominal-io/grafana-plugin-public/issues/244)) ([75ee564](https://github.com/nominal-io/grafana-plugin-public/commit/75ee564cade2645786eb4b37212d248e26dbcf1b))
+* **deps:** update go dependencies (non-major) ([#239](https://github.com/nominal-io/grafana-plugin-public/issues/239)) ([11dfa6c](https://github.com/nominal-io/grafana-plugin-public/commit/11dfa6c8da28abbcd2ebc41c6db430a37dfccbf6))
+* **deps:** update go dependencies (non-major) ([#245](https://github.com/nominal-io/grafana-plugin-public/issues/245)) ([ba95431](https://github.com/nominal-io/grafana-plugin-public/commit/ba9543106801043547c74463aafc39cba50b45b2))
+* **deps:** update grafana frontend packages to v12.1.10 ([#225](https://github.com/nominal-io/grafana-plugin-public/issues/225)) ([a5ee40d](https://github.com/nominal-io/grafana-plugin-public/commit/a5ee40d8e476861b7ca836a554353d31330ea248))
+* **deps:** update module github.com/nominal-io/nominal-api-protos-go to v0.1.0 ([#241](https://github.com/nominal-io/grafana-plugin-public/issues/241)) ([0daa292](https://github.com/nominal-io/grafana-plugin-public/commit/0daa292f361e1af15715e4af0cc6d748d9961c33))
+* keep a panicking catalog lookup from stopping the plugin ([#187](https://github.com/nominal-io/grafana-plugin-public/issues/187)) ([386250d](https://github.com/nominal-io/grafana-plugin-public/commit/386250d3792b17901c1e624d7eea61d0642d2456))
+* keep log scrolling going past a dense millisecond ([#216](https://github.com/nominal-io/grafana-plugin-public/issues/216)) ([fc5da71](https://github.com/nominal-io/grafana-plugin-public/commit/fc5da710bb974a3185007b54d1afdae7b8230309))
+* keep the inactive query mode's API fields out of saved queries ([#217](https://github.com/nominal-io/grafana-plugin-public/issues/217)) ([7bebd76](https://github.com/nominal-io/grafana-plugin-public/commit/7bebd765cc7c967e6f631fdc631d2ac59d3d344b))
+* rank the wanted channel first in metadata search ([#153](https://github.com/nominal-io/grafana-plugin-public/issues/153)) ([fc2deb5](https://github.com/nominal-io/grafana-plugin-public/commit/fc2deb513f953eff40efb99afe6c77ca2089c320))
+* recover panics in batch queries ([#188](https://github.com/nominal-io/grafana-plugin-public/issues/188)) ([abfb3d3](https://github.com/nominal-io/grafana-plugin-public/commit/abfb3d3f5c0d875ed12b5bc0c879af2ea30b39d7))
+* stop the alert rule editor evaluating builder queries in a loop ([#213](https://github.com/nominal-io/grafana-plugin-public/issues/213)) ([4974a68](https://github.com/nominal-io/grafana-plugin-public/commit/4974a68ba653474a2b4e8125a95f0c07a971f5e8))
+
+
+### Chores
+
+* **deps:** remove unused conjure-client ([#227](https://github.com/nominal-io/grafana-plugin-public/issues/227)) ([5d71e0f](https://github.com/nominal-io/grafana-plugin-public/commit/5d71e0f22c07034d7367c1adda94eed7d4a76cb0))
+* **deps:** update dependency @grafana/tsconfig to v2.2.0 ([#226](https://github.com/nominal-io/grafana-plugin-public/issues/226)) ([1146f8d](https://github.com/nominal-io/grafana-plugin-public/commit/1146f8dfb1c35994b256018a7b3de8f8c99a31a0))
+* **deps:** update dependency brace-expansion@&gt;&#x3d;3.0.0 &lt;5.0.11 to v5.0.12 [security] ([#221](https://github.com/nominal-io/grafana-plugin-public/issues/221)) ([e680ae7](https://github.com/nominal-io/grafana-plugin-public/commit/e680ae70d964264dc193220155e99d68fffe9a6e))
+* **deps:** update frontend dependencies and group Renovate updates ([#232](https://github.com/nominal-io/grafana-plugin-public/issues/232)) ([4a288dc](https://github.com/nominal-io/grafana-plugin-public/commit/4a288dcbc1bd0e388894f7c2f451dea97ee0d2cb))
+* **deps:** update github.com/nominal-io/nominal-api-go digest to 1205fd5 ([#212](https://github.com/nominal-io/grafana-plugin-public/issues/212)) ([cb355c8](https://github.com/nominal-io/grafana-plugin-public/commit/cb355c8f5354831d4086b5b67702ef521a42a237))
+* **deps:** update pnpm overrides ([#224](https://github.com/nominal-io/grafana-plugin-public/issues/224)) ([565db7f](https://github.com/nominal-io/grafana-plugin-public/commit/565db7f8d77ab1d0c717466b0da4ef4456a4f617))
+* **deps:** update pnpm to v10.34.9 ([#235](https://github.com/nominal-io/grafana-plugin-public/issues/235)) ([779e184](https://github.com/nominal-io/grafana-plugin-public/commit/779e1847c20fef15a2d8a8ce3f751e815074c6ec))
+* **deps:** update SDK and address dependency vulnerabilities ([#219](https://github.com/nominal-io/grafana-plugin-public/issues/219)) ([fdcd4b5](https://github.com/nominal-io/grafana-plugin-public/commit/fdcd4b511dc3bceab17f05066fe79adacfb39e8e))
+
 ## [0.16.0](https://github.com/nominal-io/grafana-plugin-public/compare/nominal-grafana-plugin@0.15.0...nominal-grafana-plugin@0.16.0) (2026-10-14)
 
 
