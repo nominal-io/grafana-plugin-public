@@ -453,9 +453,10 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   async metricFindQuery(query: string, options?: LegacyMetricFindQueryOptions): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
+    // Grafana passes the typed search text in scopedVars, which must win over the empty default.
     const scopedVars: ScopedVars = {
-      ...options?.scopedVars,
       ...getSearchFilterScopedVar({ query: trimmedQuery, wildcardChar: '', options }),
+      ...options?.scopedVars,
     };
 
     // Handle channels query:

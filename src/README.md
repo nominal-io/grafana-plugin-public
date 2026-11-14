@@ -104,7 +104,7 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `assets` returns up to 500 assets from the workspace. Use it as the top variable in a smaller asset-driven dashboard built from scratch.
 - `assets($__searchFilter)` enables Grafana's dynamic dropdown search. Opening the dropdown loads unfiltered assets; typing in the dropdown re-runs the Nominal asset search with the typed text. Use this for large workspaces where the target asset might not be in the initially loaded result set.
 - `assets(engine)` returns assets matching the search text `engine`. Matching is case-insensitive, tolerates minor typos, and looks at the asset's name, description, labels, and properties - so `engine`, `engines`, and `enigne` all find `Engine 1`. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern - `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
-- `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset.
+- `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset. It does not take `$__searchFilter`: the dropdown already holds every scope on the asset, and typing filters them.
 - `channels(${asset})` returns up to 5,000 channel names across all supported data scopes on the selected asset, deduplicated by name. Use it when your asset has a single primary data scope or when panels pin a literal data scope.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
 - `channels(${asset}, ${datascope}, $__searchFilter)` enables Grafana's dynamic dropdown search for channels in the selected data scope. Use it for assets with large channel catalogs.
@@ -117,7 +117,7 @@ Scope names containing commas or delimiter-like characters should be referenced 
 
 ### SQL variable queries
 
-Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to use each row as both label and value, or return columns named `__text` and `__value` for a separate label. See [Dashboard variables](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#dashboard-variables) for how values are converted, an example that filters a panel by asset, and what happens after a downgrade.
+Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to use each row as both label and value, or return columns named `__text` and `__value` for a separate label. Write `$__searchFilter` in the SQL to search as the user types in the dropdown. It is empty until they type. See [Dashboard variables](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#dashboard-variables) for how values are converted, examples that filter a panel by asset and search assets by name, and what happens after a downgrade.
 
 ### Common patterns
 
