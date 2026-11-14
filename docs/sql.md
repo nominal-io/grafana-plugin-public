@@ -227,6 +227,20 @@ GROUP BY 1, 2
 ORDER BY 1
 ```
 
+To search as the user types in the dropdown, write `$__searchFilter` in the
+query. It is empty until the user types, so this lists the first 500 assets and
+then the assets whose names contain the typed text:
+
+```sql
+SELECT title AS __text, asset_rid AS __value
+FROM assets
+WHERE lower(title) LIKE lower('%$__searchFilter%')
+ORDER BY 1
+LIMIT 500
+```
+
+Each search runs the query again, so keep it cheap.
+
 SQL variables can use other variables and the time macros. A variable that
 uses a time macro needs Refresh set to **On time range change**. A query that
 reaches the SQL row limit keeps the rows up to the limit, and Grafana shows a
