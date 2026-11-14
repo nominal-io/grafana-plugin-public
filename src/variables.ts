@@ -92,7 +92,12 @@ export class NominalVariableSupport extends CustomVariableSupport<DataSource, No
     super();
   }
 
-  query(request: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+  query(originalRequest: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+    // Grafana sets __searchFilter only while the user types in the dropdown, so default it to match everything.
+    const request = {
+      ...originalRequest,
+      scopedVars: { __searchFilter: { value: '', text: '' }, ...originalRequest.scopedVars },
+    };
     const target = toVariableQuery(request.targets[0]);
     if (target.mode === 'sql') {
       return runSql(this.datasource, request, target);

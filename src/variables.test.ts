@@ -105,7 +105,7 @@ describe('NominalVariableSupport.query', () => {
     expect(query).toHaveBeenCalledWith(
       expect.objectContaining({
         targets: [{ refId: 'V', queryType: 'sql', rawSql: "SELECT channel FROM channels WHERE dataset_rid = '$asset'", format: 'table' }],
-        scopedVars,
+        scopedVars: { __searchFilter: { value: '', text: '' }, ...scopedVars },
         range,
       })
     );
@@ -151,5 +151,55 @@ describe('NominalVariableSupport.query', () => {
       assetRid: 'ri.asset.1',
     });
     expect(response.data).toEqual([{ text: 'default', value: 'default' }]);
+  });
+
+  describe('dynamic dropdown search', () => {
+    const searchVars = (searchFilter?: string) =>
+      searchFilter === undefined ? {} : { __searchFilter: { value: searchFilter, text: searchFilter } };
+    const runWithSearch = (ds: DataSource, target: NominalVariableQuery | string, searchFilter?: string) =>
+      lastValueFrom(
+        (ds.variables as NominalVariableSupport).query({
+          targets: [target],
+          range,
+          scopedVars: searchVars(searchFilter),
+        } as unknown as DataQueryRequest<NominalVariableQuery>)
+      );
+
+    beforeEach(() => {
+      (getTemplateSrv as jest.Mock).mockReturnValue({
+        replace: (v: string, vars?: Record<string, { value?: unknown }>) =>
+          v.replace('$__searchFilter', String(vars?.__searchFilter?.value ?? '$__searchFilter')),
+      });
+    });
+
+    it.each([
+      ['an unopened dropdown', undefined, ''],
+      ['typed text', 'motor', 'motor'],
+    ])('sends %s as the catalog search text', async (_, searchFilter, expected) => {
+      mockBackendSrv.post.mockResolvedValue([]);
+      const { ds } = makeDataSource();
+
+      await runWithSearch(ds, 'assets($__searchFilter)', searchFilter);
+
+      expect(mockBackendSrv.post).toHaveBeenCalledWith(
+        expect.stringContaining('/assets'),
+        expect.objectContaining({ searchText: expected })
+      );
+    });
+
+    it.each([
+      ['an unopened dropdown', undefined, ''],
+      ['typed text', 'motor', 'motor'],
+    ])('passes %s to SQL as __searchFilter', async (_, searchFilter, expected) => {
+      const { ds, query } = makeDataSource();
+
+      await runWithSearch(ds, sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'"), searchFilter);
+
+      expect(query).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopedVars: expect.objectContaining({ __searchFilter: expect.objectContaining({ value: expected }) }),
+        })
+      );
+    });
   });
 });
