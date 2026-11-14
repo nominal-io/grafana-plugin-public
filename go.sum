@@ -137,8 +137,8 @@ github.com/nmiyake/pkg/dirs v1.1.0 h1:qyTzK3bTqAJfekQcU6vlydM/YRxhHsv6MiRFEwTkJc
 github.com/nmiyake/pkg/dirs v1.1.0/go.mod h1:lGSUDZPexhLt+aWYfPHXsqnt+HFr2l/+lbEMWUhdZ/U=
 github.com/nominal-io/nominal-api-go v0.0.0-20261114160726-1205fd5fb56f h1:BD3NibEXh4D3QWPLpv8wYB7psPCYiJJo8R2vMtykuYM=
 github.com/nominal-io/nominal-api-go v0.0.0-20261114160726-1205fd5fb56f/go.mod h1:IPK8FcQ/30GN7rwy1roN/3FyeKbTL4Hl6BzgwPfqtqY=
-github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978 h1:nzpmgqIi6kyzo5Zcl9lM5/qgPcr8H0Ok2yQyllX4Ouc=
-github.com/nominal-io/nominal-api-protos-go v0.0.0-20260922215502-050a3bb04978/go.mod h1:qvUjcme464pYt3YU/qSH//fvUXtq6/9JcaegDUTSoEs=
+github.com/nominal-io/nominal-api-protos-go v0.1.0 h1:ECpV29PtNyl5zjhv7h51aa1V0obziJlDvsla2lG1uIY=
+github.com/nominal-io/nominal-api-protos-go v0.1.0/go.mod h1:qvUjcme464pYt3YU/qSH//fvUXtq6/9JcaegDUTSoEs=
 github.com/oklog/run v1.2.0 h1:O8x3yXwah4A73hJdlrwo/2X6J62gE5qTMusH0dvz60E=
 github.com/oklog/run v1.2.0/go.mod h1:mgDbKRSwPhJfesJ4PntqFUbKQRZ50NgmZTSPlFA0YFk=
 github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 h1:zrbMGy9YXpIeTnGj4EljqMiZsIcE09mmF8XsD5AYOJc=
