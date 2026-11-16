@@ -15,8 +15,6 @@ export interface NominalQuery extends DataQuery {
   // Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
   aggregations?: string[];
 
-  // Query parameters
-  buckets?: number;
   // Saved dashboards may still hold the retired 'timeShift', 'decimation' or 'raw'; treat anything but SQL as Compute.
   queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
   rawSql?: string;
@@ -48,7 +46,6 @@ export const DEFAULT_AGGREGATIONS: AggregationTypeValue[] = [AggregationType.Mea
 
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: QUERY_TYPE_COMPUTE,
-  buckets: 1000,
 };
 
 export const DEFAULT_SQL = `SELECT $__timeGroup(ts) AS "time", channel, AVG(value) AS "value"

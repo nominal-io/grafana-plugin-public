@@ -14,14 +14,14 @@ const baseQuery: NominalQuery = {
   channel: 'temp',
 };
 
-// Old dashboards persisted assetInputMethod, which has since been removed from
-// NominalQuery. The cast mimics untyped saved JSON that still carries the key.
+// Old dashboards persisted assetInputMethod and buckets, which have since been removed
+// from NominalQuery. The cast mimics untyped saved JSON that still carries the keys.
 function legacyQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
-  return { refId: 'A', assetInputMethod: 'direct', ...overrides } as NominalQuery;
+  return { refId: 'A', assetInputMethod: 'direct', buckets: 1000, ...overrides } as NominalQuery;
 }
 
 function hasLegacyKey(query: NominalQuery): boolean {
-  return Object.prototype.hasOwnProperty.call(query, 'assetInputMethod');
+  return ['assetInputMethod', 'buckets'].some((key) => Object.prototype.hasOwnProperty.call(query, key));
 }
 
 type LegacyMutationCase = {
@@ -77,7 +77,6 @@ describe('queryMutations', () => {
       expect.objectContaining({
         dataScopeName: 'scope-b',
         queryType: 'compute',
-        buckets: 1000,
       })
     );
     expect(
@@ -91,7 +90,6 @@ describe('queryMutations', () => {
         channelDataType: 'numeric',
         dataScopeName: 'scope-a',
         queryType: 'compute',
-        buckets: 1000,
       })
     );
   });
@@ -123,8 +121,8 @@ describe('queryMutations', () => {
     );
   });
 
-  describe('legacy assetInputMethod stripping', () => {
-    it.each(legacyMutationCases)('$name strips the legacy key while applying its write', ({ mutate, assertResult }) => {
+  describe('legacy key stripping', () => {
+    it.each(legacyMutationCases)('$name strips the legacy keys while applying its write', ({ mutate, assertResult }) => {
       const result = mutate();
       expect(hasLegacyKey(result)).toBe(false);
       assertResult(result);

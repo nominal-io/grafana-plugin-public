@@ -2,18 +2,17 @@ import { AggregationType, DEFAULT_AGGREGATIONS, QUERY_TYPE_COMPUTE, type Nominal
 
 const QUERY_BUILDER_EXECUTION_DEFAULTS = {
   queryType: QUERY_TYPE_COMPUTE,
-  buckets: 1000,
 };
 
-// Removes the legacy `assetInputMethod` key that older dashboards persisted.
-// The field was removed from NominalQuery; without this, every write would
-// re-persist the stale key because the helpers spread the incoming query.
+// Keys older dashboards persisted that NominalQuery no longer has. Without this,
+// every write would re-persist them because the helpers spread the incoming query.
+const LEGACY_KEYS = ['assetInputMethod', 'buckets'];
+
 export function normalizeLegacyQuery(query: NominalQuery): NominalQuery {
-  if (!Object.prototype.hasOwnProperty.call(query, 'assetInputMethod')) {
+  if (!LEGACY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(query, key))) {
     return query;
   }
-  const { assetInputMethod: _assetInputMethod, ...rest } = query as NominalQuery & { assetInputMethod?: unknown };
-  return rest;
+  return Object.fromEntries(Object.entries(query).filter(([key]) => !LEGACY_KEYS.includes(key))) as NominalQuery;
 }
 
 export function changeAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {

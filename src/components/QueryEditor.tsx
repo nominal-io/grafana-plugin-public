@@ -266,7 +266,6 @@ const FIELD_API = {
   dataScopeName: QUERY_TYPE_COMPUTE,
   channelDataType: QUERY_TYPE_COMPUTE,
   aggregations: QUERY_TYPE_COMPUTE,
-  buckets: QUERY_TYPE_COMPUTE,
   templateVariables: QUERY_TYPE_COMPUTE,
   queryText: QUERY_TYPE_COMPUTE,
   constant: QUERY_TYPE_COMPUTE,

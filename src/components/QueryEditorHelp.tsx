@@ -69,7 +69,6 @@ const timeSeriesExample: NominalQuery = {
   dataScopeName: '${datascope}',
   channel: '${channel}',
   queryType: 'compute',
-  buckets: 1000,
   aggregations: [...DEFAULT_AGGREGATIONS],
 };
 

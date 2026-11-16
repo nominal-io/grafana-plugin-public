@@ -206,7 +206,6 @@
       "targets": [
         {
           "assetRid": "ri.scout.gov-staging.asset.18fbe7fd-de1f-491d-af60-da7f375342d6",
-          "buckets": 1000,
           "channel": "altitude_m",
           "dataScopeName": "ref",
           "queryType": "decimation",
