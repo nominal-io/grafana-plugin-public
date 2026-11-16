@@ -1,9 +1,5 @@
 import { AggregationType, DEFAULT_AGGREGATIONS, QUERY_TYPE_COMPUTE, type NominalQuery } from '../../types';
 
-const QUERY_BUILDER_EXECUTION_DEFAULTS = {
-  queryType: QUERY_TYPE_COMPUTE,
-};
-
 // Keys older dashboards persisted that NominalQuery no longer has. Without this,
 // every write would re-persist them because the helpers spread the incoming query.
 const LEGACY_KEYS = ['assetInputMethod', 'buckets'];
@@ -23,7 +19,7 @@ export function changeSelectedDataScopeQuery(query: NominalQuery, dataScopeName:
   return {
     ...normalizeLegacyQuery(query),
     dataScopeName,
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
+    queryType: QUERY_TYPE_COMPUTE,
   };
 }
 
@@ -42,7 +38,7 @@ export function changeSelectedChannelQuery(
     channel,
     channelDataType: dataType,
     dataScopeName: query?.dataScopeName || '',
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
+    queryType: QUERY_TYPE_COMPUTE,
   };
 }
 
