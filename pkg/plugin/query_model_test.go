@@ -28,7 +28,6 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 			AssetRid:      "${asset}",
 			Channel:       "$channel",
 			DataScopeName: "$scope",
-			Buckets:       100,
 			TemplateVariables: map[string]interface{}{
 				"asset":   "ri.scout.main.asset.1",
 				"channel": "temperature",
@@ -62,6 +61,23 @@ func TestPrepareQueryAppliesTemplateVariablesAndDefaultsAggregations(t *testing.
 	}
 }
 
+// Dashboards saved by older plugin versions carry "buckets": 1000 in each query.
+func TestPrepareQueryIgnoresSavedBuckets(t *testing.T) {
+	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	query := backend.DataQuery{
+		RefID:         "A",
+		JSON:          []byte(`{"assetRid":"ri.scout.main.asset.1","channel":"temperature","dataScopeName":"default","channelDataType":"numeric","buckets":1000}`),
+		MaxDataPoints: 2500,
+	}
+	prepared, prepErr := newTestQueryExecution(withCatalog(&Datasource{}), config).prepareQuery(context.Background(), query)
+	if prepErr != nil {
+		t.Fatalf("unexpected preparation error: %v", prepErr.Error)
+	}
+	if prepared.Model.Points.Count != 2500 {
+		t.Errorf("point count = %d, want maxDataPoints 2500", prepared.Model.Points.Count)
+	}
+}
+
 func TestPrepareQueryAggregationRules(t *testing.T) {
 	ds := withCatalog(&Datasource{})
 	config := &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
@@ -82,7 +98,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "numeric",
 				Aggregations:    []string{AggMin, AggMax, AggMin},
-				Buckets:         100,
 			},
 			wantAggregations:      []string{AggMin, AggMax},
 			wantExplicit:          true,
@@ -96,28 +111,22 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "numeric",
 				Aggregations:    []string{"BOGUS"},
-				Buckets:         100,
 			},
 			wantErr: "unsupported aggregation \"BOGUS\"; valid options are COUNT, FIRST_POINT, LAST_POINT, LTTB, MAX, MEAN, MIN, VARIANCE",
 		},
 		{
-			name:    "buckets above the API limit are rejected",
-			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Buckets: 10001},
-			wantErr: "buckets must be at most 10000, got 10001",
-		},
-		{
 			name:             "LTTB is accepted as a raw numeric selection",
-			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}, Buckets: 100},
+			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB}},
 			wantAggregations: []string{AggLTTB}, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
 		},
 		{
 			name:             "repeated LTTB is accepted",
-			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB, AggLTTB}, Buckets: 100},
+			model:            NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggLTTB, AggLTTB}},
 			wantAggregations: []string{AggLTTB}, wantExplicit: true, wantPreparedQueryKind: preparedQueryBatchable,
 		},
 		{
 			name:    "LTTB cannot be combined with bucket aggregation",
-			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggMean, AggLTTB}, Buckets: 100},
+			model:   NominalQueryModel{AssetRid: "ri.scout.main.asset.1", Channel: "temperature", DataScopeName: "default", ChannelDataType: "numeric", Aggregations: []string{AggMean, AggLTTB}},
 			wantErr: "LTTB cannot be combined",
 		},
 		{
@@ -128,7 +137,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "string",
 				Aggregations:    []string{"BOGUS"},
-				Buckets:         100,
 			},
 			wantAggregations:      []string{"BOGUS"},
 			wantExplicit:          true,
@@ -142,7 +150,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "log",
 				Aggregations:    []string{"BOGUS"},
-				Buckets:         100,
 			},
 			wantAggregations:      []string{"BOGUS"},
 			wantExplicit:          true,
@@ -168,7 +175,6 @@ func TestPrepareQueryAggregationRules(t *testing.T) {
 			model: NominalQueryModel{
 				AssetRid: "ri.scout.main.asset.1",
 				Channel:  "temperature",
-				Buckets:  100,
 			},
 			wantErr: "dataScopeName is required",
 		},
@@ -212,11 +218,10 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 		name       string
 		channel    string
 		seriesType api.SeriesDataType_Value
-		buckets    int
 		want       string
 	}{
-		{"string channel saved as numeric", "state", api.SeriesDataType_STRING, 100, "string"},
-		{"log channel saved as numeric skips the buckets limit", "app.logs", api.SeriesDataType_LOG, 10001, "log"},
+		{"string channel saved as numeric", "state", api.SeriesDataType_STRING, "string"},
+		{"log channel saved as numeric", "app.logs", api.SeriesDataType_LOG, "log"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -263,7 +268,6 @@ func TestPrepareQueryInfersMissingChannelType(t *testing.T) {
 					DataScopeName:   "default",
 					ChannelDataType: "numeric",
 					Aggregations:    []string{AggMean},
-					Buckets:         tt.buckets,
 				}),
 			}
 
@@ -399,7 +403,7 @@ func TestPrepareQueryInfersChannelUnit(t *testing.T) {
 				RefID: "A",
 				JSON: mustMarshal(NominalQueryModel{
 					AssetRid: assetRid, Channel: tt.queryChannel, DataScopeName: "default",
-					ChannelDataType: "numeric", Aggregations: []string{AggMean}, Buckets: 100,
+					ChannelDataType: "numeric", Aggregations: []string{AggMean},
 				}),
 			}
 
@@ -454,7 +458,7 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 	req := newQueryRequest([]backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.test", Channel: "app.logs", DataScopeName: "default", ChannelDataType: "log"}),
 			TimeRange: timeRange,
 		},
 	})

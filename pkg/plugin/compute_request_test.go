@@ -187,41 +187,23 @@ func TestBuildComputeContext(t *testing.T) {
 
 func TestResolvePointBudget(t *testing.T) {
 	tests := []struct {
-		name          string
-		qm            NominalQueryModel
-		maxDataPoints int64
-		wantCount     int
-		wantNotice    bool
-		wantErr       string
+		name            string
+		channelDataType string
+		maxDataPoints   int64
+		wantCount       int
+		wantNotice      bool
 	}{
-		{"maxDataPoints lowers saved buckets", NominalQueryModel{Buckets: 1000}, 500, 500, false, ""},
-		{"maxDataPoints does not raise saved buckets", NominalQueryModel{Buckets: 500}, 1000, 500, false, ""},
-		{"zero maxDataPoints keeps saved buckets", NominalQueryModel{Buckets: 1000}, 0, 1000, false, ""},
-		{"saved buckets at the API limit are kept", NominalQueryModel{Buckets: 10000}, 0, 10000, false, ""},
-		{"saved buckets above the API limit are rejected", NominalQueryModel{Buckets: 10001}, 0, 0, false, "buckets must be at most 10000, got 10001"},
-		{"maxDataPoints lowers saved buckets above the API limit", NominalQueryModel{Buckets: 20000}, 1200, 1200, false, ""},
-		{"saved buckets above the API limit are rejected when maxDataPoints is too", NominalQueryModel{Buckets: 20000}, 15000, 0, false, "buckets must be at most 10000, got 20000"},
-		{"negative buckets are rejected", NominalQueryModel{Buckets: -10}, 300, 0, false, "buckets must be non-negative, got -10"},
-		{"maxDataPoints used when buckets is unset", NominalQueryModel{}, 2000, 2000, false, ""},
-		{"maxDataPoints at the API limit is not capped", NominalQueryModel{}, 10000, 10000, false, ""},
-		{"maxDataPoints above the API limit is capped with a notice", NominalQueryModel{}, 43200, 10000, true, ""},
-		{"both unset falls back to the default", NominalQueryModel{}, 0, 1000, false, ""},
-		{"string channels use the same rules", NominalQueryModel{ChannelDataType: ChannelDataTypeString}, 43200, 10000, true, ""},
-		{"log channels get no budget", NominalQueryModel{ChannelDataType: ChannelDataTypeLog, Buckets: 10001}, 43200, 0, false, ""},
+		{"maxDataPoints is the point count", ChannelDataTypeNumeric, 2000, 2000, false},
+		{"maxDataPoints at the API limit is not capped", ChannelDataTypeNumeric, 10000, 10000, false},
+		{"maxDataPoints above the API limit is capped with a notice", ChannelDataTypeNumeric, 43200, 10000, true},
+		{"unset maxDataPoints falls back to the default", ChannelDataTypeNumeric, 0, 1000, false},
+		{"string channels use the same rules", ChannelDataTypeString, 43200, 10000, true},
+		{"log channels get no budget", ChannelDataTypeLog, 43200, 0, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolvePointBudget(tt.qm, tt.maxDataPoints)
-			if tt.wantErr != "" {
-				if err == nil || err.Error() != tt.wantErr {
-					t.Fatalf("error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			got := resolvePointBudget(tt.channelDataType, tt.maxDataPoints)
 			if got.Count != tt.wantCount {
 				t.Errorf("Count = %d, want %d", got.Count, tt.wantCount)
 			}
@@ -454,7 +436,7 @@ func TestBuildSeriesPlanBranching(t *testing.T) {
 		AssetRid:      "ri.nominal.asset.test",
 		Channel:       "temperature",
 		DataScopeName: "default",
-		Buckets:       1000,
+		Points:        pointBudget{Count: 1000},
 	}
 
 	tests := []struct {
@@ -502,7 +484,6 @@ func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
 				Channel:         "temperature",
 				DataScopeName:   "default",
 				ChannelDataType: channelDataType,
-				Buckets:         1000,
 				Points:          pointBudget{Count: 750},
 			}
 			plan := seriesPlanFor(qe, qm)
@@ -523,7 +504,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Channel:         "temperature",
 			ChannelDataType: ChannelDataTypeNumeric,
 			DataScopeName:   "default",
-			Buckets:         1000,
+			Points:          pointBudget{Count: 1000},
 			Aggregations:    []string{AggMean},
 		}
 		plan := seriesPlanFor(qe, qm)
@@ -541,7 +522,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			AssetRid:      "ri.nominal.asset.123",
 			Channel:       "temperature",
 			DataScopeName: "default",
-			Buckets:       1000,
+			Points:        pointBudget{Count: 1000},
 			Aggregations:  []string{AggMean},
 		}
 		if plan := seriesPlanFor(qe, qm); !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
@@ -555,7 +536,7 @@ func TestBuildSeriesPlanArrowFormat(t *testing.T) {
 			Channel:         "status",
 			ChannelDataType: ChannelDataTypeString,
 			DataScopeName:   "default",
-			Buckets:         1000,
+			Points:          pointBudget{Count: 1000},
 		}
 		plan := seriesPlanFor(qe, qm)
 
@@ -597,7 +578,7 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	qm := NominalQueryModel{
 		AssetRid: "ri.nominal.asset.test", Channel: "temperature", DataScopeName: "default",
-		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 5000,
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB},
 		Points: pointBudget{Count: 500},
 	}
 	plan := seriesPlanFor(qe, qm)
@@ -642,7 +623,6 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 		Channel:         "app.logs",
 		ChannelDataType: ChannelDataTypeLog,
 		DataScopeName:   "default",
-		Buckets:         1000,
 	}
 	plan := seriesPlanFor(qe, qm)
 

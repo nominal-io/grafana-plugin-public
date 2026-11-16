@@ -180,7 +180,6 @@ func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSet
 		AssetRid:      target.assetRid,
 		Channel:       target.channel,
 		DataScopeName: target.dataScopeName,
-		Buckets:       buckets,
 	}
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{
@@ -214,7 +213,7 @@ func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSet
 func testLiveNominalLTTB(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
 	query := NominalQueryModel{
 		AssetRid: target.assetRid, Channel: target.channel, DataScopeName: target.dataScopeName,
-		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Buckets: 4,
+		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB},
 	}
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
@@ -261,7 +260,7 @@ func testLiveNominalString(t *testing.T, settings backend.DataSourceInstanceSett
 	// 20 buckets over 11 minutes are 33 s wide, so each one-per-minute sample has its own bucket.
 	query := NominalQueryModel{
 		AssetRid: target.assetRid, Channel: "state", DataScopeName: target.dataScopeName,
-		ChannelDataType: ChannelDataTypeString, Buckets: 20,
+		ChannelDataType: ChannelDataTypeString,
 	}
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},

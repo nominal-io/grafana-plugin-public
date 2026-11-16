@@ -187,35 +187,22 @@ type pointBudget struct {
 	Notice string
 }
 
-// resolvePointBudget caps maxDataPoints, a ceiling, at the API limit with a
-// notice, and rejects saved buckets above it. Log queries get no budget.
-func resolvePointBudget(qm NominalQueryModel, maxDataPoints int64) (pointBudget, error) {
-	if qm.ChannelDataType == ChannelDataTypeLog {
-		return pointBudget{}, nil
-	}
-	if qm.Buckets < 0 {
-		return pointBudget{}, fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
-	}
-	if qm.Buckets > 0 {
-		count := qm.Buckets
-		if maxDataPoints > 0 && maxDataPoints < int64(count) {
-			count = int(maxDataPoints)
-		}
-		if count > maxPointsPerQuery {
-			return pointBudget{}, fmt.Errorf("buckets must be at most %d, got %d", maxPointsPerQuery, qm.Buckets)
-		}
-		return pointBudget{Count: count}, nil
-	}
-	if maxDataPoints > maxPointsPerQuery {
+// resolvePointBudget takes Grafana's maxDataPoints as the point count, capped at
+// the API limit with a notice. Log queries get no budget.
+func resolvePointBudget(channelDataType string, maxDataPoints int64) pointBudget {
+	switch {
+	case channelDataType == ChannelDataTypeLog:
+		return pointBudget{}
+	case maxDataPoints > maxPointsPerQuery:
 		return pointBudget{
 			Count:  maxPointsPerQuery,
 			Notice: fmt.Sprintf("Max data points %d is above the Nominal limit, so %d points were requested", maxDataPoints, maxPointsPerQuery),
-		}, nil
+		}
+	case maxDataPoints > 0:
+		return pointBudget{Count: int(maxDataPoints)}
+	default:
+		return pointBudget{Count: defaultPointCount}
 	}
-	if maxDataPoints > 0 {
-		return pointBudget{Count: int(maxDataPoints)}, nil
-	}
-	return pointBudget{Count: defaultPointCount}, nil
 }
 
 func numericOutputFields(aggregations []string) []computeapi.NumericOutputField {

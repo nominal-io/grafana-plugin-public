@@ -28,7 +28,6 @@ type NominalQueryModel struct {
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
 	// Query parameters
-	Buckets   int    `json:"buckets"`
 	QueryType string `json:"queryType"`
 
 	// Template variables support
@@ -126,16 +125,7 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 	}
 
 	if qm.AssetRid != "" && qm.Channel != "" {
-		points, err := resolvePointBudget(qm, q.MaxDataPoints)
-		if err != nil {
-			log.DefaultLogger.Error("Query validation failed", "error", err)
-			response := backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("Query validation failed: %v", err),
-			)
-			return preparedQuery{}, &response
-		}
-		qm.Points = points
+		qm.Points = resolvePointBudget(qm.ChannelDataType, q.MaxDataPoints)
 		qm.RangeEnd = q.TimeRange.To
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryBatchable}, nil
 	}

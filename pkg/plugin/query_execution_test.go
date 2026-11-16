@@ -177,7 +177,7 @@ func makeBatchableQueries(count int, timeRange backend.TimeRange) []backend.Data
 	for i := 0; i < count; i++ {
 		queries[i] = backend.DataQuery{
 			RefID:     fmt.Sprintf("Q%03d", i),
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: fmt.Sprintf("ri.nominal.asset.%d", i+1), Channel: fmt.Sprintf("temp%d", i+1), DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: fmt.Sprintf("ri.nominal.asset.%d", i+1), Channel: fmt.Sprintf("temp%d", i+1), DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		}
 	}
@@ -216,17 +216,17 @@ func TestBatchQueryExecution(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -403,7 +403,6 @@ func TestQueryDataInfersMissingStringChannelType(t *testing.T) {
 				AssetRid:      assetRid,
 				Channel:       "state",
 				DataScopeName: "default",
-				Buckets:       100,
 			}),
 			TimeRange: timeRange,
 		},
@@ -521,7 +520,6 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "numeric",
 				Aggregations:    []string{"MEAN", "MIN"},
-				Buckets:         100,
 			}),
 			TimeRange: timeRange,
 		},
@@ -533,7 +531,6 @@ func TestMixedTypeTemplateVariableWithExplicitAggregations(t *testing.T) {
 				DataScopeName:   "default",
 				ChannelDataType: "numeric", // saved as numeric, but actually string
 				Aggregations:    []string{"MEAN", "MIN"},
-				Buckets:         100,
 			}),
 			TimeRange: timeRange,
 		},
@@ -645,7 +642,7 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
@@ -655,7 +652,7 @@ func TestBatchQueryMixedWithLegacy(t *testing.T) {
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -707,12 +704,12 @@ func TestBatchQueryError(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -763,17 +760,17 @@ func TestBatchQueryWithPartialErrors(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "nonexistent", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "nonexistent", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -845,17 +842,17 @@ func TestBatchQueryWithMissingResults(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -919,17 +916,17 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 	queries := []backend.DataQuery{
 		{
 			RefID:     "A",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp1", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "B",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temp2", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "C",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.3", Channel: "temp3", DataScopeName: "ds1"}),
 			TimeRange: timeRange,
 		},
 	}
@@ -1002,12 +999,12 @@ func TestMixedLogNumericParallelBatch(t *testing.T) {
 	req := newQueryRequest([]backend.DataQuery{
 		{
 			RefID:     "LOG",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: "log", Buckets: 100}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "app.logs", DataScopeName: "ds1", ChannelDataType: "log"}),
 			TimeRange: timeRange,
 		},
 		{
 			RefID:     "NUM",
-			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temperature", DataScopeName: "ds1", ChannelDataType: "numeric", Buckets: 100, Aggregations: []string{"MEAN"}}),
+			JSON:      mustMarshal(NominalQueryModel{AssetRid: "ri.nominal.asset.2", Channel: "temperature", DataScopeName: "ds1", ChannelDataType: "numeric", Aggregations: []string{"MEAN"}}),
 			TimeRange: timeRange,
 		},
 	})
