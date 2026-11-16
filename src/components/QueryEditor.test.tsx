@@ -309,6 +309,21 @@ describe('query API selection', () => {
       expect(Object.keys(current).sort()).toEqual(['queryType', 'refId']);
     });
 
+    it.each([
+      ['a Compute edit', undefined, () => setAggregations(['MIN'])],
+      ['a Compute edit in the alert rule editor', CoreApp.UnifiedAlerting, () => setAggregations(['MIN'])],
+      ['switching to SQL in the alert rule editor', CoreApp.UnifiedAlerting, () => pick('SQL')],
+      ['a SQL edit', undefined, async () => {
+        await pick('SQL');
+        typeSql('SELECT 1');
+      }],
+    ])('drops fields that older saved queries hold on %s', async (_, app, edit) => {
+      render(<Host initial={{ ...numeric, buckets: 1000, assetInputMethod: 'direct' } as NominalQuery} app={app} merge={app !== undefined} />);
+      await settleEffects();
+      await edit();
+      expect(['buckets', 'assetInputMethod'].filter((key) => key in withoutUndefined(current))).toEqual([]);
+    });
+
     it('removes the other API fields in the alert rule editor, which merges each change into the stored model', async () => {
       render(<Host initial={numeric} app={CoreApp.UnifiedAlerting} merge />);
       await settleEffects();

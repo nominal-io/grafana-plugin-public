@@ -1,23 +1,12 @@
 import { AggregationType, DEFAULT_AGGREGATIONS, QUERY_TYPE_COMPUTE, type NominalQuery } from '../../types';
 
-// Keys older dashboards persisted that NominalQuery no longer has. Without this,
-// every write would re-persist them because the helpers spread the incoming query.
-const LEGACY_KEYS = ['assetInputMethod', 'buckets'];
-
-export function normalizeLegacyQuery(query: NominalQuery): NominalQuery {
-  if (!LEGACY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(query, key))) {
-    return query;
-  }
-  return Object.fromEntries(Object.entries(query).filter(([key]) => !LEGACY_KEYS.includes(key))) as NominalQuery;
-}
-
 export function changeAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  return { ...normalizeLegacyQuery(query), assetRid };
+  return { ...query, assetRid };
 }
 
 export function changeSelectedDataScopeQuery(query: NominalQuery, dataScopeName: string): NominalQuery {
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     dataScopeName,
     queryType: QUERY_TYPE_COMPUTE,
   };
@@ -34,7 +23,7 @@ export function changeSelectedChannelQuery(
   }
 ): NominalQuery {
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     channel,
     channelDataType: dataType,
     dataScopeName: query?.dataScopeName || '',
@@ -43,7 +32,7 @@ export function changeSelectedChannelQuery(
 }
 
 export function inferChannelDataTypeQuery(query: NominalQuery, channelDataType: string): NominalQuery {
-  return { ...normalizeLegacyQuery(query), channelDataType };
+  return { ...query, channelDataType };
 }
 
 export function changeAggregationsQuery(query: NominalQuery, aggregations: string[]): NominalQuery {
@@ -55,7 +44,7 @@ export function changeAggregationsQuery(query: NominalQuery, aggregations: strin
         : [AggregationType.Lttb];
   }
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     aggregations: selected.length > 0 ? selected : [...DEFAULT_AGGREGATIONS],
   };
 }
