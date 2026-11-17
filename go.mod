@@ -3,8 +3,8 @@ module github.com/nominal-io/grafana-plugin-public
 go 1.27.4
 
 require (
-	github.com/apache/arrow-go/v18 v18.8.0
-	github.com/grafana/grafana-plugin-sdk-go v0.299.0
+	github.com/apache/arrow-go/v18 v18.9.0
+	github.com/grafana/grafana-plugin-sdk-go v0.300.0
 	github.com/nominal-io/nominal-api-go v0.0.0-20261114160726-1205fd5fb56f
 	github.com/nominal-io/nominal-api-protos-go v0.1.0
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
@@ -13,7 +13,7 @@ require (
 	github.com/palantir/pkg/safelong v1.4.0
 	github.com/palantir/pkg/uuid v1.4.0
 	golang.org/x/sync v0.25.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261110000943-09e21b237f2c
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261116203732-fd2c7689a808
 	google.golang.org/grpc v1.85.0
 )
 
@@ -50,7 +50,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/jszwedko/go-datemath v0.1.1-0.20260113213115-7f666eef0523 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/magefile/mage v1.17.2 // indirect
 	github.com/mattetti/filebuffer v1.0.1 // indirect
 	github.com/mattn/go-colorable v0.1.16 // indirect
@@ -110,7 +110,7 @@ require (
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/fsnotify/fsnotify.v1 v1.4.7 // indirect
