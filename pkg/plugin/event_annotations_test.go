@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,7 @@ func TestEventAnnotationFrame(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		event      event.Event
+		wantTitle  string
 		titles     map[rids.AssetRid]string
 		wantEnd    time.Time
 		wantText   string
@@ -81,7 +83,7 @@ func TestEventAnnotationFrame(t *testing.T) {
 			return ev
 		}(), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","NEW_KIND"]`},
 		{name: "zero duration", event: testEvent(t, "Launch", "plain", 0), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
-		{name: "escaping", event: testEvent(t, "Launch", "<b>x</b> & y", 0), wantEnd: start, wantText: "&lt;b&gt;x&lt;/b&gt; &amp; y", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "escaping", event: testEvent(t, "<i>Launch</i>", "<b>x</b> & y", 0), wantTitle: "&lt;i&gt;Launch&lt;/i&gt;", wantEnd: start, wantText: "&lt;b&gt;x&lt;/b&gt; &amp; y", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "newlines", event: testEvent(t, "Launch", "one\ntwo", 0), wantEnd: start, wantText: "one<br />two", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "no titles", event: testEvent(t, "Launch", "d", 0, testEventAssetA), wantEnd: start, wantText: "d", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "asset line", event: testEvent(t, "Launch", "d", 0, testEventAssetA), titles: titles, wantEnd: start, wantText: "Asset: Asset &lt;A&gt;<br />d", wantTagsJS: `["a,b","c","FLAG"]`},
@@ -98,8 +100,9 @@ func TestEventAnnotationFrame(t *testing.T) {
 			if got := frame.Fields[1].At(0).(time.Time); !got.Equal(tc.wantEnd) {
 				t.Errorf("timeEnd = %v, want %v", got, tc.wantEnd)
 			}
-			if got := frame.Fields[2].At(0); got != "Launch" {
-				t.Errorf("title = %v", got)
+			wantTitle := cmp.Or(tc.wantTitle, "Launch")
+			if got := frame.Fields[2].At(0); got != wantTitle {
+				t.Errorf("title = %v, want %v", got, wantTitle)
 			}
 			if got := frame.Fields[3].At(0); got != tc.wantText {
 				t.Errorf("text = %q, want %q", got, tc.wantText)
