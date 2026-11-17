@@ -18,17 +18,21 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	nominalapi "github.com/nominal-io/nominal-api-go/io/nominal/api"
 	nominaldatasource "github.com/nominal-io/nominal-api-go/io/nominal/datasource"
+	eventapi "github.com/nominal-io/nominal-api-go/io/nominal/event"
 	scoutapi "github.com/nominal-io/nominal-api-go/scout/api"
 	assetapi "github.com/nominal-io/nominal-api-go/scout/asset/api"
 	assetservice "github.com/nominal-io/nominal-api-go/scout/assets"
+	ridsapi "github.com/nominal-io/nominal-api-go/scout/rids/api"
 	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
 	writerapi "github.com/nominal-io/nominal-api-go/storage/writer/api"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
+	"github.com/palantir/pkg/safelong"
 )
 
 const liveNominalTestEnv = "NOMINAL_LIVE_TESTS"
@@ -66,6 +70,7 @@ type liveNominalAPIClients struct {
 	http      *http.Client
 	token     bearertoken.Token
 	asset     assetservice.AssetServiceClient
+	event     eventapi.EventServiceClient
 	writer    writerapi.NominalChannelWriterServiceClient
 }
 
@@ -314,7 +319,7 @@ func testLiveNominalSQL(t *testing.T, settings backend.DataSourceInstanceSetting
 		})},
 	}
 	req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: queries}
-	responses := pollLiveQuery(t, ds, req, liveSQLRowsReady(t, 2))
+	responses := pollLiveQuery(t, ds, req, liveRowsReady(t, 2))
 	for _, ref := range []string{"A", "B"} {
 		response := responses[ref]
 		if got := response.Frames[0].RefID; got != ref {
@@ -342,7 +347,7 @@ func testLiveNominalSQLLogs(t *testing.T, settings backend.DataSourceInstanceSet
 	}
 	req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{query}}
 
-	frame := pollLiveQuery(t, ds, req, liveSQLRowsReady(t, 3))["A"].Frames[0]
+	frame := pollLiveQuery(t, ds, req, liveRowsReady(t, 3))["A"].Frames[0]
 	for i, wantBody := range []string{"third", "second", "first"} {
 		body, _, rawLabels := logRow(frame, i)
 		if body != wantBody {
@@ -367,11 +372,20 @@ func testLiveNominalSQLLogs(t *testing.T, settings backend.DataSourceInstanceSet
 	nextJSON["scrollId"] = firstID
 	nextPage.JSON = mustMarshal(nextJSON)
 	nextReq := &backend.QueryDataRequest{PluginContext: req.PluginContext, Queries: []backend.DataQuery{nextPage}}
-	next := pollLiveQuery(t, ds, nextReq, liveSQLRowsReady(t, 1))["A"].Frames[0]
+	next := pollLiveQuery(t, ds, nextReq, liveRowsReady(t, 1))["A"].Frames[0]
 	body, id, _ := logRow(next, 0)
 	wantBody, wantID, _ := logRow(frame, 2)
 	if body != wantBody || id != wantID {
 		t.Errorf("next page row = %q with id %s, want %q with id %s as on the first page", body, id, wantBody, wantID)
+	}
+}
+
+// skipUnlessLiveWritesAllowed skips tests that create resources unless a non-default base URL is
+// set or writes to the default one are explicitly allowed.
+func skipUnlessLiveWritesAllowed(t *testing.T, settings backend.DataSourceInstanceSettings) {
+	t.Helper()
+	if liveNominalBaseURLFromSettings(t, settings) == defaultAPIBaseURL && os.Getenv("NOMINAL_ALLOW_DEFAULT_LIVE_WRITES") != "1" {
+		t.Skip("live QueryData test creates temporary Nominal resources; set NOMINAL_BASE_URL explicitly or NOMINAL_ALLOW_DEFAULT_LIVE_WRITES=1 to use the default URL")
 	}
 }
 
@@ -380,10 +394,7 @@ func testLiveNominalSQLLogs(t *testing.T, settings backend.DataSourceInstanceSet
 func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings backend.DataSourceInstanceSettings) (liveNominalAPIClients, string, liveNominalDataset) {
 	t.Helper()
 
-	baseURL := liveNominalBaseURLFromSettings(t, settings)
-	if baseURL == defaultAPIBaseURL && os.Getenv("NOMINAL_ALLOW_DEFAULT_LIVE_WRITES") != "1" {
-		t.Skip("live QueryData test creates temporary Nominal resources; set NOMINAL_BASE_URL explicitly or NOMINAL_ALLOW_DEFAULT_LIVE_WRITES=1 to use the default URL")
-	}
+	skipUnlessLiveWritesAllowed(t, settings)
 
 	clients := newLiveNominalAPIClients(t, settings)
 	name := fmt.Sprintf("grafana-plugin-live-%d", time.Now().UnixNano())
@@ -400,6 +411,104 @@ func createTempLiveNominalDataset(t *testing.T, ctx context.Context, settings ba
 		}
 	})
 	return clients, name, dataset
+}
+
+// TestLiveNominalEvents creates an asset with an instant event and an event with a duration, then
+// checks the annotation frame and a label filter. Resources are archived when the test ends.
+func TestLiveNominalEvents(t *testing.T) {
+	settings := liveNominalSettings(t)
+	skipUnlessLiveWritesAllowed(t, settings)
+	clients := newLiveNominalAPIClients(t, settings)
+	ds := liveNominalDatasource(t, settings)
+
+	ctx, cancel := context.WithDeadline(context.Background(), liveDeadline(t))
+	defer cancel()
+	asset, err := clients.asset.CreateAsset(ctx, clients.token, assetapi.CreateAssetRequest{
+		Title:     fmt.Sprintf("grafana-plugin-live-events-%d", time.Now().UnixNano()),
+		Workspace: clients.workspace,
+	})
+	if err != nil {
+		t.Fatalf("failed to create live Nominal asset: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		if err := clients.asset.Archive(cleanupCtx, clients.token, asset.Rid, nil); err != nil {
+			t.Logf("failed to archive live Nominal asset %s: %v", asset.Rid, err)
+		}
+	})
+
+	base := liveNominalLogBase
+	newEvent := func(name string, offset, duration time.Duration, labels ...nominalapi.Label) eventapi.CreateEvent {
+		return eventapi.CreateEvent{
+			AssetRids: []ridsapi.AssetRid{asset.Rid},
+			Timestamp: timestampFromTime(base.Add(offset)),
+			Duration:  runapi.Duration{Seconds: safelong.SafeLong(duration / time.Second)},
+			Name:      name,
+			Type:      eventapi.New_EventType(eventapi.EventType_INFO),
+			Labels:    labels,
+		}
+	}
+	var eventRids []rids.EventRid
+	for _, create := range []eventapi.CreateEvent{
+		newEvent("instant", 0, 0, "live-a"),
+		newEvent("span", time.Minute, 2*time.Minute, "live-a", "live-b"),
+	} {
+		created, err := clients.event.CreateEvent(ctx, clients.token, create)
+		if err != nil {
+			t.Fatalf("failed to create live Nominal event %q: %v", create.Name, err)
+		}
+		eventRids = append(eventRids, created.Rid)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		if err := clients.event.BatchArchiveEvent(cleanupCtx, clients.token, eventRids); err != nil {
+			t.Logf("failed to archive live Nominal events: %v", err)
+		}
+	})
+
+	run := func(want int, labels ...string) *data.Frame {
+		query := backend.DataQuery{
+			RefID:     "A",
+			TimeRange: backend.TimeRange{From: base.Add(-time.Minute), To: base.Add(5 * time.Minute)},
+			JSON:      mustMarshal(map[string]any{"queryType": queryTypeEvents, "assetRids": []string{asset.Rid.String()}, "eventLabels": labels}),
+		}
+		req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{query}}
+		return pollLiveQuery(t, ds, req, liveRowsReady(t, want))["A"].Frames[0]
+	}
+	type row struct {
+		time, timeEnd time.Time
+		title, tags   string
+	}
+	rows := func(frame *data.Frame) []row {
+		out := make([]row, frame.Rows())
+		for i := range out {
+			out[i] = row{
+				time:    frame.Fields[0].At(i).(time.Time),
+				timeEnd: frame.Fields[1].At(i).(time.Time),
+				title:   frame.Fields[2].At(i).(string),
+				tags:    string(frame.Fields[4].At(i).(json.RawMessage)),
+			}
+		}
+		return out
+	}
+	assertRows := func(got, want []row) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("got %d rows, want %d", len(got), len(want))
+		}
+		for i := range want {
+			if !got[i].time.Equal(want[i].time) || !got[i].timeEnd.Equal(want[i].timeEnd) || got[i].title != want[i].title || got[i].tags != want[i].tags {
+				t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+			}
+		}
+	}
+	instant := row{base, base, "instant", `["live-a","INFO"]`}
+	span := row{base.Add(time.Minute), base.Add(3 * time.Minute), "span", `["live-a","live-b","INFO"]`}
+
+	assertRows(rows(run(2)), []row{span, instant})
+	assertRows(rows(run(1, "live-b")), []row{span})
 }
 
 func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {
@@ -518,10 +627,10 @@ func pollLiveQuery(t *testing.T, ds *Datasource, req *backend.QueryDataRequest, 
 	return nil
 }
 
-// liveSQLRowsReady accepts SQL responses once each has one frame with want rows. Not found is
+// liveRowsReady accepts responses once each has one frame with want rows. Not found is
 // retried, since a new dataset may not be queryable yet. Any other error, or more rows than want,
 // fails at once.
-func liveSQLRowsReady(t *testing.T, want int) func(backend.Responses) error {
+func liveRowsReady(t *testing.T, want int) func(backend.Responses) error {
 	return func(responses backend.Responses) error {
 		for _, ref := range slices.Sorted(maps.Keys(responses)) {
 			response := responses[ref]
@@ -603,6 +712,7 @@ func newLiveNominalAPIClients(t *testing.T, settings backend.DataSourceInstanceS
 		http:      &http.Client{Timeout: 30 * time.Second},
 		token:     bearertoken.Token(apiKey),
 		asset:     assetservice.NewAssetServiceClient(conjureClient),
+		event:     eventapi.NewEventServiceClient(conjureClient),
 		writer:    writerapi.NewNominalChannelWriterServiceClient(conjureClient),
 	}
 }
