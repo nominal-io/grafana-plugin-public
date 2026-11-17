@@ -34,6 +34,8 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleDatascopesVariable(ctx, req, sender)
 	case "channelvariables":
 		return h.handleChannelVariables(ctx, req, sender)
+	case "event-labels":
+		return h.handleEventLabels(ctx, req, sender)
 	case "oauth/start":
 		return h.handleOAuthStart(ctx, req, sender)
 	case "oauth/callback":

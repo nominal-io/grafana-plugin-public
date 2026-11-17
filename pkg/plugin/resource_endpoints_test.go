@@ -13,6 +13,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	"github.com/nominal-io/nominal-api-go/scout/metadata"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
@@ -892,4 +893,81 @@ func TestHandleChannelVariables(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+type fakeMetadataService struct {
+	metadata.ResourceMetadataServiceClient
+	request metadata.SearchMetadataRequest
+	labels  []string
+	err     error
+}
+
+func (f *fakeMetadataService) SearchLabels(_ context.Context, _ bearertoken.Token, req metadata.SearchMetadataRequest) (metadata.SearchLabelsResponse, error) {
+	f.request = req
+	var out metadata.SearchLabelsResponse
+	for _, l := range f.labels {
+		out.Labels = append(out.Labels, metadata.LabelWithCount{Label: api.Label(l), DocumentCount: 1})
+	}
+	return out, f.err
+}
+
+func TestHandleEventLabels(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		wantSearch *string
+	}{
+		{"query is passed as search text", "event-labels?q=valv", new("valv")},
+		{"query is trimmed", "event-labels?q=%20valv%20", new("valv")},
+		{"blank query sends no search text", "event-labels?q=%20", nil},
+		{"missing query sends no search text", "event-labels", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeMetadataService{labels: []string{"valve", "valves"}}
+			ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+			ds.metadataService = fake
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", URL: tt.url, Method: "GET"})
+
+			if resp.Status != http.StatusOK || string(resp.Body) != `{"labels":["valve","valves"]}` {
+				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
+			}
+			got := fake.request
+			if (got.SearchText == nil) != (tt.wantSearch == nil) || (got.SearchText != nil && *got.SearchText != *tt.wantSearch) {
+				t.Errorf("searchText = %v, want %v", got.SearchText, tt.wantSearch)
+			}
+			if got.ResourceTypes == nil || len(*got.ResourceTypes) != 1 || (*got.ResourceTypes)[0].Value() != metadata.ResourceType_EVENT {
+				t.Errorf("resourceTypes = %v, want [EVENT]", got.ResourceTypes)
+			}
+			if got.PageSize == nil || *got.PageSize != 100 || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT {
+				t.Errorf("pageSize/sortBy = %v/%v", got.PageSize, got.SortBy)
+			}
+		})
+	}
+
+	t.Run("no labels returns an empty array", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.metadataService = &fakeMetadataService{}
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
+		if string(resp.Body) != `{"labels":[]}` {
+			t.Errorf("body = %s", resp.Body)
+		}
+	})
+
+	t.Run("upstream error status is passed through", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds.metadataService = &fakeMetadataService{err: conjureHTTP401NoBody(t)}
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
+		if resp.Status != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", resp.Status)
+		}
+	})
+
+	t.Run("non-GET is rejected", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
+		if resp.Status != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want 405", resp.Status)
+		}
+	})
 }

@@ -5,6 +5,7 @@
   "assets": "assets",
   "datascopes": "datascopes",
   "channelVariables": "channelvariables",
+  "eventLabels": "event-labels",
   "oauthStart": "oauth/start",
   "oauthStatus": "oauth/status",
   "oauthLogout": "oauth/logout"

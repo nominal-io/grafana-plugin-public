@@ -19,6 +19,7 @@ import (
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
+	"github.com/nominal-io/nominal-api-go/scout/metadata"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
@@ -106,6 +107,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
 		eventService:        event.NewEventServiceClient(conjureClient),
+		metadataService:     metadata.NewResourceMetadataServiceClient(conjureClient),
 		workspaceRid:        workspaceRid,
 		usesOAuth:           config.UsesOAuth(),
 		oauthSessions:       newSessionStore(),
@@ -130,6 +132,7 @@ type Datasource struct {
 	datasourceService datasourceservice.DataSourceServiceClient
 	workspaceService  workspaceapi.WorkspaceServiceClient
 	eventService      event.EventServiceClient
+	metadataService   metadata.ResourceMetadataServiceClient
 
 	workspaceRid *rids.WorkspaceRid
 	usesOAuth    bool
