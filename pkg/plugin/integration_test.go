@@ -471,10 +471,10 @@ func TestLiveNominalEvents(t *testing.T) {
 		eventRids = append(eventRids, created.Rid)
 	}
 
-	run := func(want int, labels ...string) *data.Frame {
+	run := func(timeRange backend.TimeRange, want int, labels ...string) *data.Frame {
 		query := backend.DataQuery{
 			RefID:     "A",
-			TimeRange: backend.TimeRange{From: base.Add(-time.Minute), To: base.Add(5 * time.Minute)},
+			TimeRange: timeRange,
 			JSON:      mustMarshal(map[string]any{"queryType": queryTypeEvents, "assetRids": []string{asset.Rid.String()}, "eventLabels": labels}),
 		}
 		req := &backend.QueryDataRequest{PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings}, Queries: []backend.DataQuery{query}}
@@ -510,8 +510,11 @@ func TestLiveNominalEvents(t *testing.T) {
 	instant := row{base, base, "instant", `["live-a","INFO"]`}
 	span := row{base.Add(time.Minute), base.Add(3 * time.Minute), "span", `["live-b","INFO"]`}
 
-	assertRows(rows(run(2)), []row{span, instant})
-	assertRows(rows(run(1, "live-b")), []row{span})
+	full := backend.TimeRange{From: base.Add(-time.Minute), To: base.Add(5 * time.Minute)}
+	assertRows(rows(run(full, 2)), []row{span, instant})
+	assertRows(rows(run(full, 1, "live-b")), []row{span})
+	// The span starts before this range and ends inside it; the instant event is before it.
+	assertRows(rows(run(backend.TimeRange{From: base.Add(2 * time.Minute), To: base.Add(5 * time.Minute)}, 1)), []row{span})
 }
 
 func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {
