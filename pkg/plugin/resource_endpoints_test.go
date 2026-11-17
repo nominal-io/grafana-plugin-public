@@ -914,20 +914,20 @@ func (f *fakeMetadataService) SearchLabels(_ context.Context, _ bearertoken.Toke
 func TestHandleEventLabels(t *testing.T) {
 	tests := []struct {
 		name       string
-		url        string
+		body       string
 		wantSearch *string
 	}{
-		{"query is passed as search text", "event-labels?q=valv", new("valv")},
-		{"query is trimmed", "event-labels?q=%20valv%20", new("valv")},
-		{"blank query sends no search text", "event-labels?q=%20", nil},
-		{"missing query sends no search text", "event-labels", nil},
+		{"query is passed as search text", `{"q":"valv"}`, new("valv")},
+		{"query is trimmed", `{"q":" valv "}`, new("valv")},
+		{"blank query sends no search text", `{"q":" "}`, nil},
+		{"missing query sends no search text", `{}`, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeMetadataService{labels: []string{"valve", "valves"}}
 			ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 			ds.metadataService = fake
-			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", URL: tt.url, Method: "GET"})
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Body: []byte(tt.body), Method: "POST"})
 
 			if resp.Status != http.StatusOK || string(resp.Body) != `{"labels":["valve","valves"]}` {
 				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
@@ -948,7 +948,7 @@ func TestHandleEventLabels(t *testing.T) {
 	t.Run("no labels returns an empty array", func(t *testing.T) {
 		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 		ds.metadataService = &fakeMetadataService{}
-		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if string(resp.Body) != `{"labels":[]}` {
 			t.Errorf("body = %s", resp.Body)
 		}
@@ -957,15 +957,15 @@ func TestHandleEventLabels(t *testing.T) {
 	t.Run("upstream error status is passed through", func(t *testing.T) {
 		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 		ds.metadataService = &fakeMetadataService{err: conjureHTTP401NoBody(t)}
-		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if resp.Status != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", resp.Status)
 		}
 	})
 
-	t.Run("non-GET is rejected", func(t *testing.T) {
+	t.Run("GET is rejected", func(t *testing.T) {
 		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
-		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
 		if resp.Status != http.StatusMethodNotAllowed {
 			t.Errorf("status = %d, want 405", resp.Status)
 		}

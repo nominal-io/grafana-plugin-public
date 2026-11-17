@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -226,15 +225,23 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 
 const eventLabelPageSize = 100
 
+type eventLabelsRequest struct {
+	Q string `json:"q"`
+}
+
 type eventLabelsResponse struct {
 	Labels []string `json:"labels"`
 }
 
-// handleEventLabels returns event labels matching the optional q substring, most used first.
+// handleEventLabels returns event labels matching the optional q substring (POST body {"q": "..."}), most used first.
 func (h *NominalResourceHandler) handleEventLabels(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	d := h.datasource
-	if req.Method != http.MethodGet {
-		return jsonErrorResponse(sender, http.StatusMethodNotAllowed, "Method not allowed. Use GET.")
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var body eventLabelsRequest
+	if ok, err := decodeOptionalResourceJSON(req, sender, &body, "Failed to parse event labels request body"); !ok {
+		return err
 	}
 	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for event labels")
 	if !ok {
@@ -247,10 +254,8 @@ func (h *NominalResourceHandler) handleEventLabels(ctx context.Context, req *bac
 		PageSize:      &pageSize,
 		SortBy:        metadata.New_MetadataSortField(metadata.MetadataSortField_USAGE_COUNT),
 	}
-	if parsed, err := url.Parse(req.URL); err == nil {
-		if q := strings.TrimSpace(parsed.Query().Get("q")); q != "" {
-			request.SearchText = &q
-		}
+	if q := strings.TrimSpace(body.Q); q != "" {
+		request.SearchText = &q
 	}
 
 	result, err := d.metadataService.SearchLabels(ctx, bearertoken.Token(config.Secrets.AuthToken), request)
