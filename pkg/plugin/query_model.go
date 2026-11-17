@@ -13,6 +13,8 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
+	rids "github.com/nominal-io/nominal-api-go/scout/rids/api"
+	"github.com/palantir/pkg/rid"
 )
 
 // NominalQueryModel represents a query to the Nominal API
@@ -90,6 +92,8 @@ type preparedQuery struct {
 	Kind  preparedQueryKind
 	// SQL is set for preparedQuerySQL queries.
 	SQL *sqlutil.Query
+	// Assets is set for preparedQueryEvents queries.
+	Assets []rids.AssetRid
 }
 
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
@@ -125,7 +129,16 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 			response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "select an asset")
 			return preparedQuery{}, &response
 		}
-		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryEvents}, nil
+		assets := make([]rids.AssetRid, len(qm.AssetRids))
+		for i, s := range qm.AssetRids {
+			parsed, err := rid.ParseRID(s)
+			if err != nil {
+				response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, fmt.Sprintf("invalid asset RID %q: %v", s, err))
+				return preparedQuery{}, &response
+			}
+			assets[i] = rids.AssetRid(parsed)
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryEvents, Assets: assets}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {

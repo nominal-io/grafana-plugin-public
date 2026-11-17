@@ -65,11 +65,11 @@ func testEvent(t *testing.T, name, description string, durationSeconds int64, as
 
 func TestEventAnnotationFrame(t *testing.T) {
 	start := time.Unix(1_700_000_000, 0)
-	titles := map[string]string{testEventAssetA: "Asset <A>", testEventAssetB: "Asset B"}
+	titles := map[rids.AssetRid]string{testEventAssetRid(t, testEventAssetA): "Asset <A>", testEventAssetRid(t, testEventAssetB): "Asset B"}
 	for _, tc := range []struct {
 		name       string
 		event      event.Event
-		titles     map[string]string
+		titles     map[rids.AssetRid]string
 		wantEnd    time.Time
 		wantText   string
 		wantTagsJS string
@@ -131,10 +131,8 @@ func TestBuildEventSearch(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			request, err := buildEventSearch(tc.model, timeRange)
-			if err != nil {
-				t.Fatal(err)
-			}
+			assets := []rids.AssetRid{testEventAssetRid(t, testEventAssetA), testEventAssetRid(t, testEventAssetB)}
+			request := buildEventSearch(tc.model, assets, timeRange)
 			if request.PageSize != 1000 || !request.Sort.IsDescending || request.Sort.Field.Value() != event.SortField_START_TIME {
 				t.Errorf("page size %d, sort %+v", request.PageSize, request.Sort)
 			}
@@ -146,10 +144,6 @@ func TestBuildEventSearch(t *testing.T) {
 				t.Errorf("query = %s\nwant    %s", raw, want)
 			}
 		})
-	}
-
-	if _, err := buildEventSearch(NominalQueryModel{AssetRids: []string{"not a rid"}}, timeRange); err == nil {
-		t.Error("invalid asset RID: want error")
 	}
 }
 
@@ -173,6 +167,7 @@ func TestExecuteEventQueries(t *testing.T) {
 		query("E", `{"queryType":"events","assetRids":["`+testEventAssetA+`","`+testEventAssetB+`"]}`),
 		query("S", `{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`),
 		query("N", `{"queryType":"events","assetRids":[]}`),
+		query("I", `{"queryType":"events","assetRids":["not a rid"]}`),
 	})
 
 	if r := response.Responses["E"]; r.Error != nil || len(r.Frames) != 1 || r.Frames[0].Fields[3].At(0) != "Asset: Asset A<br />d" {
@@ -183,6 +178,9 @@ func TestExecuteEventQueries(t *testing.T) {
 	}
 	if r := response.Responses["N"]; r.Status != backend.StatusBadRequest || r.ErrorSource != backend.ErrorSourceDownstream {
 		t.Errorf("empty asset list response = %+v", r)
+	}
+	if r := response.Responses["I"]; r.Status != backend.StatusBadRequest || r.ErrorSource != backend.ErrorSourceDownstream {
+		t.Errorf("invalid asset RID response = %+v", r)
 	}
 
 	events.err = errors.New("boom")

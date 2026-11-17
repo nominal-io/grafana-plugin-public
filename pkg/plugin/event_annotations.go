@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"html"
 	"strings"
 	"sync"
@@ -22,15 +21,7 @@ import (
 const eventPageSize = 1000
 
 // buildEventSearch matches events that overlap the time range, on any of the model's assets.
-func buildEventSearch(qm NominalQueryModel, timeRange backend.TimeRange) (event.SearchEventsRequest, error) {
-	assets := make([]rids.AssetRid, len(qm.AssetRids))
-	for i, s := range qm.AssetRids {
-		parsed, err := rid.ParseRID(s)
-		if err != nil {
-			return event.SearchEventsRequest{}, fmt.Errorf("invalid asset RID %q: %w", s, err)
-		}
-		assets[i] = rids.AssetRid(parsed)
-	}
+func buildEventSearch(qm NominalQueryModel, assets []rids.AssetRid, timeRange backend.TimeRange) event.SearchEventsRequest {
 	filters := []event.SearchQuery{
 		event.NewSearchQueryFromAssets(event.AssetsFilter{Operator: api.New_SetOperator(api.SetOperator_OR), Assets: assets}),
 		event.NewSearchQueryFromAdvancedTimeFilter(event.EventTimeFilter{
@@ -60,12 +51,12 @@ func buildEventSearch(qm NominalQueryModel, timeRange backend.TimeRange) (event.
 		Sort:     event.SortOptions{IsDescending: true, Field: event.New_SortField(event.SortField_START_TIME)},
 		PageSize: eventPageSize,
 		Query:    event.NewSearchQueryFromAnd(filters),
-	}, nil
+	}
 }
 
 // eventAnnotationFrame shapes events as a Grafana annotation frame. Text is rendered as HTML, so
 // event text is escaped. A line naming each event asset found in assetTitles leads the text.
-func eventAnnotationFrame(events []event.Event, assetTitles map[string]string) *data.Frame {
+func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]string) *data.Frame {
 	n := len(events)
 	times, timeEnds := make([]time.Time, n), make([]time.Time, n)
 	titles, texts, tags := make([]string, n), make([]string, n), make([]json.RawMessage, n)
@@ -76,7 +67,7 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[string]string) *
 
 		var text strings.Builder
 		for _, assetRid := range ev.AssetRids {
-			if title, ok := assetTitles[rid.ResourceIdentifier(assetRid).String()]; ok {
+			if title, ok := assetTitles[assetRid]; ok {
 				text.WriteString("Asset: " + html.EscapeString(title) + "<br />")
 			}
 		}
@@ -100,14 +91,14 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[string]string) *
 }
 
 // eventAssetTitles looks up the title of each asset. Assets that fail to resolve are left out.
-func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids []string) map[string]string {
-	titles := make(map[string]string, len(assetRids))
+func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids []rids.AssetRid) map[rids.AssetRid]string {
+	titles := make(map[rids.AssetRid]string, len(assetRids))
 	var mu sync.Mutex
 	var g errgroup.Group
 	g.SetLimit(maxConcurrentRequests)
 	for _, assetRid := range assetRids {
 		g.Go(func() error {
-			asset, err := e.datasource.nominalCatalog.FetchAssetByRid(ctx, e.config, assetRid)
+			asset, err := e.datasource.nominalCatalog.FetchAssetByRid(ctx, e.config, rid.ResourceIdentifier(assetRid).String())
 			if err == nil && asset != nil {
 				mu.Lock()
 				titles[assetRid] = asset.Title
@@ -122,19 +113,16 @@ func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids 
 
 func (e *NominalQueryExecution) executeEventQuery(ctx context.Context, prepared preparedQuery) (response backend.DataResponse) {
 	defer recoverQuery(ctx, "Event query", &response)
-	request, err := buildEventSearch(prepared.Model, prepared.Query.TimeRange)
-	if err != nil {
-		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
-	}
+	request := buildEventSearch(prepared.Model, prepared.Assets, prepared.Query.TimeRange)
 	token := bearertoken.Token(e.config.Secrets.AuthToken)
 	result, err := e.datasource.eventService.SearchEvents(ctx, token, request)
 	if err != nil {
 		logErrorWithConjureFields("Event search failed", err)
 		return backend.ErrDataResponseWithSource(backend.Status(upstreamStatus(err)), backend.ErrorSourceDownstream, formatUserError("Event search failed", err))
 	}
-	var assetTitles map[string]string
-	if len(prepared.Model.AssetRids) > 1 {
-		assetTitles = e.eventAssetTitles(ctx, prepared.Model.AssetRids)
+	var assetTitles map[rids.AssetRid]string
+	if len(prepared.Assets) > 1 {
+		assetTitles = e.eventAssetTitles(ctx, prepared.Assets)
 	}
 	frame := eventAnnotationFrame(result.Results, assetTitles)
 	frame.RefID = prepared.Query.RefID
