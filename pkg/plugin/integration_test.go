@@ -462,7 +462,7 @@ func TestLiveNominalEvents(t *testing.T) {
 	})
 	for _, create := range []eventapi.CreateEvent{
 		newEvent("instant", 0, 0, "live-a"),
-		newEvent("span", time.Minute, 2*time.Minute, "live-a", "live-b"),
+		newEvent("span", time.Minute, 2*time.Minute, "live-b"),
 	} {
 		created, err := clients.event.CreateEvent(ctx, clients.token, create)
 		if err != nil {
@@ -508,7 +508,7 @@ func TestLiveNominalEvents(t *testing.T) {
 		}
 	}
 	instant := row{base, base, "instant", `["live-a","INFO"]`}
-	span := row{base.Add(time.Minute), base.Add(3 * time.Minute), "span", `["live-a","live-b","INFO"]`}
+	span := row{base.Add(time.Minute), base.Add(3 * time.Minute), "span", `["live-b","INFO"]`}
 
 	assertRows(rows(run(2)), []row{span, instant})
 	assertRows(rows(run(1, "live-b")), []row{span})
