@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { QueryEditorProps } from '@grafana/data';
 import { InlineField, RadioButtonGroup, Stack } from '@grafana/ui';
 import type { DataSource } from '../datasource';
@@ -24,8 +24,12 @@ export function AnnotationEditor(props: Props) {
   const { query, onChange } = props;
   const mode = annotationMode(query);
 
-  // Only the chosen mode's fields are saved, so the other mode's settings never reach the backend.
-  const onModeChange = (next: Mode) => onChange({ refId: query.refId, queryType: next });
+  // The saved query holds only the active mode's fields; the other mode's are kept here so switching back restores them.
+  const [other, setOther] = useState<Partial<NominalQuery>>({});
+  const onModeChange = (next: Mode) => {
+    setOther(query);
+    onChange({ ...other, refId: query.refId, queryType: next });
+  };
 
   return (
     <Stack direction="column" gap={1}>

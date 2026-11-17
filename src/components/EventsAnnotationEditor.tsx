@@ -4,7 +4,7 @@ import { getTemplateSrv } from '@grafana/runtime';
 import { Combobox, ComboboxOption, InlineField, MultiCombobox, Stack, Text } from '@grafana/ui';
 import type { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery, QUERY_TYPE_EVENTS } from '../types';
-import { searchAssets, searchEventLabels } from '../utils/api';
+import { searchAllAssets, searchEventLabels } from '../utils/api';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -20,7 +20,7 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
       .getVariables()
       .map((v) => ({ value: `$${v.name}`, description: 'Dashboard variable' }))
       .filter((o) => o.value.toLowerCase().includes(text.toLowerCase()));
-    const assets = await searchAssets(datasource.url, text);
+    const assets = await searchAllAssets(datasource.url, text);
     return [...variables, ...assets.map((a) => ({ value: a.rid, label: a.title }))];
   };
 
@@ -30,8 +30,8 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
   return (
     <Stack direction="column" gap={1}>
       <Text variant="bodySmall" color="secondary">
-        An asset is required. Leave event types and labels empty to include all events. Shows up to 1,000 events,
-        newest first.
+        An asset is required. Leave event types and labels empty to include all events. Shows events that overlap the dashboard
+        time range, up to 1,000, newest first.
       </Text>
       <InlineField label="Asset" labelWidth={14}>
         <Combobox

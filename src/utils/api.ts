@@ -115,8 +115,8 @@ export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promi
   return null;
 };
 
-/** Searches assets, returning only those with at least one supported-type dataScope. */
-export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
+/** Searches all assets, including those without supported data scopes. */
+export const searchAllAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> => {
   const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.searchAssets}`, {
     query: {
       searchText: searchText || '',
@@ -129,11 +129,12 @@ export const searchAssets = async (datasourceUrl: string, searchText: string): P
     pageSize: 50,
   });
 
-  if (!response?.results) {
-    return [];
-  }
-  return response.results.filter((asset: Asset) => getSupportedScopes(asset).length > 0);
+  return response?.results ?? [];
 };
+
+/** Searches assets, returning only those with at least one supported-type dataScope. */
+export const searchAssets = async (datasourceUrl: string, searchText: string): Promise<Asset[]> =>
+  (await searchAllAssets(datasourceUrl, searchText)).filter((asset) => getSupportedScopes(asset).length > 0);
 
 /** Returns up to 100 event labels matching the text, most used first. */
 export const searchEventLabels = async (datasourceUrl: string, text: string): Promise<string[]> => {

@@ -78,13 +78,18 @@ describe('AnnotationEditor', () => {
   it('offers dashboard variables and matching assets as asset options', async () => {
     renderEditor({ refId: 'Anno' });
     const scope = { dataScopeName: 'main', dataSource: { type: 'dataset', dataset: 'ri.d.1' } };
-    post.mockResolvedValue({ results: [{ rid: 'ri.a.1', title: 'Pump', labels: [], dataScopes: [scope] }] });
+    post.mockResolvedValue({ results: [
+        { rid: 'ri.a.1', title: 'Pump', labels: [], dataScopes: [scope] },
+        { rid: 'ri.a.2', title: 'Valve', labels: [], dataScopes: [] },
+      ],
+    });
 
     expect(await asset().options('')).toEqual([
       { value: '$asset', description: 'Dashboard variable' },
       { value: 'ri.a.1', label: 'Pump' },
+      { value: 'ri.a.2', label: 'Valve' },
     ]);
-    expect((await asset().options('zzz')).map((o: { value: string }) => o.value)).toEqual(['ri.a.1']);
+    expect((await asset().options('zzz')).map((o: { value: string }) => o.value)).toEqual(['ri.a.1', 'ri.a.2']);
   });
 
   it('sends typed label text to the label route and offers the labels', async () => {
@@ -97,20 +102,21 @@ describe('AnnotationEditor', () => {
     expect(options).toEqual([{ value: 'valve' }, { value: 'pump' }]);
   });
 
-  it('drops event fields when switching to SQL and rawSql when switching to Events', () => {
-    const first = renderEditor({
-      refId: 'Anno',
-      queryType: 'events',
-      assetRid: 'ri.a.1',
-      eventTypes: ['INFO'],
-      eventLabels: ['x'],
-    });
-    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-    expect(first.onChange).toHaveBeenCalledWith({ refId: 'Anno', queryType: 'sql' });
+  it('drops the other mode from the saved query and restores it when switching back', () => {
+    const query: NominalQuery = { refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' };
+    const onChange = jest.fn();
+    const props = { onChange, onRunQuery: jest.fn(), datasource, range: undefined };
+    const view = render(<AnnotationEditor {...props} query={query} />);
 
-    document.body.innerHTML = '';
-    const second = renderEditor({ refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' });
     fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
-    expect(second.onChange).toHaveBeenCalledWith({ refId: 'Anno', queryType: 'events' });
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'Anno', queryType: 'events' });
+
+    view.rerender(<AnnotationEditor {...props} query={{ refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' }} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' });
+
+    view.rerender(<AnnotationEditor {...props} query={{ refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' }} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
+    expect(onChange).toHaveBeenLastCalledWith({ refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' });
   });
 });
