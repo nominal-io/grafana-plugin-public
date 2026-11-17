@@ -253,6 +253,10 @@ func (h *NominalResourceHandler) handleEventLabels(ctx context.Context, req *bac
 		ResourceTypes: &[]metadata.ResourceType{metadata.New_ResourceType(metadata.ResourceType_EVENT)},
 		PageSize:      &pageSize,
 		SortBy:        metadata.New_MetadataSortField(metadata.MetadataSortField_USAGE_COUNT),
+		Descending:    new(true),
+	}
+	if d.workspaceRid != nil {
+		request.Workspaces = &[]rids.WorkspaceRid{*d.workspaceRid}
 	}
 	if q := strings.TrimSpace(body.Q); q != "" {
 		request.SearchText = &q

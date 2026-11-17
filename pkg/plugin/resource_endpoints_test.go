@@ -913,20 +913,26 @@ func (f *fakeMetadataService) SearchLabels(_ context.Context, _ bearertoken.Toke
 
 func TestHandleEventLabels(t *testing.T) {
 	tests := []struct {
-		name       string
-		body       string
-		wantSearch *string
+		name          string
+		body          string
+		wantSearch    *string
+		withWorkspace bool
 	}{
-		{"query is passed as search text", `{"q":"valv"}`, new("valv")},
-		{"query is trimmed", `{"q":" valv "}`, new("valv")},
-		{"blank query sends no search text", `{"q":" "}`, nil},
-		{"missing query sends no search text", `{}`, nil},
+		{"query is passed as search text", `{"q":"valv"}`, new("valv"), false},
+		{"query is trimmed", `{"q":" valv "}`, new("valv"), false},
+		{"blank query sends no search text", `{"q":" "}`, nil, false},
+		{"missing query sends no search text", `{}`, nil, false},
+		{"configured workspace scopes the search", `{}`, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeMetadataService{labels: []string{"valve", "valves"}}
 			ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
 			ds.metadataService = fake
+			workspace := sqlTestWorkspaceRid(t)
+			if tt.withWorkspace {
+				ds.workspaceRid = &workspace
+			}
 			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Body: []byte(tt.body), Method: "POST"})
 
 			if resp.Status != http.StatusOK || string(resp.Body) != `{"labels":["valve","valves"]}` {
@@ -941,6 +947,16 @@ func TestHandleEventLabels(t *testing.T) {
 			}
 			if got.PageSize == nil || *got.PageSize != 100 || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT {
 				t.Errorf("pageSize/sortBy = %v/%v", got.PageSize, got.SortBy)
+			}
+			if got.Descending == nil || !*got.Descending {
+				t.Errorf("descending = %v, want true", got.Descending)
+			}
+			if tt.withWorkspace {
+				if got.Workspaces == nil || len(*got.Workspaces) != 1 || (*got.Workspaces)[0] != workspace {
+					t.Errorf("workspaces = %v, want [%v]", got.Workspaces, workspace)
+				}
+			} else if got.Workspaces != nil {
+				t.Errorf("workspaces = %v, want unset", got.Workspaces)
 			}
 		})
 	}
