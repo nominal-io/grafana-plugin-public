@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"html"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -15,7 +14,6 @@ import (
 	rids "github.com/nominal-io/nominal-api-go/scout/rids/api"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
-	"golang.org/x/sync/errgroup"
 )
 
 const eventPageSize = 1000
@@ -63,7 +61,7 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]st
 	for i, ev := range events {
 		times[i] = time.Unix(int64(ev.Timestamp.Seconds), int64(ev.Timestamp.Nanos))
 		timeEnds[i] = times[i].Add(time.Duration(ev.Duration.Seconds)*time.Second + time.Duration(ev.Duration.Nanos))
-		titles[i] = ev.Name
+		titles[i] = html.EscapeString(ev.Name)
 
 		var text strings.Builder
 		for _, assetRid := range ev.AssetRids {
@@ -90,24 +88,23 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]st
 	)
 }
 
-// eventAssetTitles looks up the title of each asset. Assets that fail to resolve are left out.
+// eventAssetTitles looks up the title of each asset in one request. If the lookup fails, no titles
+// are returned.
 func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids []rids.AssetRid) map[rids.AssetRid]string {
-	titles := make(map[rids.AssetRid]string, len(assetRids))
-	var mu sync.Mutex
-	var g errgroup.Group
-	g.SetLimit(maxConcurrentRequests)
-	for _, assetRid := range assetRids {
-		g.Go(func() error {
-			asset, err := e.datasource.nominalCatalog.FetchAssetByRid(ctx, e.config, rid.ResourceIdentifier(assetRid).String())
-			if err == nil && asset != nil {
-				mu.Lock()
-				titles[assetRid] = asset.Title
-				mu.Unlock()
-			}
-			return nil
-		})
+	ridStrings := make([]string, len(assetRids))
+	for i, assetRid := range assetRids {
+		ridStrings[i] = rid.ResourceIdentifier(assetRid).String()
 	}
-	_ = g.Wait()
+	assets, err := e.datasource.nominalCatalog.fetchAssetsByRidUncached(ctx, e.config, ridStrings)
+	titles := make(map[rids.AssetRid]string, len(assetRids))
+	if err != nil {
+		return titles
+	}
+	for i, assetRid := range assetRids {
+		if asset, ok := assets[ridStrings[i]]; ok {
+			titles[assetRid] = asset.Title
+		}
+	}
 	return titles
 }
 

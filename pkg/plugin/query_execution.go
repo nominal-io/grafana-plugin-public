@@ -89,8 +89,8 @@ func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
 	return len(names) > 1
 }
 
-// maxConcurrentRequests bounds the SQL queries, event searches and asset lookups that one Grafana
-// request runs at a time.
+// maxConcurrentRequests caps SQL queries and event searches independently
+// within each Grafana QueryData request.
 const maxConcurrentRequests = 8
 
 // executeConcurrently runs run for each query, at most maxConcurrentRequests at a time, and

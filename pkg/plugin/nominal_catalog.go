@@ -314,8 +314,8 @@ func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.Plu
 	return respBody, nil
 }
 
-func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	body, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+func (c *NominalCatalog) fetchAssetsByRidUncached(ctx context.Context, config *models.PluginSettings, assetRids []string) (map[string]SingleAssetResponse, error) {
+	body, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", assetRids)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +324,14 @@ func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *mo
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&assetMap); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	return assetMap, nil
+}
 
+func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	assetMap, err := c.fetchAssetsByRidUncached(ctx, config, []string{assetRid})
+	if err != nil {
+		return nil, err
+	}
 	if asset, ok := assetMap[assetRid]; ok {
 		return &asset, nil
 	}
