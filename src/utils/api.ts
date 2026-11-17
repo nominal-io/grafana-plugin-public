@@ -135,6 +135,12 @@ export const searchAssets = async (datasourceUrl: string, searchText: string): P
   return response.results.filter((asset: Asset) => getSupportedScopes(asset).length > 0);
 };
 
+/** Returns up to 100 event labels matching the text, most used first. */
+export const searchEventLabels = async (datasourceUrl: string, text: string): Promise<string[]> => {
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.eventLabels}`, { q: text });
+  return response?.labels ?? [];
+};
+
 /** Searches channels for the given data source RIDs. Returns raw channel objects;
  *  callers are responsible for mapping to their display shape. */
 export const searchChannels = async (

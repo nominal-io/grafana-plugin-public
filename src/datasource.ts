@@ -16,7 +16,7 @@ import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, QUERY_TYPE_EVENTS, annotationMode } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
-import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
+import { AnnotationEditor } from './components/AnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
 
 // Grafana asks for the next page of logs with a range that ends at the millisecond of the oldest line
@@ -216,7 +216,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     this.url = `/api/datasources/uid/${instanceSettings.uid}/resources`;
     this.variables = new NominalVariableSupport(this);
     this.annotations = {
-      QueryEditor: SqlAnnotationEditor,
+      QueryEditor: AnnotationEditor,
       prepareQuery: (anno) => {
         // Grafana 12.1 loads v2 dashboards without copying query.spec into target; 12.2 and later do.
         const target: NominalQuery | undefined = anno.target ?? anno.query?.spec;
