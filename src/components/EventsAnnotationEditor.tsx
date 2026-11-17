@@ -20,8 +20,12 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
       .getVariables()
       .map((v) => ({ value: `$${v.name}`, description: 'Dashboard variable' }))
       .filter((o) => o.value.toLowerCase().includes(text.toLowerCase()));
-    const assets = await searchAllAssets(datasource.url, text);
-    return [...variables, ...assets.map((a) => ({ value: a.rid, label: a.title }))];
+    try {
+      const assets = await searchAllAssets(datasource.url, text);
+      return [...variables, ...assets.map((a) => ({ value: a.rid, label: a.title }))];
+    } catch {
+      return variables;
+    }
   };
 
   const loadLabels = async (text: string) =>

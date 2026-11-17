@@ -92,6 +92,13 @@ describe('AnnotationEditor', () => {
     expect((await asset().options('zzz')).map((o: { value: string }) => o.value)).toEqual(['ri.a.1', 'ri.a.2']);
   });
 
+  it('still offers dashboard variables when the asset search fails', async () => {
+    renderEditor({ refId: 'Anno' });
+    post.mockRejectedValue(new Error('boom'));
+
+    expect(await asset().options('')).toEqual([{ value: '$asset', description: 'Dashboard variable' }]);
+  });
+
   it('sends typed label text to the label route and offers the labels', async () => {
     renderEditor({ refId: 'Anno' });
     post.mockResolvedValue({ labels: ['valve', 'pump'] });
