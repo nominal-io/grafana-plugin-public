@@ -373,6 +373,11 @@ describe('annotations', () => {
     ['missing target', undefined, { refId: 'Anno', queryType: 'events' }],
     ['explicit sql without text', { refId: 'Anno', queryType: 'sql' }, { refId: 'Anno', queryType: 'sql', format: 'table' }],
     ['rawSql without queryType', { refId: 'Anno', rawSql: 'SELECT 1' }, { refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' }],
+    [
+      'events with leftover rawSql',
+      { refId: 'Anno', queryType: 'events', rawSql: 'SELECT 1' },
+      { refId: 'Anno', queryType: 'events', rawSql: 'SELECT 1' },
+    ],
     ['whitespace rawSql', { refId: 'Anno', rawSql: '  ' }, { refId: 'Anno', rawSql: '  ', queryType: 'events' }],
     [
       'saved events target',

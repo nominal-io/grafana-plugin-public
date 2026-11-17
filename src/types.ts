@@ -52,9 +52,14 @@ export type AggregationTypeValue = (typeof AggregationType)[keyof typeof Aggrega
 
 export const DEFAULT_AGGREGATIONS: AggregationTypeValue[] = [AggregationType.Mean];
 
-// Annotations without SQL text are event queries; hand-written JSON may omit queryType.
-export const annotationMode = (target?: Partial<NominalQuery>): typeof QUERY_TYPE_EVENTS | typeof QUERY_TYPE_SQL =>
-  target?.queryType === QUERY_TYPE_SQL || target?.rawSql?.trim() ? QUERY_TYPE_SQL : QUERY_TYPE_EVENTS;
+// An explicit queryType wins, since switching modes can leave stale SQL text on the target. Without
+// one (hand-written JSON), annotations with SQL text are SQL queries and the rest are event queries.
+export const annotationMode = (target?: Partial<NominalQuery>): typeof QUERY_TYPE_EVENTS | typeof QUERY_TYPE_SQL => {
+  if (target?.queryType === QUERY_TYPE_EVENTS || target?.queryType === QUERY_TYPE_SQL) {
+    return target.queryType;
+  }
+  return target?.rawSql?.trim() ? QUERY_TYPE_SQL : QUERY_TYPE_EVENTS;
+};
 
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: QUERY_TYPE_COMPUTE,
