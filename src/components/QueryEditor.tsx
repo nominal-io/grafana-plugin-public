@@ -257,7 +257,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   );
 }
 
-type QueryAPI = NonNullable<NominalQuery['queryType']>;
+type QueryAPI = typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
 
 // Which API owns each query field. A field added to NominalQuery fails typecheck until it is listed here.
 const FIELD_API = {
@@ -272,7 +272,7 @@ const FIELD_API = {
   constant: QUERY_TYPE_COMPUTE,
   rawSql: QUERY_TYPE_SQL,
   format: QUERY_TYPE_SQL,
-} satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery>, QueryAPI>;
+} satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery | 'eventTypes' | 'eventLabels' | 'assetRids'>, QueryAPI>;
 
 // A field whose value is undefined was already removed, so it is not moved or restored.
 function splitFields(query: NominalQuery, api: QueryAPI): [rest: NominalQuery, owned: Partial<NominalQuery>] {

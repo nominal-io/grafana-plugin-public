@@ -13,7 +13,7 @@ import {
 import { map, Observable } from 'rxjs';
 import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, QUERY_TYPE_EVENTS, annotationMode } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
 import { SqlAnnotationEditor } from './components/SqlAnnotationEditor';
@@ -220,8 +220,11 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       prepareQuery: (anno) => {
         // Grafana 12.1 loads v2 dashboards without copying query.spec into target; 12.2 and later do.
         const target: NominalQuery | undefined = anno.target ?? anno.query?.spec;
+        if (annotationMode(target) === QUERY_TYPE_EVENTS) {
+          return { refId: 'Anno', ...target, queryType: QUERY_TYPE_EVENTS };
+        }
         // The time series shape drops string columns, and annotation text lives in them.
-        return target && { ...target, queryType: QUERY_TYPE_SQL, format: 'table' };
+        return { ...target, queryType: QUERY_TYPE_SQL, format: 'table' } as NominalQuery;
       },
     };
     this.usesOAuth = instanceSettings.jsonData?.authMode === 'oauth';
@@ -382,6 +385,17 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       };
     }
 
+    if (query.queryType === QUERY_TYPE_EVENTS) {
+      return {
+        ...query,
+        assetRids: getTemplateSrv()
+          .replace(query.assetRid || '', scopedVars, 'csv')
+          .split(',')
+          .map((rid) => rid.trim())
+          .filter(Boolean),
+      };
+    }
+
     return {
       ...query,
       queryText: getTemplateSrv().replace(query.queryText || '', scopedVars),
@@ -398,6 +412,10 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
 
     if (query.queryType === QUERY_TYPE_SQL) {
       return !!query.rawSql?.trim();
+    }
+
+    if (query.queryType === QUERY_TYPE_EVENTS) {
+      return !!query.assetRid?.trim();
     }
 
     const queryText = query.queryText?.trim();
