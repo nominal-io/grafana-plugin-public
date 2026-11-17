@@ -278,6 +278,14 @@ func classifyConnectionError(err error) (message string, httpStatus int) {
 // Conjure errors or raw-HTTP *apiError), avoiding the duplicate ID that "%v"
 // on a Conjure error would produce. Falls back to fmt.Sprintf("%s: %v", ...)
 // for transport-level and other unclassified errors.
+// upstreamStatus returns the HTTP status the Nominal API answered with, or 502 when it did not answer.
+func upstreamStatus(err error) int {
+	if s := extractErrorDetails(err).Status; s != 0 {
+		return s
+	}
+	return http.StatusBadGateway
+}
+
 func formatUserError(prefix string, err error) string {
 	d := extractErrorDetails(err)
 	switch {

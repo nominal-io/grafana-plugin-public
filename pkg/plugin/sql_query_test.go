@@ -554,8 +554,8 @@ func TestSQLQueriesRunInParallelWithinTheLimit(t *testing.T) {
 		queries[i] = backend.DataQuery{RefID: strconv.Itoa(i), JSON: []byte(`{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`)}
 	}
 	response := sqlTestExecution(t, client).Execute(context.Background(), queries)
-	if got := peak.Load(); got < 2 || got > maxConcurrentSQLQueries {
-		t.Errorf("peak concurrent SQL queries = %d, want between 2 and %d", got, maxConcurrentSQLQueries)
+	if got := peak.Load(); got < 2 || got > maxConcurrentRequests {
+		t.Errorf("peak concurrent SQL queries = %d, want between 2 and %d", got, maxConcurrentRequests)
 	}
 	if total.Load() != 20 || len(response.Responses) != 20 {
 		t.Errorf("SQL calls, responses = %d, %d; want 20, 20", total.Load(), len(response.Responses))

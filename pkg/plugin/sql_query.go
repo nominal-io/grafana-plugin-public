@@ -132,11 +132,7 @@ func sqlErrorResponse(ctx context.Context, err error) backend.DataResponse {
 	case errors.Is(err, errNoSQLWorkspace), errors.As(err, &timeErr):
 		return backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, err.Error())
 	case errors.As(err, &lookupErr):
-		status := backend.StatusBadGateway
-		if s := extractErrorDetails(err).Status; s != 0 {
-			status = backend.Status(s)
-		}
-		return backend.ErrDataResponseWithSource(status, backend.ErrorSourceDownstream, err.Error())
+		return backend.ErrDataResponseWithSource(backend.Status(upstreamStatus(err)), backend.ErrorSourceDownstream, err.Error())
 	}
 	logger := log.DefaultLogger.FromContext(ctx)
 	// status.FromError would also find a wrapped status, but it replaces the message with the whole

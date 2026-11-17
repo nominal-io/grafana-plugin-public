@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,6 +75,11 @@ func TestEventAnnotationFrame(t *testing.T) {
 		wantTagsJS string
 	}{
 		{name: "fields and duration", event: testEvent(t, "Launch", "plain", 30), wantEnd: start.Add(30 * time.Second), wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "unknown type keeps its name", event: func() event.Event {
+			ev := testEvent(t, "Launch", "plain", 0)
+			ev.Type = event.New_EventType(event.EventType_Value("NEW_KIND"))
+			return ev
+		}(), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","NEW_KIND"]`},
 		{name: "zero duration", event: testEvent(t, "Launch", "plain", 0), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "escaping", event: testEvent(t, "Launch", "<b>x</b> & y", 0), wantEnd: start, wantText: "&lt;b&gt;x&lt;/b&gt; &amp; y", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "newlines", event: testEvent(t, "Launch", "one\ntwo", 0), wantEnd: start, wantText: "one<br />two", wantTagsJS: `["a,b","c","FLAG"]`},
@@ -110,13 +113,22 @@ func TestEventAnnotationFrame(t *testing.T) {
 
 func TestBuildEventSearch(t *testing.T) {
 	timeRange := backend.TimeRange{From: time.Unix(1000, 0), To: time.Unix(2000, 0)}
+	const (
+		assetsFilter = `{"type":"assets","assets":{"operator":"OR","assets":["` + testEventAssetA + `","` + testEventAssetB + `"]}}`
+		timeFilters  = `{"type":"advancedTimeFilter","advancedTimeFilter":{"timestamp":{"seconds":2000,"nanos":0},"timestampCondition":"START_TIME_BEFORE_INCLUSIVE"}},` +
+			`{"type":"advancedTimeFilter","advancedTimeFilter":{"timestamp":{"seconds":1000,"nanos":0},"timestampCondition":"END_TIME_AFTER_INCLUSIVE"}}`
+	)
 	for _, tc := range []struct {
-		name       string
-		model      NominalQueryModel
-		wantFilter []string
+		name    string
+		model   NominalQueryModel
+		wantAnd string
 	}{
-		{name: "no optional filters", model: NominalQueryModel{AssetRids: []string{testEventAssetA}}, wantFilter: []string{"assets", "advancedTimeFilter", "advancedTimeFilter"}},
-		{name: "types and labels", model: NominalQueryModel{AssetRids: []string{testEventAssetA}, EventTypes: []string{"FLAG"}, EventLabels: []string{"x"}}, wantFilter: []string{"assets", "advancedTimeFilter", "advancedTimeFilter", "eventTypes", "labels"}},
+		{name: "no optional filters", model: NominalQueryModel{AssetRids: []string{testEventAssetA, testEventAssetB}}, wantAnd: assetsFilter + "," + timeFilters},
+		{
+			name:    "types and labels",
+			model:   NominalQueryModel{AssetRids: []string{testEventAssetA, testEventAssetB}, EventTypes: []string{"FLAG", "ERROR"}, EventLabels: []string{"x", "y,z"}},
+			wantAnd: assetsFilter + "," + timeFilters + `,{"type":"eventTypes","eventTypes":["FLAG","ERROR"]},{"type":"labels","labels":{"operator":"OR","labels":["x","y,z"]}}`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			request, err := buildEventSearch(tc.model, timeRange)
@@ -126,31 +138,12 @@ func TestBuildEventSearch(t *testing.T) {
 			if request.PageSize != 1000 || !request.Sort.IsDescending || request.Sort.Field.Value() != event.SortField_START_TIME {
 				t.Errorf("page size %d, sort %+v", request.PageSize, request.Sort)
 			}
-
 			raw, err := json.Marshal(request.Query)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var query struct {
-				Type string `json:"type"`
-				And  []struct {
-					Type string `json:"type"`
-				} `json:"and"`
-			}
-			if err := json.Unmarshal(raw, &query); err != nil {
-				t.Fatal(err)
-			}
-			var got []string
-			for _, f := range query.And {
-				got = append(got, f.Type)
-			}
-			if query.Type != "and" || !slices.Equal(got, tc.wantFilter) {
-				t.Errorf("query = %s, want and of %v", raw, tc.wantFilter)
-			}
-			for _, want := range []string{"START_TIME_BEFORE_INCLUSIVE", "END_TIME_AFTER_INCLUSIVE", `"OR"`} {
-				if !strings.Contains(string(raw), want) {
-					t.Errorf("query %s lacks %s", raw, want)
-				}
+			if want := `{"type":"and","and":[` + tc.wantAnd + `]}`; string(raw) != want {
+				t.Errorf("query = %s\nwant    %s", raw, want)
 			}
 		})
 	}

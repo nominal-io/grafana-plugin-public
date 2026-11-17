@@ -162,11 +162,7 @@ func (h *NominalResourceHandler) nominalPostResponse(ctx context.Context, sender
 	responseBody, err := h.datasource.nominalCatalog.postNominalJSON(ctx, config, upstreamPath, body)
 	if err != nil {
 		logErrorWithConjureFields("Nominal API request failed", err, "path", upstreamPath)
-		status := http.StatusBadGateway
-		if d := extractErrorDetails(err); d.Status != 0 {
-			status = d.Status
-		}
-		return jsonErrorResponse(sender, status, appendInstanceID("Nominal API request failed", err))
+		return jsonErrorResponse(sender, upstreamStatus(err), appendInstanceID("Nominal API request failed", err))
 	}
 	return jsonBytesResponse(sender, http.StatusOK, responseBody)
 }

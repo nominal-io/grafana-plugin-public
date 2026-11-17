@@ -87,7 +87,7 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[string]string) *
 		for _, label := range ev.Labels {
 			eventTags = append(eventTags, string(label))
 		}
-		eventTags = append(eventTags, string(ev.Type.Value()))
+		eventTags = append(eventTags, ev.Type.String())
 		tags[i], _ = json.Marshal(eventTags)
 	}
 	return data.NewFrame("events",
@@ -104,7 +104,7 @@ func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids 
 	titles := make(map[string]string, len(assetRids))
 	var mu sync.Mutex
 	var g errgroup.Group
-	g.SetLimit(maxConcurrentSQLQueries)
+	g.SetLimit(maxConcurrentRequests)
 	for _, assetRid := range assetRids {
 		g.Go(func() error {
 			asset, err := e.datasource.nominalCatalog.FetchAssetByRid(ctx, e.config, assetRid)
@@ -130,11 +130,7 @@ func (e *NominalQueryExecution) executeEventQuery(ctx context.Context, prepared 
 	result, err := e.datasource.eventService.SearchEvents(ctx, token, request)
 	if err != nil {
 		logErrorWithConjureFields("Event search failed", err)
-		status := backend.StatusBadGateway
-		if s := extractErrorDetails(err).Status; s != 0 {
-			status = backend.Status(s)
-		}
-		return backend.ErrDataResponseWithSource(status, backend.ErrorSourceDownstream, formatUserError("Event search failed", err))
+		return backend.ErrDataResponseWithSource(backend.Status(upstreamStatus(err)), backend.ErrorSourceDownstream, formatUserError("Event search failed", err))
 	}
 	var assetTitles map[string]string
 	if len(prepared.Model.AssetRids) > 1 {

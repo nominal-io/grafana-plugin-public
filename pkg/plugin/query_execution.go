@@ -89,8 +89,9 @@ func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
 	return len(names) > 1
 }
 
-// maxConcurrentSQLQueries bounds the SQL requests that one Grafana request runs at a time.
-const maxConcurrentSQLQueries = 8
+// maxConcurrentRequests bounds the SQL queries, event searches and asset lookups that one Grafana
+// request runs at a time.
+const maxConcurrentRequests = 8
 
 func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
 	return executeConcurrently(ctx, queries, e.executeSQLQuery)
@@ -100,12 +101,12 @@ func (e *NominalQueryExecution) executeEventQueries(ctx context.Context, queries
 	return executeConcurrently(ctx, queries, e.executeEventQuery)
 }
 
-// executeConcurrently runs run for each query, at most maxConcurrentSQLQueries at a time, and
+// executeConcurrently runs run for each query, at most maxConcurrentRequests at a time, and
 // returns the responses by RefID.
 func executeConcurrently(ctx context.Context, queries []preparedQuery, run func(context.Context, preparedQuery) backend.DataResponse) map[string]backend.DataResponse {
 	results := make([]backend.DataResponse, len(queries))
 	var g errgroup.Group
-	g.SetLimit(maxConcurrentSQLQueries)
+	g.SetLimit(maxConcurrentRequests)
 	for i, query := range queries {
 		g.Go(func() error {
 			results[i] = run(ctx, query)
