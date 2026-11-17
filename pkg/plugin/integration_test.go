@@ -450,6 +450,16 @@ func TestLiveNominalEvents(t *testing.T) {
 		}
 	}
 	var eventRids []rids.EventRid
+	t.Cleanup(func() {
+		if len(eventRids) == 0 {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		if err := clients.event.BatchArchiveEvent(cleanupCtx, clients.token, eventRids); err != nil {
+			t.Logf("failed to archive live Nominal events: %v", err)
+		}
+	})
 	for _, create := range []eventapi.CreateEvent{
 		newEvent("instant", 0, 0, "live-a"),
 		newEvent("span", time.Minute, 2*time.Minute, "live-a", "live-b"),
@@ -460,13 +470,6 @@ func TestLiveNominalEvents(t *testing.T) {
 		}
 		eventRids = append(eventRids, created.Rid)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
-		defer cleanupCancel()
-		if err := clients.event.BatchArchiveEvent(cleanupCtx, clients.token, eventRids); err != nil {
-			t.Logf("failed to archive live Nominal events: %v", err)
-		}
-	})
 
 	run := func(want int, labels ...string) *data.Frame {
 		query := backend.DataQuery{
@@ -628,7 +631,7 @@ func pollLiveQuery(t *testing.T, ds *Datasource, req *backend.QueryDataRequest, 
 }
 
 // liveRowsReady accepts responses once each has one frame with want rows. Not found is
-// retried, since a new dataset may not be queryable yet. Any other error, or more rows than want,
+// retried, since a new resource may not be queryable yet. Any other error, or more rows than want,
 // fails at once.
 func liveRowsReady(t *testing.T, want int) func(backend.Responses) error {
 	return func(responses backend.Responses) error {
@@ -636,7 +639,7 @@ func liveRowsReady(t *testing.T, want int) func(backend.Responses) error {
 			response := responses[ref]
 			if response.Error != nil {
 				if response.Status != backend.StatusNotFound {
-					t.Fatalf("unexpected SQL error for %s (status %d): %v", ref, response.Status, response.Error)
+					t.Fatalf("unexpected error for %s (status %d): %v", ref, response.Status, response.Error)
 				}
 				return fmt.Errorf("%s: %v", ref, response.Error)
 			}
