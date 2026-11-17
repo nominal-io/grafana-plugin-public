@@ -239,8 +239,8 @@ downgrade.
 ## Annotations
 
 A SQL query can draw dashboard annotations. Open **Dashboard settings →
-Annotations → New annotation**, choose the Nominal data source, and write SQL
-or click **Use events example** to insert a starting query. Each returned row
+Annotations → New annotation**, choose the Nominal data source, set **Mode**
+to SQL, and write SQL or click **Use events example** to insert a starting query. Each returned row
 draws one marker, or one shaded region when the row has an end time.
 
 | Column | Use |
