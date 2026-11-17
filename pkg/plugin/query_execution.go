@@ -34,7 +34,7 @@ func newNominalQueryExecution(datasource *Datasource, config *models.PluginSetti
 func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.DataQuery) *backend.QueryDataResponse {
 	response := backend.NewQueryDataResponse()
 
-	var batchable, sqlQueries []preparedQuery
+	var batchable, sqlQueries, eventQueries []preparedQuery
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
@@ -49,6 +49,8 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			batchable = append(batchable, prepared)
 		case preparedQuerySQL:
 			sqlQueries = append(sqlQueries, prepared)
+		case preparedQueryEvents:
+			eventQueries = append(eventQueries, prepared)
 		case preparedQueryLegacy:
 			response.Responses[q.RefID] = e.handleLegacyQuery(prepared.Model, q.TimeRange)
 		}
@@ -56,10 +58,13 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 
 	var sqlResponses map[string]backend.DataResponse
 	var wg sync.WaitGroup
+	var eventResponses map[string]backend.DataResponse
 	wg.Go(func() { sqlResponses = e.executeSQLQueries(ctx, sqlQueries) })
+	wg.Go(func() { eventResponses = e.executeEventQueries(ctx, eventQueries) })
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
+	maps.Copy(response.Responses, eventResponses)
 	if frameNamesDiffer(response.Responses) {
 		for _, sqlResponse := range sqlResponses {
 			prefixSeriesNames(sqlResponse.Frames)
@@ -88,12 +93,22 @@ func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
 const maxConcurrentSQLQueries = 8
 
 func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
+	return executeConcurrently(ctx, queries, e.executeSQLQuery)
+}
+
+func (e *NominalQueryExecution) executeEventQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
+	return executeConcurrently(ctx, queries, e.executeEventQuery)
+}
+
+// executeConcurrently runs run for each query, at most maxConcurrentSQLQueries at a time, and
+// returns the responses by RefID.
+func executeConcurrently(ctx context.Context, queries []preparedQuery, run func(context.Context, preparedQuery) backend.DataResponse) map[string]backend.DataResponse {
 	results := make([]backend.DataResponse, len(queries))
 	var g errgroup.Group
 	g.SetLimit(maxConcurrentSQLQueries)
 	for i, query := range queries {
 		g.Go(func() error {
-			results[i] = e.executeSQLQuery(ctx, query)
+			results[i] = run(ctx, query)
 			return nil
 		})
 	}

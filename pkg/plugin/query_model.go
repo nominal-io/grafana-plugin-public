@@ -23,6 +23,11 @@ type NominalQueryModel struct {
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
 
+	// Event annotation filters. Empty EventTypes and EventLabels match all events.
+	AssetRids   []string `json:"assetRids,omitempty"`
+	EventTypes  []string `json:"eventTypes,omitempty"`
+	EventLabels []string `json:"eventLabels,omitempty"`
+
 	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
@@ -66,6 +71,9 @@ const (
 // queryTypeSQL marks a query that runs SQL instead of a Compute request.
 const queryTypeSQL = "sql"
 
+// queryTypeEvents marks a query that searches events for annotations.
+const queryTypeEvents = "events"
+
 type preparedQueryKind int
 
 const (
@@ -73,6 +81,7 @@ const (
 	preparedQueryLegacy
 	preparedQueryBatchable
 	preparedQuerySQL
+	preparedQueryEvents
 )
 
 type preparedQuery struct {
@@ -109,6 +118,14 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 			return preparedQuery{}, &response
 		}
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySQL, SQL: sql}, nil
+	}
+
+	if qm.QueryType == queryTypeEvents {
+		if len(qm.AssetRids) == 0 {
+			response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "select an asset")
+			return preparedQuery{}, &response
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryEvents}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {

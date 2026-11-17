@@ -1,0 +1,200 @@
+package plugin
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	"github.com/nominal-io/nominal-api-go/io/nominal/event"
+	rids "github.com/nominal-io/nominal-api-go/scout/rids/api"
+	runapi "github.com/nominal-io/nominal-api-go/scout/run/api"
+	"github.com/palantir/pkg/bearertoken"
+	"github.com/palantir/pkg/rid"
+	"github.com/palantir/pkg/safelong"
+)
+
+const (
+	testEventAssetA = "ri.scout.main.asset.aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	testEventAssetB = "ri.scout.main.asset.bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+)
+
+type fakeEventService struct {
+	event.EventServiceClient
+	mu      sync.Mutex
+	request event.SearchEventsRequest
+	events  []event.Event
+	err     error
+}
+
+func (f *fakeEventService) SearchEvents(_ context.Context, _ bearertoken.Token, req event.SearchEventsRequest) (event.SearchEventsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.request = req
+	return event.SearchEventsResponse{Results: f.events}, f.err
+}
+
+func testEventAssetRid(t *testing.T, s string) rids.AssetRid {
+	t.Helper()
+	parsed, err := rid.ParseRID(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rids.AssetRid(parsed)
+}
+
+func testEvent(t *testing.T, name, description string, durationSeconds int64, assets ...string) event.Event {
+	t.Helper()
+	ev := event.Event{
+		Name:        name,
+		Description: description,
+		Timestamp:   testTimestamp(1_700_000_000),
+		Duration:    runapi.Duration{Seconds: safelong.SafeLong(durationSeconds)},
+		Type:        event.New_EventType(event.EventType_FLAG),
+		Labels:      []api.Label{"a,b", "c"},
+	}
+	for _, a := range assets {
+		ev.AssetRids = append(ev.AssetRids, testEventAssetRid(t, a))
+	}
+	return ev
+}
+
+func TestEventAnnotationFrame(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0)
+	titles := map[string]string{testEventAssetA: "Asset <A>", testEventAssetB: "Asset B"}
+	for _, tc := range []struct {
+		name       string
+		event      event.Event
+		titles     map[string]string
+		wantEnd    time.Time
+		wantText   string
+		wantTagsJS string
+	}{
+		{name: "fields and duration", event: testEvent(t, "Launch", "plain", 30), wantEnd: start.Add(30 * time.Second), wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "zero duration", event: testEvent(t, "Launch", "plain", 0), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "escaping", event: testEvent(t, "Launch", "<b>x</b> & y", 0), wantEnd: start, wantText: "&lt;b&gt;x&lt;/b&gt; &amp; y", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "newlines", event: testEvent(t, "Launch", "one\ntwo", 0), wantEnd: start, wantText: "one<br />two", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "no titles", event: testEvent(t, "Launch", "d", 0, testEventAssetA), wantEnd: start, wantText: "d", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "asset line", event: testEvent(t, "Launch", "d", 0, testEventAssetA), titles: titles, wantEnd: start, wantText: "Asset: Asset &lt;A&gt;<br />d", wantTagsJS: `["a,b","c","FLAG"]`},
+		{name: "line per matching asset", event: testEvent(t, "Launch", "d", 0, testEventAssetA, "ri.scout.main.asset.cccccccc-cccc-cccc-cccc-cccccccccccc", testEventAssetB), titles: titles, wantEnd: start, wantText: "Asset: Asset &lt;A&gt;<br />Asset: Asset B<br />d", wantTagsJS: `["a,b","c","FLAG"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := eventAnnotationFrame([]event.Event{tc.event}, tc.titles)
+			if len(frame.Fields) != 5 {
+				t.Fatalf("got %d fields, want 5", len(frame.Fields))
+			}
+			if got := frame.Fields[0].At(0).(time.Time); !got.Equal(start) {
+				t.Errorf("time = %v, want %v", got, start)
+			}
+			if got := frame.Fields[1].At(0).(time.Time); !got.Equal(tc.wantEnd) {
+				t.Errorf("timeEnd = %v, want %v", got, tc.wantEnd)
+			}
+			if got := frame.Fields[2].At(0); got != "Launch" {
+				t.Errorf("title = %v", got)
+			}
+			if got := frame.Fields[3].At(0); got != tc.wantText {
+				t.Errorf("text = %q, want %q", got, tc.wantText)
+			}
+			if got := string(frame.Fields[4].At(0).(json.RawMessage)); got != tc.wantTagsJS {
+				t.Errorf("tags = %s, want %s", got, tc.wantTagsJS)
+			}
+		})
+	}
+}
+
+func TestBuildEventSearch(t *testing.T) {
+	timeRange := backend.TimeRange{From: time.Unix(1000, 0), To: time.Unix(2000, 0)}
+	for _, tc := range []struct {
+		name       string
+		model      NominalQueryModel
+		wantFilter []string
+	}{
+		{name: "no optional filters", model: NominalQueryModel{AssetRids: []string{testEventAssetA}}, wantFilter: []string{"assets", "advancedTimeFilter", "advancedTimeFilter"}},
+		{name: "types and labels", model: NominalQueryModel{AssetRids: []string{testEventAssetA}, EventTypes: []string{"FLAG"}, EventLabels: []string{"x"}}, wantFilter: []string{"assets", "advancedTimeFilter", "advancedTimeFilter", "eventTypes", "labels"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, err := buildEventSearch(tc.model, timeRange)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.PageSize != 1000 || !request.Sort.IsDescending || request.Sort.Field.Value() != event.SortField_START_TIME {
+				t.Errorf("page size %d, sort %+v", request.PageSize, request.Sort)
+			}
+
+			raw, err := json.Marshal(request.Query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var query struct {
+				Type string `json:"type"`
+				And  []struct {
+					Type string `json:"type"`
+				} `json:"and"`
+			}
+			if err := json.Unmarshal(raw, &query); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, f := range query.And {
+				got = append(got, f.Type)
+			}
+			if query.Type != "and" || !slices.Equal(got, tc.wantFilter) {
+				t.Errorf("query = %s, want and of %v", raw, tc.wantFilter)
+			}
+			for _, want := range []string{"START_TIME_BEFORE_INCLUSIVE", "END_TIME_AFTER_INCLUSIVE", `"OR"`} {
+				if !strings.Contains(string(raw), want) {
+					t.Errorf("query %s lacks %s", raw, want)
+				}
+			}
+		})
+	}
+
+	if _, err := buildEventSearch(NominalQueryModel{AssetRids: []string{"not a rid"}}, timeRange); err == nil {
+		t.Error("invalid asset RID: want error")
+	}
+}
+
+func TestExecuteEventQueries(t *testing.T) {
+	assetServer := newTestAssetServer(t, map[string]SingleAssetResponse{testEventAssetA: {Rid: testEventAssetA, Title: "Asset A"}}, nil)
+	defer assetServer.Close()
+	events := &fakeEventService{events: []event.Event{testEvent(t, "Launch", "d", 0, testEventAssetA)}}
+	ds := newTestDatasource(assetServer.URL, nil, nil)
+	ds.eventService = events
+	e := newTestQueryExecution(ds, nil)
+	e.config.BaseUrl = assetServer.URL
+	workspace := sqlTestWorkspaceRid(t)
+	ds.workspaceRid = &workspace
+	ds.sqlService = sqlQueryService(t, sqlPayloadServer(sqlValueStream(t, 1)))
+
+	timeRange := backend.TimeRange{From: time.Unix(1000, 0), To: time.Unix(2000, 0)}
+	query := func(refID, js string) backend.DataQuery {
+		return backend.DataQuery{RefID: refID, TimeRange: timeRange, JSON: []byte(js)}
+	}
+	response := e.Execute(context.Background(), []backend.DataQuery{
+		query("E", `{"queryType":"events","assetRids":["`+testEventAssetA+`","`+testEventAssetB+`"]}`),
+		query("S", `{"queryType":"sql","rawSql":"SELECT 1","format":"table"}`),
+		query("N", `{"queryType":"events","assetRids":[]}`),
+	})
+
+	if r := response.Responses["E"]; r.Error != nil || len(r.Frames) != 1 || r.Frames[0].Fields[3].At(0) != "Asset: Asset A<br />d" {
+		t.Errorf("events response = %+v", r)
+	}
+	if r := response.Responses["S"]; r.Error != nil || len(r.Frames) == 0 {
+		t.Errorf("sql response = %+v", r)
+	}
+	if r := response.Responses["N"]; r.Status != backend.StatusBadRequest || r.ErrorSource != backend.ErrorSourceDownstream {
+		t.Errorf("empty asset list response = %+v", r)
+	}
+
+	events.err = errors.New("boom")
+	failed := e.Execute(context.Background(), []backend.DataQuery{query("E", `{"queryType":"events","assetRids":["`+testEventAssetA+`"]}`)})
+	if r := failed.Responses["E"]; r.Error == nil || r.ErrorSource != backend.ErrorSourceDownstream {
+		t.Errorf("failed search response = %+v", r)
+	}
+}

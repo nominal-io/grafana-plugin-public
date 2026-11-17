@@ -15,6 +15,7 @@ import (
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
+	"github.com/nominal-io/nominal-api-go/io/nominal/event"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
@@ -104,6 +105,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		computeService:      computeapi1.NewComputeServiceClient(conjureClient),
 		datasourceService:   datasourceservice.NewDataSourceServiceClient(conjureClient),
 		workspaceService:    workspaceapi.NewWorkspaceServiceClient(conjureClient),
+		eventService:        event.NewEventServiceClient(conjureClient),
 		workspaceRid:        workspaceRid,
 		usesOAuth:           config.UsesOAuth(),
 		oauthSessions:       newSessionStore(),
@@ -127,6 +129,7 @@ type Datasource struct {
 	computeService    computeapi1.ComputeServiceClient
 	datasourceService datasourceservice.DataSourceServiceClient
 	workspaceService  workspaceapi.WorkspaceServiceClient
+	eventService      event.EventServiceClient
 
 	workspaceRid *rids.WorkspaceRid
 	usesOAuth    bool
