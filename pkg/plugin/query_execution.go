@@ -59,8 +59,8 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 	var sqlResponses map[string]backend.DataResponse
 	var wg sync.WaitGroup
 	var eventResponses map[string]backend.DataResponse
-	wg.Go(func() { sqlResponses = e.executeSQLQueries(ctx, sqlQueries) })
-	wg.Go(func() { eventResponses = e.executeEventQueries(ctx, eventQueries) })
+	wg.Go(func() { sqlResponses = executeConcurrently(ctx, sqlQueries, e.executeSQLQuery) })
+	wg.Go(func() { eventResponses = executeConcurrently(ctx, eventQueries, e.executeEventQuery) })
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
@@ -92,14 +92,6 @@ func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
 // maxConcurrentRequests bounds the SQL queries, event searches and asset lookups that one Grafana
 // request runs at a time.
 const maxConcurrentRequests = 8
-
-func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
-	return executeConcurrently(ctx, queries, e.executeSQLQuery)
-}
-
-func (e *NominalQueryExecution) executeEventQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
-	return executeConcurrently(ctx, queries, e.executeEventQuery)
-}
 
 // executeConcurrently runs run for each query, at most maxConcurrentRequests at a time, and
 // returns the responses by RefID.
