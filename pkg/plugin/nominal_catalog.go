@@ -94,30 +94,35 @@ func (c *ttlCache[V]) store(key string, value V, err error) {
 }
 
 // get returns the cached result for key, coalescing concurrent misses for the
-// same key into one load, detached from its callers and bounded by
-// detachedLookupTimeout.
+// same key into one detachedFlight load.
 func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
-	var zero V
 	if entry, hit := c.lookup(key); hit {
 		return entry.value, entry.err
 	}
-
-	// Avoid starting detached work for an already-canceled caller.
-	if err := ctx.Err(); err != nil {
-		return zero, err
-	}
-
-	ch := c.group.DoChan(key, func() (any, error) {
+	return detachedFlight(ctx, &c.group, key, func(workCtx context.Context) (V, error) {
 		if entry, hit := c.lookup(key); hit {
 			return entry.value, entry.err
 		}
-		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
-		defer cancel()
 		v, err := recoverLoad(workCtx, load)
 		c.store(key, v, err)
 		return v, err
 	})
+}
 
+// detachedFlight runs load once for all concurrent callers with the same key. The load is
+// detached from the callers and bounded by detachedLookupTimeout, and a caller whose context
+// ends stops waiting without canceling it.
+func detachedFlight[V any](ctx context.Context, group *singleflight.Group, key string, load func(context.Context) (V, error)) (V, error) {
+	var zero V
+	// Avoid starting detached work for an already-canceled caller.
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	ch := group.DoChan(key, func() (any, error) {
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		return recoverLoad(workCtx, load)
+	})
 	select {
 	case <-ctx.Done():
 		return zero, ctx.Err()
@@ -283,7 +288,7 @@ func (c *NominalCatalog) FetchAssetsByRid(ctx context.Context, config *models.Pl
 	for _, assetRid := range assetRids {
 		entry, hit := c.assetCache.lookup(key(assetRid))
 		switch {
-		case !hit || entry.err != nil:
+		case !hit:
 			missing = append(missing, assetRid)
 		case entry.value != nil:
 			assets[assetRid] = *entry.value.clone()
@@ -292,42 +297,26 @@ func (c *NominalCatalog) FetchAssetsByRid(ctx context.Context, config *models.Pl
 	if len(missing) == 0 {
 		return assets, nil
 	}
-	if err := ctx.Err(); err != nil {
-		return assets, err
-	}
-
-	// Callers asking for the same assets share one detached request, like ttlCache.get.
+	// Callers asking for the same assets share one request.
 	slices.Sort(missing)
-	ch := c.assetBatches.DoChan(key(strings.Join(missing, "\x00")), func() (any, error) {
-		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
-		defer cancel()
-		return recoverLoad(workCtx, func(loadCtx context.Context) (map[string]SingleAssetResponse, error) {
-			fetched, err := c.fetchAssetsByRidUncached(loadCtx, config, missing)
-			if err != nil {
-				return nil, err
+	fetched, err := detachedFlight(ctx, &c.assetBatches, key(strings.Join(missing, "\x00")), func(loadCtx context.Context) (map[string]SingleAssetResponse, error) {
+		fetched, err := c.fetchAssetsByRidUncached(loadCtx, config, missing)
+		if err != nil {
+			return nil, err
+		}
+		for _, assetRid := range missing {
+			var cached *SingleAssetResponse
+			if asset, ok := fetched[assetRid]; ok {
+				cached = asset.clone()
 			}
-			for _, assetRid := range missing {
-				var cached *SingleAssetResponse
-				if asset, ok := fetched[assetRid]; ok {
-					cached = asset.clone()
-				}
-				c.assetCache.store(key(assetRid), cached, nil)
-			}
-			return fetched, nil
-		})
+			c.assetCache.store(key(assetRid), cached, nil)
+		}
+		return fetched, nil
 	})
-	select {
-	case <-ctx.Done():
-		return assets, ctx.Err()
-	case res := <-ch:
-		if res.Err != nil {
-			return assets, res.Err
-		}
-		for assetRid, asset := range res.Val.(map[string]SingleAssetResponse) {
-			assets[assetRid] = *asset.clone()
-		}
-		return assets, nil
+	for assetRid, asset := range fetched {
+		assets[assetRid] = *asset.clone()
 	}
+	return assets, err
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
