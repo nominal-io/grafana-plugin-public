@@ -248,10 +248,9 @@ func (h *NominalResourceHandler) handleEventLabels(ctx context.Context, req *bac
 		return err
 	}
 
-	pageSize := eventLabelPageSize
 	request := metadata.SearchMetadataRequest{
 		ResourceTypes: &[]metadata.ResourceType{metadata.New_ResourceType(metadata.ResourceType_EVENT)},
-		PageSize:      &pageSize,
+		PageSize:      new(eventLabelPageSize),
 		SortBy:        metadata.New_MetadataSortField(metadata.MetadataSortField_USAGE_COUNT),
 		Descending:    new(true),
 	}

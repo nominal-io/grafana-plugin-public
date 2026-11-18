@@ -481,40 +481,35 @@ func TestLiveNominalEvents(t *testing.T) {
 		return pollLiveQuery(t, ds, req, liveRowsReady(t, want))["A"].Frames[0]
 	}
 	type row struct {
-		time, timeEnd time.Time
+		time, timeEnd int64
 		title, tags   string
 	}
 	rows := func(frame *data.Frame) []row {
 		out := make([]row, frame.Rows())
 		for i := range out {
 			out[i] = row{
-				time:    frame.Fields[0].At(i).(time.Time),
-				timeEnd: frame.Fields[1].At(i).(time.Time),
+				time:    frame.Fields[0].At(i).(time.Time).Unix(),
+				timeEnd: frame.Fields[1].At(i).(time.Time).Unix(),
 				title:   frame.Fields[2].At(i).(string),
 				tags:    string(frame.Fields[4].At(i).(json.RawMessage)),
 			}
 		}
 		return out
 	}
-	assertRows := func(got, want []row) {
-		t.Helper()
-		if len(got) != len(want) {
-			t.Fatalf("got %d rows, want %d", len(got), len(want))
-		}
-		for i := range want {
-			if !got[i].time.Equal(want[i].time) || !got[i].timeEnd.Equal(want[i].timeEnd) || got[i].title != want[i].title || got[i].tags != want[i].tags {
-				t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
-			}
-		}
-	}
-	instant := row{base, base, "instant", `["live-a","INFO"]`}
-	span := row{base.Add(time.Minute), base.Add(3 * time.Minute), "span", `["live-b","INFO"]`}
+	instant := row{base.Unix(), base.Unix(), "instant", `["live-a","INFO"]`}
+	span := row{base.Add(time.Minute).Unix(), base.Add(3 * time.Minute).Unix(), "span", `["live-b","INFO"]`}
 
 	full := backend.TimeRange{From: base.Add(-time.Minute), To: base.Add(5 * time.Minute)}
-	assertRows(rows(run(full, 2)), []row{span, instant})
-	assertRows(rows(run(full, 1, "live-b")), []row{span})
+	if got := rows(run(full, 2)); !slices.Equal(got, []row{span, instant}) {
+		t.Errorf("rows = %+v, want %+v", got, []row{span, instant})
+	}
+	if got := rows(run(full, 1, "live-b")); !slices.Equal(got, []row{span}) {
+		t.Errorf("rows = %+v, want %+v", got, []row{span})
+	}
 	// The span starts before this range and ends inside it; the instant event is before it.
-	assertRows(rows(run(backend.TimeRange{From: base.Add(2 * time.Minute), To: base.Add(5 * time.Minute)}, 1)), []row{span})
+	if got := rows(run(backend.TimeRange{From: base.Add(2 * time.Minute), To: base.Add(5 * time.Minute)}, 1)); !slices.Equal(got, []row{span}) {
+		t.Errorf("rows = %+v, want %+v", got, []row{span})
+	}
 }
 
 func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInstanceSettings) liveNominalQueryTarget {

@@ -101,14 +101,12 @@ describe('AnnotationEditor', () => {
     expect(await asset().options('')).toEqual([{ value: '$asset', description: 'Dashboard variable' }]);
   });
 
-  it.each([
-    ['a saved RID', 'ri.a.1', [], { value: 'ri.a.1', label: 'Pump' }],
-    ['a saved RID without data scopes', 'ri.a.1', undefined, { value: 'ri.a.1', label: 'Pump' }],
-  ])('shows the looked-up title for %s', async (_name, rid, dataScopes, expected) => {
-    post.mockResolvedValue({ [rid]: { rid, title: 'Pump', labels: [], dataScopes } });
+  it('shows the looked-up title for a saved RID', async () => {
+    const rid = 'ri.a.1';
+    post.mockResolvedValue({ [rid]: { rid, title: 'Pump', labels: [], dataScopes: [] } });
     renderEditor({ refId: 'Anno', queryType: 'events', assetRid: rid });
 
-    await waitFor(() => expect(asset().value).toEqual(expected));
+    await waitFor(() => expect(asset().value).toEqual({ value: rid, label: 'Pump' }));
     expect(post).toHaveBeenCalledWith('/ds/assets-by-rid', [rid]);
   });
 

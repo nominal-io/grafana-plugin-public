@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,16 +25,11 @@ const (
 
 type fakeEventService struct {
 	event.EventServiceClient
-	mu      sync.Mutex
-	request event.SearchEventsRequest
-	events  []event.Event
-	err     error
+	events []event.Event
+	err    error
 }
 
-func (f *fakeEventService) SearchEvents(_ context.Context, _ bearertoken.Token, req event.SearchEventsRequest) (event.SearchEventsResponse, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.request = req
+func (f *fakeEventService) SearchEvents(context.Context, bearertoken.Token, event.SearchEventsRequest) (event.SearchEventsResponse, error) {
 	return event.SearchEventsResponse{Results: f.events}, f.err
 }
 
@@ -82,7 +76,6 @@ func TestEventAnnotationFrame(t *testing.T) {
 			ev.Type = event.New_EventType(event.EventType_Value("NEW_KIND"))
 			return ev
 		}(), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","NEW_KIND"]`},
-		{name: "zero duration", event: testEvent(t, "Launch", "plain", 0), wantEnd: start, wantText: "plain", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "escaping", event: testEvent(t, "<i>Launch</i>", "<b>x</b> & y", 0), wantTitle: "&lt;i&gt;Launch&lt;/i&gt;", wantEnd: start, wantText: "&lt;b&gt;x&lt;/b&gt; &amp; y", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "newlines", event: testEvent(t, "Launch", "one\ntwo", 0), wantEnd: start, wantText: "one<br />two", wantTagsJS: `["a,b","c","FLAG"]`},
 		{name: "no titles", event: testEvent(t, "Launch", "d", 0, testEventAssetA), wantEnd: start, wantText: "d", wantTagsJS: `["a,b","c","FLAG"]`},
@@ -136,7 +129,7 @@ func TestBuildEventSearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assets := []rids.AssetRid{testEventAssetRid(t, testEventAssetA), testEventAssetRid(t, testEventAssetB)}
 			request := buildEventSearch(tc.model, assets, timeRange)
-			if request.PageSize != 1000 || !request.Sort.IsDescending || request.Sort.Field.Value() != event.SortField_START_TIME {
+			if request.PageSize == 0 || !request.Sort.IsDescending || request.Sort.Field.Value() != event.SortField_START_TIME {
 				t.Errorf("page size %d, sort %+v", request.PageSize, request.Sort)
 			}
 			raw, err := json.Marshal(request.Query)

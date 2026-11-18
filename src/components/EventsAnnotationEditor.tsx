@@ -18,7 +18,7 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
   const [savedTitle, setSavedTitle] = useState<{ rid: string; title: string }>();
   useEffect(() => {
     const rid = query.assetRid;
-    if (!rid?.startsWith('ri.')) {
+    if (!rid) {
       return;
     }
     let cancelled = false;

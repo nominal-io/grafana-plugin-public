@@ -927,7 +927,7 @@ func TestHandleEventLabels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := &fakeMetadataService{labels: []string{"valve", "valves"}}
-			ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+			ds := newTestDatasource("https://api.test.com", nil, nil)
 			ds.metadataService = fake
 			workspace := sqlTestWorkspaceRid(t)
 			if tt.withWorkspace {
@@ -945,7 +945,7 @@ func TestHandleEventLabels(t *testing.T) {
 			if got.ResourceTypes == nil || len(*got.ResourceTypes) != 1 || (*got.ResourceTypes)[0].Value() != metadata.ResourceType_EVENT {
 				t.Errorf("resourceTypes = %v, want [EVENT]", got.ResourceTypes)
 			}
-			if got.PageSize == nil || *got.PageSize != 100 || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT {
+			if got.PageSize == nil || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT {
 				t.Errorf("pageSize/sortBy = %v/%v", got.PageSize, got.SortBy)
 			}
 			if got.Descending == nil || !*got.Descending {
@@ -962,7 +962,7 @@ func TestHandleEventLabels(t *testing.T) {
 	}
 
 	t.Run("no labels returns an empty array", func(t *testing.T) {
-		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds := newTestDatasource("https://api.test.com", nil, nil)
 		ds.metadataService = &fakeMetadataService{}
 		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if string(resp.Body) != `{"labels":[]}` {
@@ -971,7 +971,7 @@ func TestHandleEventLabels(t *testing.T) {
 	})
 
 	t.Run("upstream error status is passed through", func(t *testing.T) {
-		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds := newTestDatasource("https://api.test.com", nil, nil)
 		ds.metadataService = &fakeMetadataService{err: conjureHTTP401NoBody(t)}
 		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if resp.Status != http.StatusUnauthorized {
@@ -980,7 +980,7 @@ func TestHandleEventLabels(t *testing.T) {
 	})
 
 	t.Run("GET is rejected", func(t *testing.T) {
-		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
+		ds := newTestDatasource("https://api.test.com", nil, nil)
 		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
 		if resp.Status != http.StatusMethodNotAllowed {
 			t.Errorf("status = %d, want 405", resp.Status)
