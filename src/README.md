@@ -111,13 +111,13 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `channels(${asset}, , $__searchFilter)` searches channels across all supported data scopes on the selected asset. The second argument is intentionally empty.
 - `channels(${asset}, $__searchFilter)` is a shortcut for unscoped dynamic channel search, equivalent to `channels(${asset}, , $__searchFilter)`.
 
-The same search slot accepts fixed text: `assets:engine`, `channels(${asset}, ${datascope}, temp)`, and `channels(${asset}, , temp)`. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
+Asset search also accepts fixed text, such as `assets:engine`. Channel search takes only `$__searchFilter`; to narrow a channel list to fixed text, use the variable's **Regex** option. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
 
 Search text matches as a case-insensitive substring, the same as search in the Nominal app. Separate words with spaces to require each one: `assets(turbine north)` returns assets that contain both `turbine` and `north`.
 
 In Grafana 12 with Scenes disabled, the variable editor saves a search marker for catalog and SQL queries that use `$__searchFilter`. For an existing variable, focus its query field, click outside it, then save the dashboard. When provisioning a variable query object, set its `target` field to `$__searchFilter` alongside the saved query text in `query`.
 
-Scope names containing commas or delimiter-like characters should be referenced through a variable such as `${datascope}` instead of hardcoded inline. Channel arguments are split before Grafana variable interpolation, so `channels(${asset}, ${datascope}, $__searchFilter)` preserves the selected scope name as one value.
+A channel query reads everything between the asset and `$__searchFilter` as the scope name, so a scope name can contain commas: `channels(${asset}, engine,north, $__searchFilter)`. A scope variable such as `${datascope}` also keeps a selected name with commas as one value.
 
 ### SQL variable queries
 

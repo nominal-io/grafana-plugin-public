@@ -423,29 +423,34 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
-   * - "channels(<assetRid>, <dataScopeName>, <search>)": Returns channels matching search text
-   * - "channels(<assetRid>, , <search>)": Returns channels matching search text across all datascopes
-   * - "channels(<assetRid>, $__searchFilter)": Shortcut for unscoped dynamic channel search
+   * - "channels(<assetRid>, <dataScopeName>, $__searchFilter)": Returns channels matching the typed search text
+   * - "channels(<assetRid>, $__searchFilter)": Searches channels across all datascopes
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    */
-  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+  async metricFindQuery(
+    query: string,
+    options?: { scopedVars?: ScopedVars; requestId?: string }
+  ): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
     const scopedVars = options?.scopedVars ?? {};
 
     const channelsMatch = trimmedQuery.match(/^channels\(([^)]*)\)$/i);
     if (channelsMatch) {
-      const args = channelsMatch[1].split(',').map((arg) => arg.trim());
-      const [assetRidRaw, dataScopeNameRaw = '', searchTextRaw = ''] =
-        args.length === 2 && /^\$\{?__searchFilter\}?$/.test(args[1]) ? [args[0], '', args[1]] : args;
-      if (args.length > 3 || !assetRidRaw) {
+      // Only a last argument that uses __searchFilter is search text. Everything between it and the
+      // asset is the scope name, so a scope name with commas such as engine,north keeps working.
+      const [assetRidPart, ...rest] = channelsMatch[1].split(',');
+      const searchTextRaw = rest.length && rest[rest.length - 1].includes('__searchFilter') ? rest.pop()!.trim() : '';
+      const assetRidRaw = assetRidPart.trim();
+      const dataScopeNameRaw = rest.join(',').trim();
+      if (!assetRidRaw) {
         return [];
       }
 
       const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
       const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
       const searchText = interpolateCatalogSearch(searchTextRaw, scopedVars);
-      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText);
+      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText, options?.requestId);
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
@@ -461,7 +466,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
     if (assetsMatch) {
       const searchText = interpolateCatalogSearch(assetsMatch[1].trim(), scopedVars);
-      return searchText === undefined ? [] : this.fetchAssetVariables(searchText);
+      return searchText === undefined ? [] : this.fetchAssetVariables(searchText, options?.requestId);
     }
 
     if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
@@ -469,7 +474,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         ? trimmedQuery.substring(7).trim()
         : '';
       const searchText = interpolateCatalogSearch(rawSearchText, scopedVars);
-      return searchText === undefined ? [] : this.fetchAssetVariables(searchText);
+      return searchText === undefined ? [] : this.fetchAssetVariables(searchText, options?.requestId);
     }
 
     // Return empty for unknown query types
@@ -496,7 +501,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     });
   }
 
-  private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
+  private async fetchAssetVariables(searchText: string, requestId?: string): Promise<MetricFindValue[]> {
     let response: unknown;
     try {
       response = await getBackendSrv().post(
@@ -504,7 +509,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         {
           searchText: searchText,
           maxResults: 500,
-        }
+        },
+        { requestId }
       );
     } catch {
       throw new Error('Unable to load Nominal assets for the variable query.');
@@ -532,7 +538,12 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return this.validateMetricFindResponse(response, 'datascope');
   }
 
-  private async fetchChannelVariables(assetRid: string, dataScopeName: string, searchText: string): Promise<MetricFindValue[]> {
+  private async fetchChannelVariables(
+    assetRid: string,
+    dataScopeName: string,
+    searchText: string,
+    requestId?: string
+  ): Promise<MetricFindValue[]> {
     // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
@@ -550,7 +561,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           assetRid: assetRid,
           dataScopeName: dataScopeName,
           searchText: searchText,
-        }
+        },
+        { requestId }
       );
     } catch {
       throw new Error('Unable to load Nominal channels for the variable query.');

@@ -186,8 +186,23 @@ describe('NominalVariableSupport.query', () => {
 
       expect(mockBackendSrv.post).toHaveBeenCalledWith(
         expect.stringContaining('/assets'),
-        expect.objectContaining({ searchText: expected })
+        expect.objectContaining({ searchText: expected }),
+        expect.anything()
       );
+    });
+
+    it.each([
+      ['a Scenes variable', { __sceneObject: { value: { valueOf: () => ({ state: { key: 'var-1' } }) } } }, 'nominal-variable-var-1'],
+      ['the legacy picker', {}, undefined],
+    ])('gives catalog searches from %s a per-variable request ID', async (_, searchVars, requestId) => {
+      mockBackendSrv.post.mockResolvedValue([]);
+      const { ds } = makeDataSource();
+
+      await runWithSearch(ds, 'assets($__searchFilter)', searchVars as unknown as ScopedVars);
+
+      expect(mockBackendSrv.post).toHaveBeenCalledWith(expect.stringContaining('/assets'), expect.anything(), {
+        requestId,
+      });
     });
 
     it.each(cases)('passes %s to SQL as __searchFilter', async (_, searchVars, expected) => {
