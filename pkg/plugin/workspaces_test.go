@@ -96,15 +96,17 @@ func TestCheckHealthWorkspace(t *testing.T) {
 // template-variable endpoint builds its own body, the query editor's search is posted as sent.
 func TestAssetSearchAppliesWorkspaceFilter(t *testing.T) {
 	text := map[string]interface{}{"type": "searchText", "searchText": "eng"}
+	substring := map[string]interface{}{"type": "exactSubstring", "exactSubstring": "eng"}
 	clause := map[string]interface{}{"type": "workspace", "workspace": testWorkspaceRid}
 	anded, _ := json.Marshal(map[string]interface{}{"type": "and", "and": []interface{}{text, clause}})
+	andedSubstring, _ := json.Marshal(map[string]interface{}{"type": "and", "and": []interface{}{substring, clause}})
 	bare, _ := json.Marshal(clause)
 	cases := []struct {
 		name, path string
 		body       string
 		want       string
 	}{
-		{"assets variable", "assets", `{"searchText":"eng"}`, string(anded)},
+		{"assets variable", "assets", `{"searchText":"eng"}`, string(andedSubstring)},
 		{"posted search-assets", "search-assets", `{"query":{"type":"searchText","searchText":"eng"},"pageSize":50}`, string(anded)},
 		{"posted search-assets without query", "search-assets", `{"pageSize":50}`, string(bare)},
 	}

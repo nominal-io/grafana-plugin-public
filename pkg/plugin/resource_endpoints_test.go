@@ -576,8 +576,8 @@ func TestHandleChannelVariables(t *testing.T) {
 			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
 		got := mockDS.searchChannelsRequestSnapshot()
-		if got.FuzzySearchText != searchText || len(got.ExactMatch) != 0 {
-			t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and no ExactMatch", got.FuzzySearchText, got.ExactMatch, searchText)
+		if got.FuzzySearchText != searchText || len(got.ExactMatch) != 1 || got.ExactMatch[0] != searchText {
+			t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q for both", got.FuzzySearchText, got.ExactMatch, searchText)
 		}
 	})
 

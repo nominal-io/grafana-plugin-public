@@ -103,7 +103,7 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 - `assets` returns up to 500 assets from the workspace. Use it as the top variable in a smaller asset-driven dashboard built from scratch.
 - `assets($__searchFilter)` enables Grafana's dynamic dropdown search. Opening the dropdown loads unfiltered assets; typing in the dropdown re-runs the Nominal asset search with the typed text. Use this for large workspaces where the target asset might not be in the initially loaded result set.
-- `assets(engine)` returns assets matching the search text `engine`. Matching is case-insensitive, tolerates minor typos, and looks at the asset's name, description, labels, and properties - so `engine`, `engines`, and `enigne` all find `Engine 1`. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern - `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
+- `assets(engine)` returns assets whose name, description, labels, or properties contain `engine`, ignoring case. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern - `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset. It does not take `$__searchFilter`: the dropdown already holds every scope on the asset, and typing filters them.
 - `channels(${asset})` returns up to 5,000 channel names across all supported data scopes on the selected asset, deduplicated by name. Use it when your asset has a single primary data scope or when panels pin a literal data scope.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
@@ -113,7 +113,7 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 The same search slot accepts fixed text: `assets:engine`, `channels(${asset}, ${datascope}, temp)`, and `channels(${asset}, , temp)`. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
 
-Channel search uses case-insensitive substring matching for terms with no ASCII letters or digits, such as `_` or `温度`.
+Search text matches as a case-insensitive substring, the same as search in the Nominal app. Separate words with spaces to require each one: `assets(turbine north)` returns assets that contain both `turbine` and `north`.
 
 In Grafana 12 with Scenes disabled, the variable editor saves a search marker for catalog and SQL queries that use `$__searchFilter`. For an existing variable, focus its query field, click outside it, then save the dashboard. When provisioning a variable query object, set its `target` field to `$__searchFilter` alongside the saved query text in `query`.
 

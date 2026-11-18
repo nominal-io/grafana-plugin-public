@@ -343,6 +343,23 @@ func withWorkspaceFilter(query interface{}, workspaceRid string) interface{} {
 	return map[string]interface{}{"type": "and", "and": []interface{}{query, clause}}
 }
 
+// assetSearchQuery matches like the Nominal app's asset search: every whitespace-separated
+// term must appear, case-insensitively, in the asset's name, description, labels, or properties.
+func assetSearchQuery(searchText string) interface{} {
+	terms := strings.Fields(searchText)
+	if len(terms) == 0 {
+		return map[string]interface{}{"type": "searchText", "searchText": ""}
+	}
+	arms := make([]interface{}, len(terms))
+	for i, term := range terms {
+		arms[i] = map[string]interface{}{"type": "exactSubstring", "exactSubstring": term}
+	}
+	if len(arms) == 1 {
+		return arms[0]
+	}
+	return map[string]interface{}{"type": "and", "and": arms}
+}
+
 // FetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls.
 func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
 	var allResults []AssetResponse
@@ -351,7 +368,7 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	pageSize := min(maxResults, 1000)
 	totalFetched := 0
 
-	query := withWorkspaceFilter(map[string]interface{}{"type": "searchText", "searchText": searchText}, config.WorkspaceRid)
+	query := withWorkspaceFilter(assetSearchQuery(searchText), config.WorkspaceRid)
 
 	for totalFetched < maxResults {
 		requestBody := map[string]interface{}{
@@ -465,12 +482,9 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		return nil, nil
 	}
 
+	// ExactMatch keeps channels that contain every term, case-insensitively. The fuzzy text only ranks them.
+	exactMatch := strings.Fields(searchText)
 	fuzzySearchText := fuzzySearchTextFor(searchText)
-	var exactMatch []string
-	if searchText != "" && fuzzySearchText == "" {
-		// ExactMatch is a substring filter, so terms without trigrams still match.
-		exactMatch = []string{searchText}
-	}
 
 	pageSize := 1000
 	var allChannelResults []datasourceapi.ChannelMetadata
