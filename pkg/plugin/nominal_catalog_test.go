@@ -255,6 +255,34 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	}
 }
 
+func TestNominalCatalogFetchAssetsByRidFetchesOnlyUncachedAssets(t *testing.T) {
+	cached, uncached, missing := "ri.scout.main.asset.a", "ri.scout.main.asset.b", "ri.scout.main.asset.gone"
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		cached:   {Rid: cached, Title: "A"},
+		uncached: {Rid: uncached, Title: "B"},
+	}, nil)
+	defer server.Close()
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	if _, err := catalog.FetchAssetByRid(context.Background(), config, cached); err != nil {
+		t.Fatalf("FetchAssetByRid returned error: %v", err)
+	}
+	// The first batch fetches b and the missing asset; the second is served from the cache.
+	for range 2 {
+		assets, err := catalog.FetchAssetsByRid(context.Background(), config, []string{cached, uncached, missing})
+		if err != nil {
+			t.Fatalf("FetchAssetsByRid returned error: %v", err)
+		}
+		if len(assets) != 2 || assets[cached].Title != "A" || assets[uncached].Title != "B" {
+			t.Fatalf("assets = %+v", assets)
+		}
+	}
+	if got := assetFetches.Load(); got != 2 {
+		t.Fatalf("asset fetch count = %d, want 2", got)
+	}
+}
+
 func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	assetRid := "ri.scout.main.asset.copied"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"

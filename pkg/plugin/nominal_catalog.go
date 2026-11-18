@@ -269,6 +269,42 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	return asset.clone(), nil
 }
 
+// FetchAssetsByRid fetches several assets, serving cached ones from the FetchAssetByRid cache and
+// fetching the rest in one request. Assets that do not exist are left out. If the request fails,
+// the cached assets are still returned with the error.
+func (c *NominalCatalog) FetchAssetsByRid(ctx context.Context, config *models.PluginSettings, assetRids []string) (map[string]SingleAssetResponse, error) {
+	key := func(assetRid string) string {
+		return oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, assetRid)
+	}
+	assets := make(map[string]SingleAssetResponse, len(assetRids))
+	var missing []string
+	for _, assetRid := range assetRids {
+		entry, hit := c.assetCache.lookup(key(assetRid))
+		switch {
+		case !hit || entry.err != nil:
+			missing = append(missing, assetRid)
+		case entry.value != nil:
+			assets[assetRid] = *entry.value.clone()
+		}
+	}
+	if len(missing) == 0 {
+		return assets, nil
+	}
+	fetched, err := c.fetchAssetsByRidUncached(ctx, config, missing)
+	if err != nil {
+		return assets, err
+	}
+	for _, assetRid := range missing {
+		var cached *SingleAssetResponse
+		if asset, ok := fetched[assetRid]; ok {
+			assets[assetRid] = asset
+			cached = asset.clone()
+		}
+		c.assetCache.store(key(assetRid), cached, nil)
+	}
+	return assets, nil
+}
+
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
 // with the standard Authorization and Content-Type headers. It reads and
 // closes the response body itself: on non-200 it returns a typed *apiError

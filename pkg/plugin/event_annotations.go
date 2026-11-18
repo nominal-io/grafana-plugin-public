@@ -97,10 +97,11 @@ func (e *NominalQueryExecution) executeEventQuery(ctx context.Context, prepared 
 		logErrorWithConjureFields("Event search failed", err)
 		return backend.ErrDataResponseWithSource(backend.Status(upstreamStatus(err)), backend.ErrorSourceDownstream, formatUserError("Event search failed", err))
 	}
-	// With several assets, each event's text names its asset. A failed lookup leaves the names out.
+	// With several assets, each event's text names its asset. A failed lookup leaves out the names
+	// that were not cached.
 	var assetTitles map[string]string
-	if len(prepared.Assets) > 1 {
-		assets, err := e.datasource.nominalCatalog.fetchAssetsByRidUncached(ctx, e.config, prepared.Model.AssetRids)
+	if len(prepared.Assets) > 1 && len(result.Results) > 0 {
+		assets, err := e.datasource.nominalCatalog.FetchAssetsByRid(ctx, e.config, prepared.Model.AssetRids)
 		if err != nil {
 			logErrorWithConjureFields("Event asset title lookup failed", err)
 		}
