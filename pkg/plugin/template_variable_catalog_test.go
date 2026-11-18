@@ -155,7 +155,7 @@ func TestTemplateVariableCatalogChannelVariablesDedupesAndHandlesUnresolvedVaria
 	}
 }
 
-func TestTemplateVariableCatalogChannelVariablesForwardsSearchTextAndHandlesUnresolvedSearchText(t *testing.T) {
+func TestTemplateVariableCatalogChannelVariablesForwardsSearchText(t *testing.T) {
 	assetRid := "ri.scout.main.asset.1"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
 	server := newTestAssetServer(t, map[string]SingleAssetResponse{
@@ -198,21 +198,5 @@ func TestTemplateVariableCatalogChannelVariablesForwardsSearchTextAndHandlesUnre
 	}
 	if got := mockDS.searchChannelsRequestSnapshot().FuzzySearchText; got != "temp" {
 		t.Fatalf("FuzzySearchText = %q, want temp", got)
-	}
-
-	callsBeforeUnresolved := mockDS.searchChannelsCallCount()
-	unresolved, err := templateCatalog.ChannelVariables(context.Background(), config, channelVariablesRequest{
-		AssetRid:      assetRid,
-		DataScopeName: "scope-a",
-		SearchText:    "$channelSearch",
-	})
-	if err != nil {
-		t.Fatalf("unresolved ChannelVariables returned error: %v", err)
-	}
-	if len(unresolved) != 0 {
-		t.Fatalf("unresolved values = %v, want empty", unresolved)
-	}
-	if got := mockDS.searchChannelsCallCount(); got != callsBeforeUnresolved {
-		t.Fatalf("SearchChannels calls = %d, want unchanged %d", got, callsBeforeUnresolved)
 	}
 }

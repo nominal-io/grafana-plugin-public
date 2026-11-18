@@ -33,7 +33,7 @@ type datascopesVariableRequest struct {
 type channelVariablesRequest struct {
 	AssetRid      string `json:"assetRid"`
 	DataScopeName string `json:"dataScopeName"`
-	SearchText    string `json:"searchText"`
+	SearchText    string `json:"searchText"` // Literal search text after Grafana interpolation.
 }
 
 type templateVariableCatalogErrorKind int
@@ -131,7 +131,7 @@ func (c *TemplateVariableCatalog) Datascopes(ctx context.Context, config *models
 }
 
 func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *models.PluginSettings, req channelVariablesRequest) ([]metricFindValue, error) {
-	if hasUnresolvedTemplateVariable(req.AssetRid, req.DataScopeName, req.SearchText) {
+	if hasUnresolvedTemplateVariable(req.AssetRid, req.DataScopeName) {
 		return []metricFindValue{}, nil
 	}
 

@@ -4,6 +4,7 @@ import {
   DataQueryRequest,
   DataQueryResponse,
   FieldType,
+  ScopedVars,
   createDataFrame,
   dateTime,
 } from '@grafana/data';
@@ -154,32 +155,34 @@ describe('NominalVariableSupport.query', () => {
   });
 
   describe('dynamic dropdown search', () => {
-    const searchVars = (searchFilter?: string) =>
-      searchFilter === undefined ? {} : { __searchFilter: { value: searchFilter, text: searchFilter } };
-    const runWithSearch = (ds: DataSource, target: NominalVariableQuery | string, searchFilter?: string) =>
+    const term = (value: string) => ({ value, text: value });
+    const cases: Array<[string, ScopedVars, string]> = [
+      ['an unopened dropdown', {}, ''],
+      ['legacy typed text', { searchFilter: term('$team') }, '$team'],
+      ['Scenes typed text', { __searchFilter: term('motor') }, 'motor'],
+      ['a cleared Scenes filter with a stale legacy filter', { __searchFilter: term(''), searchFilter: term('motor') }, ''],
+    ];
+    const runWithSearch = (ds: DataSource, target: NominalVariableQuery | string, searchVars: ScopedVars) =>
       lastValueFrom(
         (ds.variables as NominalVariableSupport).query({
           targets: [target],
           range,
-          scopedVars: searchVars(searchFilter),
+          scopedVars: searchVars,
         } as unknown as DataQueryRequest<NominalVariableQuery>)
       );
 
     beforeEach(() => {
       (getTemplateSrv as jest.Mock).mockReturnValue({
         replace: (v: string, vars?: Record<string, { value?: unknown }>) =>
-          v.replace('$__searchFilter', String(vars?.__searchFilter?.value ?? '$__searchFilter')),
+          v.replace('$__searchFilter', () => String(vars?.__searchFilter?.value ?? '$__searchFilter')),
       });
     });
 
-    it.each([
-      ['an unopened dropdown', undefined, ''],
-      ['typed text', 'motor', 'motor'],
-    ])('sends %s as the catalog search text', async (_, searchFilter, expected) => {
+    it.each(cases)('sends %s as the catalog search text', async (_, searchVars, expected) => {
       mockBackendSrv.post.mockResolvedValue([]);
       const { ds } = makeDataSource();
 
-      await runWithSearch(ds, 'assets($__searchFilter)', searchFilter);
+      await runWithSearch(ds, 'assets($__searchFilter)', searchVars);
 
       expect(mockBackendSrv.post).toHaveBeenCalledWith(
         expect.stringContaining('/assets'),
@@ -187,13 +190,10 @@ describe('NominalVariableSupport.query', () => {
       );
     });
 
-    it.each([
-      ['an unopened dropdown', undefined, ''],
-      ['typed text', 'motor', 'motor'],
-    ])('passes %s to SQL as __searchFilter', async (_, searchFilter, expected) => {
+    it.each(cases)('passes %s to SQL as __searchFilter', async (_, searchVars, expected) => {
       const { ds, query } = makeDataSource();
 
-      await runWithSearch(ds, sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'"), searchFilter);
+      await runWithSearch(ds, sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'"), searchVars);
 
       expect(query).toHaveBeenCalledWith(
         expect.objectContaining({

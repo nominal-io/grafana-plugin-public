@@ -464,13 +464,21 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		return nil, nil
 	}
 
+	fuzzySearchText := fuzzySearchTextFor(searchText)
+	var exactMatch []string
+	if searchText != "" && fuzzySearchText == "" {
+		// ExactMatch is a substring filter, so terms without trigrams still match.
+		exactMatch = []string{searchText}
+	}
+
 	pageSize := 1000
 	var allChannelResults []datasourceapi.ChannelMetadata
 	var nextPageToken *api.Token
 
 	for {
 		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
-			FuzzySearchText: searchText,
+			FuzzySearchText: fuzzySearchText,
+			ExactMatch:      exactMatch,
 			DataSources:     dataSourceRids,
 			PageSize:        &pageSize,
 			NextPageToken:   nextPageToken,

@@ -13,7 +13,7 @@ import {
   getSearchFilterScopedVar,
 } from '@grafana/data';
 import { map, Observable } from 'rxjs';
-import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
@@ -207,6 +207,18 @@ interface OAuthState {
 }
 
 const searchFilterToken = '$__searchFilter';
+
+function interpolateCatalogSearch(rawSearchText: string, scopedVars: ScopedVars): string | undefined {
+  const interpolations: VariableInterpolation[] = [];
+  const searchText = getTemplateSrv().replace(rawSearchText, scopedVars, undefined, interpolations);
+
+  // Grafana marks a replacement identical to its token as unresolved. Typed text
+  // can equal the search token itself, but the scoped dropdown value is still known.
+  const hasUnresolvedReference = interpolations.some(({ found, variableName, value }) =>
+    found === false && !(variableName === '__searchFilter' && value === scopedVars.__searchFilter?.value)
+  );
+  return hasUnresolvedReference ? undefined : searchText;
+}
 
 type ChannelVariableArgs = {
   assetRidRaw: string;
@@ -473,10 +485,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       const dataScopeName = channelArgs.dataScopeNameRaw
         ? getTemplateSrv().replace(channelArgs.dataScopeNameRaw, scopedVars)
         : '';
-      const searchText = channelArgs.searchTextRaw
-        ? getTemplateSrv().replace(channelArgs.searchTextRaw, scopedVars)
-        : '';
-      return this.fetchChannelVariables(assetRid, dataScopeName, searchText);
+      const searchText = interpolateCatalogSearch(channelArgs.searchTextRaw, scopedVars);
+      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText);
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
@@ -491,17 +501,16 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
     const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
     if (assetsMatch) {
-      const searchText = getTemplateSrv().replace(assetsMatch[1].trim(), scopedVars);
-      return this.fetchAssetVariables(searchText);
+      const searchText = interpolateCatalogSearch(assetsMatch[1].trim(), scopedVars);
+      return searchText === undefined ? [] : this.fetchAssetVariables(searchText);
     }
 
     if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
       const rawSearchText = lowerQuery.startsWith('assets:')
         ? trimmedQuery.substring(7).trim()
         : '';
-      const searchText = getTemplateSrv().replace(rawSearchText, scopedVars);
-
-      return this.fetchAssetVariables(searchText);
+      const searchText = interpolateCatalogSearch(rawSearchText, scopedVars);
+      return searchText === undefined ? [] : this.fetchAssetVariables(searchText);
     }
 
     // Return empty for unknown query types
@@ -529,11 +538,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   }
 
   private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
-    // If search text contains unresolved variable, return empty
-    if (searchText && searchText.includes('$')) {
-      return [];
-    }
-
     let response: unknown;
     try {
       response = await getBackendSrv().post(
@@ -578,11 +582,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     if (dataScopeName && dataScopeName.includes('$')) {
       return [];
     }
-    // If search text contains unresolved variable, return empty
-    if (searchText && searchText.includes('$')) {
-      return [];
-    }
-
     let response: unknown;
     try {
       response = await getBackendSrv().post(

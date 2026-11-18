@@ -11,7 +11,7 @@ import {
   LoadingState,
   toDataFrame,
 } from '@grafana/data';
-import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
 import { lastValueFrom, of } from 'rxjs';
 
 const mockBackendQuery = jest.fn();
@@ -33,10 +33,19 @@ jest.mock('@grafana/runtime', () => ({
 
 type TemplateScopedVars = Record<string, { value?: unknown } | undefined>;
 
-const replaceScopedVariable = (value: string, scopedVars?: TemplateScopedVars) => {
-  const variableName = value.match(/^\$\{?([^}]+)\}?$/)?.[1];
-  const scopedValue = variableName ? scopedVars?.[variableName]?.value : undefined;
-  return scopedValue === undefined ? value : String(scopedValue);
+const replaceScopedVariable = (
+  input: string,
+  scopedVars?: TemplateScopedVars,
+  _format?: unknown,
+  interpolations?: VariableInterpolation[]
+) => {
+  return input.replace(/\$(\w+)|\$\{(\w+)\}/g, (match, bareName, bracedName) => {
+    const variableName = bareName ?? bracedName;
+    const scopedValue = scopedVars?.[variableName]?.value;
+    const value = scopedValue === undefined ? match : String(scopedValue);
+    interpolations?.push({ match, variableName, value, found: value !== match });
+    return value;
+  });
 };
 
 const mockTemplateSrv = { replace: jest.fn(replaceScopedVariable) };
@@ -160,6 +169,7 @@ describe('metricFindQuery routing', () => {
     ['assets:rocket', 'rocket'],
     ['assets(rocket)', 'rocket'],
     ['assets( rocket )', 'rocket'],
+    ['assets(cost$)', 'cost$'],
   ])('query %j passes search text %j', async (query, expectedSearch) => {
     await ds.metricFindQuery(query);
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
@@ -184,6 +194,19 @@ describe('metricFindQuery routing', () => {
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/assets'),
       expect.objectContaining({ searchText: '' })
+    );
+  });
+
+  it.each([
+    ['assets($__searchFilter)', '/assets', '$team'],
+    ['assets:$__searchFilter', '/assets', '$__searchFilter'],
+    ['channels(ri.scout.main.asset.1, myScope, $__searchFilter)', '/channelvariables', 'cost$'],
+    ['channels(ri.scout.main.asset.1, $__searchFilter)', '/channelvariables', '$team'],
+  ])('query %j passes typed search text literally to %s', async (query, path, searchText) => {
+    await ds.metricFindQuery(query, { scopedVars: { __searchFilter: { text: searchText, value: searchText } } });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining(path),
+      expect.objectContaining({ searchText })
     );
   });
 
@@ -374,12 +397,13 @@ describe('metricFindQuery unresolved variable short-circuits', () => {
   it('channels with unresolved search text returns empty without backend call', async () => {
     const result = await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope, $channelSearch)');
     expect(result).toEqual([]);
-    expect(mockTemplateSrv.replace).toHaveBeenCalledWith('$channelSearch', expect.anything());
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });
 
   it('assets with unresolved search text returns empty without backend call', async () => {
-    const result = await ds.metricFindQuery('assets:$search');
+    const result = await ds.metricFindQuery('assets:$__searchFilter-$search', {
+      scopedVars: { __searchFilter: { text: 'cost$', value: 'cost$' } },
+    });
     expect(result).toEqual([]);
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });

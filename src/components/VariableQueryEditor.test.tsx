@@ -31,19 +31,44 @@ describe('VariableQueryEditor', () => {
   it('converts a legacy string to the object model when edited', () => {
     const { onChange } = renderEditor('assets');
     const input = screen.getByLabelText('Catalog query');
+    fireEvent.change(input, { target: { value: 'assets($__searchFilter)' } });
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenCalledWith({ refId: 'variable', mode: 'catalog', query: 'assets($__searchFilter)', target: '$__searchFilter' });
+  });
+
+  it('adds the marker when committing an existing query without changing its text', () => {
+    const catalog = { refId: 'V', mode: 'catalog' as const, query: 'assets($__searchFilter)' };
+    const { onChange, rerender } = renderEditor(catalog);
+    expect(onChange).not.toHaveBeenCalled();
+
+    const input = screen.getByLabelText('Catalog query');
+    fireEvent.blur(input);
+    const withMarker = { ...catalog, target: '$__searchFilter' };
+    expect(onChange).toHaveBeenLastCalledWith(withMarker);
+
+    rerender(withMarker);
     fireEvent.change(input, { target: { value: 'assets(engine)' } });
     fireEvent.blur(input);
-    expect(onChange).toHaveBeenCalledWith({ refId: 'variable', mode: 'catalog', query: 'assets(engine)' });
+    expect(onChange).toHaveBeenLastCalledWith({ ...catalog, query: 'assets(engine)' });
   });
 
   it("restores the other mode's text on switching back, without saving it", () => {
-    const { onChange, rerender } = renderEditor(sqlQuery('SELECT 1'));
+    const sql = { ...sqlQuery("SELECT '$__searchFilter'"), target: '$__searchFilter' };
+    const { onChange, rerender } = renderEditor(sql);
     fireEvent.click(screen.getByRole('radio', { name: 'Catalog' }));
     const catalog = { refId: 'V', mode: 'catalog' as const, query: '' };
     expect(onChange).toHaveBeenLastCalledWith(catalog);
     rerender(catalog);
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
-    expect(onChange).toHaveBeenLastCalledWith(sqlQuery('SELECT 1'));
+    expect(onChange).toHaveBeenLastCalledWith(sql);
+  });
+
+  it('saves the marker alongside a SQL query that uses dropdown search', () => {
+    const { onChange } = renderEditor(sqlQuery('SELECT 1'));
+    const query = "SELECT '$__searchFilter'";
+    fireEvent.change(sqlEditor(), { target: { value: query } });
+    fireEvent.blur(sqlEditor());
+    expect(onChange).toHaveBeenLastCalledWith({ ...sqlQuery(query), target: '$__searchFilter' });
   });
 
   it.each([

@@ -113,6 +113,8 @@ export interface NominalVariableQuery extends DataQuery {
   mode: VariableQueryMode;
   // A catalog pattern or SQL, depending on mode.
   query: string;
+  // Grafana's legacy picker checks target for the dropdown search token.
+  target?: string;
 }
 
 // Older dashboards store catalog queries as strings; provisioned queries may omit fields.

@@ -549,7 +549,7 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
-	t.Run("forwards searchText to channel search", func(t *testing.T) {
+	t.Run("forwards literal dollar signs to channel search", func(t *testing.T) {
 		server := newTestAssetServer(t, makeAssetWithDS(), nil)
 		defer server.Close()
 
@@ -563,14 +563,15 @@ func TestHandleChannelVariables(t *testing.T) {
 
 		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
 
-		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "temp"})
+		const searchText = "$channelSearch"
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": searchText})
 		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
-		if got := mockDS.searchChannelsRequestSnapshot().FuzzySearchText; got != "temp" {
-			t.Fatalf("FuzzySearchText = %q, want temp", got)
+		if got := mockDS.searchChannelsRequestSnapshot().FuzzySearchText; got != searchText {
+			t.Fatalf("FuzzySearchText = %q, want %q", got, searchText)
 		}
 	})
 
@@ -693,21 +694,6 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
-	t.Run("unresolved template variable in searchText skips settings load", func(t *testing.T) {
-		ds := newTestDatasource("https://api.test.com", &mockAuthService{}, &mockDatasourceService{})
-		ds.settings.JSONData = []byte(`{`)
-
-		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": "$channelSearch"})
-		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
-		resp := callResourceAndCapture(t, ds, req)
-		if resp.Status != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
-		}
-		if string(resp.Body) != "[]" {
-			t.Errorf("body = %q, want %q", string(resp.Body), "[]")
-		}
-	})
-
 	t.Run("no datasource RIDs returns empty 200", func(t *testing.T) {
 		videoAsset := map[string]SingleAssetResponse{
 			assetRid: {
@@ -735,21 +721,25 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
-	t.Run("paginates across multiple pages", func(t *testing.T) {
+	t.Run("paginates channel substring search", func(t *testing.T) {
 		server := newTestAssetServer(t, makeAssetWithDS(), nil)
 		defer server.Close()
 
+		const searchText = "_"
 		pageToken := api.Token("page2")
 		callCount := 0
 		mockDS := &mockDatasourceService{
 			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
 				callCount++
+				if req.FuzzySearchText != "" || len(req.ExactMatch) != 1 || req.ExactMatch[0] != searchText {
+					return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("page %d: expected substring search for %q, got fuzzy %q and exact %q", callCount, searchText, req.FuzzySearchText, req.ExactMatch)
+				}
 				if callCount == 1 {
 					return datasourceapi.SearchChannelsResponse{
 						Results: []datasourceapi.ChannelMetadata{
-							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-							{Name: api.Channel("ch2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-							{Name: api.Channel("ch3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
 						},
 						NextPageToken: &pageToken,
 					}, nil
@@ -760,8 +750,8 @@ func TestHandleChannelVariables(t *testing.T) {
 				}
 				return datasourceapi.SearchChannelsResponse{
 					Results: []datasourceapi.ChannelMetadata{
-						{Name: api.Channel("ch4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-						{Name: api.Channel("ch5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch_4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch_5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
 					},
 				}, nil
 			},
@@ -769,7 +759,7 @@ func TestHandleChannelVariables(t *testing.T) {
 
 		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
 
-		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": searchText})
 		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {

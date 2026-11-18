@@ -113,6 +113,10 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 
 The same search slot accepts fixed text: `assets:engine`, `channels(${asset}, ${datascope}, temp)`, and `channels(${asset}, , temp)`. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
 
+Channel search uses case-insensitive substring matching for terms with no ASCII letters or digits, such as `_` or `温度`.
+
+In Grafana 12 with Scenes disabled, the variable editor saves a search marker for catalog and SQL queries that use `$__searchFilter`. For an existing variable, focus its query field, click outside it, then save the dashboard. When provisioning a variable query object, set its `target` field to `$__searchFilter` alongside the saved query text in `query`.
+
 Scope names containing commas or delimiter-like characters should be referenced through a variable such as `${datascope}` instead of hardcoded inline. Channel arguments are split before Grafana variable interpolation, so `channels(${asset}, ${datascope}, $__searchFilter)` preserves the selected scope name as one value.
 
 ### SQL variable queries

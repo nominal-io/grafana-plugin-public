@@ -196,13 +196,8 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 
 	// Must run before loadResourceSettings so unresolved vars return [] even when
 	// settings are absent/invalid (the catalog re-checks only to skip the network call).
-	if hasUnresolvedTemplateVariable(searchRequest.AssetRid, searchRequest.DataScopeName, searchRequest.SearchText) {
-		log.DefaultLogger.Debug(
-			"Request contains unresolved template variable",
-			"assetRid", searchRequest.AssetRid,
-			"dataScopeName", searchRequest.DataScopeName,
-			"searchTextLength", len(searchRequest.SearchText),
-		)
+	if hasUnresolvedTemplateVariable(searchRequest.AssetRid, searchRequest.DataScopeName) {
+		log.DefaultLogger.Debug("Request contains unresolved template variable", "assetRid", searchRequest.AssetRid, "dataScopeName", searchRequest.DataScopeName)
 		return jsonBytesResponse(sender, http.StatusOK, []byte("[]"))
 	}
 

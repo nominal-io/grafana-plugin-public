@@ -93,10 +93,15 @@ export class NominalVariableSupport extends CustomVariableSupport<DataSource, No
   }
 
   query(originalRequest: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
-    // Grafana sets __searchFilter only while the user types in the dropdown, so default it to match everything.
+    const { scopedVars } = originalRequest;
     const request = {
       ...originalRequest,
-      scopedVars: { __searchFilter: { value: '', text: '' }, ...originalRequest.scopedVars },
+      scopedVars: {
+        ...scopedVars,
+        // Grafana's legacy dashboard picker sends searchFilter. Scenes sends __searchFilter.
+        // Remove the fallback and the editor's target marker when the minimum Grafana version is 13.
+        __searchFilter: scopedVars?.__searchFilter ?? scopedVars?.searchFilter ?? { value: '', text: '' },
+      },
     };
     const target = toVariableQuery(request.targets[0]);
     if (target.mode === 'sql') {
