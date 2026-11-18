@@ -54,7 +54,7 @@ func buildEventSearch(qm NominalQueryModel, assets []rids.AssetRid, timeRange ba
 
 // eventAnnotationFrame shapes events as a Grafana annotation frame. Text is rendered as HTML, so
 // event text is escaped. A line naming each event asset found in assetTitles leads the text.
-func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]string) *data.Frame {
+func eventAnnotationFrame(events []event.Event, assetTitles map[string]string) *data.Frame {
 	n := len(events)
 	times, timeEnds := make([]time.Time, n), make([]time.Time, n)
 	titles, texts, tags := make([]string, n), make([]string, n), make([]json.RawMessage, n)
@@ -65,7 +65,7 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]st
 
 		var text strings.Builder
 		for _, assetRid := range ev.AssetRids {
-			if title, ok := assetTitles[assetRid]; ok {
+			if title, ok := assetTitles[rid.ResourceIdentifier(assetRid).String()]; ok {
 				text.WriteString("Asset: " + html.EscapeString(title) + "<br />")
 			}
 		}
@@ -88,26 +88,6 @@ func eventAnnotationFrame(events []event.Event, assetTitles map[rids.AssetRid]st
 	)
 }
 
-// eventAssetTitles looks up the title of each asset in one request. If the lookup fails, no titles
-// are returned.
-func (e *NominalQueryExecution) eventAssetTitles(ctx context.Context, assetRids []rids.AssetRid) map[rids.AssetRid]string {
-	ridStrings := make([]string, len(assetRids))
-	for i, assetRid := range assetRids {
-		ridStrings[i] = rid.ResourceIdentifier(assetRid).String()
-	}
-	assets, err := e.datasource.nominalCatalog.fetchAssetsByRidUncached(ctx, e.config, ridStrings)
-	titles := make(map[rids.AssetRid]string, len(assetRids))
-	if err != nil {
-		return titles
-	}
-	for i, assetRid := range assetRids {
-		if asset, ok := assets[ridStrings[i]]; ok {
-			titles[assetRid] = asset.Title
-		}
-	}
-	return titles
-}
-
 func (e *NominalQueryExecution) executeEventQuery(ctx context.Context, prepared preparedQuery) (response backend.DataResponse) {
 	defer recoverQuery(ctx, "Event query", &response)
 	request := buildEventSearch(prepared.Model, prepared.Assets, prepared.Query.TimeRange)
@@ -117,9 +97,17 @@ func (e *NominalQueryExecution) executeEventQuery(ctx context.Context, prepared 
 		logErrorWithConjureFields("Event search failed", err)
 		return backend.ErrDataResponseWithSource(backend.Status(upstreamStatus(err)), backend.ErrorSourceDownstream, formatUserError("Event search failed", err))
 	}
-	var assetTitles map[rids.AssetRid]string
+	// With several assets, each event's text names its asset. A failed lookup leaves the names out.
+	var assetTitles map[string]string
 	if len(prepared.Assets) > 1 {
-		assetTitles = e.eventAssetTitles(ctx, prepared.Assets)
+		assets, err := e.datasource.nominalCatalog.fetchAssetsByRidUncached(ctx, e.config, prepared.Model.AssetRids)
+		if err != nil {
+			logErrorWithConjureFields("Event asset title lookup failed", err)
+		}
+		assetTitles = make(map[string]string, len(assets))
+		for assetRid, asset := range assets {
+			assetTitles[assetRid] = asset.Title
+		}
 	}
 	frame := eventAnnotationFrame(result.Results, assetTitles)
 	frame.RefID = prepared.Query.RefID

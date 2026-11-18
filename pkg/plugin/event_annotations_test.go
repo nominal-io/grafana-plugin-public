@@ -60,12 +60,12 @@ func testEvent(t *testing.T, name, description string, durationSeconds int64, as
 
 func TestEventAnnotationFrame(t *testing.T) {
 	start := time.Unix(1_700_000_000, 0)
-	titles := map[rids.AssetRid]string{testEventAssetRid(t, testEventAssetA): "Asset <A>", testEventAssetRid(t, testEventAssetB): "Asset B"}
+	titles := map[string]string{testEventAssetA: "Asset <A>", testEventAssetB: "Asset B"}
 	for _, tc := range []struct {
 		name       string
 		event      event.Event
 		wantTitle  string
-		titles     map[rids.AssetRid]string
+		titles     map[string]string
 		wantEnd    time.Time
 		wantText   string
 		wantTagsJS string

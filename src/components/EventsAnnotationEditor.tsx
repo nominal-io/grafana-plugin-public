@@ -61,7 +61,12 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
           id="nominal-annotation-asset"
           value={assetValue || null}
           options={loadAssets}
-          onChange={(o) => update({ assetRid: o?.value })}
+          onChange={(o) => {
+            if (o?.label) {
+              setSavedTitle({ rid: o.value, title: o.label });
+            }
+            update({ assetRid: o?.value });
+          }}
           placeholder="Search assets or choose a variable"
           createCustomValue
           isClearable

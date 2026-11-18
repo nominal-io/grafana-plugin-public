@@ -64,12 +64,12 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
-	maps.Copy(response.Responses, eventResponses)
 	if frameNamesDiffer(response.Responses) {
 		for _, sqlResponse := range sqlResponses {
 			prefixSeriesNames(sqlResponse.Frames)
 		}
 	}
+	maps.Copy(response.Responses, eventResponses)
 
 	return response
 }
