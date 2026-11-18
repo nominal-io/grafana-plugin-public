@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -1296,6 +1297,78 @@ func TestPanicInOneResultTransformAffectsOnlyItsQuery(t *testing.T) {
 	}
 	if len(healthyResp.Frames) != 1 {
 		t.Fatalf("healthy query should render one frame, got %d", len(healthyResp.Frames))
+	}
+}
+
+func TestBatchQueryOmitsMissingNumericBuckets(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	timeRange := backend.TimeRange{From: from, To: from.Add(time.Minute)}
+	timestamps := []int64{from.Add(time.Second).UnixNano(), from.Add(2 * time.Second).UnixNano(), from.Add(3 * time.Second).UnixNano()}
+	mixed := createTestArrowMultiAggWithNullPattern(t, timestamps, map[string][]float64{
+		"mean":  {99, 0, math.NaN()},
+		"min":   {0, 0, 0},
+		"count": {1, 0, 1},
+	}, func(row, column int) bool {
+		return column == 1 || (column == 0 && row == 1)
+	})
+	empty := createTestArrowBucketedNumeric(timestamps, []float64{0, 0, 0}, []bool{true, true, true})
+	mockService := &mockComputeService{}
+	for _, arrow := range [][]byte{mixed, empty} {
+		result := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: arrow})
+		mockService.batchComputeResponse.Results = append(mockService.batchComputeResponse.Results,
+			computeapi.ComputeWithUnitsResult{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(result)})
+	}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+	qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeNumeric}
+	qm.Aggregations = []string{AggMean, AggMin, AggCount}
+	mixedQuery := backend.DataQuery{RefID: "A", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 10000}
+	qm.Aggregations = []string{AggMean}
+	emptyQuery := backend.DataQuery{RefID: "B", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 10000}
+	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{mixedQuery, emptyQuery}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	a := resp.Responses["A"]
+	if a.Error != nil || len(a.Frames) != 2 {
+		t.Fatalf("A: got %d frames and error %v, want mean and count frames", len(a.Frames), a.Error)
+	}
+	mean, count := a.Frames[0], a.Frames[1]
+	if mean.Name != "temp (mean)" || mean.Rows() != 2 {
+		t.Fatalf("mean: got %q with %d rows, want two non-null rows", mean.Name, mean.Rows())
+	}
+	wire, err := mean.MarshalArrow()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mean, err = data.UnmarshalArrowFrame(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int64{timestamps[0], timestamps[2]} {
+		if got := mean.Fields[0].At(i).(time.Time).UnixNano(); got != want {
+			t.Errorf("mean timestamp %d = %d, want %d", i, got, want)
+		}
+	}
+	if got := mean.Fields[1].At(0).(*float64); got == nil || *got != 99 {
+		t.Errorf("mean first value = %v, want 99", got)
+	}
+	if got := mean.Fields[1].At(1).(*float64); got == nil || !math.IsNaN(*got) {
+		t.Errorf("mean last value = %v, want a non-null NaN", got)
+	}
+	if count.Name != "temp (count)" || count.Rows() != 3 {
+		t.Fatalf("count: got %q with %d rows, want all three rows", count.Name, count.Rows())
+	}
+	if got := count.Fields[1].At(1).(*float64); got == nil || *got != 0 {
+		t.Errorf("count middle value = %v, want zero", got)
+	}
+	if got := count.Fields[0].At(1).(time.Time).UnixNano(); got != timestamps[1] {
+		t.Errorf("count middle timestamp = %d, want %d", got, timestamps[1])
+	}
+
+	b := resp.Responses["B"]
+	if b.Error != nil || len(b.Frames) != 1 || len(b.Frames[0].Fields) != 0 {
+		t.Fatalf("B: want one fieldless no-data frame, got %+v", b)
 	}
 }
 

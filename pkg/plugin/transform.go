@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,7 +51,14 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				response.Frames = append(response.Frames, frame)
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
+				bucketed := !slices.Contains(qm.Aggregations, AggLTTB)
 				for _, agg := range result.AggSeries {
+					if bucketed {
+						agg.dropMissingBuckets()
+						if len(agg.Values) == 0 {
+							continue
+						}
+					}
 					capTimes(agg.TimePoints, qm.RangeEnd)
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
@@ -74,6 +82,10 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 						)
 					}
 					response.Frames = append(response.Frames, frame)
+				}
+				if len(response.Frames) == 0 {
+					// A fieldless frame tells Grafana Alerting the query returned no data.
+					response.Frames = append(response.Frames, data.NewFrame(qm.Channel))
 				}
 				log.DefaultLogger.Debug("Successfully processed multi-agg query",
 					"series", len(result.AggSeries),

@@ -33,7 +33,9 @@ Compute queries follow a three-step pattern:
 
 Queries can be used in any Grafana panel or in Explore.
 
-A Compute query on a numeric or string channel requests as many points (time buckets, or LTTB samples) as Grafana's **Max data points**. By default that is the panel width in pixels. To request fewer, set **Max data points** under the panel's **Query options**, or under **Options** on the query in an alert rule. Nominal returns at most 10,000 points per query. Alert rules default to 43,200, so they get 10,000 and show a notice that the count was lowered.
+A Compute query on a numeric or string channel uses Grafana's **Max data points** as its point budget. By default that is the panel width in pixels. To request fewer, set **Max data points** under the panel's **Query options**, or under **Options** on the query in an alert rule. Requests are capped at 10,000 points. Alert rules default to 43,200, so their queries include a notice when the budget is capped.
+
+Numeric bucket aggregations omit buckets with a missing result in dashboards and alert rules. A numeric result such as zero or `NaN` is preserved.
 
 ## SQL queries
 

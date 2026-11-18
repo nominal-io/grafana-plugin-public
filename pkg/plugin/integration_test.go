@@ -816,7 +816,7 @@ func liveNominalCSVTimeRange(t *testing.T) (time.Time, time.Time) {
 	return timestamps[0].Add(-time.Minute), timestamps[len(timestamps)-1].Add(time.Minute)
 }
 
-// liveNominalValues excludes empty buckets, which appear as nil-valued rows.
+// liveNominalValues collects the concrete numeric values from the response.
 func liveNominalValues(t *testing.T, response backend.DataResponse) []float64 {
 	t.Helper()
 	var values []float64
@@ -852,6 +852,9 @@ func assertLiveNominalNumericResponse(t *testing.T, response backend.DataRespons
 	}
 	if len(frame.Fields) < 2 {
 		t.Fatalf("expected live query frame to contain time and value fields, got %d fields", len(frame.Fields))
+	}
+	if frame.Rows() != len(expected) {
+		t.Fatalf("expected one row per ingested sample and no empty buckets, got %d rows for %d samples", frame.Rows(), len(expected))
 	}
 
 	values := liveNominalValues(t, response)

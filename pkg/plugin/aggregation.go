@@ -40,6 +40,30 @@ type AggregationSeries struct {
 	TimePoints         []time.Time
 	Values             []*float64
 	CarriesChannelUnit bool
+	missingValues      int
+}
+
+// dropMissingBuckets omits Arrow nulls while preserving numeric values, including
+// zero and NaN. Timestamps may be shared with other series, so only the values
+// can be compacted in place.
+func (s *AggregationSeries) dropMissingBuckets() {
+	if s.missingValues == 0 {
+		return
+	}
+	if s.missingValues == len(s.Values) {
+		s.TimePoints, s.Values, s.missingValues = nil, nil, 0
+		return
+	}
+	times := make([]time.Time, 0, len(s.Values)-s.missingValues)
+	values := s.Values[:0]
+	for i, value := range s.Values {
+		if value != nil {
+			times = append(times, s.TimePoints[i])
+			values = append(values, value)
+		}
+	}
+	s.TimePoints, s.Values = times, values
+	s.missingValues = 0
 }
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
@@ -275,6 +299,7 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 		}
 		if rawCol.IsNull(i) {
 			series.Values = append(series.Values, nil)
+			series.missingValues++
 			continue
 		}
 		if bi >= len(backing) {
