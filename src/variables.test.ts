@@ -197,8 +197,12 @@ describe('NominalVariableSupport.query', () => {
     });
 
     describe('overlapping searches', () => {
-      const sceneVars = (key: string, search: string) =>
-        ({ __sceneObject: { value: { valueOf: () => ({ state: { key } }) } }, __searchFilter: term(search) }) as ScopedVars;
+      // Scenes sets __searchFilter only on dropdown searches, not on refreshes.
+      const sceneVars = (key: string, search?: string) =>
+        ({
+          __sceneObject: { value: { valueOf: () => ({ state: { key } }) } },
+          ...(search === undefined ? {} : { __searchFilter: term(search) }),
+        }) as ScopedVars;
 
       // Grafana's backend service cancels an in-flight request when another starts with the same request ID.
       beforeEach(() => {
@@ -228,16 +232,38 @@ describe('NominalVariableSupport.query', () => {
       );
 
       it.each([
-        ['the same variable on another selected data source', 'v1'],
-        ['another variable on the same dashboard', 'v2'],
-      ])('does not cancel %s', async (_, otherKey) => {
+        ['the same variable on another selected data source', 'other-uid', 'v1', 'rpm', 'rpm'],
+        ['another variable on the same dashboard', 'test-uid', 'v2', 'rpm', 'rpm'],
+        ['a refresh of the same variable', 'test-uid', 'v1', undefined, 'rpm'],
+      ])('does not cancel %s', async (_, otherUid, otherKey, firstSearch, secondSearch) => {
         const { ds } = makeDataSource();
-        const other = otherKey === 'v1' ? new DataSource({ uid: 'other-uid', jsonData: {} } as any) : ds;
-        const first = runWithSearch(ds, 'channels(ri.asset.1, , $__searchFilter)', sceneVars('v1', 'rpm'));
-        const second = runWithSearch(other, 'channels(ri.asset.1, , $__searchFilter)', sceneVars(otherKey, 'rpm'));
+        const other = otherUid === 'test-uid' ? ds : new DataSource({ uid: otherUid, jsonData: {} } as any);
+        const first = runWithSearch(ds, 'channels(ri.asset.1, , $__searchFilter)', sceneVars('v1', firstSearch));
+        const second = runWithSearch(other, 'channels(ri.asset.1, , $__searchFilter)', sceneVars(otherKey, secondSearch));
 
         await expect(first).resolves.toEqual({ data: [] });
         await expect(second).resolves.toEqual({ data: [] });
+      });
+
+      it('sends overlapping SQL searches of a Scenes variable under one request ID and keeps a refresh on its own', async () => {
+        const { ds, query } = makeDataSource();
+        const runSqlWith = (vars: ScopedVars, requestId: string) =>
+          lastValueFrom(
+            (ds.variables as NominalVariableSupport).query({
+              targets: [sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'")],
+              range,
+              scopedVars: vars,
+              requestId,
+            } as unknown as DataQueryRequest<NominalVariableQuery>)
+          );
+
+        await runSqlWith(sceneVars('v1', 'a'), 'r1');
+        await runSqlWith(sceneVars('v1', 'ab'), 'r2');
+        await runSqlWith(sceneVars('v1'), 'r3');
+
+        const [first, second, refresh] = query.mock.calls.map((call) => (call as unknown as [DataQueryRequest])[0].requestId);
+        expect(second).toBe(first);
+        expect(refresh).toBe('r3');
       });
     });
 
