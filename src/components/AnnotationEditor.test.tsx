@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AnnotationEventFieldSource, AnnotationQuery } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import { NominalQuery } from '../types';
@@ -79,7 +79,8 @@ describe('AnnotationEditor', () => {
   it('offers dashboard variables and matching assets as asset options', async () => {
     renderEditor({ refId: 'Anno' });
     const scope = { dataScopeName: 'main', dataSource: { type: 'dataset', dataset: 'ri.d.1' } };
-    post.mockResolvedValue({ results: [
+    post.mockResolvedValue({
+      results: [
         { rid: 'ri.a.1', title: 'Pump', labels: [], dataScopes: [scope] },
         { rid: 'ri.a.2', title: 'Valve', labels: [], dataScopes: [] },
       ],
@@ -98,6 +99,32 @@ describe('AnnotationEditor', () => {
     post.mockRejectedValue(new Error('boom'));
 
     expect(await asset().options('')).toEqual([{ value: '$asset', description: 'Dashboard variable' }]);
+  });
+
+  it.each([
+    ['a saved RID', 'ri.a.1', [], { value: 'ri.a.1', label: 'Pump' }],
+    ['a saved RID without data scopes', 'ri.a.1', undefined, { value: 'ri.a.1', label: 'Pump' }],
+  ])('shows the looked-up title for %s', async (_name, rid, dataScopes, expected) => {
+    post.mockResolvedValue({ [rid]: { rid, title: 'Pump', labels: [], dataScopes } });
+    renderEditor({ refId: 'Anno', queryType: 'events', assetRid: rid });
+
+    await waitFor(() => expect(asset().value).toEqual(expected));
+    expect(post).toHaveBeenCalledWith('/ds/assets-by-rid', [rid]);
+  });
+
+  it('does not look up a variable value', () => {
+    renderEditor({ refId: 'Anno', queryType: 'events', assetRid: '$asset' });
+
+    expect(asset().value).toBe('$asset');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('keeps showing the RID when the title lookup fails', async () => {
+    post.mockRejectedValue(new Error('boom'));
+    renderEditor({ refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' });
+
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(asset().value).toBe('ri.a.1');
   });
 
   it('sends typed label text to the label route and offers the labels', async () => {
@@ -129,14 +156,20 @@ describe('AnnotationEditor', () => {
   });
 
   it('swaps mappings with the target in one annotation update when available', () => {
-    const sqlMappings: AnnotationQuery['mappings'] = { text: { source: AnnotationEventFieldSource.Field, value: 'description' } };
+    const sqlMappings: AnnotationQuery['mappings'] = {
+      text: { source: AnnotationEventFieldSource.Field, value: 'description' },
+    };
     const sqlTarget: NominalQuery = { refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' };
     const onChange = jest.fn();
     const onAnnotationChange = jest.fn();
     const props = { onChange, onAnnotationChange, onRunQuery: jest.fn(), datasource, range: undefined };
     const base = { name: 'a', enable: true, iconColor: 'red' };
     const view = render(
-      <AnnotationEditor {...props} query={sqlTarget} annotation={{ ...base, target: sqlTarget, mappings: sqlMappings }} />
+      <AnnotationEditor
+        {...props}
+        query={sqlTarget}
+        annotation={{ ...base, target: sqlTarget, mappings: sqlMappings }}
+      />
     );
 
     fireEvent.click(screen.getByRole('radio', { name: 'Events' }));

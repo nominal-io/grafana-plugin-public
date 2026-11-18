@@ -55,8 +55,7 @@ export const getSupportedScopes = (asset: Asset): DataScope[] =>
   asset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type));
 
 /** Returns the dataScopeNames for the asset's supported scopes. */
-export const getSupportedScopeNames = (asset: Asset): string[] =>
-  getSupportedScopes(asset).map((s) => s.dataScopeName);
+export const getSupportedScopeNames = (asset: Asset): string[] => getSupportedScopes(asset).map((s) => s.dataScopeName);
 
 /** Returns the rid for a data source, or undefined if the type is unsupported. */
 export const getDataSourceRid = (ds: DataSource): string | undefined => {
@@ -74,9 +73,7 @@ export const getDataSourceRid = (ds: DataSource): string | undefined => {
 
 /** Collects data source RIDs from an asset's dataScopes, optionally filtered to a single scope. */
 export const resolveDataSourceRids = (asset: Asset, dataScopeName?: string): string[] => {
-  const scopes = asset.dataScopes.filter(
-    (scope) => !dataScopeName || scope.dataScopeName === dataScopeName
-  );
+  const scopes = asset.dataScopes.filter((scope) => !dataScopeName || scope.dataScopeName === dataScopeName);
   const rids: string[] = [];
   for (const scope of scopes) {
     const rid = getDataSourceRid(scope.dataSource);
@@ -97,22 +94,20 @@ export const createBasicAsset = (rid: string, title: string): Asset => ({
   properties: {},
 });
 
-/** Fetches a single asset by its exact RID using the batch lookup endpoint */
-export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
+/** Fetches a single asset by its exact RID, including assets without supported data scopes. */
+export const fetchAnyAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
   if (!rid || !rid.startsWith('ri.')) {
     return null;
   }
 
-  const response = await getBackendSrv().post(
-    `${datasourceUrl}/${resourceRoutes.assetsByRid}`,
-    [rid]
-  );
+  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.assetsByRid}`, [rid]);
+  return response?.[rid] ?? null;
+};
 
-  const asset = response?.[rid];
-  if (asset && asset.dataScopes?.length > 0) {
-    return asset;
-  }
-  return null;
+/** Fetches a single asset by its exact RID, only if it has a data scope. */
+export const fetchAssetByRid = async (datasourceUrl: string, rid: string): Promise<Asset | null> => {
+  const asset = await fetchAnyAssetByRid(datasourceUrl, rid);
+  return asset && asset.dataScopes?.length > 0 ? asset : null;
 };
 
 /** Searches all assets, including those without supported data scopes. */
@@ -158,7 +153,9 @@ export const searchChannels = async (
     searchText,
   };
   const response = options.requestId
-    ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
+    ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, {
+        requestId: options.requestId,
+      })
     : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
 };

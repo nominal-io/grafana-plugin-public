@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { QueryEditorProps } from '@grafana/data';
 import { getTemplateSrv } from '@grafana/runtime';
 import { Combobox, ComboboxOption, InlineField, MultiCombobox, Stack, Text } from '@grafana/ui';
 import type { DataSource } from '../datasource';
 import { NominalDataSourceOptions, NominalQuery, QUERY_TYPE_EVENTS } from '../types';
-import { searchAllAssets, searchEventLabels } from '../utils/api';
+import { fetchAnyAssetByRid, searchAllAssets, searchEventLabels } from '../utils/api';
 
 type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
 
@@ -14,6 +14,25 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
   // Changes only save: Grafana reruns annotations when the saved query changes, and
   // onRunQuery still holds the previous query at that point.
   const update = (patch: Partial<NominalQuery>) => onChange({ ...query, queryType: QUERY_TYPE_EVENTS, ...patch });
+
+  const [savedTitle, setSavedTitle] = useState<{ rid: string; title: string }>();
+  useEffect(() => {
+    const rid = query.assetRid;
+    if (!rid?.startsWith('ri.')) {
+      return;
+    }
+    let cancelled = false;
+    fetchAnyAssetByRid(datasource.url, rid)
+      .then((asset) => !cancelled && asset && setSavedTitle({ rid, title: asset.title }))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [datasource.url, query.assetRid]);
+  const assetValue =
+    savedTitle && savedTitle.rid === query.assetRid
+      ? { value: savedTitle.rid, label: savedTitle.title }
+      : query.assetRid;
 
   const loadAssets = async (text: string): Promise<Array<ComboboxOption<string>>> => {
     const variables = getTemplateSrv()
@@ -34,13 +53,13 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
   return (
     <Stack direction="column" gap={1}>
       <Text variant="bodySmall" color="secondary">
-        An asset is required. Leave event types and labels empty to include all events. Shows events that overlap the dashboard
-        time range, up to 1,000, newest first.
+        An asset is required. Leave event types and labels empty to include all events. Shows events that overlap the
+        dashboard time range, up to 1,000, newest first.
       </Text>
       <InlineField label="Asset" labelWidth={14}>
         <Combobox
           id="nominal-annotation-asset"
-          value={query.assetRid || null}
+          value={assetValue || null}
           options={loadAssets}
           onChange={(o) => update({ assetRid: o?.value })}
           placeholder="Search assets or choose a variable"
