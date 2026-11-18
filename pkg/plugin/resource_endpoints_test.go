@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -554,32 +555,39 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
-	t.Run("forwards literal dollar signs to channel search", func(t *testing.T) {
-		server := newTestAssetServer(t, makeAssetWithDS(), nil)
-		defer server.Close()
+	for _, tc := range []struct {
+		name, searchText string
+		wantExact        []string
+	}{
+		{"forwards literal dollar signs to channel search", "$channelSearch", []string{"$channelSearch"}},
+		{"requires every word of a multi-word channel search", "OSSteal  CPU164", []string{"OSSteal", "CPU164"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTestAssetServer(t, makeAssetWithDS(), nil)
+			defer server.Close()
 
-		mockDS := &mockDatasourceService{
-			searchChannelsResponse: datasourceapi.SearchChannelsResponse{
-				Results: []datasourceapi.ChannelMetadata{
-					{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+			mockDS := &mockDatasourceService{
+				searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
 				},
-			},
-		}
+			}
 
-		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+			ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
 
-		const searchText = "$channelSearch"
-		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": searchText})
-		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
-		resp := callResourceAndCapture(t, ds, req)
-		if resp.Status != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
-		}
-		got := mockDS.searchChannelsRequestSnapshot()
-		if got.FuzzySearchText != searchText || len(got.ExactMatch) != 1 || got.ExactMatch[0] != searchText {
-			t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q for both", got.FuzzySearchText, got.ExactMatch, searchText)
-		}
-	})
+			body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": tc.searchText})
+			req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+			}
+			got := mockDS.searchChannelsRequestSnapshot()
+			if got.FuzzySearchText != tc.searchText || !slices.Equal(got.ExactMatch, tc.wantExact) {
+				t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and %q", got.FuzzySearchText, got.ExactMatch, tc.searchText, tc.wantExact)
+			}
+		})
+	}
 
 	t.Run("uses connection datasource RID when type is connection", func(t *testing.T) {
 		connectionRid := "ri.scout.main.data-source.conn1"
