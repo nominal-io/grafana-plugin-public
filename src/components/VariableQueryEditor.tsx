@@ -31,19 +31,17 @@ export function VariableQueryEditor({ query, onChange }: Props) {
     setDraft(saved);
   }, [saved]);
 
-  const saveQuery = (mode: VariableQueryMode, text: string, runUnchanged = false) => {
+  // Grafana's variable editor passes a no-op onRunQuery; onChange is what reruns the variable.
+  const commit = (text: string, runUnchanged = false, mode = current.mode) => {
     const target = containsSearchFilter(text) ? '$__searchFilter' : undefined;
     if (mode !== current.mode || text !== saved || target !== current.target || (runUnchanged && text.trim())) {
       onChange({ ...current, mode, query: text, target });
     }
   };
 
-  // Grafana's variable editor passes a no-op onRunQuery; onChange is what reruns the variable.
-  const commit = (text: string, runUnchanged = false) => saveQuery(current.mode, text, runUnchanged);
-
   const onModeChange = (mode: VariableQueryMode) => {
     setOtherModeText(draft);
-    saveQuery(mode, otherModeText);
+    commit(otherModeText, false, mode);
   };
 
   return (

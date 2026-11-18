@@ -179,34 +179,21 @@ describe('metricFindQuery routing', () => {
   });
 
   it.each([
-    ['assets($__searchFilter)', 'motor'],
-    ['assets:$__searchFilter', 'motor'],
-  ])('query %j passes Grafana dynamic search filter %j', async (query, expectedSearch) => {
-    await ds.metricFindQuery(query, { searchFilter: expectedSearch });
-    expect(mockBackendSrv.post).toHaveBeenCalledWith(
-      expect.stringContaining('/assets'),
-      expect.objectContaining({ searchText: expectedSearch })
-    );
-  });
-
-  it('query "assets($__searchFilter)" uses unfiltered search when dropdown text is empty', async () => {
-    await ds.metricFindQuery('assets($__searchFilter)');
-    expect(mockBackendSrv.post).toHaveBeenCalledWith(
-      expect.stringContaining('/assets'),
-      expect.objectContaining({ searchText: '' })
-    );
-  });
-
-  it.each([
-    ['assets($__searchFilter)', '/assets', '$team'],
-    ['assets:$__searchFilter', '/assets', '$__searchFilter'],
-    ['channels(ri.scout.main.asset.1, myScope, $__searchFilter)', '/channelvariables', 'cost$'],
-    ['channels(ri.scout.main.asset.1, $__searchFilter)', '/channelvariables', '$team'],
-  ])('query %j passes typed search text literally to %s', async (query, path, searchText) => {
+    ['assets($__searchFilter)', '/assets', '$team', {}],
+    ['assets:$__searchFilter', '/assets', 'motor', {}],
+    [
+      'channels(ri.scout.main.asset.1, myScope, $__searchFilter)',
+      '/channelvariables',
+      'cost$',
+      { dataScopeName: 'myScope' },
+    ],
+    ['channels(ri.scout.main.asset.1, $__searchFilter)', '/channelvariables', '$team', { dataScopeName: '' }],
+    ['channels(ri.scout.main.asset.1, ${__searchFilter})', '/channelvariables', 'temp', { dataScopeName: '' }],
+  ])('query %j passes typed search text literally to %s', async (query, path, searchText, extra) => {
     await ds.metricFindQuery(query, { scopedVars: { __searchFilter: { text: searchText, value: searchText } } });
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining(path),
-      expect.objectContaining({ searchText })
+      expect.objectContaining({ searchText, ...extra })
     );
   });
 
@@ -234,34 +221,6 @@ describe('metricFindQuery routing', () => {
     );
   });
 
-  it('query "channels(asset, scope, $__searchFilter)" passes typed channel search text', async () => {
-    await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope, $__searchFilter)', {
-      searchFilter: 'temp',
-    });
-    expect(mockBackendSrv.post).toHaveBeenCalledWith(
-      expect.stringContaining('/channelvariables'),
-      expect.objectContaining({
-        assetRid: 'ri.scout.main.asset.1',
-        dataScopeName: 'myScope',
-        searchText: 'temp',
-      })
-    );
-  });
-
-  it('query "channels(asset, $__searchFilter)" treats the token as unscoped channel search', async () => {
-    await ds.metricFindQuery('channels(ri.scout.main.asset.1, $__searchFilter)', {
-      searchFilter: 'rpm',
-    });
-    expect(mockBackendSrv.post).toHaveBeenCalledWith(
-      expect.stringContaining('/channelvariables'),
-      expect.objectContaining({
-        assetRid: 'ri.scout.main.asset.1',
-        dataScopeName: '',
-        searchText: 'rpm',
-      })
-    );
-  });
-
   it('query "channels(asset, , motor)" passes empty scope and fixed channel search text', async () => {
     await ds.metricFindQuery('channels(ri.scout.main.asset.1, , motor)');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
@@ -273,6 +232,14 @@ describe('metricFindQuery routing', () => {
       })
     );
   });
+
+  it.each(['channels()', 'channels(, myScope)', 'channels(a, b, c, d)'])(
+    'invalid channels query %j returns empty without calling backend',
+    async (query) => {
+      expect(await ds.metricFindQuery(query)).toEqual([]);
+      expect(mockBackendSrv.post).not.toHaveBeenCalled();
+    }
+  );
 
   it('unknown query returns empty array without calling backend', async () => {
     const result = await ds.metricFindQuery('somethingElse');

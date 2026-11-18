@@ -9,8 +9,6 @@ import {
   LoadingState,
   ScopedVars,
   MetricFindValue,
-  LegacyMetricFindQueryOptions,
-  getSearchFilterScopedVar,
 } from '@grafana/data';
 import { map, Observable } from 'rxjs';
 import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
@@ -206,42 +204,10 @@ interface OAuthState {
   signIns: number;
 }
 
-const searchFilterToken = '$__searchFilter';
-
 function interpolateCatalogSearch(rawSearchText: string, scopedVars: ScopedVars): string | undefined {
   const interpolations: VariableInterpolation[] = [];
   const searchText = getTemplateSrv().replace(rawSearchText, scopedVars, undefined, interpolations);
-
-  // Grafana marks a replacement identical to its token as unresolved. Typed text
-  // can equal the search token itself, but the scoped dropdown value is still known.
-  const hasUnresolvedReference = interpolations.some(({ found, variableName, value }) =>
-    found === false && !(variableName === '__searchFilter' && value === scopedVars.__searchFilter?.value)
-  );
-  return hasUnresolvedReference ? undefined : searchText;
-}
-
-type ChannelVariableArgs = {
-  assetRidRaw: string;
-  dataScopeNameRaw: string;
-  searchTextRaw: string;
-};
-
-function parseChannelVariableArgs(rawArgs: string): ChannelVariableArgs | undefined {
-  const args = rawArgs.split(',').map((arg) => arg.trim());
-  if (args.length < 1 || args.length > 3 || !args[0]) {
-    return undefined;
-  }
-
-  const [assetRidRaw, secondArgRaw = '', thirdArgRaw = ''] = args;
-  if (args.length === 2 && secondArgRaw === searchFilterToken) {
-    return { assetRidRaw, dataScopeNameRaw: '', searchTextRaw: secondArgRaw };
-  }
-
-  return {
-    assetRidRaw,
-    dataScopeNameRaw: secondArgRaw,
-    searchTextRaw: thirdArgRaw,
-  };
+  return interpolations.some(({ found }) => found === false) ? undefined : searchText;
 }
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -455,37 +421,30 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * Supports query types:
    * - "assets", "assets()", or empty: Returns all assets with text=title, value=rid
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
-   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
    * - "channels(<assetRid>, <dataScopeName>, <search>)": Returns channels matching search text
    * - "channels(<assetRid>, , <search>)": Returns channels matching search text across all datascopes
    * - "channels(<assetRid>, $__searchFilter)": Shortcut for unscoped dynamic channel search
+   * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    */
-  async metricFindQuery(query: string, options?: LegacyMetricFindQueryOptions): Promise<MetricFindValue[]> {
+  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
-    // Grafana passes the typed search text in scopedVars, which must win over the empty default.
-    const scopedVars: ScopedVars = {
-      ...getSearchFilterScopedVar({ query: trimmedQuery, wildcardChar: '', options }),
-      ...options?.scopedVars,
-    };
+    const scopedVars = options?.scopedVars ?? {};
 
-    // Handle channels query:
-    // channels(<assetRid>), channels(<assetRid>, <dataScopeName>),
-    // channels(<assetRid>, <dataScopeName>, <search>), or channels(<assetRid>, , <search>)
     const channelsMatch = trimmedQuery.match(/^channels\(([^)]*)\)$/i);
     if (channelsMatch) {
-      const channelArgs = parseChannelVariableArgs(channelsMatch[1]);
-      if (!channelArgs) {
+      const args = channelsMatch[1].split(',').map((arg) => arg.trim());
+      const [assetRidRaw, dataScopeNameRaw = '', searchTextRaw = ''] =
+        args.length === 2 && /^\$\{?__searchFilter\}?$/.test(args[1]) ? [args[0], '', args[1]] : args;
+      if (args.length > 3 || !assetRidRaw) {
         return [];
       }
 
-      const assetRid = getTemplateSrv().replace(channelArgs.assetRidRaw, scopedVars);
-      const dataScopeName = channelArgs.dataScopeNameRaw
-        ? getTemplateSrv().replace(channelArgs.dataScopeNameRaw, scopedVars)
-        : '';
-      const searchText = interpolateCatalogSearch(channelArgs.searchTextRaw, scopedVars);
+      const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
+      const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
+      const searchText = interpolateCatalogSearch(searchTextRaw, scopedVars);
       return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText);
     }
 
@@ -582,6 +541,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     if (dataScopeName && dataScopeName.includes('$')) {
       return [];
     }
+
     let response: unknown;
     try {
       response = await getBackendSrv().post(

@@ -498,6 +498,9 @@ func TestHandleChannelVariables(t *testing.T) {
 		if len(result) != 2 {
 			t.Fatalf("expected 2 deduplicated channels, got %d: %v", len(result), result)
 		}
+		if got := mockDS.searchChannelsRequestSnapshot(); got.FuzzySearchText != "" || len(got.ExactMatch) != 0 {
+			t.Fatalf("search without text sent FuzzySearchText = %q, ExactMatch = %q", got.FuzzySearchText, got.ExactMatch)
+		}
 
 		names := map[string]bool{}
 		for _, r := range result {
@@ -570,8 +573,9 @@ func TestHandleChannelVariables(t *testing.T) {
 		if resp.Status != http.StatusOK {
 			t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 		}
-		if got := mockDS.searchChannelsRequestSnapshot().FuzzySearchText; got != searchText {
-			t.Fatalf("FuzzySearchText = %q, want %q", got, searchText)
+		got := mockDS.searchChannelsRequestSnapshot()
+		if got.FuzzySearchText != searchText || len(got.ExactMatch) != 0 {
+			t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and no ExactMatch", got.FuzzySearchText, got.ExactMatch, searchText)
 		}
 	})
 
