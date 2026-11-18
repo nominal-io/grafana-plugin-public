@@ -10,6 +10,12 @@ type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions
 
 const eventTypeOptions = ['INFO', 'FLAG', 'ERROR', 'SUCCESS'].map((value) => ({ value }));
 
+const variableOptions = (text: string): Array<ComboboxOption<string>> =>
+  getTemplateSrv()
+    .getVariables()
+    .map((v) => ({ value: `$${v.name}`, description: 'Dashboard variable' }))
+    .filter((o) => o.value.toLowerCase().includes(text.toLowerCase()));
+
 export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
   // Changes only save: Grafana reruns annotations when the saved query changes, and
   // onRunQuery still holds the previous query at that point.
@@ -35,10 +41,7 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
       : query.assetRid;
 
   const loadAssets = async (text: string): Promise<Array<ComboboxOption<string>>> => {
-    const variables = getTemplateSrv()
-      .getVariables()
-      .map((v) => ({ value: `$${v.name}`, description: 'Dashboard variable' }))
-      .filter((o) => o.value.toLowerCase().includes(text.toLowerCase()));
+    const variables = variableOptions(text);
     try {
       const assets = await searchAllAssets(datasource.url, text);
       return [...variables, ...assets.map((a) => ({ value: a.rid, label: a.title }))];
@@ -47,8 +50,15 @@ export function EventsAnnotationEditor({ query, onChange, datasource }: Props) {
     }
   };
 
-  const loadLabels = async (text: string) =>
-    (await searchEventLabels(datasource.url, text)).map((value) => ({ value }));
+  const loadLabels = async (text: string): Promise<Array<ComboboxOption<string>>> => {
+    const variables = variableOptions(text);
+    try {
+      const labels = await searchEventLabels(datasource.url, text);
+      return [...variables, ...labels.map((value) => ({ value }))];
+    } catch {
+      return variables;
+    }
+  };
 
   return (
     <Stack direction="column" gap={1}>

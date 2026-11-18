@@ -56,7 +56,7 @@ Annotations can show Nominal events on dashboard panels. Open **Dashboard settin
 
 - **Asset** is required. Pick a fixed asset or a dashboard variable such as `$asset`; multi-value variables work.
 - **Event types** limits the annotation to INFO, FLAG, ERROR, or SUCCESS events. Empty means all types.
-- **Labels** limits it to events that have any of the chosen labels. The picker suggests labels from Nominal events and accepts custom values. Empty means all events.
+- **Labels** limits it to events that have any of the chosen labels. The picker suggests labels from Nominal events, accepts custom values, and lists dashboard variables; a multi-value variable adds one label per value. Empty means all events.
 
 Events that overlap the dashboard time range are shown. Instant events draw as markers and events with a duration draw as shaded regions. The tooltip text is the event description, and the event's labels and type appear as tags. An annotation loads at most 1,000 events, newest first, so older events in a busy range are dropped.
 

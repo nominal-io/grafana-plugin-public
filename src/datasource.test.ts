@@ -138,6 +138,17 @@ describe('event queries', () => {
     expect(result.assetRids).toEqual(['ri.a.1', 'ri.a.2']);
   });
 
+  it('expands a multi-value label variable and keeps commas in labels', () => {
+    const ds = createDataSource();
+    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: any) =>
+      v === '$label' ? format(['a, b', 'c']) : v
+    );
+
+    const result = ds.applyTemplateVariables({ refId: 'A', queryType: 'events', eventLabels: ['$label', 'x,y'] }, {});
+
+    expect(result.eventLabels).toEqual(['a, b', 'c', 'x,y']);
+  });
+
   it('requires an asset', () => {
     const ds = createDataSource();
     expect(ds.filterQuery({ refId: 'A', queryType: 'events' })).toBe(false);

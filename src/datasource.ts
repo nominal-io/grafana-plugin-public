@@ -393,6 +393,15 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
           .split(',')
           .map((rid) => rid.trim())
           .filter(Boolean),
+        // A multi-value variable becomes one label per value. Values are joined with NUL rather than a
+        // comma so labels that contain commas survive.
+        eventLabels: query.eventLabels
+          ?.flatMap((label) =>
+            getTemplateSrv()
+              .replace(label, scopedVars, (value: string | string[]) => [value].flat().join('\0'))
+              .split('\0')
+          )
+          .filter(Boolean),
       };
     }
 
