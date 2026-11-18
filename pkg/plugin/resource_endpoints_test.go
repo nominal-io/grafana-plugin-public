@@ -298,6 +298,13 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 	t.Run("stops pagination when maxResults is reached", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			var reqBody map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			if reqBody["pageSize"] != float64(3) {
+				t.Errorf("pageSize = %v, want 3", reqBody["pageSize"])
+			}
 
 			// Always return a full page with a next token
 			results := make([]AssetSearchResult, 50)
@@ -556,11 +563,13 @@ func TestHandleChannelVariables(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		name, searchText string
-		wantExact        []string
+		name, searchText, wantFuzzy string
+		wantExact                   []string
 	}{
-		{"forwards literal dollar signs to channel search", "$channelSearch", []string{"$channelSearch"}},
-		{"requires every word of a multi-word channel search", "OSSteal  CPU164", []string{"OSSteal", "CPU164"}},
+		{"forwards literal dollar signs to channel search", "$channelSearch", "$channelSearch", []string{"$channelSearch"}},
+		{"requires every word of a multi-word channel search", "OSSteal  CPU164", "OSSteal  CPU164", []string{"OSSteal", "CPU164"}},
+		{"leaves short-word searches unranked so no match is dropped", "io 01", "", []string{"io", "01"}},
+		{"leaves non-ASCII searches unranked so no match is dropped", "温度計測", "", []string{"温度計測"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newTestAssetServer(t, makeAssetWithDS(), nil)
@@ -583,8 +592,8 @@ func TestHandleChannelVariables(t *testing.T) {
 				t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
 			}
 			got := mockDS.searchChannelsRequestSnapshot()
-			if got.FuzzySearchText != tc.searchText || !slices.Equal(got.ExactMatch, tc.wantExact) {
-				t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and %q", got.FuzzySearchText, got.ExactMatch, tc.searchText, tc.wantExact)
+			if got.FuzzySearchText != tc.wantFuzzy || !slices.Equal(got.ExactMatch, tc.wantExact) {
+				t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and %q", got.FuzzySearchText, got.ExactMatch, tc.wantFuzzy, tc.wantExact)
 			}
 		})
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
@@ -482,9 +483,9 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		return nil, nil
 	}
 
-	// ExactMatch keeps channels that contain every term, case-insensitively. The fuzzy text only ranks them.
+	// ExactMatch keeps channels that contain every term, case-insensitively. The fuzzy text ranks them.
 	exactMatch := strings.Fields(searchText)
-	fuzzySearchText := fuzzySearchTextFor(searchText)
+	fuzzySearchText := channelRankText(exactMatch, searchText)
 
 	pageSize := 1000
 	var allChannelResults []datasourceapi.ChannelMetadata
@@ -516,6 +517,18 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
+}
+
+// channelRankText returns the fuzzy text that orders channel search results, or "" to leave
+// them unranked. Nominal also drops rows that share no 4-character run with the fuzzy text, so
+// it is only sent when one term has 4 or more ASCII characters, which every matching row contains.
+func channelRankText(terms []string, searchText string) string {
+	for _, term := range terms {
+		if len(term) >= 4 && strings.IndexFunc(term, func(r rune) bool { return r > unicode.MaxASCII }) < 0 {
+			return searchText
+		}
+	}
+	return ""
 }
 
 // fuzzySearchTextFor leaves the search text empty unless channel has an ASCII letter or
