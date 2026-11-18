@@ -347,7 +347,8 @@ func withWorkspaceFilter(query interface{}, workspaceRid string) interface{} {
 func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
 	var allResults []AssetResponse
 	pageToken := ""
-	pageSize := 50
+	// One request usually covers the whole variable. Each extra page is a full search round trip.
+	pageSize := min(maxResults, 1000)
 	totalFetched := 0
 
 	query := withWorkspaceFilter(map[string]interface{}{"type": "searchText", "searchText": searchText}, config.WorkspaceRid)

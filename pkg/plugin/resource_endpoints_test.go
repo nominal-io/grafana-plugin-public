@@ -238,9 +238,12 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 			json.NewDecoder(r.Body).Decode(&reqBody)
 			callCount++
 
-			// Page 1: return 50 assets with a next page token
+			// Page 1: return a full page with a next page token
 			if reqBody["nextPageToken"] == nil || reqBody["nextPageToken"] == "" {
-				results := make([]AssetSearchResult, 50)
+				if reqBody["pageSize"] != float64(1000) {
+					t.Errorf("pageSize = %v, want 1000", reqBody["pageSize"])
+				}
+				results := make([]AssetSearchResult, 1000)
 				for i := range results {
 					results[i] = AssetSearchResult{
 						Rid:   fmt.Sprintf("ri.scout.main.asset.page1-%d", i),
@@ -271,7 +274,7 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 
 		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
 
-		body, _ := json.Marshal(map[string]interface{}{"maxResults": 100})
+		body, _ := json.Marshal(map[string]interface{}{"maxResults": 2000})
 		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
@@ -283,9 +286,8 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 			t.Fatalf("failed to parse response: %v", err)
 		}
 
-		// Should have fetched both pages: 50 + 10 = 60
-		if len(result) != 60 {
-			t.Errorf("expected 60 assets across 2 pages, got %d", len(result))
+		if len(result) != 1010 {
+			t.Errorf("expected 1010 assets across 2 pages, got %d", len(result))
 		}
 		if callCount != 2 {
 			t.Errorf("expected 2 API calls (2 pages), got %d", callCount)
