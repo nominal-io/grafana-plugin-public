@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -145,6 +146,7 @@ type NominalCatalog struct {
 	datasourceService  datasourceservice.DataSourceServiceClient
 
 	assetCache           *ttlCache[*SingleAssetResponse]
+	assetBatches         singleflight.Group
 	channelMetadataCache *ttlCache[channelMetadataCacheEntry]
 }
 
@@ -290,19 +292,42 @@ func (c *NominalCatalog) FetchAssetsByRid(ctx context.Context, config *models.Pl
 	if len(missing) == 0 {
 		return assets, nil
 	}
-	fetched, err := c.fetchAssetsByRidUncached(ctx, config, missing)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return assets, err
 	}
-	for _, assetRid := range missing {
-		var cached *SingleAssetResponse
-		if asset, ok := fetched[assetRid]; ok {
-			assets[assetRid] = asset
-			cached = asset.clone()
+
+	// Callers asking for the same assets share one detached request, like ttlCache.get.
+	slices.Sort(missing)
+	ch := c.assetBatches.DoChan(key(strings.Join(missing, "\x00")), func() (any, error) {
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		return recoverLoad(workCtx, func(loadCtx context.Context) (map[string]SingleAssetResponse, error) {
+			fetched, err := c.fetchAssetsByRidUncached(loadCtx, config, missing)
+			if err != nil {
+				return nil, err
+			}
+			for _, assetRid := range missing {
+				var cached *SingleAssetResponse
+				if asset, ok := fetched[assetRid]; ok {
+					cached = asset.clone()
+				}
+				c.assetCache.store(key(assetRid), cached, nil)
+			}
+			return fetched, nil
+		})
+	})
+	select {
+	case <-ctx.Done():
+		return assets, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return assets, res.Err
 		}
-		c.assetCache.store(key(assetRid), cached, nil)
+		for assetRid, asset := range res.Val.(map[string]SingleAssetResponse) {
+			assets[assetRid] = *asset.clone()
+		}
+		return assets, nil
 	}
-	return assets, nil
 }
 
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path

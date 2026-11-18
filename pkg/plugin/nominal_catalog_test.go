@@ -1021,6 +1021,42 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 	}
 }
 
+func TestNominalCatalogFetchAssetsByRidSharesFlightWithSurvivingCaller(t *testing.T) {
+	assetRids := []string{"ri.scout.main.asset.b", "ri.scout.main.asset.a"}
+	blocker := newBlockingLookup()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		blocker.block()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]SingleAssetResponse{assetRids[0]: {Rid: assetRids[0], Title: "B"}})
+	}))
+	t.Cleanup(func() {
+		blocker.unblock()
+		server.Close()
+	})
+
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	var canceledErr, survivorErr error
+	var survivor map[string]SingleAssetResponse
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) { _, canceledErr = catalog.FetchAssetsByRid(ctx, config, assetRids) },
+		// The same assets in another order join the same flight.
+		func(ctx context.Context) {
+			survivor, survivorErr = catalog.FetchAssetsByRid(ctx, config, []string{assetRids[1], assetRids[0]})
+		},
+	)
+
+	if !errors.Is(canceledErr, context.Canceled) {
+		t.Fatalf("canceled lookup error = %v, want context.Canceled", canceledErr)
+	}
+	if survivorErr != nil || len(survivor) != 1 || survivor[assetRids[0]].Title != "B" {
+		t.Fatalf("surviving lookup = (%+v, %v), want asset B", survivor, survivorErr)
+	}
+	if got := blocker.calls.Load(); got != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", got)
+	}
+}
+
 func TestNominalCatalogInferChannelMetadataSharesFlightWithSurvivingCaller(t *testing.T) {
 	const assetRid = "ri.scout.main.asset.infercancel"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
