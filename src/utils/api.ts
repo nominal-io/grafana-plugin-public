@@ -55,7 +55,8 @@ export const getSupportedScopes = (asset: Asset): DataScope[] =>
   asset.dataScopes.filter((s) => SUPPORTED_DATA_SOURCE_TYPES.includes(s.dataSource.type));
 
 /** Returns the dataScopeNames for the asset's supported scopes. */
-export const getSupportedScopeNames = (asset: Asset): string[] => getSupportedScopes(asset).map((s) => s.dataScopeName);
+export const getSupportedScopeNames = (asset: Asset): string[] =>
+  getSupportedScopes(asset).map((s) => s.dataScopeName);
 
 /** Returns the rid for a data source, or undefined if the type is unsupported. */
 export const getDataSourceRid = (ds: DataSource): string | undefined => {
@@ -73,7 +74,9 @@ export const getDataSourceRid = (ds: DataSource): string | undefined => {
 
 /** Collects data source RIDs from an asset's dataScopes, optionally filtered to a single scope. */
 export const resolveDataSourceRids = (asset: Asset, dataScopeName?: string): string[] => {
-  const scopes = asset.dataScopes.filter((scope) => !dataScopeName || scope.dataScopeName === dataScopeName);
+  const scopes = asset.dataScopes.filter(
+    (scope) => !dataScopeName || scope.dataScopeName === dataScopeName
+  );
   const rids: string[] = [];
   for (const scope of scopes) {
     const rid = getDataSourceRid(scope.dataSource);
@@ -100,7 +103,10 @@ export const fetchAnyAssetByRid = async (datasourceUrl: string, rid: string): Pr
     return null;
   }
 
-  const response = await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.assetsByRid}`, [rid]);
+  const response = await getBackendSrv().post(
+    `${datasourceUrl}/${resourceRoutes.assetsByRid}`,
+    [rid]
+  );
   return response?.[rid] ?? null;
 };
 
@@ -153,9 +159,7 @@ export const searchChannels = async (
     searchText,
   };
   const response = options.requestId
-    ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, {
-        requestId: options.requestId,
-      })
+    ? await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody, { requestId: options.requestId })
     : await getBackendSrv().post(`${datasourceUrl}/${resourceRoutes.channels}`, requestBody);
   return response?.channels ?? [];
 };

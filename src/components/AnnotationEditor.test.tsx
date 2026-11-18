@@ -153,7 +153,7 @@ describe('AnnotationEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith({ refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' });
   });
 
-  it('swaps mappings with the target in one annotation update when available', () => {
+  it('swaps mappings and the v2 query spec with the target in one annotation update', () => {
     const sqlMappings: AnnotationQuery['mappings'] = {
       text: { source: AnnotationEventFieldSource.Field, value: 'description' },
     };
@@ -162,20 +162,24 @@ describe('AnnotationEditor', () => {
     const onAnnotationChange = jest.fn();
     const props = { onChange, onAnnotationChange, onRunQuery: jest.fn(), datasource, range: undefined };
     const base = { name: 'a', enable: true, iconColor: 'red' };
+    // Grafana 12.1 loads v2 dashboards with the query in query.spec; 12.2+ has no query.
+    const v2Query = { kind: 'DataQuery', group: 'nominal', spec: sqlTarget };
     const view = render(
       <AnnotationEditor
         {...props}
         query={sqlTarget}
-        annotation={{ ...base, target: sqlTarget, mappings: sqlMappings }}
+        annotation={{ ...base, target: sqlTarget, mappings: sqlMappings, query: v2Query }}
       />
     );
 
     fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
+    const emptyEvents = { refId: 'Anno', queryType: 'events' };
     expect(onAnnotationChange).toHaveBeenCalledTimes(1);
     expect(onAnnotationChange).toHaveBeenLastCalledWith({
       ...base,
-      target: { refId: 'Anno', queryType: 'events' },
+      target: emptyEvents,
       mappings: undefined,
+      query: { ...v2Query, spec: emptyEvents },
     });
 
     const eventsTarget: NominalQuery = { refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' };
@@ -183,37 +187,5 @@ describe('AnnotationEditor', () => {
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
     expect(onAnnotationChange).toHaveBeenLastCalledWith({ ...base, target: sqlTarget, mappings: sqlMappings });
     expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it('switches the v2 query spec along with the target on Grafana 12.1', () => {
-    const sqlTarget: NominalQuery = { refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' };
-    const onAnnotationChange = jest.fn();
-    const annotation = {
-      name: 'a',
-      enable: true,
-      iconColor: 'red',
-      target: sqlTarget,
-      query: { kind: 'DataQuery', group: 'nominal', spec: sqlTarget },
-    };
-    render(
-      <AnnotationEditor
-        query={sqlTarget}
-        annotation={annotation}
-        onChange={jest.fn()}
-        onAnnotationChange={onAnnotationChange}
-        onRunQuery={jest.fn()}
-        datasource={datasource}
-        range={undefined}
-      />
-    );
-
-    fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
-    const eventsTarget = { refId: 'Anno', queryType: 'events' };
-    expect(onAnnotationChange).toHaveBeenCalledWith({
-      ...annotation,
-      target: eventsTarget,
-      mappings: undefined,
-      query: { ...annotation.query, spec: eventsTarget },
-    });
   });
 });

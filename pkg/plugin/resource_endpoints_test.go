@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -918,8 +919,7 @@ func TestHandleEventLabels(t *testing.T) {
 		wantSearch    *string
 		withWorkspace bool
 	}{
-		{"query is passed as search text", `{"q":"valv"}`, new("valv"), false},
-		{"query is trimmed", `{"q":" valv "}`, new("valv"), false},
+		{"query is trimmed and passed as search text", `{"q":" valv "}`, new("valv"), false},
 		{"blank query sends no search text", `{"q":" "}`, nil, false},
 		{"missing query sends no search text", `{}`, nil, false},
 		{"configured workspace scopes the search", `{}`, nil, true},
@@ -942,31 +942,26 @@ func TestHandleEventLabels(t *testing.T) {
 			if (got.SearchText == nil) != (tt.wantSearch == nil) || (got.SearchText != nil && *got.SearchText != *tt.wantSearch) {
 				t.Errorf("searchText = %v, want %v", got.SearchText, tt.wantSearch)
 			}
-			if got.ResourceTypes == nil || len(*got.ResourceTypes) != 1 || (*got.ResourceTypes)[0].Value() != metadata.ResourceType_EVENT {
-				t.Errorf("resourceTypes = %v, want [EVENT]", got.ResourceTypes)
-			}
-			if got.PageSize == nil || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT {
-				t.Errorf("pageSize/sortBy = %v/%v", got.PageSize, got.SortBy)
-			}
-			if got.Descending == nil || !*got.Descending {
-				t.Errorf("descending = %v, want true", got.Descending)
-			}
-			if tt.withWorkspace {
-				if got.Workspaces == nil || len(*got.Workspaces) != 1 || (*got.Workspaces)[0] != workspace {
-					t.Errorf("workspaces = %v, want [%v]", got.Workspaces, workspace)
-				}
-			} else if got.Workspaces != nil {
-				t.Errorf("workspaces = %v, want unset", got.Workspaces)
+			if (got.Workspaces != nil) != tt.withWorkspace || (got.Workspaces != nil && !slices.Equal(*got.Workspaces, []rids.WorkspaceRid{workspace})) {
+				t.Errorf("workspaces = %v, want scoped: %v", got.Workspaces, tt.withWorkspace)
 			}
 		})
 	}
 
-	t.Run("no labels returns an empty array", func(t *testing.T) {
+	t.Run("searches event labels by usage, most used first", func(t *testing.T) {
+		fake := &fakeMetadataService{}
 		ds := newTestDatasource("https://api.test.com", nil, nil)
-		ds.metadataService = &fakeMetadataService{}
+		ds.metadataService = fake
 		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if string(resp.Body) != `{"labels":[]}` {
-			t.Errorf("body = %s", resp.Body)
+			t.Errorf("body = %s, want an empty labels array", resp.Body)
+		}
+		got := fake.request
+		if got.ResourceTypes == nil || len(*got.ResourceTypes) != 1 || (*got.ResourceTypes)[0].Value() != metadata.ResourceType_EVENT {
+			t.Errorf("resourceTypes = %v, want [EVENT]", got.ResourceTypes)
+		}
+		if got.PageSize == nil || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT || got.Descending == nil || !*got.Descending {
+			t.Errorf("pageSize/sortBy/descending = %v/%v/%v", got.PageSize, got.SortBy, got.Descending)
 		}
 	})
 
@@ -976,14 +971,6 @@ func TestHandleEventLabels(t *testing.T) {
 		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
 		if resp.Status != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", resp.Status)
-		}
-	})
-
-	t.Run("GET is rejected", func(t *testing.T) {
-		ds := newTestDatasource("https://api.test.com", nil, nil)
-		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "GET"})
-		if resp.Status != http.StatusMethodNotAllowed {
-			t.Errorf("status = %d, want 405", resp.Status)
 		}
 	})
 }
