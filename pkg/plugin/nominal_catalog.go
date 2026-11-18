@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
@@ -520,16 +520,19 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 }
 
 // channelRankText returns the fuzzy text that orders channel search results, or "" to leave
-// them unranked. Nominal also drops rows that share no 4-character run with the fuzzy text, so
-// it is only sent when one term has 4 or more ASCII characters, which every matching row contains.
+// them unranked. Nominal also drops rows that share no n-gram with the fuzzy text, and scorers
+// skip punctuation, so it is only sent when a term has 4 ASCII letters or digits in a row, which
+// every matching row then contains.
 func channelRankText(terms []string, searchText string) string {
 	for _, term := range terms {
-		if len(term) >= 4 && strings.IndexFunc(term, func(r rune) bool { return r > unicode.MaxASCII }) < 0 {
+		if rankableRun.MatchString(term) {
 			return searchText
 		}
 	}
 	return ""
 }
+
+var rankableRun = regexp.MustCompile(`[A-Za-z0-9]{4}`)
 
 // fuzzySearchTextFor leaves the search text empty unless channel has an ASCII letter or
 // digit. A non-empty search text drops rows that score zero, and only those characters

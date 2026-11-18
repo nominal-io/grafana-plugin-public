@@ -14,7 +14,12 @@ import { NominalVariableQuery, toVariableQuery } from './types';
 import { framesToVariableOptions, NominalVariableSupport } from './variables';
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {},
+  DataSourceWithBackend: class {
+    uid: string;
+    constructor(settings: { uid: string }) {
+      this.uid = settings.uid;
+    }
+  },
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
   getAppEvents: jest.fn(),
@@ -191,17 +196,48 @@ describe('NominalVariableSupport.query', () => {
       );
     });
 
-    it.each([
-      ['a Scenes variable', { __sceneObject: { value: { valueOf: () => ({ state: { key: 'var-1' } }) } } }, 'nominal-variable-var-1'],
-      ['the legacy picker', {}, undefined],
-    ])('gives catalog searches from %s a per-variable request ID', async (_, searchVars, requestId) => {
-      mockBackendSrv.post.mockResolvedValue([]);
-      const { ds } = makeDataSource();
+    describe('overlapping searches', () => {
+      const sceneVars = (key: string, search: string) =>
+        ({ __sceneObject: { value: { valueOf: () => ({ state: { key } }) } }, __searchFilter: term(search) }) as ScopedVars;
 
-      await runWithSearch(ds, 'assets($__searchFilter)', searchVars as unknown as ScopedVars);
+      // Grafana's backend service cancels an in-flight request when another starts with the same request ID.
+      beforeEach(() => {
+        const inFlight = new Map<string, (reason: unknown) => void>();
+        mockBackendSrv.post.mockImplementation(
+          (_url: string, _data: unknown, options?: { requestId?: string }) =>
+            new Promise((resolve, reject) => {
+              if (options?.requestId) {
+                inFlight.get(options.requestId)?.({ cancelled: true });
+                inFlight.set(options.requestId, reject);
+              }
+              setTimeout(() => resolve([]), 10);
+            })
+        );
+      });
 
-      expect(mockBackendSrv.post).toHaveBeenCalledWith(expect.stringContaining('/assets'), expect.anything(), {
-        requestId,
+      it.each(['assets($__searchFilter)', 'channels(ri.asset.1, , $__searchFilter)'])(
+        'cancels the outdated %s search of a Scenes variable and marks it cancelled for Scenes',
+        async (query) => {
+          const { ds } = makeDataSource();
+          const outdated = runWithSearch(ds, query, sceneVars('v1', 'a_b'));
+          const current = runWithSearch(ds, query, sceneVars('v1', 'a_bus'));
+
+          await expect(outdated).rejects.toMatchObject({ cancelled: true });
+          await expect(current).resolves.toEqual({ data: [] });
+        }
+      );
+
+      it.each([
+        ['the same variable on another selected data source', 'v1'],
+        ['another variable on the same dashboard', 'v2'],
+      ])('does not cancel %s', async (_, otherKey) => {
+        const { ds } = makeDataSource();
+        const other = otherKey === 'v1' ? new DataSource({ uid: 'other-uid', jsonData: {} } as any) : ds;
+        const first = runWithSearch(ds, 'channels(ri.asset.1, , $__searchFilter)', sceneVars('v1', 'rpm'));
+        const second = runWithSearch(other, 'channels(ri.asset.1, , $__searchFilter)', sceneVars(otherKey, 'rpm'));
+
+        await expect(first).resolves.toEqual({ data: [] });
+        await expect(second).resolves.toEqual({ data: [] });
       });
     });
 

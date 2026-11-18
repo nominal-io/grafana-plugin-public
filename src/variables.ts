@@ -88,10 +88,11 @@ function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>,
 
 // Scenes lets every dropdown search run to completion, so a slow outdated search can overwrite newer options or
 // raise an error toast after them. Grafana cancels an in-flight request when another starts with the same request
-// ID, so one ID per variable drops the outdated search. The legacy picker sends nothing that identifies the variable.
-function catalogRequestId(scopedVars?: ScopedVars): string | undefined {
+// ID, so one ID per variable and data source drops the outdated search without touching the same variable's search
+// of another selected data source. The legacy picker sends nothing that identifies the variable.
+function catalogRequestId(datasourceUid: string, scopedVars?: ScopedVars): string | undefined {
   const key = scopedVars?.__sceneObject?.value?.valueOf()?.state?.key;
-  return key ? `nominal-variable-${key}` : undefined;
+  return key ? `nominal-variable-${datasourceUid}-${key}` : undefined;
 }
 
 export class NominalVariableSupport extends CustomVariableSupport<DataSource, NominalVariableQuery> {
@@ -116,7 +117,7 @@ export class NominalVariableSupport extends CustomVariableSupport<DataSource, No
     if (target.mode === 'sql') {
       return runSql(this.datasource, request, target);
     }
-    const requestId = catalogRequestId(scopedVars);
+    const requestId = catalogRequestId(this.datasource.uid, scopedVars);
     return from(this.datasource.metricFindQuery(target.query, { scopedVars: request.scopedVars, requestId })).pipe(
       map((data) => ({ data }))
     );

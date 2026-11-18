@@ -570,6 +570,8 @@ func TestHandleChannelVariables(t *testing.T) {
 		{"requires every word of a multi-word channel search", "OSSteal  CPU164", "OSSteal  CPU164", []string{"OSSteal", "CPU164"}},
 		{"leaves short-word searches unranked so no match is dropped", "io 01", "", []string{"io", "01"}},
 		{"leaves non-ASCII searches unranked so no match is dropped", "温度計測", "", []string{"温度計測"}},
+		{"leaves punctuation-heavy searches unranked so no match is dropped", "---- _241", "", []string{"----", "_241"}},
+		{"ranks when a word has a 4-character letter or digit run", "engine----rpm", "engine----rpm", []string{"engine----rpm"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newTestAssetServer(t, makeAssetWithDS(), nil)

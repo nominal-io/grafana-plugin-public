@@ -204,6 +204,9 @@ interface OAuthState {
   signIns: number;
 }
 
+// Grafana marks a request it cancelled for a newer one; Scenes drops those quietly but reports other errors.
+const isCancelled = (error: unknown) => (error as { cancelled?: boolean } | undefined)?.cancelled === true;
+
 function interpolateCatalogSearch(rawSearchText: string, scopedVars: ScopedVars): string | undefined {
   const interpolations: VariableInterpolation[] = [];
   const searchText = getTemplateSrv().replace(rawSearchText, scopedVars, undefined, interpolations);
@@ -512,8 +515,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         },
         { requestId }
       );
-    } catch {
-      throw new Error('Unable to load Nominal assets for the variable query.');
+    } catch (error) {
+      throw isCancelled(error) ? error : new Error('Unable to load Nominal assets for the variable query.');
     }
     return this.validateMetricFindResponse(response, 'asset');
   }
@@ -564,8 +567,8 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
         },
         { requestId }
       );
-    } catch {
-      throw new Error('Unable to load Nominal channels for the variable query.');
+    } catch (error) {
+      throw isCancelled(error) ? error : new Error('Unable to load Nominal channels for the variable query.');
     }
     return this.validateMetricFindResponse(response, 'channel');
   }
