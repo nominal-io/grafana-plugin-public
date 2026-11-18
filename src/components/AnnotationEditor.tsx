@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { QueryEditorProps } from '@grafana/data';
+import { AnnotationQuery, QueryEditorProps } from '@grafana/data';
 import { InlineField, RadioButtonGroup, Stack } from '@grafana/ui';
 import type { DataSource } from '../datasource';
 import {
@@ -12,7 +12,11 @@ import {
 import { EventsAnnotationEditor } from './EventsAnnotationEditor';
 import { SqlAnnotationEditor } from './SqlAnnotationEditor';
 
-type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions>;
+type Props = QueryEditorProps<DataSource, NominalQuery, NominalDataSourceOptions> & {
+  annotation?: AnnotationQuery<NominalQuery>;
+  onAnnotationChange?: (annotation: AnnotationQuery<NominalQuery>) => void;
+};
+type Stash = { target: Partial<NominalQuery>; mappings?: AnnotationQuery['mappings'] };
 type Mode = ReturnType<typeof annotationMode>;
 
 const modes = [
@@ -21,14 +25,21 @@ const modes = [
 ];
 
 export function AnnotationEditor(props: Props) {
-  const { query, onChange } = props;
+  const { query, onChange, annotation, onAnnotationChange } = props;
   const mode = annotationMode(query);
 
-  // The saved query holds only the active mode's fields; the other mode's are kept here so switching back restores them.
-  const [other, setOther] = useState<Partial<NominalQuery>>({});
+  // The saved query holds only the active mode's fields; the other mode's target and mappings are
+  // kept here so switching back restores them.
+  const [other, setOther] = useState<Stash>({ target: {} });
   const onModeChange = (next: Mode) => {
-    setOther(query);
-    onChange({ ...other, refId: query.refId, queryType: next });
+    setOther({ target: query, mappings: annotation?.mappings });
+    const target = { ...other.target, refId: query.refId, queryType: next };
+    if (annotation && onAnnotationChange) {
+      // Column mappings belong to the outgoing mode's result shape, and one call keeps them in step with the target.
+      onAnnotationChange({ ...annotation, target, mappings: other.mappings });
+    } else {
+      onChange(target);
+    }
   };
 
   return (

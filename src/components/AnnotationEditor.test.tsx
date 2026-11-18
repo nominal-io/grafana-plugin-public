@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { AnnotationEventFieldSource, AnnotationQuery } from '@grafana/data';
 import type { DataSource } from '../datasource';
 import { NominalQuery } from '../types';
 import { AnnotationEditor } from './AnnotationEditor';
@@ -125,5 +126,31 @@ describe('AnnotationEditor', () => {
     view.rerender(<AnnotationEditor {...props} query={{ refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' }} />);
     fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
     expect(onChange).toHaveBeenLastCalledWith({ refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' });
+  });
+
+  it('swaps mappings with the target in one annotation update when available', () => {
+    const sqlMappings: AnnotationQuery['mappings'] = { text: { source: AnnotationEventFieldSource.Field, value: 'description' } };
+    const sqlTarget: NominalQuery = { refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' };
+    const onChange = jest.fn();
+    const onAnnotationChange = jest.fn();
+    const props = { onChange, onAnnotationChange, onRunQuery: jest.fn(), datasource, range: undefined };
+    const base = { name: 'a', enable: true, iconColor: 'red' };
+    const view = render(
+      <AnnotationEditor {...props} query={sqlTarget} annotation={{ ...base, target: sqlTarget, mappings: sqlMappings }} />
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
+    expect(onAnnotationChange).toHaveBeenCalledTimes(1);
+    expect(onAnnotationChange).toHaveBeenLastCalledWith({
+      ...base,
+      target: { refId: 'Anno', queryType: 'events' },
+      mappings: undefined,
+    });
+
+    const eventsTarget: NominalQuery = { refId: 'Anno', queryType: 'events', assetRid: 'ri.a.1' };
+    view.rerender(<AnnotationEditor {...props} query={eventsTarget} annotation={{ ...base, target: eventsTarget }} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
+    expect(onAnnotationChange).toHaveBeenLastCalledWith({ ...base, target: sqlTarget, mappings: sqlMappings });
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
