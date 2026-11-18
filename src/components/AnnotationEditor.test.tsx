@@ -184,4 +184,36 @@ describe('AnnotationEditor', () => {
     expect(onAnnotationChange).toHaveBeenLastCalledWith({ ...base, target: sqlTarget, mappings: sqlMappings });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('switches the v2 query spec along with the target on Grafana 12.1', () => {
+    const sqlTarget: NominalQuery = { refId: 'Anno', queryType: 'sql', rawSql: 'SELECT 1' };
+    const onAnnotationChange = jest.fn();
+    const annotation = {
+      name: 'a',
+      enable: true,
+      iconColor: 'red',
+      target: sqlTarget,
+      query: { kind: 'DataQuery', group: 'nominal', spec: sqlTarget },
+    };
+    render(
+      <AnnotationEditor
+        query={sqlTarget}
+        annotation={annotation}
+        onChange={jest.fn()}
+        onAnnotationChange={onAnnotationChange}
+        onRunQuery={jest.fn()}
+        datasource={datasource}
+        range={undefined}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Events' }));
+    const eventsTarget = { refId: 'Anno', queryType: 'events' };
+    expect(onAnnotationChange).toHaveBeenCalledWith({
+      ...annotation,
+      target: eventsTarget,
+      mappings: undefined,
+      query: { ...annotation.query, spec: eventsTarget },
+    });
+  });
 });

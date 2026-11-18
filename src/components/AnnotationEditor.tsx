@@ -36,7 +36,14 @@ export function AnnotationEditor(props: Props) {
     const target = { ...other.target, refId: query.refId, queryType: next };
     if (annotation && onAnnotationChange) {
       // Column mappings belong to the outgoing mode's result shape, and one call keeps them in step with the target.
-      onAnnotationChange({ ...annotation, target, mappings: other.mappings });
+      onAnnotationChange({
+        ...annotation,
+        target,
+        mappings: other.mappings,
+        // Grafana 12.1 keeps a v2 dashboard's query in `query.spec` and reads it ahead of `target` when rendering
+        // and saving. 12.2+ moves it into `target` on load, so `query` is absent there.
+        ...(annotation.query && { query: { ...annotation.query, spec: target } }),
+      });
     } else {
       onChange(target);
     }
