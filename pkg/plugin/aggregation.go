@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 )
 
@@ -41,6 +42,7 @@ type AggregationSeries struct {
 	Values             []*float64
 	CarriesChannelUnit bool
 	missingValues      int
+	ownTimes           bool // TimePoints are sample times, not shared bucket ends
 }
 
 // dropMissingBuckets omits Arrow nulls while preserving numeric values, including
@@ -64,6 +66,20 @@ func (s *AggregationSeries) dropMissingBuckets() {
 	}
 	s.TimePoints, s.Values = times, values
 	s.missingValues = 0
+}
+
+// dropOutsideRange removes points sampled outside r. Edge buckets can extend past
+// the query range, so their first or last sample may lie outside it. Only call it
+// on a series with its own timestamps; it compacts TimePoints in place.
+func (s *AggregationSeries) dropOutsideRange(r backend.TimeRange) {
+	kept := 0
+	for i, t := range s.TimePoints {
+		if !t.Before(r.From) && !t.After(r.To) {
+			s.TimePoints[kept], s.Values[kept] = t, s.Values[i]
+			kept++
+		}
+	}
+	s.TimePoints, s.Values = s.TimePoints[:kept], s.Values[:kept]
 }
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
@@ -422,6 +438,7 @@ func extractArrowBucketedNumericSeries(
 	for i := range seriesData {
 		if perSeriesTime[i] != nil {
 			seriesData[i].TimePoints = perSeriesTime[i]
+			seriesData[i].ownTimes = true
 		} else {
 			seriesData[i].TimePoints = sharedTimePoints
 		}

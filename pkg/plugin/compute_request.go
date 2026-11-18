@@ -125,8 +125,9 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
 		buckets := qm.Points.Count
 		requestRange, aligned := alignedBucketRange(timeRange, buckets)
-		if aligned {
-			// The aligned range is wider; keep only panel-range data.
+		if aligned && e.fromAlert {
+			// The aligned range is wider. Alerts evaluate exactly their window; dashboards
+			// keep whole edge buckets so edge values hold steady as the range moves.
 			from, to := computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.From)), computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.To))
 			numericSeries = computeapi1.NewNumericSeriesFromTimeRangeFilter(computeapi1.NumericTimeRangeFilterSeries{Input: numericSeries, StartTime: &from, EndTime: &to})
 		}

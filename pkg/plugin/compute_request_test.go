@@ -321,23 +321,27 @@ func TestAlignedBucketRange(t *testing.T) {
 }
 
 func TestBuildComputeRequestAlignsOnlyBucketedNumeric(t *testing.T) {
-	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
 	tr := backend.TimeRange{
 		From: time.Date(2026, 11, 1, 0, 0, 3, 500_000_000, time.UTC),
 		To:   time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC),
 	}
+	numeric := NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggMean}, Points: pointBudget{Count: 100}}
 	tests := []struct {
-		name        string
-		qm          NominalQueryModel
-		wantAligned bool
+		name                    string
+		qm                      NominalQueryModel
+		fromAlert               bool
+		wantAligned, wantFilter bool
 	}{
-		{"numeric buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggMean}, Points: pointBudget{Count: 100}}, true},
-		{"enum buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: 100}}, false},
-		{"LTTB", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Points: pointBudget{Count: 100}}, false},
+		{"numeric buckets", numeric, false, true, false},
+		{"numeric buckets from an alert", numeric, true, true, true},
+		{"enum buckets", NominalQueryModel{ChannelDataType: ChannelDataTypeString, Points: pointBudget{Count: 100}}, false, false, false},
+		{"LTTB", NominalQueryModel{ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB}, Points: pointBudget{Count: 100}}, false, false, false},
 	}
 	asTime := func(ts api.Timestamp) time.Time { return time.Unix(int64(ts.Seconds), int64(ts.Nanos)) }
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+			qe.fromAlert = tt.fromAlert
 			req := qe.buildComputeRequest(tt.qm, tr)
 			start, end := asTime(req.Start), asTime(req.End)
 			raw, err := json.Marshal(req.Node)
@@ -366,11 +370,16 @@ func TestBuildComputeRequestAlignsOnlyBucketedNumeric(t *testing.T) {
 				}
 				return
 			}
-			if start.Equal(tr.From) || filter == nil {
-				t.Fatalf("start = %v, filter = %v; want an aligned start and a filter", start, filter)
+			if start.Equal(tr.From) {
+				t.Fatalf("start = %v, want an aligned start", start)
 			}
-			if from, to := asTime(filter.StartTime.Literal), asTime(filter.EndTime.Literal); !from.Equal(tr.From) || !to.Equal(tr.To) {
-				t.Errorf("filter = [%v, %v], want the panel range [%v, %v]", from, to, tr.From, tr.To)
+			if (filter != nil) != tt.wantFilter {
+				t.Fatalf("filter = %v, want a filter: %v", filter, tt.wantFilter)
+			}
+			if filter != nil {
+				if from, to := asTime(filter.StartTime.Literal), asTime(filter.EndTime.Literal); !from.Equal(tr.From) || !to.Equal(tr.To) {
+					t.Errorf("filter = [%v, %v], want the panel range [%v, %v]", from, to, tr.From, tr.To)
+				}
 			}
 			if got := *summarizeSeriesFromNode(t, req.Node).Buckets; got != tt.qm.Points.Count {
 				t.Errorf("buckets = %d, want %d", got, tt.qm.Points.Count)

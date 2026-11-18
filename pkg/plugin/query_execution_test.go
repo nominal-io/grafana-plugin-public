@@ -1416,6 +1416,50 @@ func TestBatchQueryCapsBucketTimesAtRangeEnd(t *testing.T) {
 	}
 }
 
+func TestBatchQueryDropsFirstLastSamplesOutsideRange(t *testing.T) {
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	at := func(d time.Duration) int64 { return timeRange.From.Add(d).UnixNano() }
+	// The first bucket starts before the range and the last ends after it.
+	arrowBytes := createTestArrowFirstLast(t,
+		[]int64{at(20 * time.Minute), at(40 * time.Minute), at(60 * time.Minute)},
+		[]float64{10, 20, 30}, []int64{at(-time.Second), at(30 * time.Minute), at(59 * time.Minute)},
+		[]float64{15, 25, 35}, []int64{at(time.Minute), at(31 * time.Minute), at(time.Hour + time.Second)},
+	)
+	mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+		Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+			computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: arrowBytes}))}},
+	}}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+	qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggFirstPoint, AggLastPoint}}
+	query := backend.DataQuery{RefID: "A", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 3}
+
+	resp, err := ds.QueryData(context.Background(), newQueryRequest([]backend.DataQuery{query}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]int64{
+		"temp (first)": {at(30 * time.Minute), at(59 * time.Minute)},
+		"temp (last)":  {at(time.Minute), at(31 * time.Minute)},
+	}
+	frames := resp.Responses["A"].Frames
+	if len(frames) != len(want) {
+		t.Fatalf("frames = %d, want %d", len(frames), len(want))
+	}
+	for _, frame := range frames {
+		times := frame.Fields[0]
+		got := make([]int64, times.Len())
+		for i := range got {
+			got[i] = times.At(i).(time.Time).UnixNano()
+		}
+		if !slices.Equal(got, want[frame.Name]) {
+			t.Errorf("%s times = %v, want %v", frame.Name, got, want[frame.Name])
+		}
+	}
+}
+
 // computeLogStore serves log lines like the compute service: the lines in the request's range,
 // ordered by time and id, ascending, up to the page size of them after the page token, or before it
 // for a negative page size. With no token a page starts from the end of the range it pages from.
@@ -1531,5 +1575,33 @@ func TestComputeLogScrollPageContinuesFromItsLine(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestQueryDataFiltersToRangeOnlyForAlerts(t *testing.T) {
+	timeRange := backend.TimeRange{
+		From: time.Date(2024, 1, 1, 0, 0, 3, 500_000_000, time.UTC),
+		To:   time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	for _, fromAlert := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fromAlert=%v", fromAlert), func(t *testing.T) {
+			mockService := &mockComputeService{batchComputeResponse: computeapi.BatchComputeWithUnitsResponse{
+				Results: []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+					computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: createTestArrowBucketedNumeric(nil, nil, nil)}))}},
+			}}
+			ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+			qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeNumeric}
+			req := newQueryRequest([]backend.DataQuery{{RefID: "A", JSON: mustMarshal(qm), TimeRange: timeRange, MaxDataPoints: 100}})
+			if fromAlert {
+				req.Headers = map[string]string{backend.FromAlertHeaderName: "true"}
+			}
+
+			if _, err := ds.QueryData(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Contains(string(mustMarshal(mockService.lastBatchRequest)), `"timeRangeFilter"`); got != fromAlert {
+				t.Errorf("request has a time range filter: %v, want %v", got, fromAlert)
+			}
+		})
 	}
 }
