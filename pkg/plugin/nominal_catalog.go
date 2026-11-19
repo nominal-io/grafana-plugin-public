@@ -483,9 +483,13 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		return nil, nil
 	}
 
-	// ExactMatch keeps channels that contain every term, case-insensitively. The fuzzy text ranks them.
 	exactMatch := strings.Fields(searchText)
-	fuzzySearchText := channelRankText(exactMatch, searchText)
+	var fuzzySearchText string
+	// Fuzzy ranking can drop matches with low scores. Send it only when every
+	// substring match shares a run of at least four ASCII letters or digits.
+	if rankableRun.MatchString(searchText) {
+		fuzzySearchText = searchText
+	}
 
 	pageSize := 1000
 	var allChannelResults []datasourceapi.ChannelMetadata
@@ -517,19 +521,6 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 		allChannelResults = allChannelResults[:maxChannelVariables]
 	}
 	return allChannelResults, nil
-}
-
-// channelRankText returns the fuzzy text that orders channel search results, or "" to leave
-// them unranked. Nominal also drops rows that share no n-gram with the fuzzy text, and scorers
-// skip punctuation, so it is only sent when a term has 4 ASCII letters or digits in a row, which
-// every matching row then contains.
-func channelRankText(terms []string, searchText string) string {
-	for _, term := range terms {
-		if rankableRun.MatchString(term) {
-			return searchText
-		}
-	}
-	return ""
 }
 
 var rankableRun = regexp.MustCompile(`[A-Za-z0-9]{4}`)

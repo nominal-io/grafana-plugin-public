@@ -86,11 +86,9 @@ function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>,
     );
 }
 
-// Scenes lets every dropdown search run to completion, so a slow outdated search can overwrite newer options or
-// raise an error toast after them. Grafana cancels an in-flight request when another starts with the same request
-// ID, so searches share one ID per variable and data source. Only searches carry __searchFilter: a refresh keeps
-// Grafana's own ID, because Scenes reads a cancelled refresh as no options and clears the selection. The legacy
-// picker sends nothing that identifies the variable.
+// Grafana cancels in-flight requests with the same ID. Scenes only supplies __searchFilter for non-empty
+// dropdown searches, so those share an ID per variable and data source. Clearing a search looks like a refresh.
+// Keep both outside cancellation because Scenes clears the selected value when a refresh is cancelled.
 function searchRequestId(datasourceUid: string, scopedVars?: ScopedVars): string | undefined {
   const key = scopedVars?.__searchFilter && scopedVars.__sceneObject?.value?.valueOf()?.state?.key;
   return key ? `nominal-variable-search-${datasourceUid}-${key}` : undefined;

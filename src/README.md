@@ -115,6 +115,11 @@ Asset search also accepts fixed text, such as `assets:engine`. Channel search ta
 
 Search text matches as a case-insensitive substring, the same as search in the Nominal app. Separate words with spaces to require each one: `assets(turbine north)` returns assets that contain both `turbine` and `north`.
 
+With Grafana Scenes enabled, Grafana also filters the returned options by name, so typing in an asset dropdown shows only assets whose names match. To list assets that match on description, labels, or properties, use fixed text such as `assets(engine)`.
+
+With Grafana Scenes enabled, an asset or channel search that is still in flight when you clear the search box can finish later and replace the unfiltered options, or show an error if it fails.
+Closing and reopening the dropdown after a search can also show the previous search results with an empty search box.
+
 In Grafana 12 with Scenes disabled, the variable editor saves a search marker for catalog and SQL queries that use `$__searchFilter`. For an existing variable, focus its query field, click outside it, then save the dashboard. When provisioning a variable query object, set its `target` field to `$__searchFilter` alongside the saved query text in `query`.
 
 A channel query reads everything between the asset and `$__searchFilter` as the scope name, so a scope name can contain commas: `channels(${asset}, engine,north, $__searchFilter)`. A scope variable such as `${datascope}` also keeps a selected name with commas as one value.

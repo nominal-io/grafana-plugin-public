@@ -436,7 +436,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   ): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
-    const scopedVars = options?.scopedVars ?? {};
+    const { scopedVars = {}, requestId } = options ?? {};
 
     const channelsMatch = trimmedQuery.match(/^channels\(([^)]*)\)$/i);
     if (channelsMatch) {
@@ -453,7 +453,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
       const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
       const searchText = interpolateCatalogSearch(searchTextRaw, scopedVars);
-      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText, options?.requestId);
+      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText, requestId);
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
@@ -466,22 +466,21 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
 
     // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
-    const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
-    if (assetsMatch) {
-      const searchText = interpolateCatalogSearch(assetsMatch[1].trim(), scopedVars);
-      return searchText === undefined ? [] : this.fetchAssetVariables(searchText, options?.requestId);
+    let rawAssetSearch = trimmedQuery.match(/^assets\(([^)]*)\)$/i)?.[1];
+    if (!lowerQuery || lowerQuery === 'assets') {
+      rawAssetSearch = '';
+    } else if (lowerQuery.startsWith('assets:')) {
+      rawAssetSearch = trimmedQuery.slice(7);
+    }
+    // Not an assets query either: unknown query types have no options.
+    if (rawAssetSearch === undefined) {
+      return [];
     }
 
-    if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
-      const rawSearchText = lowerQuery.startsWith('assets:')
-        ? trimmedQuery.substring(7).trim()
-        : '';
-      const searchText = interpolateCatalogSearch(rawSearchText, scopedVars);
-      return searchText === undefined ? [] : this.fetchAssetVariables(searchText, options?.requestId);
-    }
-
-    // Return empty for unknown query types
-    return [];
+    const searchText = interpolateCatalogSearch(rawAssetSearch.trim(), scopedVars);
+    return searchText === undefined
+      ? []
+      : this.postSearchVariable('asset', { searchText, maxResults: 500 }, requestId);
   }
 
   /**
@@ -504,21 +503,19 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     });
   }
 
-  private async fetchAssetVariables(searchText: string, requestId?: string): Promise<MetricFindValue[]> {
+  private async postSearchVariable(
+    entity: 'asset' | 'channel',
+    body: object,
+    requestId?: string
+  ): Promise<MetricFindValue[]> {
+    const route = entity === 'asset' ? resourceRoutes.assets : resourceRoutes.channelVariables;
     let response: unknown;
     try {
-      response = await getBackendSrv().post(
-        `${this.url}/${resourceRoutes.assets}`,
-        {
-          searchText: searchText,
-          maxResults: 500,
-        },
-        { requestId }
-      );
+      response = await getBackendSrv().post(`${this.url}/${route}`, body, { requestId });
     } catch (error) {
-      throw isCancelled(error) ? error : new Error('Unable to load Nominal assets for the variable query.');
+      throw isCancelled(error) ? error : new Error(`Unable to load Nominal ${entity}s for the variable query.`);
     }
-    return this.validateMetricFindResponse(response, 'asset');
+    return this.validateMetricFindResponse(response, entity);
   }
 
   private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
@@ -556,20 +553,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return [];
     }
 
-    let response: unknown;
-    try {
-      response = await getBackendSrv().post(
-        `${this.url}/${resourceRoutes.channelVariables}`,
-        {
-          assetRid: assetRid,
-          dataScopeName: dataScopeName,
-          searchText: searchText,
-        },
-        { requestId }
-      );
-    } catch (error) {
-      throw isCancelled(error) ? error : new Error('Unable to load Nominal channels for the variable query.');
-    }
-    return this.validateMetricFindResponse(response, 'channel');
+    return this.postSearchVariable('channel', { assetRid, dataScopeName, searchText }, requestId);
   }
 }
