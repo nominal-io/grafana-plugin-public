@@ -240,9 +240,12 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 			json.NewDecoder(r.Body).Decode(&reqBody)
 			callCount++
 
-			// Page 1: return 50 assets with a next page token
+			// Page 1: return a full page with a next page token
 			if reqBody["nextPageToken"] == nil || reqBody["nextPageToken"] == "" {
-				results := make([]AssetSearchResult, 50)
+				if reqBody["pageSize"] != float64(1000) {
+					t.Errorf("pageSize = %v, want 1000", reqBody["pageSize"])
+				}
+				results := make([]AssetSearchResult, 1000)
 				for i := range results {
 					results[i] = AssetSearchResult{
 						Rid:   fmt.Sprintf("ri.scout.main.asset.page1-%d", i),
@@ -273,7 +276,7 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 
 		ds := newTestDatasource(server.URL, &mockAuthService{}, &mockDatasourceService{})
 
-		body, _ := json.Marshal(map[string]interface{}{"maxResults": 100})
+		body, _ := json.Marshal(map[string]interface{}{"maxResults": 2000})
 		req := &backend.CallResourceRequest{Path: "assets", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {
@@ -285,9 +288,8 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 			t.Fatalf("failed to parse response: %v", err)
 		}
 
-		// Should have fetched both pages: 50 + 10 = 60
-		if len(result) != 60 {
-			t.Errorf("expected 60 assets across 2 pages, got %d", len(result))
+		if len(result) != 1010 {
+			t.Errorf("expected 1010 assets across 2 pages, got %d", len(result))
 		}
 		if callCount != 2 {
 			t.Errorf("expected 2 API calls (2 pages), got %d", callCount)
@@ -297,6 +299,13 @@ func TestHandleAssetsVariablePagination(t *testing.T) {
 	t.Run("stops pagination when maxResults is reached", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			var reqBody map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			if reqBody["pageSize"] != float64(3) {
+				t.Errorf("pageSize = %v, want 3", reqBody["pageSize"])
+			}
 
 			// Always return a full page with a next token
 			results := make([]AssetSearchResult, 50)
@@ -500,6 +509,9 @@ func TestHandleChannelVariables(t *testing.T) {
 		if len(result) != 2 {
 			t.Fatalf("expected 2 deduplicated channels, got %d: %v", len(result), result)
 		}
+		if got := mockDS.searchChannelsRequestSnapshot(); got.FuzzySearchText != "" || len(got.ExactMatch) != 0 {
+			t.Fatalf("search without text sent FuzzySearchText = %q, ExactMatch = %q", got.FuzzySearchText, got.ExactMatch)
+		}
 
 		names := map[string]bool{}
 		for _, r := range result {
@@ -550,6 +562,44 @@ func TestHandleChannelVariables(t *testing.T) {
 			t.Errorf("expected 1 datasource RID (filtered by scope-a), got %d", len(request.DataSources))
 		}
 	})
+
+	for _, tc := range []struct {
+		name, searchText, wantFuzzy string
+		wantExact                   []string
+	}{
+		{"forwards literal dollar signs to channel search", "$channelSearch", "$channelSearch", []string{"$channelSearch"}},
+		{"requires every word of a multi-word channel search", "OSSteal  CPU164", "OSSteal  CPU164", []string{"OSSteal", "CPU164"}},
+		{"leaves short-word searches unranked so no match is dropped", "io 01", "", []string{"io", "01"}},
+		{"leaves non-ASCII searches unranked so no match is dropped", "温度計測", "", []string{"温度計測"}},
+		{"leaves punctuation-heavy searches unranked so no match is dropped", "---- _241", "", []string{"----", "_241"}},
+		{"ranks when a word has a 4-character letter or digit run", "engine----rpm", "engine----rpm", []string{"engine----rpm"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTestAssetServer(t, makeAssetWithDS(), nil)
+			defer server.Close()
+
+			mockDS := &mockDatasourceService{
+				searchChannelsResponse: datasourceapi.SearchChannelsResponse{
+					Results: []datasourceapi.ChannelMetadata{
+						{Name: api.Channel("temperature"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+					},
+				},
+			}
+
+			ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
+
+			body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": tc.searchText})
+			req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
+			resp := callResourceAndCapture(t, ds, req)
+			if resp.Status != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", resp.Status, string(resp.Body))
+			}
+			got := mockDS.searchChannelsRequestSnapshot()
+			if got.FuzzySearchText != tc.wantFuzzy || !slices.Equal(got.ExactMatch, tc.wantExact) {
+				t.Fatalf("FuzzySearchText = %q, ExactMatch = %q; want %q and %q", got.FuzzySearchText, got.ExactMatch, tc.wantFuzzy, tc.wantExact)
+			}
+		})
+	}
 
 	t.Run("uses connection datasource RID when type is connection", func(t *testing.T) {
 		connectionRid := "ri.scout.main.data-source.conn1"
@@ -697,21 +747,25 @@ func TestHandleChannelVariables(t *testing.T) {
 		}
 	})
 
-	t.Run("paginates across multiple pages", func(t *testing.T) {
+	t.Run("paginates channel substring search", func(t *testing.T) {
 		server := newTestAssetServer(t, makeAssetWithDS(), nil)
 		defer server.Close()
 
+		const searchText = "_"
 		pageToken := api.Token("page2")
 		callCount := 0
 		mockDS := &mockDatasourceService{
 			searchChannelsFunc: func(ctx context.Context, authHeader bearertoken.Token, req datasourceapi.SearchChannelsRequest) (datasourceapi.SearchChannelsResponse, error) {
 				callCount++
+				if req.FuzzySearchText != "" || len(req.ExactMatch) != 1 || req.ExactMatch[0] != searchText {
+					return datasourceapi.SearchChannelsResponse{}, fmt.Errorf("page %d: expected substring search for %q, got fuzzy %q and exact %q", callCount, searchText, req.FuzzySearchText, req.ExactMatch)
+				}
 				if callCount == 1 {
 					return datasourceapi.SearchChannelsResponse{
 						Results: []datasourceapi.ChannelMetadata{
-							{Name: api.Channel("ch1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-							{Name: api.Channel("ch2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-							{Name: api.Channel("ch3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_1"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_2"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+							{Name: api.Channel("ch_3"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
 						},
 						NextPageToken: &pageToken,
 					}, nil
@@ -722,8 +776,8 @@ func TestHandleChannelVariables(t *testing.T) {
 				}
 				return datasourceapi.SearchChannelsResponse{
 					Results: []datasourceapi.ChannelMetadata{
-						{Name: api.Channel("ch4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
-						{Name: api.Channel("ch5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch_4"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
+						{Name: api.Channel("ch_5"), DataSource: rids.DataSourceRid(rid.MustNew("scout", "main", "data-source", "ds1"))},
 					},
 				}, nil
 			},
@@ -731,7 +785,7 @@ func TestHandleChannelVariables(t *testing.T) {
 
 		ds := newTestDatasource(server.URL, &mockAuthService{}, mockDS)
 
-		body, _ := json.Marshal(map[string]string{"assetRid": assetRid})
+		body, _ := json.Marshal(map[string]string{"assetRid": assetRid, "searchText": searchText})
 		req := &backend.CallResourceRequest{Path: "channelvariables", Method: "POST", Body: body}
 		resp := callResourceAndCapture(t, ds, req)
 		if resp.Status != http.StatusOK {

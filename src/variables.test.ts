@@ -4,6 +4,7 @@ import {
   DataQueryRequest,
   DataQueryResponse,
   FieldType,
+  ScopedVars,
   createDataFrame,
   dateTime,
 } from '@grafana/data';
@@ -13,7 +14,12 @@ import { NominalVariableQuery, toVariableQuery } from './types';
 import { framesToVariableOptions, NominalVariableSupport } from './variables';
 
 jest.mock('@grafana/runtime', () => ({
-  DataSourceWithBackend: class {},
+  DataSourceWithBackend: class {
+    uid: string;
+    constructor(settings: { uid: string }) {
+      this.uid = settings.uid;
+    }
+  },
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
   getAppEvents: jest.fn(),
@@ -105,7 +111,7 @@ describe('NominalVariableSupport.query', () => {
     expect(query).toHaveBeenCalledWith(
       expect.objectContaining({
         targets: [{ refId: 'V', queryType: 'sql', rawSql: "SELECT channel FROM channels WHERE dataset_rid = '$asset'", format: 'table' }],
-        scopedVars,
+        scopedVars: { __searchFilter: { value: '', text: '' }, ...scopedVars },
         range,
       })
     );
@@ -151,5 +157,126 @@ describe('NominalVariableSupport.query', () => {
       assetRid: 'ri.asset.1',
     });
     expect(response.data).toEqual([{ text: 'default', value: 'default' }]);
+  });
+
+  describe('dynamic dropdown search', () => {
+    const term = (value: string) => ({ value, text: value });
+    const cases: Array<[string, ScopedVars, string]> = [
+      ['an unopened dropdown', {}, ''],
+      ['legacy typed text', { searchFilter: term('$team') }, '$team'],
+      ['Scenes typed text', { __searchFilter: term('motor') }, 'motor'],
+      ['a cleared Scenes filter with a stale legacy filter', { __searchFilter: term(''), searchFilter: term('motor') }, ''],
+    ];
+    const runWithSearch = (ds: DataSource, target: NominalVariableQuery | string, searchVars: ScopedVars) =>
+      lastValueFrom(
+        (ds.variables as NominalVariableSupport).query({
+          targets: [target],
+          range,
+          scopedVars: searchVars,
+        } as unknown as DataQueryRequest<NominalVariableQuery>)
+      );
+
+    beforeEach(() => {
+      (getTemplateSrv as jest.Mock).mockReturnValue({
+        replace: (v: string, vars?: Record<string, { value?: unknown }>) =>
+          v.replace('$__searchFilter', () => String(vars?.__searchFilter?.value ?? '$__searchFilter')),
+      });
+    });
+
+    it.each(cases)('sends %s as the catalog search text', async (_, searchVars, expected) => {
+      mockBackendSrv.post.mockResolvedValue([]);
+      const { ds } = makeDataSource();
+
+      await runWithSearch(ds, 'assets($__searchFilter)', searchVars);
+
+      expect(mockBackendSrv.post).toHaveBeenCalledWith(
+        expect.stringContaining('/assets'),
+        expect.objectContaining({ searchText: expected }),
+        expect.anything()
+      );
+    });
+
+    describe('overlapping searches', () => {
+      // Scenes sets __searchFilter only on dropdown searches, not on refreshes.
+      const sceneVars = (key: string, search?: string) =>
+        ({
+          __sceneObject: { value: { valueOf: () => ({ state: { key } }) } },
+          ...(search === undefined ? {} : { __searchFilter: term(search) }),
+        }) as ScopedVars;
+
+      // Grafana's backend service cancels an in-flight request when another starts with the same request ID.
+      beforeEach(() => {
+        const inFlight = new Map<string, (reason: unknown) => void>();
+        mockBackendSrv.post.mockImplementation(
+          (_url: string, _data: unknown, options?: { requestId?: string }) =>
+            new Promise((resolve, reject) => {
+              if (options?.requestId) {
+                inFlight.get(options.requestId)?.({ cancelled: true });
+                inFlight.set(options.requestId, reject);
+              }
+              setTimeout(() => resolve([]), 10);
+            })
+        );
+      });
+
+      it.each(['assets($__searchFilter)', 'channels(ri.asset.1, , $__searchFilter)'])(
+        'cancels the outdated %s search of a Scenes variable and marks it cancelled for Scenes',
+        async (query) => {
+          const { ds } = makeDataSource();
+          const outdated = runWithSearch(ds, query, sceneVars('v1', 'a_b'));
+          const current = runWithSearch(ds, query, sceneVars('v1', 'a_bus'));
+
+          await expect(outdated).rejects.toMatchObject({ cancelled: true });
+          await expect(current).resolves.toEqual({ data: [] });
+        }
+      );
+
+      it.each([
+        ['the same variable on another selected data source', 'other-uid', 'v1', 'rpm', 'rpm'],
+        ['another variable on the same dashboard', 'test-uid', 'v2', 'rpm', 'rpm'],
+        ['a refresh of the same variable', 'test-uid', 'v1', undefined, 'rpm'],
+      ])('does not cancel %s', async (_, otherUid, otherKey, firstSearch, secondSearch) => {
+        const { ds } = makeDataSource();
+        const other = otherUid === 'test-uid' ? ds : new DataSource({ uid: otherUid, jsonData: {} } as any);
+        const first = runWithSearch(ds, 'channels(ri.asset.1, , $__searchFilter)', sceneVars('v1', firstSearch));
+        const second = runWithSearch(other, 'channels(ri.asset.1, , $__searchFilter)', sceneVars(otherKey, secondSearch));
+
+        await expect(first).resolves.toEqual({ data: [] });
+        await expect(second).resolves.toEqual({ data: [] });
+      });
+
+      it('sends overlapping SQL searches of a Scenes variable under one request ID and keeps a refresh on its own', async () => {
+        const { ds, query } = makeDataSource();
+        const runSqlWith = (vars: ScopedVars, requestId: string) =>
+          lastValueFrom(
+            (ds.variables as NominalVariableSupport).query({
+              targets: [sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'")],
+              range,
+              scopedVars: vars,
+              requestId,
+            } as unknown as DataQueryRequest<NominalVariableQuery>)
+          );
+
+        await runSqlWith(sceneVars('v1', 'a'), 'r1');
+        await runSqlWith(sceneVars('v1', 'ab'), 'r2');
+        await runSqlWith(sceneVars('v1'), 'r3');
+
+        const [first, second, refresh] = query.mock.calls.map((call) => (call as unknown as [DataQueryRequest])[0].requestId);
+        expect(second).toBe(first);
+        expect(refresh).toBe('r3');
+      });
+    });
+
+    it.each(cases)('passes %s to SQL as __searchFilter', async (_, searchVars, expected) => {
+      const { ds, query } = makeDataSource();
+
+      await runWithSearch(ds, sql("SELECT title FROM assets WHERE title LIKE '%$__searchFilter%'"), searchVars);
+
+      expect(query).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scopedVars: expect.objectContaining({ __searchFilter: expect.objectContaining({ value: expected }) }),
+        })
+      );
+    });
   });
 });

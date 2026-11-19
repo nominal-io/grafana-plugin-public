@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { QueryEditorProps } from '@grafana/data';
+import { containsSearchFilter, QueryEditorProps } from '@grafana/data';
 import { Button, InlineField, Input, RadioButtonGroup, Stack, Text } from '@grafana/ui';
 import type { DataSource } from '../datasource';
 import {
@@ -32,15 +32,16 @@ export function VariableQueryEditor({ query, onChange }: Props) {
   }, [saved]);
 
   // Grafana's variable editor passes a no-op onRunQuery; onChange is what reruns the variable.
-  const commit = (text: string, runUnchanged = false) => {
-    if (text !== saved || (runUnchanged && text.trim())) {
-      onChange({ ...current, query: text });
+  const commit = (text: string, runUnchanged = false, mode = current.mode) => {
+    const target = containsSearchFilter(text) ? '$__searchFilter' : undefined;
+    if (mode !== current.mode || text !== saved || target !== current.target || (runUnchanged && text.trim())) {
+      onChange({ ...current, mode, query: text, target });
     }
   };
 
   const onModeChange = (mode: VariableQueryMode) => {
     setOtherModeText(draft);
-    onChange({ ...current, mode, query: otherModeText });
+    commit(otherModeText, false, mode);
   };
 
   return (
@@ -54,7 +55,7 @@ export function VariableQueryEditor({ query, onChange }: Props) {
             Return one column, or columns named __text and __value. Null values are skipped.
           </Text>
           {!saved && !draft && (
-            <Button variant="secondary" onClick={() => onChange({ ...current, query: VARIABLE_SQL_EXAMPLE })}>
+            <Button variant="secondary" onClick={() => commit(VARIABLE_SQL_EXAMPLE)}>
               Use variable example
             </Button>
           )}

@@ -8,10 +8,10 @@ import {
   FieldType,
   LoadingState,
   ScopedVars,
-  MetricFindValue
+  MetricFindValue,
 } from '@grafana/data';
 import { map, Observable } from 'rxjs';
-import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
 
 import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, QUERY_TYPE_EVENTS, annotationMode } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
@@ -202,6 +202,15 @@ function without(frame: DataFrame, drop: (ms: number) => boolean): DataFrame {
 interface OAuthState {
   signedIn: boolean | undefined;
   signIns: number;
+}
+
+// Grafana marks a request it cancelled for a newer one; Scenes drops those quietly but reports other errors.
+const isCancelled = (error: unknown) => (error as { cancelled?: boolean } | undefined)?.cancelled === true;
+
+function interpolateCatalogSearch(rawSearchText: string, scopedVars: ScopedVars): string | undefined {
+  const interpolations: VariableInterpolation[] = [];
+  const searchText = getTemplateSrv().replace(rawSearchText, scopedVars, undefined, interpolations);
+  return interpolations.some(({ found }) => found === false) ? undefined : searchText;
 }
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -444,21 +453,34 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
    * - "assets(<search>)" or "assets:<search>": Returns assets matching search text
    * - "channels(<assetRid>)": Returns all channels for a specific asset
    * - "channels(<assetRid>, <dataScopeName>)": Returns channels filtered to a specific datascope
+   * - "channels(<assetRid>, <dataScopeName>, $__searchFilter)": Returns channels matching the typed search text
+   * - "channels(<assetRid>, $__searchFilter)": Searches channels across all datascopes
    * - "datascopes(<assetRid>)": Returns datascopes for a specific asset
    */
-  async metricFindQuery(query: string, options?: { scopedVars?: ScopedVars }): Promise<MetricFindValue[]> {
+  async metricFindQuery(
+    query: string,
+    options?: { scopedVars?: ScopedVars; requestId?: string }
+  ): Promise<MetricFindValue[]> {
     const trimmedQuery = (query || '').trim();
     const lowerQuery = trimmedQuery.toLowerCase();
-    const scopedVars = options?.scopedVars;
+    const { scopedVars = {}, requestId } = options ?? {};
 
-    // Handle channels query: channels(<assetRid>) or channels(<assetRid>, <dataScopeName>)
-    const channelsMatch = trimmedQuery.match(/^channels\(([^,)]+)(?:,\s*([^)]+))?\)$/i);
+    const channelsMatch = trimmedQuery.match(/^channels\(([^)]*)\)$/i);
     if (channelsMatch) {
-      const assetRidRaw = channelsMatch[1].trim();
-      const dataScopeNameRaw = channelsMatch[2]?.trim() || '';
+      // Only a last argument that uses __searchFilter is search text. Everything between it and the
+      // asset is the scope name, so a scope name with commas such as engine,north keeps working.
+      const [assetRidPart, ...rest] = channelsMatch[1].split(',');
+      const searchTextRaw = rest.length && rest[rest.length - 1].includes('__searchFilter') ? rest.pop()!.trim() : '';
+      const assetRidRaw = assetRidPart.trim();
+      const dataScopeNameRaw = rest.join(',').trim();
+      if (!assetRidRaw) {
+        return [];
+      }
+
       const assetRid = getTemplateSrv().replace(assetRidRaw, scopedVars);
       const dataScopeName = dataScopeNameRaw ? getTemplateSrv().replace(dataScopeNameRaw, scopedVars) : '';
-      return this.fetchChannelVariables(assetRid, dataScopeName);
+      const searchText = interpolateCatalogSearch(searchTextRaw, scopedVars);
+      return searchText === undefined ? [] : this.fetchChannelVariables(assetRid, dataScopeName, searchText, requestId);
     }
 
     // Handle datascopes query: datascopes(<assetRid>) or datascopes(${asset})
@@ -471,23 +493,21 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     }
 
     // Handle assets query: assets, assets(), assets(<search>), assets:<search>, or empty
-    const assetsMatch = trimmedQuery.match(/^assets\(([^)]*)\)$/i);
-    if (assetsMatch) {
-      const searchText = getTemplateSrv().replace(assetsMatch[1].trim(), scopedVars);
-      return this.fetchAssetVariables(searchText);
+    let rawAssetSearch = trimmedQuery.match(/^assets\(([^)]*)\)$/i)?.[1];
+    if (!lowerQuery || lowerQuery === 'assets') {
+      rawAssetSearch = '';
+    } else if (lowerQuery.startsWith('assets:')) {
+      rawAssetSearch = trimmedQuery.slice(7);
+    }
+    // Not an assets query either: unknown query types have no options.
+    if (rawAssetSearch === undefined) {
+      return [];
     }
 
-    if (!lowerQuery || lowerQuery === 'assets' || lowerQuery.startsWith('assets:')) {
-      const rawSearchText = lowerQuery.startsWith('assets:')
-        ? trimmedQuery.substring(7).trim()
-        : '';
-      const searchText = getTemplateSrv().replace(rawSearchText, scopedVars);
-
-      return this.fetchAssetVariables(searchText);
-    }
-
-    // Return empty for unknown query types
-    return [];
+    const searchText = interpolateCatalogSearch(rawAssetSearch.trim(), scopedVars);
+    return searchText === undefined
+      ? []
+      : this.postSearchVariable('asset', { searchText, maxResults: 500 }, requestId);
   }
 
   /**
@@ -510,25 +530,19 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     });
   }
 
-  private async fetchAssetVariables(searchText: string): Promise<MetricFindValue[]> {
-    // If search text contains unresolved variable, return empty
-    if (searchText && searchText.includes('$')) {
-      return [];
-    }
-
+  private async postSearchVariable(
+    entity: 'asset' | 'channel',
+    body: object,
+    requestId?: string
+  ): Promise<MetricFindValue[]> {
+    const route = entity === 'asset' ? resourceRoutes.assets : resourceRoutes.channelVariables;
     let response: unknown;
     try {
-      response = await getBackendSrv().post(
-        `${this.url}/${resourceRoutes.assets}`,
-        {
-          searchText: searchText,
-          maxResults: 500,
-        }
-      );
-    } catch {
-      throw new Error('Unable to load Nominal assets for the variable query.');
+      response = await getBackendSrv().post(`${this.url}/${route}`, body, { requestId });
+    } catch (error) {
+      throw isCancelled(error) ? error : new Error(`Unable to load Nominal ${entity}s for the variable query.`);
     }
-    return this.validateMetricFindResponse(response, 'asset');
+    return this.validateMetricFindResponse(response, entity);
   }
 
   private async fetchDatascopeVariables(assetRid: string): Promise<MetricFindValue[]> {
@@ -551,7 +565,12 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
     return this.validateMetricFindResponse(response, 'datascope');
   }
 
-  private async fetchChannelVariables(assetRid: string, dataScopeName: string): Promise<MetricFindValue[]> {
+  private async fetchChannelVariables(
+    assetRid: string,
+    dataScopeName: string,
+    searchText: string,
+    requestId?: string
+  ): Promise<MetricFindValue[]> {
     // If asset RID contains unresolved variable, return empty
     if (!assetRid || assetRid.includes('$')) {
       return [];
@@ -561,18 +580,6 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return [];
     }
 
-    let response: unknown;
-    try {
-      response = await getBackendSrv().post(
-        `${this.url}/${resourceRoutes.channelVariables}`,
-        {
-          assetRid: assetRid,
-          dataScopeName: dataScopeName,
-        }
-      );
-    } catch {
-      throw new Error('Unable to load Nominal channels for the variable query.');
-    }
-    return this.validateMetricFindResponse(response, 'channel');
+    return this.postSearchVariable('channel', { assetRid, dataScopeName, searchText }, requestId);
   }
 }

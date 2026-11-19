@@ -11,7 +11,7 @@ import {
   LoadingState,
   toDataFrame,
 } from '@grafana/data';
-import { getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
 import { lastValueFrom, of } from 'rxjs';
 
 const mockBackendQuery = jest.fn();
@@ -31,14 +31,31 @@ jest.mock('@grafana/runtime', () => ({
   getBackendSrv: jest.fn(),
 }));
 
-const mockTemplateSrv = { replace: jest.fn((v: string) => v) };
+type TemplateScopedVars = Record<string, { value?: unknown } | undefined>;
+
+const replaceScopedVariable = (
+  input: string,
+  scopedVars?: TemplateScopedVars,
+  _format?: unknown,
+  interpolations?: VariableInterpolation[]
+) => {
+  return input.replace(/\$(\w+)|\$\{(\w+)\}/g, (match, bareName, bracedName) => {
+    const variableName = bareName ?? bracedName;
+    const scopedValue = scopedVars?.[variableName]?.value;
+    const value = scopedValue === undefined ? match : String(scopedValue);
+    interpolations?.push({ match, variableName, value, found: value !== match });
+    return value;
+  });
+};
+
+const mockTemplateSrv = { replace: jest.fn(replaceScopedVariable) };
 const mockBackendSrv = { post: jest.fn() };
 
 beforeEach(() => {
   jest.clearAllMocks();
   (getTemplateSrv as jest.Mock).mockReturnValue(mockTemplateSrv);
   (getBackendSrv as jest.Mock).mockReturnValue(mockBackendSrv);
-  mockTemplateSrv.replace.mockImplementation((v: string) => v);
+  mockTemplateSrv.replace.mockImplementation(replaceScopedVariable);
 });
 
 function createDataSource(): DataSource {
@@ -175,7 +192,8 @@ describe('metricFindQuery routing', () => {
     await ds.metricFindQuery(query);
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining(expectedPath),
-      expect.objectContaining({ searchText: '' })
+      expect.objectContaining({ searchText: '' }),
+      expect.anything()
     );
   });
 
@@ -183,11 +201,33 @@ describe('metricFindQuery routing', () => {
     ['assets:rocket', 'rocket'],
     ['assets(rocket)', 'rocket'],
     ['assets( rocket )', 'rocket'],
+    ['assets(cost$)', 'cost$'],
   ])('query %j passes search text %j', async (query, expectedSearch) => {
     await ds.metricFindQuery(query);
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/assets'),
-      expect.objectContaining({ searchText: expectedSearch })
+      expect.objectContaining({ searchText: expectedSearch }),
+      expect.anything()
+    );
+  });
+
+  it.each([
+    ['assets($__searchFilter)', '/assets', '$team', {}],
+    ['assets:$__searchFilter', '/assets', 'motor', {}],
+    [
+      'channels(ri.scout.main.asset.1, myScope, $__searchFilter)',
+      '/channelvariables',
+      'cost$',
+      { dataScopeName: 'myScope' },
+    ],
+    ['channels(ri.scout.main.asset.1, $__searchFilter)', '/channelvariables', '$team', { dataScopeName: '' }],
+    ['channels(ri.scout.main.asset.1, ${__searchFilter})', '/channelvariables', 'temp', { dataScopeName: '' }],
+  ])('query %j passes typed search text literally to %s', async (query, path, searchText, extra) => {
+    await ds.metricFindQuery(query, { scopedVars: { __searchFilter: { text: searchText, value: searchText } } });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining(path),
+      expect.objectContaining({ searchText, ...extra }),
+      expect.anything()
     );
   });
 
@@ -203,7 +243,8 @@ describe('metricFindQuery routing', () => {
     await ds.metricFindQuery('channels(ri.scout.main.asset.1)');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
-      expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName: '' })
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName: '' }),
+      expect.anything()
     );
   });
 
@@ -211,9 +252,31 @@ describe('metricFindQuery routing', () => {
     await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope)');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
-      expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName: 'myScope' })
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName: 'myScope' }),
+      expect.anything()
     );
   });
+
+  it.each([
+    ['channels(ri.scout.main.asset.1, engine, north)', 'engine, north', ''],
+    ['channels(ri.scout.main.asset.1, engine,north, $__searchFilter)', 'engine,north', 'temp'],
+    ['channels(ri.scout.main.asset.1, , $__searchFilter)', '', 'temp'],
+  ])('query %j reads everything before a $__searchFilter argument as the scope name', async (query, dataScopeName, searchText) => {
+    await ds.metricFindQuery(query, { scopedVars: { __searchFilter: { text: 'temp', value: 'temp' } } });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.1', dataScopeName, searchText }),
+      expect.anything()
+    );
+  });
+
+  it.each(['channels()', 'channels(, myScope)'])(
+    'invalid channels query %j returns empty without calling backend',
+    async (query) => {
+      expect(await ds.metricFindQuery(query)).toEqual([]);
+      expect(mockBackendSrv.post).not.toHaveBeenCalled();
+    }
+  );
 
   it('unknown query returns empty array without calling backend', async () => {
     const result = await ds.metricFindQuery('somethingElse');
@@ -254,7 +317,8 @@ describe('metricFindQuery template variable resolution', () => {
     await ds.metricFindQuery('channels(${asset}, ${scope})');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
-      expect.objectContaining({ assetRid: 'ri.scout.main.asset.resolved', dataScopeName: 'myScope' })
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.resolved', dataScopeName: 'myScope' }),
+      expect.anything()
     );
   });
 
@@ -278,7 +342,28 @@ describe('metricFindQuery template variable resolution', () => {
 
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
       expect.stringContaining('/channelvariables'),
-      expect.objectContaining({ assetRid: 'ri.scout.main.asset.scoped', dataScopeName: 'primary' })
+      expect.objectContaining({ assetRid: 'ri.scout.main.asset.scoped', dataScopeName: 'primary' }),
+      expect.anything()
+    );
+  });
+
+  it('keeps a scope variable whose value contains a comma as one scope name', async () => {
+    await ds.metricFindQuery('channels(${asset}, ${scope}, $__searchFilter)', {
+      scopedVars: {
+        asset: { text: 'Asset 1', value: 'ri.scout.main.asset.scoped' },
+        scope: { text: 'Engine north', value: 'engine,north' },
+        __searchFilter: { text: 'temp', value: 'temp' },
+      },
+    });
+
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/channelvariables'),
+      expect.objectContaining({
+        assetRid: 'ri.scout.main.asset.scoped',
+        dataScopeName: 'engine,north',
+        searchText: 'temp',
+      }),
+      expect.anything()
     );
   });
 });
@@ -316,8 +401,18 @@ describe('metricFindQuery unresolved variable short-circuits', () => {
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });
 
+  it('channels with unresolved search text returns empty without backend call', async () => {
+    const result = await ds.metricFindQuery('channels(ri.scout.main.asset.1, myScope, $__searchFilter-$search)', {
+      scopedVars: { __searchFilter: { text: 'temp', value: 'temp' } },
+    });
+    expect(result).toEqual([]);
+    expect(mockBackendSrv.post).not.toHaveBeenCalled();
+  });
+
   it('assets with unresolved search text returns empty without backend call', async () => {
-    const result = await ds.metricFindQuery('assets:$search');
+    const result = await ds.metricFindQuery('assets:$__searchFilter-$search', {
+      scopedVars: { __searchFilter: { text: 'cost$', value: 'cost$' } },
+    });
     expect(result).toEqual([]);
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });

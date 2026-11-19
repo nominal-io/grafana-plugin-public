@@ -8,6 +8,7 @@ import {
   Field,
   FieldType,
   MetricFindValue,
+  ScopedVars,
 } from '@grafana/data';
 import { getAppEvents } from '@grafana/runtime';
 import type { DataSource } from './datasource';
@@ -85,6 +86,14 @@ function runSql(ds: DataSource, request: DataQueryRequest<NominalVariableQuery>,
     );
 }
 
+// Grafana cancels in-flight requests with the same ID. Scenes only supplies __searchFilter for non-empty
+// dropdown searches, so those share an ID per variable and data source. Clearing a search looks like a refresh.
+// Keep both outside cancellation because Scenes clears the selected value when a refresh is cancelled.
+function searchRequestId(datasourceUid: string, scopedVars?: ScopedVars): string | undefined {
+  const key = scopedVars?.__searchFilter && scopedVars.__sceneObject?.value?.valueOf()?.state?.key;
+  return key ? `nominal-variable-search-${datasourceUid}-${key}` : undefined;
+}
+
 export class NominalVariableSupport extends CustomVariableSupport<DataSource, NominalVariableQuery> {
   editor = VariableQueryEditor;
 
@@ -92,12 +101,23 @@ export class NominalVariableSupport extends CustomVariableSupport<DataSource, No
     super();
   }
 
-  query(request: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+  query(originalRequest: DataQueryRequest<NominalVariableQuery>): Observable<DataQueryResponse> {
+    const { scopedVars } = originalRequest;
+    const request = {
+      ...originalRequest,
+      scopedVars: {
+        ...scopedVars,
+        // Grafana's legacy dashboard picker sends searchFilter. Scenes sends __searchFilter.
+        // Remove the fallback and the editor's target marker when the minimum Grafana version is 13.
+        __searchFilter: scopedVars?.__searchFilter ?? scopedVars?.searchFilter ?? { value: '', text: '' },
+      },
+    };
     const target = toVariableQuery(request.targets[0]);
+    const requestId = searchRequestId(this.datasource.uid, scopedVars);
     if (target.mode === 'sql') {
-      return runSql(this.datasource, request, target);
+      return runSql(this.datasource, { ...request, requestId: requestId ?? request.requestId }, target);
     }
-    return from(this.datasource.metricFindQuery(target.query, { scopedVars: request.scopedVars })).pipe(
+    return from(this.datasource.metricFindQuery(target.query, { scopedVars: request.scopedVars, requestId })).pipe(
       map((data) => ({ data }))
     );
   }

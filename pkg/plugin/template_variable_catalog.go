@@ -33,6 +33,7 @@ type datascopesVariableRequest struct {
 type channelVariablesRequest struct {
 	AssetRid      string `json:"assetRid"`
 	DataScopeName string `json:"dataScopeName"`
+	SearchText    string `json:"searchText"` // Literal search text after Grafana interpolation.
 }
 
 type templateVariableCatalogErrorKind int
@@ -148,7 +149,7 @@ func (c *TemplateVariableCatalog) ChannelVariables(ctx context.Context, config *
 	}
 
 	bearerToken := bearertoken.Token(config.Secrets.AuthToken)
-	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids)
+	allChannelResults, err := c.nominal.SearchChannelsForVariables(ctx, bearerToken, dataSourceRids, req.SearchText)
 	if err != nil {
 		return nil, &templateVariableCatalogError{kind: templateVariableChannelSearchError, err: err}
 	}

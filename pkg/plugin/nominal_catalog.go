@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -400,14 +401,32 @@ func withWorkspaceFilter(query interface{}, workspaceRid string) interface{} {
 	return map[string]interface{}{"type": "and", "and": []interface{}{query, clause}}
 }
 
+// assetSearchQuery matches like the Nominal app's asset search: every whitespace-separated
+// term must appear, case-insensitively, in the asset's name, description, labels, or properties.
+func assetSearchQuery(searchText string) interface{} {
+	terms := strings.Fields(searchText)
+	if len(terms) == 0 {
+		return map[string]interface{}{"type": "searchText", "searchText": ""}
+	}
+	arms := make([]interface{}, len(terms))
+	for i, term := range terms {
+		arms[i] = map[string]interface{}{"type": "exactSubstring", "exactSubstring": term}
+	}
+	if len(arms) == 1 {
+		return arms[0]
+	}
+	return map[string]interface{}{"type": "and", "and": arms}
+}
+
 // FetchAssetsForVariable fetches assets from the Nominal API using direct HTTP calls.
 func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *models.PluginSettings, searchText string, maxResults int) ([]AssetResponse, error) {
 	var allResults []AssetResponse
 	pageToken := ""
-	pageSize := 50
+	// One request usually covers the whole variable. Each extra page is a full search round trip.
+	pageSize := min(maxResults, 1000)
 	totalFetched := 0
 
-	query := withWorkspaceFilter(map[string]interface{}{"type": "searchText", "searchText": searchText}, config.WorkspaceRid)
+	query := withWorkspaceFilter(assetSearchQuery(searchText), config.WorkspaceRid)
 
 	for totalFetched < maxResults {
 		requestBody := map[string]interface{}{
@@ -516,9 +535,17 @@ func (c *NominalCatalog) computeChannelMetadata(ctx context.Context, config *mod
 	return channelMetadataCacheEntry{}, nil
 }
 
-func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid) ([]datasourceapi.ChannelMetadata, error) {
+func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerToken bearertoken.Token, dataSourceRids []rids.DataSourceRid, searchText string) ([]datasourceapi.ChannelMetadata, error) {
 	if c.datasourceService == nil || len(dataSourceRids) == 0 {
 		return nil, nil
+	}
+
+	exactMatch := strings.Fields(searchText)
+	var fuzzySearchText string
+	// Fuzzy ranking can drop matches with low scores. Send it only when every
+	// substring match shares a run of at least four ASCII letters or digits.
+	if rankableRun.MatchString(searchText) {
+		fuzzySearchText = searchText
 	}
 
 	pageSize := 1000
@@ -527,7 +554,8 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 
 	for {
 		searchChannelsRequest := datasourceapi.SearchChannelsRequest{
-			FuzzySearchText: "",
+			FuzzySearchText: fuzzySearchText,
+			ExactMatch:      exactMatch,
 			DataSources:     dataSourceRids,
 			PageSize:        &pageSize,
 			NextPageToken:   nextPageToken,
@@ -551,6 +579,8 @@ func (c *NominalCatalog) SearchChannelsForVariables(ctx context.Context, bearerT
 	}
 	return allChannelResults, nil
 }
+
+var rankableRun = regexp.MustCompile(`[A-Za-z0-9]{4}`)
 
 // fuzzySearchTextFor leaves the search text empty unless channel has an ASCII letter or
 // digit. A non-empty search text drops rows that score zero, and only those characters

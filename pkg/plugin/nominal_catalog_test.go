@@ -1234,3 +1234,25 @@ func TestChannelMetadataCacheKeyKeepsDelimiterNamesDistinct(t *testing.T) {
 		t.Fatalf("cache keys collide across the separator: %q", a)
 	}
 }
+
+func TestAssetSearchQuery(t *testing.T) {
+	substring := func(term string) map[string]interface{} {
+		return map[string]interface{}{"type": "exactSubstring", "exactSubstring": term}
+	}
+	for _, tc := range []struct {
+		name, searchText string
+		want             interface{}
+	}{
+		{"empty search lists everything", "  ", map[string]interface{}{"type": "searchText", "searchText": ""}},
+		{"one word", "engine", substring("engine")},
+		{"every word is required", " turbine  north ", map[string]interface{}{"type": "and", "and": []interface{}{substring("turbine"), substring("north")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := json.Marshal(assetSearchQuery(tc.searchText))
+			want, _ := json.Marshal(tc.want)
+			if string(got) != string(want) {
+				t.Fatalf("query = %s, want %s", got, want)
+			}
+		})
+	}
+}
