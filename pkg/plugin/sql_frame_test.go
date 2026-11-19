@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -121,6 +122,20 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			want:     []any{time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), nil},
 		},
 		{
+			name:     "float with NaN",
+			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float64},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float64, `[1.5, "NaN"]`) },
+			wantType: data.FieldTypeNullableFloat64,
+			want:     []any{1.5, math.NaN()},
+		},
+		{
+			name:     "float32 with NaN",
+			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float32},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float32, `["NaN", 2]`) },
+			wantType: data.FieldTypeNullableFloat32,
+			want:     []any{float32(math.NaN()), float32(2)},
+		},
+		{
 			name:     "nullable float",
 			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float32, Nullable: true},
 			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float32, `[1.5, null]`) },
@@ -227,6 +242,16 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 	}
 }
 
+func isNaN(v any) bool {
+	switch f := v.(type) {
+	case float64:
+		return math.IsNaN(f)
+	case float32:
+		return f != f
+	}
+	return false
+}
+
 func equalValues(got, want []any) bool {
 	if len(got) != len(want) {
 		return false
@@ -237,6 +262,9 @@ func equalValues(got, want []any) bool {
 			if !ok || !gotTime.Equal(wantTime) {
 				return false
 			}
+			continue
+		}
+		if isNaN(got[i]) && isNaN(want[i]) {
 			continue
 		}
 		if got[i] != want[i] {
