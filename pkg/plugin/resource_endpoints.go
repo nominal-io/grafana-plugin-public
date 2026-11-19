@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
+	"github.com/nominal-io/nominal-api-go/scout/metadata"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
@@ -219,4 +221,54 @@ func (h *NominalResourceHandler) handleChannelVariables(ctx context.Context, req
 
 	log.DefaultLogger.Debug("Channel variables request successful", "channelCount", len(result))
 	return jsonMarshalResponse(sender, http.StatusOK, result)
+}
+
+const eventLabelPageSize = 100
+
+type eventLabelsRequest struct {
+	Q string `json:"q"`
+}
+
+type eventLabelsResponse struct {
+	Labels []string `json:"labels"`
+}
+
+// handleEventLabels returns event labels matching the optional q substring (POST body {"q": "..."}), most used first.
+func (h *NominalResourceHandler) handleEventLabels(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	d := h.datasource
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var body eventLabelsRequest
+	if ok, err := decodeOptionalResourceJSON(req, sender, &body, "Failed to parse event labels request body"); !ok {
+		return err
+	}
+	config, ok, err := d.loadResourceSettings(ctx, sender, "Failed to load settings for event labels")
+	if !ok {
+		return err
+	}
+
+	request := metadata.SearchMetadataRequest{
+		ResourceTypes: &[]metadata.ResourceType{metadata.New_ResourceType(metadata.ResourceType_EVENT)},
+		PageSize:      new(eventLabelPageSize),
+		SortBy:        metadata.New_MetadataSortField(metadata.MetadataSortField_USAGE_COUNT),
+		Descending:    new(true),
+	}
+	if d.workspaceRid != nil {
+		request.Workspaces = &[]rids.WorkspaceRid{*d.workspaceRid}
+	}
+	if q := strings.TrimSpace(body.Q); q != "" {
+		request.SearchText = &q
+	}
+
+	result, err := d.metadataService.SearchLabels(ctx, bearertoken.Token(config.Secrets.AuthToken), request)
+	if err != nil {
+		logErrorWithConjureFields("Failed to search event labels", err)
+		return jsonErrorResponse(sender, upstreamStatus(err), appendInstanceID("Failed to search event labels", err))
+	}
+	labels := make([]string, len(result.Labels))
+	for i, l := range result.Labels {
+		labels[i] = string(l.Label)
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, eventLabelsResponse{Labels: labels})
 }

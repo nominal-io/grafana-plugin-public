@@ -13,6 +13,8 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/grafana/grafana-plugin-sdk-go/data/sqlutil"
+	rids "github.com/nominal-io/nominal-api-go/scout/rids/api"
+	"github.com/palantir/pkg/rid"
 )
 
 // NominalQueryModel represents a query to the Nominal API
@@ -22,6 +24,11 @@ type NominalQueryModel struct {
 	Channel         string `json:"channel"`
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
+
+	// Event annotation filters. Empty EventTypes and EventLabels match all events.
+	AssetRids   []string `json:"assetRids,omitempty"`
+	EventTypes  []string `json:"eventTypes,omitempty"`
+	EventLabels []string `json:"eventLabels,omitempty"`
 
 	// Bucket aggregations, or LTTB alone. Empty means MEAN. Numeric channels only.
 	Aggregations         []string `json:"aggregations,omitempty"`
@@ -66,6 +73,9 @@ const (
 // queryTypeSQL marks a query that runs SQL instead of a Compute request.
 const queryTypeSQL = "sql"
 
+// queryTypeEvents marks a query that searches events for annotations.
+const queryTypeEvents = "events"
+
 type preparedQueryKind int
 
 const (
@@ -73,6 +83,7 @@ const (
 	preparedQueryLegacy
 	preparedQueryBatchable
 	preparedQuerySQL
+	preparedQueryEvents
 )
 
 type preparedQuery struct {
@@ -81,6 +92,8 @@ type preparedQuery struct {
 	Kind  preparedQueryKind
 	// SQL is set for preparedQuerySQL queries.
 	SQL *sqlutil.Query
+	// Assets is set for preparedQueryEvents queries.
+	Assets []rids.AssetRid
 }
 
 // prepareQuery turns one raw Grafana query into the runtime shape used by query execution.
@@ -109,6 +122,23 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 			return preparedQuery{}, &response
 		}
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQuerySQL, SQL: sql}, nil
+	}
+
+	if qm.QueryType == queryTypeEvents {
+		if len(qm.AssetRids) == 0 {
+			response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, "select an asset")
+			return preparedQuery{}, &response
+		}
+		assets := make([]rids.AssetRid, len(qm.AssetRids))
+		for i, s := range qm.AssetRids {
+			parsed, err := rid.ParseRID(s)
+			if err != nil {
+				response := backend.ErrDataResponseWithSource(backend.StatusBadRequest, backend.ErrorSourceDownstream, fmt.Sprintf("invalid asset RID %q: %v", s, err))
+				return preparedQuery{}, &response
+			}
+			assets[i] = rids.AssetRid(parsed)
+		}
+		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryEvents, Assets: assets}, nil
 	}
 
 	if err := e.validateQuery(qm); err != nil {

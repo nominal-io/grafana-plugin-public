@@ -255,6 +255,34 @@ func TestNominalCatalogFetchAssetByRidUsesOwnCache(t *testing.T) {
 	}
 }
 
+func TestNominalCatalogFetchAssetsByRidFetchesOnlyUncachedAssets(t *testing.T) {
+	cached, uncached, missing := "ri.scout.main.asset.a", "ri.scout.main.asset.b", "ri.scout.main.asset.gone"
+	server, assetFetches := newCountingAssetServer(t, map[string]SingleAssetResponse{
+		cached:   {Rid: cached, Title: "A"},
+		uncached: {Rid: uncached, Title: "B"},
+	}, nil)
+	defer server.Close()
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+
+	if _, err := catalog.FetchAssetByRid(context.Background(), config, cached); err != nil {
+		t.Fatalf("FetchAssetByRid returned error: %v", err)
+	}
+	// The first batch fetches b and the missing asset; the second is served from the cache.
+	for range 2 {
+		assets, err := catalog.FetchAssetsByRid(context.Background(), config, []string{cached, uncached, missing})
+		if err != nil {
+			t.Fatalf("FetchAssetsByRid returned error: %v", err)
+		}
+		if len(assets) != 2 || assets[cached].Title != "A" || assets[uncached].Title != "B" {
+			t.Fatalf("assets = %+v", assets)
+		}
+	}
+	if got := assetFetches.Load(); got != 2 {
+		t.Fatalf("asset fetch count = %d, want 2", got)
+	}
+}
+
 func TestNominalCatalogFetchAssetByRidReturnsCopy(t *testing.T) {
 	assetRid := "ri.scout.main.asset.copied"
 	dataSourceRid := "ri.scout.main.data-source.dataset1"
@@ -987,6 +1015,42 @@ func TestNominalCatalogFetchAssetByRidSharesFlightWithSurvivingCaller(t *testing
 	}
 	if survivor.err != nil || survivor.asset == nil || survivor.asset.Title != "Detached" {
 		t.Fatalf("surviving lookup = (%+v, %v), want Detached asset", survivor.asset, survivor.err)
+	}
+	if got := blocker.calls.Load(); got != 1 {
+		t.Fatalf("asset backend calls = %d, want 1", got)
+	}
+}
+
+func TestNominalCatalogFetchAssetsByRidSharesFlightWithSurvivingCaller(t *testing.T) {
+	assetRids := []string{"ri.scout.main.asset.b", "ri.scout.main.asset.a"}
+	blocker := newBlockingLookup()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		blocker.block()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]SingleAssetResponse{assetRids[0]: {Rid: assetRids[0], Title: "B"}})
+	}))
+	t.Cleanup(func() {
+		blocker.unblock()
+		server.Close()
+	})
+
+	config := &models.PluginSettings{BaseUrl: server.URL, Secrets: &models.SecretPluginSettings{AuthToken: "test-key"}}
+	catalog := newNominalCatalog(server.Client(), &mockDatasourceService{})
+	var canceledErr, survivorErr error
+	var survivor map[string]SingleAssetResponse
+	runSurvivingCallerScenario(t, blocker,
+		func(ctx context.Context) { _, canceledErr = catalog.FetchAssetsByRid(ctx, config, assetRids) },
+		// The same assets in another order join the same flight.
+		func(ctx context.Context) {
+			survivor, survivorErr = catalog.FetchAssetsByRid(ctx, config, []string{assetRids[1], assetRids[0]})
+		},
+	)
+
+	if !errors.Is(canceledErr, context.Canceled) {
+		t.Fatalf("canceled lookup error = %v, want context.Canceled", canceledErr)
+	}
+	if survivorErr != nil || len(survivor) != 1 || survivor[assetRids[0]].Title != "B" {
+		t.Fatalf("surviving lookup = (%+v, %v), want asset B", survivor, survivorErr)
 	}
 	if got := blocker.calls.Load(); got != 1 {
 		t.Fatalf("asset backend calls = %d, want 1", got)

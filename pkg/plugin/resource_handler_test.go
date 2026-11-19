@@ -195,6 +195,7 @@ func TestCallResourceRejectsBadRequests(t *testing.T) {
 		{"dot segments", "scout/v1/search-assets/../../authentication/api/v2/my/profile", http.MethodPost, `{}`, http.StatusNotFound},
 		{"GET search-assets", "search-assets", http.MethodGet, ``, http.StatusMethodNotAllowed},
 		{"DELETE assets-by-rid", "assets-by-rid", http.MethodDelete, ``, http.StatusMethodNotAllowed},
+		{"GET event-labels", "event-labels", http.MethodGet, ``, http.StatusMethodNotAllowed},
 		{"assets-by-rid with object body", "assets-by-rid", http.MethodPost, `{}`, http.StatusBadRequest},
 		{"assets-by-rid with null body", "assets-by-rid", http.MethodPost, `null`, http.StatusBadRequest},
 		{"assets-by-rid with empty array", "assets-by-rid", http.MethodPost, `[]`, http.StatusBadRequest},

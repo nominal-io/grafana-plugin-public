@@ -273,6 +273,14 @@ func classifyConnectionError(err error) (message string, httpStatus int) {
 	return appendInstanceID("Failed to connect to Nominal API", err), http.StatusServiceUnavailable
 }
 
+// upstreamStatus returns the HTTP status the Nominal API answered with, or 502 when it did not answer.
+func upstreamStatus(err error) int {
+	if s := extractErrorDetails(err).Status; s != 0 {
+		return s
+	}
+	return http.StatusBadGateway
+}
+
 // formatUserError builds a "<prefix>: <details>" message with a labeled
 // trace ID for any error carrying the Conjure classification triple (typed
 // Conjure errors or raw-HTTP *apiError), avoiding the duplicate ID that "%v"

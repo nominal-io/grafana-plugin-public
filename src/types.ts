@@ -4,6 +4,7 @@ import { DataQuery } from '@grafana/schema';
 export type SqlFormat = 'timeseries' | 'table' | 'logs';
 export const QUERY_TYPE_COMPUTE = 'compute' as const;
 export const QUERY_TYPE_SQL = 'sql' as const;
+export const QUERY_TYPE_EVENTS = 'events' as const;
 
 export interface NominalQuery extends DataQuery {
   // Asset information
@@ -18,9 +19,14 @@ export interface NominalQuery extends DataQuery {
   // Query parameters
   buckets?: number;
   // Saved dashboards may still hold the retired 'timeShift', 'decimation' or 'raw'; treat anything but SQL as Compute.
-  queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL;
+  queryType?: typeof QUERY_TYPE_COMPUTE | typeof QUERY_TYPE_SQL | typeof QUERY_TYPE_EVENTS;
   rawSql?: string;
   format?: SqlFormat;
+
+  // Events (annotations). assetRids is derived from assetRid when the query runs.
+  eventTypes?: string[];
+  eventLabels?: string[];
+  assetRids?: string[];
 
   // Template variables support
   templateVariables?: Record<string, any>;
@@ -45,6 +51,15 @@ export const AggregationType = {
 export type AggregationTypeValue = (typeof AggregationType)[keyof typeof AggregationType];
 
 export const DEFAULT_AGGREGATIONS: AggregationTypeValue[] = [AggregationType.Mean];
+
+// An explicit queryType wins, since switching modes can leave stale SQL text on the target. Without
+// one (hand-written JSON), annotations with SQL text are SQL queries and the rest are event queries.
+export const annotationMode = (target?: Partial<NominalQuery>): typeof QUERY_TYPE_EVENTS | typeof QUERY_TYPE_SQL => {
+  if (target?.queryType === QUERY_TYPE_EVENTS || target?.queryType === QUERY_TYPE_SQL) {
+    return target.queryType;
+  }
+  return target?.rawSql?.trim() ? QUERY_TYPE_SQL : QUERY_TYPE_EVENTS;
+};
 
 export const DEFAULT_QUERY: Partial<NominalQuery> = {
   queryType: QUERY_TYPE_COMPUTE,

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -93,30 +94,35 @@ func (c *ttlCache[V]) store(key string, value V, err error) {
 }
 
 // get returns the cached result for key, coalescing concurrent misses for the
-// same key into one load, detached from its callers and bounded by
-// detachedLookupTimeout.
+// same key into one detachedFlight load.
 func (c *ttlCache[V]) get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
-	var zero V
 	if entry, hit := c.lookup(key); hit {
 		return entry.value, entry.err
 	}
-
-	// Avoid starting detached work for an already-canceled caller.
-	if err := ctx.Err(); err != nil {
-		return zero, err
-	}
-
-	ch := c.group.DoChan(key, func() (any, error) {
+	return detachedFlight(ctx, &c.group, key, func(workCtx context.Context) (V, error) {
 		if entry, hit := c.lookup(key); hit {
 			return entry.value, entry.err
 		}
-		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
-		defer cancel()
 		v, err := recoverLoad(workCtx, load)
 		c.store(key, v, err)
 		return v, err
 	})
+}
 
+// detachedFlight runs load once for all concurrent callers with the same key. The load is
+// detached from the callers and bounded by detachedLookupTimeout, and a caller whose context
+// ends stops waiting without canceling it.
+func detachedFlight[V any](ctx context.Context, group *singleflight.Group, key string, load func(context.Context) (V, error)) (V, error) {
+	var zero V
+	// Avoid starting detached work for an already-canceled caller.
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
+	ch := group.DoChan(key, func() (any, error) {
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detachedLookupTimeout)
+		defer cancel()
+		return recoverLoad(workCtx, load)
+	})
 	select {
 	case <-ctx.Done():
 		return zero, ctx.Err()
@@ -145,6 +151,7 @@ type NominalCatalog struct {
 	datasourceService  datasourceservice.DataSourceServiceClient
 
 	assetCache           *ttlCache[*SingleAssetResponse]
+	assetBatches         singleflight.Group
 	channelMetadataCache *ttlCache[channelMetadataCacheEntry]
 }
 
@@ -269,6 +276,49 @@ func (c *NominalCatalog) FetchAssetByRid(ctx context.Context, config *models.Plu
 	return asset.clone(), nil
 }
 
+// FetchAssetsByRid fetches several assets, serving cached ones from the FetchAssetByRid cache and
+// fetching the rest in one request. Assets that do not exist are left out. If the request fails,
+// the cached assets are still returned with the error.
+func (c *NominalCatalog) FetchAssetsByRid(ctx context.Context, config *models.PluginSettings, assetRids []string) (map[string]SingleAssetResponse, error) {
+	key := func(assetRid string) string {
+		return oauthCacheKey(ctx, config.UsesOAuth(), config.Secrets.AuthToken, assetRid)
+	}
+	assets := make(map[string]SingleAssetResponse, len(assetRids))
+	var missing []string
+	for _, assetRid := range assetRids {
+		entry, hit := c.assetCache.lookup(key(assetRid))
+		switch {
+		case !hit:
+			missing = append(missing, assetRid)
+		case entry.value != nil:
+			assets[assetRid] = *entry.value.clone()
+		}
+	}
+	if len(missing) == 0 {
+		return assets, nil
+	}
+	// Callers asking for the same assets share one request.
+	slices.Sort(missing)
+	fetched, err := detachedFlight(ctx, &c.assetBatches, key(strings.Join(missing, "\x00")), func(loadCtx context.Context) (map[string]SingleAssetResponse, error) {
+		fetched, err := c.fetchAssetsByRidUncached(loadCtx, config, missing)
+		if err != nil {
+			return nil, err
+		}
+		for _, assetRid := range missing {
+			var cached *SingleAssetResponse
+			if asset, ok := fetched[assetRid]; ok {
+				cached = asset.clone()
+			}
+			c.assetCache.store(key(assetRid), cached, nil)
+		}
+		return fetched, nil
+	})
+	for assetRid, asset := range fetched {
+		assets[assetRid] = *asset.clone()
+	}
+	return assets, err
+}
+
 // postNominalJSON marshals body as JSON and POSTs it to {config baseURL}+path
 // with the standard Authorization and Content-Type headers. It reads and
 // closes the response body itself: on non-200 it returns a typed *apiError
@@ -314,8 +364,8 @@ func (c *NominalCatalog) postNominalJSON(ctx context.Context, config *models.Plu
 	return respBody, nil
 }
 
-func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
-	body, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", []string{assetRid})
+func (c *NominalCatalog) fetchAssetsByRidUncached(ctx context.Context, config *models.PluginSettings, assetRids []string) (map[string]SingleAssetResponse, error) {
+	body, err := c.postNominalJSON(ctx, config, "/scout/v1/asset/multiple", assetRids)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +374,14 @@ func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *mo
 	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&assetMap); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+	return assetMap, nil
+}
 
+func (c *NominalCatalog) fetchAssetByRidUncached(ctx context.Context, config *models.PluginSettings, assetRid string) (*SingleAssetResponse, error) {
+	assetMap, err := c.fetchAssetsByRidUncached(ctx, config, []string{assetRid})
+	if err != nil {
+		return nil, err
+	}
 	if asset, ok := assetMap[assetRid]; ok {
 		return &asset, nil
 	}

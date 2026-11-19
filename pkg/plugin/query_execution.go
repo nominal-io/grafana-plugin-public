@@ -34,7 +34,7 @@ func newNominalQueryExecution(datasource *Datasource, config *models.PluginSetti
 func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.DataQuery) *backend.QueryDataResponse {
 	response := backend.NewQueryDataResponse()
 
-	var batchable, sqlQueries []preparedQuery
+	var batchable, sqlQueries, eventQueries []preparedQuery
 	for _, q := range queries {
 		prepared, prepErr := e.prepareQuery(ctx, q)
 		if prepErr != nil {
@@ -49,6 +49,8 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			batchable = append(batchable, prepared)
 		case preparedQuerySQL:
 			sqlQueries = append(sqlQueries, prepared)
+		case preparedQueryEvents:
+			eventQueries = append(eventQueries, prepared)
 		case preparedQueryLegacy:
 			response.Responses[q.RefID] = e.handleLegacyQuery(prepared.Model, q.TimeRange)
 		}
@@ -56,7 +58,9 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 
 	var sqlResponses map[string]backend.DataResponse
 	var wg sync.WaitGroup
-	wg.Go(func() { sqlResponses = e.executeSQLQueries(ctx, sqlQueries) })
+	var eventResponses map[string]backend.DataResponse
+	wg.Go(func() { sqlResponses = executeConcurrently(ctx, sqlQueries, e.executeSQLQuery) })
+	wg.Go(func() { eventResponses = executeConcurrently(ctx, eventQueries, e.executeEventQuery) })
 	maps.Copy(response.Responses, e.executePreparedBatches(ctx, batchable))
 	wg.Wait()
 	maps.Copy(response.Responses, sqlResponses)
@@ -65,6 +69,7 @@ func (e *NominalQueryExecution) Execute(ctx context.Context, queries []backend.D
 			prefixSeriesNames(sqlResponse.Frames)
 		}
 	}
+	maps.Copy(response.Responses, eventResponses)
 
 	return response
 }
@@ -84,16 +89,19 @@ func frameNamesDiffer(responses map[string]backend.DataResponse) bool {
 	return len(names) > 1
 }
 
-// maxConcurrentSQLQueries bounds the SQL requests that one Grafana request runs at a time.
-const maxConcurrentSQLQueries = 8
+// maxConcurrentRequests caps SQL queries and event searches independently
+// within each Grafana QueryData request.
+const maxConcurrentRequests = 8
 
-func (e *NominalQueryExecution) executeSQLQueries(ctx context.Context, queries []preparedQuery) map[string]backend.DataResponse {
+// executeConcurrently runs run for each query, at most maxConcurrentRequests at a time, and
+// returns the responses by RefID.
+func executeConcurrently(ctx context.Context, queries []preparedQuery, run func(context.Context, preparedQuery) backend.DataResponse) map[string]backend.DataResponse {
 	results := make([]backend.DataResponse, len(queries))
 	var g errgroup.Group
-	g.SetLimit(maxConcurrentSQLQueries)
+	g.SetLimit(maxConcurrentRequests)
 	for i, query := range queries {
 		g.Go(func() error {
-			results[i] = e.executeSQLQuery(ctx, query)
+			results[i] = run(ctx, query)
 			return nil
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
 	"github.com/nominal-io/nominal-api-go/io/nominal/api"
+	"github.com/nominal-io/nominal-api-go/scout/metadata"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/rid"
 )
@@ -892,4 +894,83 @@ func TestHandleChannelVariables(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+type fakeMetadataService struct {
+	metadata.ResourceMetadataServiceClient
+	request metadata.SearchMetadataRequest
+	labels  []string
+	err     error
+}
+
+func (f *fakeMetadataService) SearchLabels(_ context.Context, _ bearertoken.Token, req metadata.SearchMetadataRequest) (metadata.SearchLabelsResponse, error) {
+	f.request = req
+	var out metadata.SearchLabelsResponse
+	for _, l := range f.labels {
+		out.Labels = append(out.Labels, metadata.LabelWithCount{Label: api.Label(l), DocumentCount: 1})
+	}
+	return out, f.err
+}
+
+func TestHandleEventLabels(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		wantSearch    *string
+		withWorkspace bool
+	}{
+		{"query is trimmed and passed as search text", `{"q":" valv "}`, new("valv"), false},
+		{"blank query sends no search text", `{"q":" "}`, nil, false},
+		{"missing query sends no search text", `{}`, nil, false},
+		{"configured workspace scopes the search", `{}`, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeMetadataService{labels: []string{"valve", "valves"}}
+			ds := newTestDatasource("https://api.test.com", nil, nil)
+			ds.metadataService = fake
+			workspace := sqlTestWorkspaceRid(t)
+			if tt.withWorkspace {
+				ds.workspaceRid = &workspace
+			}
+			resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Body: []byte(tt.body), Method: "POST"})
+
+			if resp.Status != http.StatusOK || string(resp.Body) != `{"labels":["valve","valves"]}` {
+				t.Fatalf("status = %d, body = %s", resp.Status, resp.Body)
+			}
+			got := fake.request
+			if (got.SearchText == nil) != (tt.wantSearch == nil) || (got.SearchText != nil && *got.SearchText != *tt.wantSearch) {
+				t.Errorf("searchText = %v, want %v", got.SearchText, tt.wantSearch)
+			}
+			if (got.Workspaces != nil) != tt.withWorkspace || (got.Workspaces != nil && !slices.Equal(*got.Workspaces, []rids.WorkspaceRid{workspace})) {
+				t.Errorf("workspaces = %v, want scoped: %v", got.Workspaces, tt.withWorkspace)
+			}
+		})
+	}
+
+	t.Run("searches event labels by usage, most used first", func(t *testing.T) {
+		fake := &fakeMetadataService{}
+		ds := newTestDatasource("https://api.test.com", nil, nil)
+		ds.metadataService = fake
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
+		if string(resp.Body) != `{"labels":[]}` {
+			t.Errorf("body = %s, want an empty labels array", resp.Body)
+		}
+		got := fake.request
+		if got.ResourceTypes == nil || len(*got.ResourceTypes) != 1 || (*got.ResourceTypes)[0].Value() != metadata.ResourceType_EVENT {
+			t.Errorf("resourceTypes = %v, want [EVENT]", got.ResourceTypes)
+		}
+		if got.PageSize == nil || got.SortBy.Value() != metadata.MetadataSortField_USAGE_COUNT || got.Descending == nil || !*got.Descending {
+			t.Errorf("pageSize/sortBy/descending = %v/%v/%v", got.PageSize, got.SortBy, got.Descending)
+		}
+	})
+
+	t.Run("upstream error status is passed through", func(t *testing.T) {
+		ds := newTestDatasource("https://api.test.com", nil, nil)
+		ds.metadataService = &fakeMetadataService{err: conjureHTTP401NoBody(t)}
+		resp := callResourceAndCapture(t, ds, &backend.CallResourceRequest{Path: "event-labels", Method: "POST"})
+		if resp.Status != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", resp.Status)
+		}
+	})
 }

@@ -126,6 +126,37 @@ describe('applyTemplateVariables', () => {
   });
 });
 
+describe('event queries', () => {
+  it('expands a multi-value asset variable into assetRids', () => {
+    const ds = createDataSource();
+    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: string) =>
+      v === '${asset}' && format === 'csv' ? 'ri.a.1, ri.a.2,' : v
+    );
+
+    const result = ds.applyTemplateVariables({ refId: 'A', queryType: 'events', assetRid: '${asset}' }, {});
+
+    expect(result.assetRids).toEqual(['ri.a.1', 'ri.a.2']);
+  });
+
+  it('expands a multi-value label variable and keeps commas in labels', () => {
+    const ds = createDataSource();
+    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: any) =>
+      v === '$label' ? format(['a, b', 'c']) : v
+    );
+
+    const result = ds.applyTemplateVariables({ refId: 'A', queryType: 'events', eventLabels: ['$label', 'x,y'] }, {});
+
+    expect(result.eventLabels).toEqual(['a, b', 'c', 'x,y']);
+  });
+
+  it('requires an asset', () => {
+    const ds = createDataSource();
+    expect(ds.filterQuery({ refId: 'A', queryType: 'events' })).toBe(false);
+    expect(ds.filterQuery({ refId: 'A', queryType: 'events', assetRid: ' ' })).toBe(false);
+    expect(ds.filterQuery({ refId: 'A', queryType: 'events', assetRid: 'ri.a.1' })).toBe(true);
+  });
+});
+
 describe('metricFindQuery routing', () => {
   let ds: DataSource;
 
@@ -346,7 +377,27 @@ describe('annotations', () => {
     expect(
       prepare({ enable: true, name: 'a', iconColor: 'red', query: { kind: 'DataQuery', spec: { refId: 'Anno', rawSql: 'SELECT 1' } } })
     ).toEqual({ refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' });
-    expect(prepare({ enable: true, name: 'a', iconColor: 'red' })).toBeUndefined();
+  });
+
+  it.each([
+    ['empty target', { refId: 'Anno' }, { refId: 'Anno', queryType: 'events' }],
+    ['missing target', undefined, { refId: 'Anno', queryType: 'events' }],
+    ['explicit sql without text', { refId: 'Anno', queryType: 'sql' }, { refId: 'Anno', queryType: 'sql', format: 'table' }],
+    ['rawSql without queryType', { refId: 'Anno', rawSql: 'SELECT 1' }, { refId: 'Anno', rawSql: 'SELECT 1', queryType: 'sql', format: 'table' }],
+    [
+      'events with leftover rawSql',
+      { refId: 'Anno', queryType: 'events', rawSql: 'SELECT 1' },
+      { refId: 'Anno', queryType: 'events', rawSql: 'SELECT 1' },
+    ],
+    ['whitespace rawSql', { refId: 'Anno', rawSql: '  ' }, { refId: 'Anno', rawSql: '  ', queryType: 'events' }],
+    [
+      'saved events target',
+      { refId: 'Anno', queryType: 'events', assetRid: '${asset}', eventTypes: ['FLAG'] },
+      { refId: 'Anno', queryType: 'events', assetRid: '${asset}', eventTypes: ['FLAG'] },
+    ],
+  ] as const)('prepares %s', (_name, target, expected) => {
+    const prepare = createDataSource().annotations!.prepareQuery!;
+    expect(prepare({ enable: true, name: 'a', iconColor: 'red', target: target as any })).toEqual(expected);
   });
 });
 

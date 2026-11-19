@@ -50,6 +50,22 @@ ORDER BY 1
 
 Annotations can also run Nominal SQL. The query needs a `"time"` column and a text column, and the annotation editor's **Use events example** inserts a starting query. See [Annotations](https://github.com/nominal-io/grafana-plugin-public/blob/main/docs/sql.md#annotations) for the columns and more patterns.
 
+## Event annotations
+
+Annotations can show Nominal events on dashboard panels. Open **Dashboard settings** > **Annotations** > **New annotation** and choose the Nominal data source. The editor has an **Events** / **SQL** toggle, and Events is the default. SQL annotations are described above.
+
+- **Asset** is required. Pick a fixed asset or a dashboard variable such as `$asset`; multi-value variables work.
+- **Event types** limits the annotation to INFO, FLAG, ERROR, or SUCCESS events. Empty means all types.
+- **Labels** limits it to events that have any of the chosen labels. The picker suggests labels from Nominal events, accepts custom values, and lists dashboard variables; a multi-value variable adds one label per value. Empty means all events.
+
+Events that overlap the dashboard time range are shown. Instant events draw as markers and events with a duration draw as shaded regions. The tooltip text is the event description, and the event's labels and type appear as tags. An annotation loads at most 1,000 events, newest first, so older events in a busy range are dropped.
+
+Grafana runs an annotation query once per dashboard, so every panel shows the events of every selected asset. With more than one asset, the tooltip starts with an `Asset: <title>` line. To tell assets apart, for example with one color each, add one annotation per asset.
+
+Leave the custom all value of the asset variable empty. A value such as `.*` is passed through literally and the event search fails. With it empty, **All** expands to every asset.
+
+Annotations run again on refresh, so new events appear after a dashboard refresh.
+
 ## Channel types
 
 ### Numeric
