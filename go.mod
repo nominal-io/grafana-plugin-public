@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/apache/arrow-go/v18 v18.9.0
-	github.com/grafana/grafana-plugin-sdk-go v0.300.0
+	github.com/grafana/grafana-plugin-sdk-go v0.302.0
 	github.com/nominal-io/nominal-api-go v0.0.0-20261114160726-1205fd5fb56f
 	github.com/nominal-io/nominal-api-protos-go v0.1.0
 	github.com/palantir/conjure-go-runtime/v2 v2.99.0
@@ -13,7 +13,7 @@ require (
 	github.com/palantir/pkg/safelong v1.4.0
 	github.com/palantir/pkg/uuid v1.4.0
 	golang.org/x/sync v0.25.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261116203732-fd2c7689a808
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261118221215-c8830f628b3f
 	google.golang.org/grpc v1.85.0
 )
 
@@ -86,7 +86,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.25.0 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
-	github.com/prometheus/common v0.73.1 // indirect
+	github.com/prometheus/common v0.74.0 // indirect
 	github.com/prometheus/procfs v0.23.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/unknwon/bra v0.0.0-20200517080246-1e3013ecaff8 // indirect
