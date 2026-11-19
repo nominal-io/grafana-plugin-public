@@ -125,8 +125,9 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 		numericSeries := computeapi1.NewNumericSeriesFromTimeShift(numericTimeShiftSeries)
 		buckets := qm.Points.Count
 		requestRange, aligned := alignedBucketRange(timeRange, buckets)
-		if aligned {
-			// The aligned range is wider; keep only panel-range data.
+		if aligned && e.fromAlert {
+			// The aligned range is wider. Alerts evaluate exactly their window; dashboards
+			// keep whole edge buckets so edge values hold steady as the range moves.
 			from, to := computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.From)), computeapi.NewTimestampConstantFromLiteral(timestampFromTime(timeRange.To))
 			numericSeries = computeapi1.NewNumericSeriesFromTimeRangeFilter(computeapi1.NumericTimeRangeFilterSeries{Input: numericSeries, StartTime: &from, EndTime: &to})
 		}
@@ -187,35 +188,22 @@ type pointBudget struct {
 	Notice string
 }
 
-// resolvePointBudget caps maxDataPoints, a ceiling, at the API limit with a
-// notice, and rejects saved buckets above it. Log queries get no budget.
-func resolvePointBudget(qm NominalQueryModel, maxDataPoints int64) (pointBudget, error) {
-	if qm.ChannelDataType == ChannelDataTypeLog {
-		return pointBudget{}, nil
-	}
-	if qm.Buckets < 0 {
-		return pointBudget{}, fmt.Errorf("buckets must be non-negative, got %d", qm.Buckets)
-	}
-	if qm.Buckets > 0 {
-		count := qm.Buckets
-		if maxDataPoints > 0 && maxDataPoints < int64(count) {
-			count = int(maxDataPoints)
-		}
-		if count > maxPointsPerQuery {
-			return pointBudget{}, fmt.Errorf("buckets must be at most %d, got %d", maxPointsPerQuery, qm.Buckets)
-		}
-		return pointBudget{Count: count}, nil
-	}
-	if maxDataPoints > maxPointsPerQuery {
+// resolvePointBudget takes Grafana's maxDataPoints as the point count, capped at
+// the API limit with a notice. Log queries get no budget.
+func resolvePointBudget(channelDataType string, maxDataPoints int64) pointBudget {
+	switch {
+	case channelDataType == ChannelDataTypeLog:
+		return pointBudget{}
+	case maxDataPoints > maxPointsPerQuery:
 		return pointBudget{
 			Count:  maxPointsPerQuery,
 			Notice: fmt.Sprintf("Max data points %d is above the Nominal limit, so %d points were requested", maxDataPoints, maxPointsPerQuery),
-		}, nil
+		}
+	case maxDataPoints > 0:
+		return pointBudget{Count: int(maxDataPoints)}
+	default:
+		return pointBudget{Count: defaultPointCount}
 	}
-	if maxDataPoints > 0 {
-		return pointBudget{Count: int(maxDataPoints)}, nil
-	}
-	return pointBudget{Count: defaultPointCount}, nil
 }
 
 func numericOutputFields(aggregations []string) []computeapi.NumericOutputField {

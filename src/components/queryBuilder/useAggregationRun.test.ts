@@ -10,7 +10,6 @@ function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {
     dataScopeName: 'default',
     channel: 'temp',
     queryType: 'compute',
-    buckets: 1000,
     ...overrides,
   } as NominalQuery;
 }

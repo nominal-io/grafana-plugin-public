@@ -1,30 +1,14 @@
 import { AggregationType, DEFAULT_AGGREGATIONS, QUERY_TYPE_COMPUTE, type NominalQuery } from '../../types';
 
-const QUERY_BUILDER_EXECUTION_DEFAULTS = {
-  queryType: QUERY_TYPE_COMPUTE,
-  buckets: 1000,
-};
-
-// Removes the legacy `assetInputMethod` key that older dashboards persisted.
-// The field was removed from NominalQuery; without this, every write would
-// re-persist the stale key because the helpers spread the incoming query.
-export function normalizeLegacyQuery(query: NominalQuery): NominalQuery {
-  if (!Object.prototype.hasOwnProperty.call(query, 'assetInputMethod')) {
-    return query;
-  }
-  const { assetInputMethod: _assetInputMethod, ...rest } = query as NominalQuery & { assetInputMethod?: unknown };
-  return rest;
-}
-
 export function changeAssetRidQuery(query: NominalQuery, assetRid: string): NominalQuery {
-  return { ...normalizeLegacyQuery(query), assetRid };
+  return { ...query, assetRid };
 }
 
 export function changeSelectedDataScopeQuery(query: NominalQuery, dataScopeName: string): NominalQuery {
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     dataScopeName,
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
+    queryType: QUERY_TYPE_COMPUTE,
   };
 }
 
@@ -39,16 +23,16 @@ export function changeSelectedChannelQuery(
   }
 ): NominalQuery {
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     channel,
     channelDataType: dataType,
     dataScopeName: query?.dataScopeName || '',
-    ...QUERY_BUILDER_EXECUTION_DEFAULTS,
+    queryType: QUERY_TYPE_COMPUTE,
   };
 }
 
 export function inferChannelDataTypeQuery(query: NominalQuery, channelDataType: string): NominalQuery {
-  return { ...normalizeLegacyQuery(query), channelDataType };
+  return { ...query, channelDataType };
 }
 
 export function changeAggregationsQuery(query: NominalQuery, aggregations: string[]): NominalQuery {
@@ -60,7 +44,7 @@ export function changeAggregationsQuery(query: NominalQuery, aggregations: strin
         : [AggregationType.Lttb];
   }
   return {
-    ...normalizeLegacyQuery(query),
+    ...query,
     aggregations: selected.length > 0 ? selected : [...DEFAULT_AGGREGATIONS],
   };
 }

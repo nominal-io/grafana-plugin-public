@@ -182,7 +182,7 @@ describe('query API selection', () => {
 
   it('keeps only the active API fields in the query and restores the other API when switching back', async () => {
     const onChange = jest.fn();
-    const compute = { refId: 'A', queryType: 'compute' as const, assetRid: '$asset', channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', buckets: 50, aggregations: ['MAX'], hide: true };
+    const compute = { refId: 'A', queryType: 'compute' as const, assetRid: '$asset', channel: 'app.logs', channelDataType: 'log', dataScopeName: 'default', aggregations: ['MAX'], hide: true };
     render(<EditableQuery initialQuery={compute} onChange={onChange} />);
     await settleEffects();
     fireEvent.click(screen.getByRole('radio', { name: 'SQL' }));
@@ -220,7 +220,7 @@ describe('query API selection', () => {
   });
 
   describe('restoring the other API after the query changes', () => {
-    const numeric: NominalQuery = { refId: 'A', queryType: 'compute', assetRid: ASSET_RID, dataScopeName: 'default', channel: 'temp', channelDataType: 'numeric', buckets: 50 };
+    const numeric: NominalQuery = { refId: 'A', queryType: 'compute', assetRid: ASSET_RID, dataScopeName: 'default', channel: 'temp', channelDataType: 'numeric' };
     let current: NominalQuery;
     let replaceQuery: (query: NominalQuery) => void;
 
@@ -266,7 +266,7 @@ describe('query API selection', () => {
       ['the query is hidden', true, () => replace({ ...current, hide: true })],
       ['a different query replaces it', false, () => replace({ refId: 'A', queryType: 'compute', assetRid: 'ri.scout.main.asset.other' })],
       ['a different query replaces it and is then edited', false, async () => {
-        await replace({ ...numeric, buckets: 99 });
+        await replace({ ...numeric, aggregations: ['MAX'] });
         await setAggregations(['MIN']);
       }],
       ['a different query replaces it and its channel type is inferred', false, () => replace({ ...numeric, channel: '$logChan', channelDataType: undefined })],
@@ -309,6 +309,21 @@ describe('query API selection', () => {
       expect(Object.keys(current).sort()).toEqual(['queryType', 'refId']);
     });
 
+    it.each([
+      ['a Compute edit', undefined, () => setAggregations(['MIN'])],
+      ['a Compute edit in the alert rule editor', CoreApp.UnifiedAlerting, () => setAggregations(['MIN'])],
+      ['switching to SQL in the alert rule editor', CoreApp.UnifiedAlerting, () => pick('SQL')],
+      ['a SQL edit', undefined, async () => {
+        await pick('SQL');
+        typeSql('SELECT 1');
+      }],
+    ])('drops fields that older saved queries hold on %s', async (_, app, edit) => {
+      render(<Host initial={{ ...numeric, buckets: 1000, assetInputMethod: 'direct' } as NominalQuery} app={app} merge={app !== undefined} />);
+      await settleEffects();
+      await edit();
+      expect(['buckets', 'assetInputMethod'].filter((key) => key in withoutUndefined(current))).toEqual([]);
+    });
+
     it('removes the other API fields in the alert rule editor, which merges each change into the stored model', async () => {
       render(<Host initial={numeric} app={CoreApp.UnifiedAlerting} merge />);
       await settleEffects();
@@ -336,7 +351,6 @@ describe('channel data type inference effect', () => {
       assetRid: ASSET_RID,
       dataScopeName: 'default',
       queryType: 'compute',
-      buckets: 1000,
       ...overrides,
     } as NominalQuery;
   }

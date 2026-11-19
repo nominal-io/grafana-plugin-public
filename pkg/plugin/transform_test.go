@@ -526,7 +526,7 @@ func TestDisplayNameFromDS(t *testing.T) {
 		}
 	})
 
-	t.Run("numeric path with empty data sets DisplayNameFromDS to channel name", func(t *testing.T) {
+	t.Run("numeric aggregation with no buckets returns a named no-data frame", func(t *testing.T) {
 		result := createMockArrowComputeResult([]float64{})
 		qm := NominalQueryModel{
 			Channel:      "pressure",
@@ -538,13 +538,8 @@ func TestDisplayNameFromDS(t *testing.T) {
 		if resp.Error != nil {
 			t.Fatalf("unexpected error: %v", resp.Error)
 		}
-		frame := resp.Frames[0]
-		valueField := frame.Fields[1]
-		if valueField.Config == nil {
-			t.Fatal("expected non-nil Config on value field")
-		}
-		if valueField.Config.DisplayNameFromDS != "pressure" {
-			t.Errorf("DisplayNameFromDS = %q, want %q", valueField.Config.DisplayNameFromDS, "pressure")
+		if len(resp.Frames) != 1 || resp.Frames[0].Name != "pressure" || len(resp.Frames[0].Fields) != 0 {
+			t.Fatalf("expected one fieldless pressure frame, got %v", resp.Frames)
 		}
 	})
 

@@ -35,7 +35,6 @@ const BASE_QUERY: Partial<NominalQuery> = {
   assetRid: 'ri.scout.main.asset.abc123',
   dataScopeName: 'default',
   queryType: 'compute',
-  buckets: 1000,
 };
 
 function makeQuery(overrides: Partial<NominalQuery> = {}): NominalQuery {

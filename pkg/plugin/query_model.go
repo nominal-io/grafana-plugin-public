@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -35,7 +34,6 @@ type NominalQueryModel struct {
 	ExplicitAggregations bool     `json:"-"` // true when aggregations were set by the frontend (not defaulted)
 
 	// Query parameters
-	Buckets   int    `json:"buckets"`
 	QueryType string `json:"queryType"`
 
 	// Template variables support
@@ -57,8 +55,8 @@ type NominalQueryModel struct {
 	// Points is runtime-only, set by resolvePointBudget.
 	Points pointBudget `json:"-"`
 
-	// RangeEnd is runtime-only: the end of the query's time range.
-	RangeEnd time.Time `json:"-"`
+	// Range is runtime-only: the query's time range.
+	Range backend.TimeRange `json:"-"`
 }
 
 // ChannelDataType values. These are produced by getChannelDataType (normalizing the
@@ -156,17 +154,8 @@ func (e *NominalQueryExecution) prepareQuery(ctx context.Context, q backend.Data
 	}
 
 	if qm.AssetRid != "" && qm.Channel != "" {
-		points, err := resolvePointBudget(qm, q.MaxDataPoints)
-		if err != nil {
-			log.DefaultLogger.Error("Query validation failed", "error", err)
-			response := backend.ErrDataResponse(
-				backend.StatusBadRequest,
-				fmt.Sprintf("Query validation failed: %v", err),
-			)
-			return preparedQuery{}, &response
-		}
-		qm.Points = points
-		qm.RangeEnd = q.TimeRange.To
+		qm.Points = resolvePointBudget(qm.ChannelDataType, q.MaxDataPoints)
+		qm.Range = q.TimeRange
 		return preparedQuery{Query: q, Model: qm, Kind: preparedQueryBatchable}, nil
 	}
 

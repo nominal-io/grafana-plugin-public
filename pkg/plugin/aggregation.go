@@ -13,6 +13,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 
+	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	computeapi "github.com/nominal-io/nominal-api-go/scout/compute/api"
 )
 
@@ -40,6 +41,45 @@ type AggregationSeries struct {
 	TimePoints         []time.Time
 	Values             []*float64
 	CarriesChannelUnit bool
+	missingValues      int
+	ownTimes           bool // TimePoints are sample times, not shared bucket ends
+}
+
+// dropMissingBuckets omits Arrow nulls while preserving numeric values, including
+// zero and NaN. Timestamps may be shared with other series, so only the values
+// can be compacted in place.
+func (s *AggregationSeries) dropMissingBuckets() {
+	if s.missingValues == 0 {
+		return
+	}
+	if s.missingValues == len(s.Values) {
+		s.TimePoints, s.Values, s.missingValues = nil, nil, 0
+		return
+	}
+	times := make([]time.Time, 0, len(s.Values)-s.missingValues)
+	values := s.Values[:0]
+	for i, value := range s.Values {
+		if value != nil {
+			times = append(times, s.TimePoints[i])
+			values = append(values, value)
+		}
+	}
+	s.TimePoints, s.Values = times, values
+	s.missingValues = 0
+}
+
+// dropOutsideRange removes points sampled outside r. Edge buckets can extend past
+// the query range, so their first or last sample may lie outside it. Only call it
+// on a series with its own timestamps; it compacts TimePoints in place.
+func (s *AggregationSeries) dropOutsideRange(r backend.TimeRange) {
+	kept := 0
+	for i, t := range s.TimePoints {
+		if !t.Before(r.From) && !t.After(r.To) {
+			s.TimePoints[kept], s.Values[kept] = t, s.Values[i]
+			kept++
+		}
+	}
+	s.TimePoints, s.Values = s.TimePoints[:kept], s.Values[:kept]
 }
 
 // aggColumnSpec describes how an aggregation maps to Arrow columns.
@@ -275,6 +315,7 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 		}
 		if rawCol.IsNull(i) {
 			series.Values = append(series.Values, nil)
+			series.missingValues++
 			continue
 		}
 		if bi >= len(backing) {
@@ -397,6 +438,7 @@ func extractArrowBucketedNumericSeries(
 	for i := range seriesData {
 		if perSeriesTime[i] != nil {
 			seriesData[i].TimePoints = perSeriesTime[i]
+			seriesData[i].ownTimes = true
 		} else {
 			seriesData[i].TimePoints = sharedTimePoints
 		}

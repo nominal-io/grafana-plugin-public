@@ -719,9 +719,9 @@ func TestInferChannelTypeDeduplicatesWithinRequest(t *testing.T) {
 	// 3 queries for the same asset+scope+channel should make 1 asset fetch
 	// and 1 SearchChannels call.
 	req := newQueryRequestForURL(server.URL, []backend.DataQuery{
-		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
-		{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+		{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default"}), TimeRange: timeRange},
+		{RefID: "B", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default"}), TimeRange: timeRange},
+		{RefID: "C", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default"}), TimeRange: timeRange},
 	})
 
 	_, err := ds.QueryData(context.Background(), req)
@@ -784,7 +784,7 @@ func TestAssetCacheTTLReusedAcrossRequests(t *testing.T) {
 	}
 	makeReq := func() *backend.QueryDataRequest {
 		return newQueryRequestForURL(server.URL, []backend.DataQuery{
-			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default"}), TimeRange: timeRange},
 		})
 	}
 
@@ -848,7 +848,7 @@ func TestChannelTypeCacheTTLReusedAcrossRequests(t *testing.T) {
 	}
 	makeReq := func() *backend.QueryDataRequest {
 		return newQueryRequestForURL(server.URL, []backend.DataQuery{
-			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default", Buckets: 100}), TimeRange: timeRange},
+			{RefID: "A", JSON: mustMarshal(NominalQueryModel{AssetRid: assetRid, Channel: "temperature", DataScopeName: "default"}), TimeRange: timeRange},
 		})
 	}
 

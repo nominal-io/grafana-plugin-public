@@ -3,6 +3,7 @@ package plugin
 import (
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,8 +51,18 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				response.Frames = append(response.Frames, frame)
 			} else if len(result.AggSeries) > 0 {
 				// Multi-aggregation Arrow path: one frame per series
+				bucketed := !slices.Contains(qm.Aggregations, AggLTTB)
 				for _, agg := range result.AggSeries {
-					capTimes(agg.TimePoints, qm.RangeEnd)
+					if bucketed {
+						agg.dropMissingBuckets()
+						if agg.ownTimes {
+							agg.dropOutsideRange(qm.Range)
+						}
+						if len(agg.Values) == 0 {
+							continue
+						}
+					}
+					capTimes(agg.TimePoints, qm.Range.To)
 					frame := data.NewFrame("response")
 					displayName := qm.Channel
 					if qm.ExplicitAggregations {
@@ -75,11 +86,15 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					}
 					response.Frames = append(response.Frames, frame)
 				}
+				if len(response.Frames) == 0 {
+					// A fieldless frame tells Grafana Alerting the query returned no data.
+					response.Frames = append(response.Frames, data.NewFrame(qm.Channel))
+				}
 				log.DefaultLogger.Debug("Successfully processed multi-agg query",
 					"series", len(result.AggSeries),
 					"dataPoints", len(result.AggSeries[0].TimePoints))
 			} else if result.IsEnum {
-				capTimes(result.TimePoints, qm.RangeEnd)
+				capTimes(result.TimePoints, qm.Range.To)
 				frame := data.NewFrame("response")
 				frame.Name = qm.Channel
 				// Mark enum frames as table type so panels like Stat can pick up string fields.
@@ -381,8 +396,8 @@ func fieldConfigForEnum(qm *NominalQueryModel) *data.FieldConfig {
 	return &data.FieldConfig{DisplayNameFromDS: qm.Channel}
 }
 
-// capTimes caps times at end: a last bucket that runs past the range carries its
-// own end time, though its data stops at end. Times ascend, so only the tail is scanned.
+// capTimes caps times at end: a last bucket that runs past the range still belongs
+// on the chart, so it is drawn at end. Times ascend, so only the tail is scanned.
 func capTimes(times []time.Time, end time.Time) {
 	for i := len(times) - 1; i >= 0 && !end.IsZero() && times[i].After(end); i-- {
 		times[i] = end

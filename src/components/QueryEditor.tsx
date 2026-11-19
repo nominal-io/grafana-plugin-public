@@ -266,7 +266,6 @@ const FIELD_API = {
   dataScopeName: QUERY_TYPE_COMPUTE,
   channelDataType: QUERY_TYPE_COMPUTE,
   aggregations: QUERY_TYPE_COMPUTE,
-  buckets: QUERY_TYPE_COMPUTE,
   templateVariables: QUERY_TYPE_COMPUTE,
   queryText: QUERY_TYPE_COMPUTE,
   constant: QUERY_TYPE_COMPUTE,
@@ -274,11 +273,17 @@ const FIELD_API = {
   format: QUERY_TYPE_SQL,
 } satisfies Record<Exclude<keyof NominalQuery, keyof DataQuery | 'eventTypes' | 'eventLabels' | 'assetRids'>, QueryAPI>;
 
+const ownedBy = (api: QueryAPI) => (key: string) => FIELD_API[key as keyof typeof FIELD_API] === api;
+
+// Fields older saved queries can hold that NominalQuery no longer has. They are dropped on the next edit.
+const RETIRED_FIELDS = ['assetInputMethod', 'buckets'];
+const isRetired = (key: string) => RETIRED_FIELDS.includes(key);
+
 // A field whose value is undefined was already removed, so it is not moved or restored.
-function splitFields(query: NominalQuery, api: QueryAPI): [rest: NominalQuery, owned: Partial<NominalQuery>] {
-  const owned = ([key]: [string, unknown]) => FIELD_API[key as keyof typeof FIELD_API] === api;
+function splitFields(query: NominalQuery, takes: (key: string) => boolean): [rest: NominalQuery, taken: Partial<NominalQuery>] {
+  const taken = ([key]: [string, unknown]) => takes(key);
   const entries = Object.entries(query).filter(([, value]) => value !== undefined);
-  return [Object.fromEntries(entries.filter((entry) => !owned(entry))) as NominalQuery, Object.fromEntries(entries.filter(owned))];
+  return [Object.fromEntries(entries.filter((entry) => !taken(entry))) as NominalQuery, Object.fromEntries(entries.filter(taken))];
 }
 
 // The query's API and that API's field values, to tell whether a query is the one the editor last sent. Grafana
@@ -312,10 +317,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
   // so opening the editor alone does not modify the dashboard.
   const onEdit = React.useCallback(
     (next: NominalQuery) => {
-      const [clean, stale] = splitFields(next, inactiveAPI);
+      const [current, retired] = splitFields(next, isRetired);
+      const [clean, stale] = splitFields(current, ownedBy(inactiveAPI));
       const fields = Object.keys(stale).length > 0 ? stale : remembered();
       inactive.current = fields && { fields, sent: ownedValues(clean, activeAPI) };
-      onChange({ ...removedFields(stale, app), ...clean });
+      onChange({ ...removedFields({ ...retired, ...stale }, app), ...clean });
     },
     [activeAPI, inactiveAPI, app, onChange, remembered]
   );
@@ -324,10 +330,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
     if (api === activeAPI) {
       return;
     }
-    const [shared, leaving] = splitFields(query, activeAPI);
+    const [current, retired] = splitFields(query, isRetired);
+    const [shared, leaving] = splitFields(current, ownedBy(activeAPI));
     const next = { ...remembered(), ...shared, queryType: api };
     inactive.current = { fields: leaving, sent: ownedValues(next, api) };
-    onChange({ ...removedFields(leaving, app), ...next });
+    onChange({ ...removedFields({ ...retired, ...leaving }, app), ...next });
   };
 
   return (

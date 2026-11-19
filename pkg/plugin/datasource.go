@@ -230,7 +230,9 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		return response, nil
 	}
 
-	return newNominalQueryExecution(d, config).Execute(ctx, req.Queries), nil
+	execution := newNominalQueryExecution(d, config)
+	execution.fromAlert = req.Headers[backend.FromAlertHeaderName] == "true"
+	return execution.Execute(ctx, req.Queries), nil
 }
 
 // CheckHealth handles health checks sent from Grafana to the plugin.

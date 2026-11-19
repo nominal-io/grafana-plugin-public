@@ -20,6 +20,7 @@ import (
 type NominalQueryExecution struct {
 	datasource *Datasource
 	config     *models.PluginSettings
+	fromAlert  bool // the request came from Grafana Alerting
 }
 
 func newNominalQueryExecution(datasource *Datasource, config *models.PluginSettings) *NominalQueryExecution {
