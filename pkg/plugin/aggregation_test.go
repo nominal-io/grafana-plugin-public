@@ -42,8 +42,8 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 			}
 		}
 		for i, m := range means {
-			if s.Values[i] == nil || *s.Values[i] != m {
-				t.Errorf("values[%d] = %v, want %f", i, s.Values[i], m)
+			if s.valueAt(i) == nil || *s.valueAt(i) != m {
+				t.Errorf("values[%d] = %v, want %f", i, s.valueAt(i), m)
 			}
 		}
 	})
@@ -63,14 +63,14 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if len(s.Values) != 3 {
 			t.Fatalf("expected 3 values, got %d", len(s.Values))
 		}
-		if s.Values[0] == nil || *s.Values[0] != 1.5 {
-			t.Errorf("values[0] = %v, want 1.5", s.Values[0])
+		if s.valueAt(0) == nil || *s.valueAt(0) != 1.5 {
+			t.Errorf("values[0] = %v, want 1.5", s.valueAt(0))
 		}
-		if s.Values[1] != nil {
-			t.Errorf("values[1] = %v, want nil", s.Values[1])
+		if s.valueAt(1) != nil {
+			t.Errorf("values[1] = %v, want nil", s.valueAt(1))
 		}
-		if s.Values[2] == nil || *s.Values[2] != 3.5 {
-			t.Errorf("values[2] = %v, want 3.5", s.Values[2])
+		if s.valueAt(2) == nil || *s.valueAt(2) != 3.5 {
+			t.Errorf("values[2] = %v, want 3.5", s.valueAt(2))
 		}
 		if len(s.TimePoints) != 3 {
 			t.Fatalf("expected 3 time points, got %d", len(s.TimePoints))
@@ -112,8 +112,8 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if len(s.TimePoints) != 1 || len(s.Values) != 1 {
 			t.Fatalf("expected 1 row, got %d timePoints and %d values", len(s.TimePoints), len(s.Values))
 		}
-		if s.Values[0] == nil || *s.Values[0] != 42.0 {
-			t.Errorf("values[0] = %v, want 42.0", s.Values[0])
+		if s.valueAt(0) == nil || *s.valueAt(0) != 42.0 {
+			t.Errorf("values[0] = %v, want 42.0", s.valueAt(0))
 		}
 	})
 
@@ -290,11 +290,11 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if len(series[0].Values) != 2 {
 			t.Fatalf("len(Values) = %d, want 2", len(series[0].Values))
 		}
-		if series[0].Values[0] == nil || *series[0].Values[0] != 10.0 {
-			t.Fatalf("Values[0] = %v, want 10.0", series[0].Values[0])
+		if series[0].valueAt(0) == nil || *series[0].valueAt(0) != 10.0 {
+			t.Fatalf("Values[0] = %v, want 10.0", series[0].valueAt(0))
 		}
-		if series[0].Values[1] == nil || *series[0].Values[1] != 20.0 {
-			t.Fatalf("Values[1] = %v, want 20.0", series[0].Values[1])
+		if series[0].valueAt(1) == nil || *series[0].valueAt(1) != 20.0 {
+			t.Fatalf("Values[1] = %v, want 20.0", series[0].valueAt(1))
 		}
 	})
 
@@ -426,11 +426,11 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if len(s.Values) != 2 {
 			t.Fatalf("expected 2 values, got %d", len(s.Values))
 		}
-		if *s.Values[0] != 5.0 {
-			t.Errorf("values[0] = %v, want 5.0", *s.Values[0])
+		if *s.valueAt(0) != 5.0 {
+			t.Errorf("values[0] = %v, want 5.0", *s.valueAt(0))
 		}
-		if *s.Values[1] != 12.0 {
-			t.Errorf("values[1] = %v, want 12.0", *s.Values[1])
+		if *s.valueAt(1) != 12.0 {
+			t.Errorf("values[1] = %v, want 12.0", *s.valueAt(1))
 		}
 	})
 
@@ -471,8 +471,8 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 		if len(s.TimePoints) != 100 || len(s.Values) != 100 {
 			t.Fatalf("expected 100 rows, got %d timePoints and %d values", len(s.TimePoints), len(s.Values))
 		}
-		if s.Values[50] == nil || *s.Values[50] != 5.0 {
-			t.Errorf("values[50] = %v, want 5.0", s.Values[50])
+		if s.valueAt(50) == nil || *s.valueAt(50) != 5.0 {
+			t.Errorf("values[50] = %v, want 5.0", s.valueAt(50))
 		}
 	})
 
@@ -571,16 +571,16 @@ func TestExtractArrowBucketedNumericSeries(t *testing.T) {
 			t.Fatalf("mean: expected %d values from 2 batches, got %d", len(wantMean), len(series[0].Values))
 		}
 		for i, want := range wantMean {
-			if series[0].Values[i] == nil || *series[0].Values[i] != want {
-				t.Errorf("mean.Values[%d] = %v, want %f", i, series[0].Values[i], want)
+			if series[0].valueAt(i) == nil || *series[0].valueAt(i) != want {
+				t.Errorf("mean.valueAt(%d) = %v, want %f", i, series[0].valueAt(i), want)
 			}
 		}
 		if len(series[1].Values) != len(wantCount) {
 			t.Fatalf("count: expected %d values from 2 batches, got %d", len(wantCount), len(series[1].Values))
 		}
 		for i, want := range wantCount {
-			if series[1].Values[i] == nil || *series[1].Values[i] != want {
-				t.Errorf("count.Values[%d] = %v, want %f", i, series[1].Values[i], want)
+			if series[1].valueAt(i) == nil || *series[1].valueAt(i) != want {
+				t.Errorf("count.valueAt(%d) = %v, want %f", i, series[1].valueAt(i), want)
 			}
 		}
 	})
@@ -617,7 +617,7 @@ func TestExtractArrowRawNumericSeriesWithoutSharedTimestamp(t *testing.T) {
 	if len(series[0].TimePoints) != 3 || !series[0].TimePoints[2].Equal(time.Unix(0, 300)) {
 		t.Fatalf("TimePoints = %v, want 3 points ending at 300ns", series[0].TimePoints)
 	}
-	if len(series[0].Values) != 3 || *series[0].Values[1] != 2 {
+	if len(series[0].Values) != 3 || *series[0].valueAt(1) != 2 {
 		t.Fatalf("Values = %v, want [1 2 3]", series[0].Values)
 	}
 }
@@ -863,14 +863,14 @@ func TestExtractColumnValuesMaskedNullValue(t *testing.T) {
 	if len(s.Values) != 3 {
 		t.Fatalf("len(Values) = %d, want 3", len(s.Values))
 	}
-	if s.Values[0] == nil || *s.Values[0] != 10.0 {
-		t.Errorf("Values[0] = %v, want 10.0", s.Values[0])
+	if s.valueAt(0) == nil || *s.valueAt(0) != 10.0 {
+		t.Errorf("Values[0] = %v, want 10.0", s.valueAt(0))
 	}
-	if s.Values[1] != nil {
-		t.Errorf("Values[1] = %v, want nil (included row, null value)", s.Values[1])
+	if s.valueAt(1) != nil {
+		t.Errorf("Values[1] = %v, want nil (included row, null value)", s.valueAt(1))
 	}
-	if s.Values[2] == nil || *s.Values[2] != 30.0 {
-		t.Errorf("Values[2] = %v, want 30.0", s.Values[2])
+	if s.valueAt(2) == nil || *s.valueAt(2) != 30.0 {
+		t.Errorf("Values[2] = %v, want 30.0", s.valueAt(2))
 	}
 	wantTs := []int64{900000000000, 2000000000000, 3000000000000}
 	for i, ts := range wantTs {
@@ -990,11 +990,11 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	if len(first.TimePoints) != 2 {
 		t.Fatalf("first: expected 2 timepoints, got %d", len(first.TimePoints))
 	}
-	if first.Values[0] == nil || *first.Values[0] != 10.0 {
-		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
+	if first.valueAt(0) == nil || *first.valueAt(0) != 10.0 {
+		t.Errorf("first.valueAt(0) = %v, want 10.0", first.valueAt(0))
 	}
-	if first.Values[1] == nil || *first.Values[1] != 30.0 {
-		t.Errorf("first.Values[1] = %v, want 30.0", first.Values[1])
+	if first.valueAt(1) == nil || *first.valueAt(1) != 30.0 {
+		t.Errorf("first.valueAt(1) = %v, want 30.0", first.valueAt(1))
 	}
 	if first.TimePoints[0] != time.Unix(0, 900000000000) {
 		t.Errorf("first.TimePoints[0] = %v, want %v", first.TimePoints[0], time.Unix(0, 900000000000))
@@ -1010,11 +1010,11 @@ func TestTransformArrowFirstLastWithNulls(t *testing.T) {
 	if len(last.TimePoints) != 2 {
 		t.Fatalf("last: expected 2 timepoints, got %d", len(last.TimePoints))
 	}
-	if last.Values[0] == nil || *last.Values[0] != 25.0 {
-		t.Errorf("last.Values[0] = %v, want 25.0", last.Values[0])
+	if last.valueAt(0) == nil || *last.valueAt(0) != 25.0 {
+		t.Errorf("last.valueAt(0) = %v, want 25.0", last.valueAt(0))
 	}
-	if last.Values[1] == nil || *last.Values[1] != 35.0 {
-		t.Errorf("last.Values[1] = %v, want 35.0", last.Values[1])
+	if last.valueAt(1) == nil || *last.valueAt(1) != 35.0 {
+		t.Errorf("last.valueAt(1) = %v, want 35.0", last.valueAt(1))
 	}
 	if last.TimePoints[0] != time.Unix(0, 1999000000000) {
 		t.Errorf("last.TimePoints[0] = %v, want %v", last.TimePoints[0], time.Unix(0, 1999000000000))
@@ -1134,11 +1134,11 @@ func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
 	if len(first.TimePoints) != 2 {
 		t.Fatalf("first: expected 2 timepoints, got %d", len(first.TimePoints))
 	}
-	if first.Values[0] == nil || *first.Values[0] != 10.0 {
-		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
+	if first.valueAt(0) == nil || *first.valueAt(0) != 10.0 {
+		t.Errorf("first.valueAt(0) = %v, want 10.0", first.valueAt(0))
 	}
-	if first.Values[1] == nil || *first.Values[1] != 40.0 {
-		t.Errorf("first.Values[1] = %v, want 40.0", first.Values[1])
+	if first.valueAt(1) == nil || *first.valueAt(1) != 40.0 {
+		t.Errorf("first.valueAt(1) = %v, want 40.0", first.valueAt(1))
 	}
 	if first.TimePoints[0] != time.Unix(0, 900_000_000_000) {
 		t.Errorf("first.TimePoints[0] = %v, want %v", first.TimePoints[0], time.Unix(0, 900_000_000_000))
@@ -1154,11 +1154,11 @@ func TestTransformArrowFirstLastWithNullsMultiBatch(t *testing.T) {
 	if len(last.TimePoints) != 2 {
 		t.Fatalf("last: expected 2 timepoints, got %d", len(last.TimePoints))
 	}
-	if last.Values[0] == nil || *last.Values[0] != 25.0 {
-		t.Errorf("last.Values[0] = %v, want 25.0", last.Values[0])
+	if last.valueAt(0) == nil || *last.valueAt(0) != 25.0 {
+		t.Errorf("last.valueAt(0) = %v, want 25.0", last.valueAt(0))
 	}
-	if last.Values[1] == nil || *last.Values[1] != 35.0 {
-		t.Errorf("last.Values[1] = %v, want 35.0", last.Values[1])
+	if last.valueAt(1) == nil || *last.valueAt(1) != 35.0 {
+		t.Errorf("last.valueAt(1) = %v, want 35.0", last.valueAt(1))
 	}
 	if last.TimePoints[0] != time.Unix(0, 1_999_000_000_000) {
 		t.Errorf("last.TimePoints[0] = %v, want %v", last.TimePoints[0], time.Unix(0, 1_999_000_000_000))
@@ -1288,5 +1288,61 @@ func TestAggregationSeriesCarriesChannelUnitPropagation(t *testing.T) {
 		if series[i].CarriesChannelUnit != w.carries {
 			t.Errorf("series[%d] (%s).CarriesChannelUnit = %v, want %v", i, w.name, series[i].CarriesChannelUnit, w.carries)
 		}
+	}
+}
+
+// valueAt returns a pointer to the i-th value, or nil if it is missing.
+func (s *AggregationSeries) valueAt(i int) *float64 {
+	if s.missing != nil && s.missing[i] {
+		return nil
+	}
+	return &s.Values[i]
+}
+
+func TestAggregationSeriesFieldValues(t *testing.T) {
+	sparse := func() arrow.Array {
+		b := array.NewFloat64Builder(memory.DefaultAllocator)
+		defer b.Release()
+		b.AppendValues([]float64{1, 0}, []bool{true, false})
+		return b.NewArray()
+	}()
+	defer sparse.Release()
+	dense := func() arrow.Array {
+		b := array.NewFloat64Builder(memory.DefaultAllocator)
+		defer b.Release()
+		b.AppendValues([]float64{3, 4}, nil)
+		return b.NewArray()
+	}()
+	defer dense.Release()
+
+	extract := func(cols ...arrow.Array) AggregationSeries {
+		var s AggregationSeries
+		for _, c := range cols {
+			if err := extractColumnValues(&s, c, allRows(c.Len()), c.Len()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return s
+	}
+
+	// A dense batch after a sparse one must keep missing aligned with Values.
+	s := extract(sparse, dense)
+	ptrs, ok := s.fieldValues().([]*float64)
+	if !ok || len(ptrs) != 4 || ptrs[0] == nil || ptrs[1] != nil || *ptrs[2] != 3 || *ptrs[3] != 4 {
+		t.Errorf("sparse then dense fieldValues() = %v, want [1 nil 3 4]", s.fieldValues())
+	}
+	s.TimePoints = make([]time.Time, 4)
+	s.dropMissingBuckets()
+	if got := s.Values; len(got) != 3 || got[0] != 1 || got[1] != 3 || got[2] != 4 {
+		t.Errorf("after dropMissingBuckets Values = %v, want [1 3 4]", got)
+	}
+	if got, ok := s.fieldValues().([]float64); !ok || len(got) != 3 {
+		t.Errorf("fieldValues() after dropMissingBuckets = %T, want []float64", s.fieldValues())
+	}
+
+	// A dense column is returned as is.
+	s = extract(dense)
+	if got, ok := s.fieldValues().([]float64); !ok || len(got) != 2 {
+		t.Errorf("dense fieldValues() = %T, want []float64", s.fieldValues())
 	}
 }

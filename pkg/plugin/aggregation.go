@@ -40,51 +40,61 @@ const (
 type AggregationSeries struct {
 	Name               string // display name: "mean", "min", "max", "first", "last"
 	TimePoints         []time.Time
-	Values             []*float64
+	Values             []float64
 	CarriesChannelUnit bool
-	missingValues      int
-	ownTimes           bool // TimePoints are sample times, not shared bucket ends
+	missing            []bool // nil unless a value is missing; then parallel to Values
+	ownTimes           bool   // TimePoints are sample times, not shared bucket ends
 }
 
 // dropMissingBuckets omits Arrow nulls while preserving numeric values, including
 // zero and NaN. Timestamps may be shared with other series, so only the values
 // can be compacted in place.
 func (s *AggregationSeries) dropMissingBuckets() {
-	if s.missingValues == 0 {
+	if s.missing == nil {
 		return
 	}
-	if s.missingValues == len(s.Values) {
-		s.TimePoints, s.Values, s.missingValues = nil, nil, 0
-		return
-	}
-	times := make([]time.Time, 0, len(s.Values)-s.missingValues)
-	values := s.Values[:0]
-	for i, value := range s.Values {
-		if value != nil {
+	times := make([]time.Time, 0, len(s.Values))
+	kept := 0
+	for i, missing := range s.missing {
+		if !missing {
 			times = append(times, s.TimePoints[i])
-			values = append(values, value)
+			s.Values[kept] = s.Values[i]
+			kept++
 		}
 	}
-	s.TimePoints, s.Values = times, values
-	s.missingValues = 0
+	s.missing = nil
+	if kept == 0 {
+		s.TimePoints, s.Values = nil, nil
+		return
+	}
+	s.TimePoints, s.Values = times, s.Values[:kept]
 }
 
-// fieldValues returns the values for a frame field: []float64 when none is missing or NaN, else
-// []*float64 with nil for the missing ones. Grafana decodes a nullable field with one allocation
-// per value, so most series are sent non-nullable. NaN keeps the field nullable because Grafana's
-// SQL expressions read NaN as NULL and fail when they write a NULL to a non-nullable column.
+// appendValue adds a value, or a missing placeholder, to the series.
+func (s *AggregationSeries) appendValue(v float64, missing bool) {
+	if missing && s.missing == nil {
+		s.missing = make([]bool, len(s.Values), cap(s.Values))
+	}
+	s.Values = append(s.Values, v)
+	if s.missing != nil {
+		s.missing = append(s.missing, missing)
+	}
+}
+
+// fieldValues returns the values for a frame field: the []float64 itself when none is missing or
+// NaN, else []*float64 with nil for the missing ones. NaN keeps the field nullable for the reason
+// given on columnValues.
 func (s *AggregationSeries) fieldValues() any {
-	if s.missingValues > 0 {
+	if s.missing == nil && !slices.ContainsFunc(s.Values, math.IsNaN) {
 		return s.Values
 	}
-	values := make([]float64, len(s.Values))
-	for i, v := range s.Values {
-		if math.IsNaN(*v) {
-			return s.Values
+	ptrs := make([]*float64, len(s.Values))
+	for i := range s.Values {
+		if s.missing == nil || !s.missing[i] {
+			ptrs[i] = &s.Values[i]
 		}
-		values[i] = *v
 	}
-	return values
+	return ptrs
 }
 
 // dropOutsideRange removes points sampled outside r. Edge buckets can extend past
@@ -282,23 +292,9 @@ func appendNonNullTimestamps(dst []time.Time, col *array.Int64) ([]time.Time, ro
 	return dst, selection, nil
 }
 
-// valueBackingLen sizes extractColumnValues' shared float backing slice.
-// Unmasked columns use Arrow's O(1) null counter. Masked FIRST/LAST columns use
-// the selected-row count as an upper bound to avoid a second pass over the same
-// rows; null-valued selected rows leave a few unused float64 slots.
-func valueBackingLen(col arrow.Array, selection rowSelection) int {
-	if selection.mask == nil {
-		return selection.includedRows - col.NullN()
-	}
-	return selection.includedRows
-}
-
 // extractColumnValues reads nRows from an Arrow column (Float64 or Uint32) and
 // appends values to series.Values. Rows excluded by selection are skipped (used
-// to drop null-timestamp rows for FIRST/LAST).
-//
-// Non-null values share one backing slice per call, avoiding one heap allocation
-// per value while keeping pointers stable.
+// to drop null-timestamp rows for FIRST/LAST). Null rows are recorded in series.missing.
 func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selection rowSelection, nRows int) error {
 	// Dense columns are the common throughput path and can avoid per-row null
 	// checks plus indirect value dispatch.
@@ -306,13 +302,18 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 	switch col := rawCol.(type) {
 	case *array.Float64:
 		if selection.mask == nil && col.NullN() == 0 {
-			extractDenseFloat64ColumnValues(series, col, nRows)
+			series.Values = append(slices.Grow(series.Values, nRows), col.Float64Values()[:nRows]...)
+			series.extendMissing(nRows)
 			return nil
 		}
 		valueAt = col.Value
 	case *array.Uint32:
 		if selection.mask == nil && col.NullN() == 0 {
-			extractDenseUint32ColumnValues(series, col, nRows)
+			series.Values = slices.Grow(series.Values, nRows)
+			for _, v := range col.Uint32Values()[:nRows] {
+				series.Values = append(series.Values, float64(v))
+			}
+			series.extendMissing(nRows)
 			return nil
 		}
 		valueAt = func(i int) float64 { return float64(col.Value(i)) }
@@ -321,51 +322,32 @@ func extractColumnValues(series *AggregationSeries, rawCol arrow.Array, selectio
 	}
 
 	series.Values = slices.Grow(series.Values, selection.includedRows)
-
-	backingLen := valueBackingLen(rawCol, selection)
-	if backingLen < 0 {
+	// An unmasked column's null count must agree with its validity bitmap.
+	wantValid := selection.includedRows - rawCol.NullN()
+	if selection.mask == nil && wantValid < 0 {
 		return fmt.Errorf("Arrow column null metadata inconsistent: null count %d exceeds selected rows %d", rawCol.NullN(), selection.includedRows)
 	}
-	backing := make([]float64, backingLen)
-	bi := 0
+	valid := 0
 	for i := 0; i < nRows; i++ {
 		if !selection.includes(i) {
 			continue
 		}
 		if rawCol.IsNull(i) {
-			series.Values = append(series.Values, nil)
-			series.missingValues++
+			series.appendValue(0, true)
 			continue
 		}
-		if bi >= len(backing) {
+		if valid++; selection.mask == nil && valid > wantValid {
 			return fmt.Errorf("Arrow column null metadata inconsistent: more non-null values than declared by null count")
 		}
-		backing[bi] = valueAt(i)
-		series.Values = append(series.Values, &backing[bi])
-		bi++
+		series.appendValue(valueAt(i), false)
 	}
 	return nil
 }
 
-func extractDenseFloat64ColumnValues(series *AggregationSeries, col *array.Float64, nRows int) {
-	series.Values = slices.Grow(series.Values, nRows)
-
-	// Keep the dense helpers' backing-slice loop in sync: Values stores element
-	// pointers, so backing must be fully sized before any pointer is taken.
-	backing := make([]float64, nRows)
-	for i := 0; i < nRows; i++ {
-		backing[i] = col.Value(i)
-		series.Values = append(series.Values, &backing[i])
-	}
-}
-
-func extractDenseUint32ColumnValues(series *AggregationSeries, col *array.Uint32, nRows int) {
-	series.Values = slices.Grow(series.Values, nRows)
-
-	backing := make([]float64, nRows)
-	for i := 0; i < nRows; i++ {
-		backing[i] = float64(col.Value(i))
-		series.Values = append(series.Values, &backing[i])
+// extendMissing marks n newly appended values as present.
+func (s *AggregationSeries) extendMissing(n int) {
+	if s.missing != nil {
+		s.missing = append(s.missing, make([]bool, n)...)
 	}
 }
 
@@ -381,7 +363,7 @@ func extractArrowBucketedNumericSeries(
 	for i, spec := range specs {
 		seriesData[i].Name = spec.Name
 		seriesData[i].CarriesChannelUnit = spec.CarriesChannelUnit
-		seriesData[i].Values = []*float64{}
+		seriesData[i].Values = []float64{}
 	}
 	sharedTimePoints := []time.Time{}
 	// Per-series timestamps for specs that have their own timestamp column.

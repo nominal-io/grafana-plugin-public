@@ -271,11 +271,11 @@ func TestTransformArrowBucketedNumericResponse(t *testing.T) {
 	if len(series.Values) != 3 {
 		t.Fatalf("expected 3 values, got %d", len(series.Values))
 	}
-	if series.Values[0] == nil || *series.Values[0] != 1.5 {
-		t.Errorf("Values[0] = %v, want 1.5", series.Values[0])
+	if series.valueAt(0) == nil || *series.valueAt(0) != 1.5 {
+		t.Errorf("Values[0] = %v, want 1.5", series.valueAt(0))
 	}
-	if series.Values[2] == nil || *series.Values[2] != 3.5 {
-		t.Errorf("Values[2] = %v, want 3.5", series.Values[2])
+	if series.valueAt(2) == nil || *series.valueAt(2) != 3.5 {
+		t.Errorf("Values[2] = %v, want 3.5", series.valueAt(2))
 	}
 }
 
@@ -320,11 +320,11 @@ func TestTransformArrowMultiAggregation(t *testing.T) {
 		if len(s.Values) != 3 {
 			t.Errorf("AggSeries[%d] has %d values, want 3", i, len(s.Values))
 		}
-		if s.Values[0] == nil || *s.Values[0] != exp.first {
-			t.Errorf("AggSeries[%d].Values[0] = %v, want %v", i, s.Values[0], exp.first)
+		if s.valueAt(0) == nil || *s.valueAt(0) != exp.first {
+			t.Errorf("AggSeries[%d].Values[0] = %v, want %v", i, s.valueAt(0), exp.first)
 		}
-		if s.Values[2] == nil || *s.Values[2] != exp.last {
-			t.Errorf("AggSeries[%d].Values[2] = %v, want %v", i, s.Values[2], exp.last)
+		if s.valueAt(2) == nil || *s.valueAt(2) != exp.last {
+			t.Errorf("AggSeries[%d].Values[2] = %v, want %v", i, s.valueAt(2), exp.last)
 		}
 	}
 }
@@ -358,8 +358,8 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	if len(first.Values) != 3 {
 		t.Fatalf("expected 3 values, got %d", len(first.Values))
 	}
-	if first.Values[0] == nil || *first.Values[0] != 10.0 {
-		t.Errorf("first.Values[0] = %v, want 10.0", first.Values[0])
+	if first.valueAt(0) == nil || *first.valueAt(0) != 10.0 {
+		t.Errorf("first.valueAt(0) = %v, want 10.0", first.valueAt(0))
 	}
 	// FIRST_POINT uses its own timestamps, not end_bucket_timestamp.
 	if first.TimePoints[0] != time.Unix(0, 900000000000) {
@@ -371,8 +371,8 @@ func TestTransformArrowFirstLastPoint(t *testing.T) {
 	if last.Name != "last" {
 		t.Errorf("AggSeries[1].Name = %q, want %q", last.Name, "last")
 	}
-	if last.Values[2] == nil || *last.Values[2] != 35.0 {
-		t.Errorf("last.Values[2] = %v, want 35.0", last.Values[2])
+	if last.valueAt(2) == nil || *last.valueAt(2) != 35.0 {
+		t.Errorf("last.valueAt(2) = %v, want 35.0", last.valueAt(2))
 	}
 	if last.TimePoints[2] != time.Unix(0, 2999000000000) {
 		t.Errorf("last.TimePoints[2] = %v, want %v", last.TimePoints[2], time.Unix(0, 2999000000000))
