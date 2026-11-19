@@ -11,7 +11,7 @@
 //   - A few non-UCUM shorthands (mph, psia, psig, rpm) are canonical at the
 //     source and included as-is.
 //
-// Values are Grafana unit IDs pinned to the 12.1.0 floor (plugin.json's
+// Values are Grafana unit IDs pinned to the 12.4.0 floor (plugin.json's
 // grafanaDependency) and enforced by a snapshot test in unit_map_test.go.
 // Unmapped symbols fall through to "suffix:<symbol>" (rendered verbatim,
 // e.g. "12.3 MPa") — always safe, just less rich.

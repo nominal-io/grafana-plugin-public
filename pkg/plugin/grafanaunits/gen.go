@@ -6,13 +6,11 @@
 // that every entry in unitSymbolToGrafanaID maps to a real Grafana ID.
 //
 // Refresh: cd pkg/plugin/grafanaunits && go run gen.go <grafana-tag> > unitids.txt
-// (e.g. go run gen.go v12.1.0 > unitids.txt).
+// (e.g. go run gen.go v12.4.0 > unitids.txt).
 //
-// v12.1.0 is the floor because plugin.json's grafanaDependency is >=12.1.0:
-// a value valid in a later patch but absent in 12.1 would silently render with
-// no unit for users still on 12.1. The unit registry is invariant across
-// v12.1.0–v12.4.x (verified by diffing categories.ts between tags), so pinning
-// the floor is sufficient.
+// v12.4.0 is the floor because plugin.json's grafanaDependency is >=12.4.0:
+// a value added after 12.4.0 would silently render with no unit for users
+// still on 12.4.
 //
 // Upstream copyright Grafana Labs, licensed Apache-2.0. The emitted file contains
 // only unit-ID strings extracted from the value-format registry — none of the
@@ -40,7 +38,7 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("gen: ")
 	if len(os.Args) != 2 {
-		log.Fatalf("usage: go run gen.go <grafana-tag> > unitids.txt  (e.g. go run gen.go v12.1.0 > unitids.txt)")
+		log.Fatalf("usage: go run gen.go <grafana-tag> > unitids.txt  (e.g. go run gen.go v12.4.0 > unitids.txt)")
 	}
 	tag := os.Args[1]
 	url := fmt.Sprintf(upstreamURLFmt, tag)
