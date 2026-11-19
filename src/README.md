@@ -4,7 +4,7 @@ Bring Nominal time-series data into Grafana dashboards and Explore, with templat
 
 ## Requirements
 
-- Grafana 12.1 or later.
+- Grafana 12.4 or later.
 - A Nominal API key.
 - Access to a Nominal API endpoint, such as `https://api.gov.nominal.io/api`.
 
