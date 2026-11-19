@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -66,6 +67,24 @@ func (s *AggregationSeries) dropMissingBuckets() {
 	}
 	s.TimePoints, s.Values = times, values
 	s.missingValues = 0
+}
+
+// fieldValues returns the values for a frame field: []float64 when none is missing or NaN, else
+// []*float64 with nil for the missing ones. Grafana decodes a nullable field with one allocation
+// per value, so most series are sent non-nullable. NaN keeps the field nullable because Grafana's
+// SQL expressions read NaN as NULL and fail when they write a NULL to a non-nullable column.
+func (s *AggregationSeries) fieldValues() any {
+	if s.missingValues > 0 {
+		return s.Values
+	}
+	values := make([]float64, len(s.Values))
+	for i, v := range s.Values {
+		if math.IsNaN(*v) {
+			return s.Values
+		}
+		values[i] = *v
+	}
+	return values
 }
 
 // dropOutsideRange removes points sampled outside r. Edge buckets can extend past

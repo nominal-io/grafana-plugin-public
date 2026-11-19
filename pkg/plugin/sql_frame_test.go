@@ -143,6 +143,13 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			want:     []any{float32(1.5), nil},
 		},
 		{
+			name:     "nullable float without nulls",
+			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float64, `[1.5, 2]`) },
+			wantType: data.FieldTypeFloat64,
+			want:     []any{1.5, 2.0},
+		},
+		{
 			name:  "decimal",
 			field: arrow.Field{Name: "c", Type: &arrow.Decimal128Type{Precision: 10, Scale: 2}},
 			column: func(t *testing.T) arrow.Array {
@@ -295,6 +302,36 @@ func TestFrameFromArrowStreamConcatenatesBatches(t *testing.T) {
 	}
 }
 
+func TestFrameFromArrowStreamNullabilityFollowsAllBatches(t *testing.T) {
+	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Float64, Nullable: true}}, nil)
+	for name, tc := range map[string]struct {
+		lastValid []bool
+		want      data.FieldType
+	}{
+		"null in the last batch": {[]bool{true, false}, data.FieldTypeNullableFloat64},
+		"no nulls":               {nil, data.FieldTypeFloat64},
+	} {
+		t.Run(name, func(t *testing.T) {
+			batch := 0
+			stream := sqlArrowStream(t, schema, 2, func(b *array.RecordBuilder) {
+				var valid []bool
+				if batch == 1 {
+					valid = tc.lastValid
+				}
+				b.Field(0).(*array.Float64Builder).AppendValues([]float64{1, 2}, valid)
+				batch++
+			})
+			frame, err := decodeTable(bytes.NewReader(stream), testRowLimit)
+			if err != nil {
+				t.Fatalf("decodeTable() error = %v", err)
+			}
+			if got := frame.Fields[0].Type(); got != tc.want {
+				t.Errorf("field type = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFrameFromArrowStreamLimitsRows(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{{Name: "v", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	next := int64(0)
@@ -378,11 +415,12 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		name, channel, display string
 		times                  []any
 		values                 []any
+		typ                    data.FieldType
 	}{
-		{"avg", "a", "avg a", []any{at(0), at(2)}, []any{1.0, nil}},
-		{"avg", "b", "avg b", []any{at(0), at(1)}, []any{4.0, 2.0}},
-		{"max", "a", "max a", []any{at(0), at(2)}, []any{int64(10), int64(30)}},
-		{"max", "b", "max b", []any{at(0), at(1)}, []any{int64(40), int64(20)}},
+		{"avg", "a", "avg a", []any{at(0), at(2)}, []any{1.0, nil}, data.FieldTypeNullableFloat64},
+		{"avg", "b", "avg b", []any{at(0), at(1)}, []any{4.0, 2.0}, data.FieldTypeNullableFloat64},
+		{"max", "a", "max a", []any{at(0), at(2)}, []any{int64(10), int64(30)}, data.FieldTypeInt64},
+		{"max", "b", "max b", []any{at(0), at(1)}, []any{int64(40), int64(20)}, data.FieldTypeInt64},
 	}
 	if len(frames) != len(want) {
 		t.Fatalf("got %d frames, want %d", len(frames), len(want))
@@ -405,6 +443,33 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		if got := fieldValues(value); !equalValues(got, w.values) {
 			t.Errorf("frame %d values = %v, want %v", i, got, w.values)
 		}
+		if value.Type() != w.typ {
+			t.Errorf("frame %d value type = %s, want %s", i, value.Type(), w.typ)
+		}
+	}
+}
+
+func TestShapeSQLFrameKeepsValueTypes(t *testing.T) {
+	at := []time.Time{time.Unix(1700000000, 0).UTC(), time.Unix(1700000001, 0).UTC()}
+	for _, values := range []any{
+		[]int8{1, 2}, []int16{1, 2}, []int32{1, 2}, []int64{1, 2},
+		[]uint8{1, 2}, []uint16{1, 2}, []uint32{1, 2}, []uint64{1, 2},
+		[]float32{1, 2}, []float64{1, 2}, []string{"on", "off"},
+	} {
+		column := data.NewField("value", nil, values)
+		t.Run(column.Type().String(), func(t *testing.T) {
+			frames, err := shapeSQLFrame(data.NewFrame("A", data.NewField("time", nil, at), column))
+			if err != nil || len(frames) != 1 {
+				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
+			}
+			got := frames[0].Fields[1]
+			if got.Type() != column.Type() {
+				t.Errorf("value type = %s, want %s", got.Type(), column.Type())
+			}
+			if !equalValues(fieldValues(got), fieldValues(column)) {
+				t.Errorf("values = %v, want %v", fieldValues(got), fieldValues(column))
+			}
+		})
 	}
 }
 

@@ -953,12 +953,8 @@ func TestBatchQueryWithExtraResultsIgnoresExtras(t *testing.T) {
 		if len(response.Frames) != 1 {
 			t.Fatalf("expected 1 frame for %s, got %d", q.RefID, len(response.Frames))
 		}
-		v, ok := response.Frames[0].Fields[1].At(0).(*float64)
-		if !ok || v == nil {
+		if v := response.Frames[0].Fields[1].At(0); v != expectedFirst[q.RefID] {
 			t.Fatalf("expected %s first value %v, got %v", q.RefID, expectedFirst[q.RefID], v)
-		}
-		if *v != expectedFirst[q.RefID] {
-			t.Fatalf("expected %s first value %v, got %v", q.RefID, expectedFirst[q.RefID], *v)
 		}
 	}
 }
@@ -1350,6 +1346,12 @@ func TestBatchQueryOmitsMissingNumericBuckets(t *testing.T) {
 			t.Errorf("mean timestamp %d = %d, want %d", i, got, want)
 		}
 	}
+	if mean.Fields[1].Type() != data.FieldTypeNullableFloat64 {
+		t.Errorf("mean value type = %s, want nullable float64 for a series with NaN", mean.Fields[1].Type())
+	}
+	if count.Fields[1].Type() != data.FieldTypeFloat64 {
+		t.Errorf("count value type = %s, want float64 once missing buckets are dropped", count.Fields[1].Type())
+	}
 	if got := mean.Fields[1].At(0).(*float64); got == nil || *got != 99 {
 		t.Errorf("mean first value = %v, want 99", got)
 	}
@@ -1359,7 +1361,7 @@ func TestBatchQueryOmitsMissingNumericBuckets(t *testing.T) {
 	if count.Name != "temp (count)" || count.Rows() != 3 {
 		t.Fatalf("count: got %q with %d rows, want all three rows", count.Name, count.Rows())
 	}
-	if got := count.Fields[1].At(1).(*float64); got == nil || *got != 0 {
+	if got := count.Fields[1].At(1).(float64); got != 0 {
 		t.Errorf("count middle value = %v, want zero", got)
 	}
 	if got := count.Fields[0].At(1).(time.Time).UnixNano(); got != timestamps[1] {

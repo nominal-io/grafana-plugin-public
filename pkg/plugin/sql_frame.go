@@ -104,11 +104,12 @@ func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, 
 }
 
 // columnValues converts one Arrow column, split across record batches, to the values of a Grafana
-// field: a []T, or a []*T with nil for nulls when the column is nullable or holds NaN. Grafana's
-// SQL expressions read NaN as NULL and fail when they write that NULL to a column the input marked
-// non-nullable, so a float column with NaN is returned as nullable.
+// field: a []*T with nil for nulls when the column has nulls or NaNs, else a []T. Grafana decodes
+// a nullable field with one allocation per value, so a column without either is sent non-nullable
+// whatever its Arrow type allows. Grafana's SQL expressions read NaN as NULL and fail when they
+// write a NULL to a non-nullable column, so NaN makes a column nullable even when its type is not.
 func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error) {
-	n := field.Nullable || slices.ContainsFunc(chunks, hasNaN)
+	n := slices.ContainsFunc(chunks, hasNullOrNaN)
 	switch t := field.Type.(type) {
 	case *arrow.NullType:
 		// NULL arrays have no validity bitmap, and every value is null.
@@ -159,14 +160,14 @@ func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error
 	}
 }
 
-func hasNaN(chunk arrow.Array) bool {
+func hasNullOrNaN(chunk arrow.Array) bool {
 	switch a := chunk.(type) {
 	case *array.Float64:
-		return slices.ContainsFunc(a.Float64Values(), math.IsNaN)
+		return a.NullN() > 0 || slices.ContainsFunc(a.Float64Values(), math.IsNaN)
 	case *array.Float32:
-		return slices.ContainsFunc(a.Float32Values(), func(v float32) bool { return v != v })
+		return a.NullN() > 0 || slices.ContainsFunc(a.Float32Values(), func(v float32) bool { return v != v })
 	}
-	return false
+	return chunk.NullN() > 0
 }
 
 // column reads chunks, which must be arrays of type A, through value.
@@ -386,15 +387,10 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 	var frames data.Frames
 	for _, index := range values {
 		column := frame.Fields[index]
-		// Both return a *T for these fields: PointerAt into a []T, and At from a []*T.
-		valueAt := column.PointerAt
-		if column.Nullable() {
-			valueAt = column.At
-		}
 		for _, id := range ids {
 			rows := seriesRows[id]
 			seriesTimes := make([]time.Time, len(rows))
-			field := data.NewFieldFromFieldType(column.Type().NullableType(), len(rows))
+			field := seriesField(column, rows)
 			field.Name, field.Labels = column.Name, seriesLabels[id]
 			name := seriesNames[id]
 			if len(values) > 1 {
@@ -411,7 +407,6 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 			}
 			for i, row := range rows {
 				seriesTimes[i] = times[row]
-				field.Set(i, valueAt(row))
 			}
 			series := data.NewFrame(frame.Name, data.NewField(timeName, nil, seriesTimes), field)
 			series.Meta = frame.Meta
@@ -419,6 +414,57 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 		}
 	}
 	return frames
+}
+
+// seriesField returns a field of column's type holding its values at rows. A nullable field points
+// at column's values. Other fields get a copy, typed so that no value is boxed.
+func seriesField(column *data.Field, rows []int) *data.Field {
+	if column.Nullable() {
+		field := data.NewFieldFromFieldType(column.Type(), len(rows))
+		for i, row := range rows {
+			field.Set(i, column.At(row))
+		}
+		return field
+	}
+	switch column.Type() {
+	case data.FieldTypeInt8:
+		return gather[int8](column, rows)
+	case data.FieldTypeInt16:
+		return gather[int16](column, rows)
+	case data.FieldTypeInt32:
+		return gather[int32](column, rows)
+	case data.FieldTypeInt64:
+		return gather[int64](column, rows)
+	case data.FieldTypeUint8:
+		return gather[uint8](column, rows)
+	case data.FieldTypeUint16:
+		return gather[uint16](column, rows)
+	case data.FieldTypeUint32:
+		return gather[uint32](column, rows)
+	case data.FieldTypeUint64:
+		return gather[uint64](column, rows)
+	case data.FieldTypeFloat32:
+		return gather[float32](column, rows)
+	case data.FieldTypeFloat64:
+		return gather[float64](column, rows)
+	case data.FieldTypeString:
+		return gather[string](column, rows)
+	default:
+		// Value columns are numeric or string, so this is not reached.
+		field := data.NewFieldFromFieldType(column.Type().NullableType(), len(rows))
+		for i, row := range rows {
+			field.Set(i, column.PointerAt(row))
+		}
+		return field
+	}
+}
+
+func gather[T any](column *data.Field, rows []int) *data.Field {
+	values := make([]T, len(rows))
+	for i, row := range rows {
+		values[i] = *column.PointerAt(row).(*T)
+	}
+	return data.NewField("", nil, values)
 }
 
 // prefixSeriesNames puts each frame's name before the series names set on its fields. Grafana does

@@ -526,6 +526,28 @@ func TestDisplayNameFromDS(t *testing.T) {
 		}
 	})
 
+	t.Run("LTTB value field is nullable only when a value is missing", func(t *testing.T) {
+		for _, tc := range []struct {
+			nulls []bool
+			want  data.FieldType
+		}{
+			{nil, data.FieldTypeFloat64},
+			{[]bool{false, true}, data.FieldTypeNullableFloat64},
+		} {
+			plot := computeapi.ArrowPlot{ArrowBinary: createTestArrowTwoColumn("timestamp", "value", []int64{100, 200}, []float64{1, 2}, tc.nulls)}
+			result := computeapi.ComputeWithUnitsResult{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(
+				computeapi.NewComputeNodeResponseFromArrowNumeric(plot))}
+			qm := NominalQueryModel{Channel: "temperature", Aggregations: []string{AggLTTB}}
+			resp := newTestQueryExecution(ds, nil).transformBatchResult(result, qm)
+			if resp.Error != nil {
+				t.Fatalf("unexpected error: %v", resp.Error)
+			}
+			if got := resp.Frames[0].Fields[1].Type(); got != tc.want {
+				t.Errorf("nulls %v: value type = %s, want %s", tc.nulls, got, tc.want)
+			}
+		}
+	})
+
 	t.Run("numeric aggregation with no buckets returns a named no-data frame", func(t *testing.T) {
 		result := createMockArrowComputeResult([]float64{})
 		qm := NominalQueryModel{
