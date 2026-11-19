@@ -387,10 +387,11 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 	var frames data.Frames
 	for _, index := range values {
 		column := frame.Fields[index]
+		var scratch any // Holds a typed slice for this column's series.
 		for _, id := range ids {
 			rows := seriesRows[id]
 			seriesTimes := make([]time.Time, len(rows))
-			field := seriesField(column, rows)
+			field := seriesField(column, rows, &scratch)
 			field.Name, field.Labels = column.Name, seriesLabels[id]
 			name := seriesNames[id]
 			if len(values) > 1 {
@@ -416,55 +417,78 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 	return frames
 }
 
-// seriesField returns a field of column's type holding its values at rows. A nullable field points
-// at column's values. Other fields get a copy, typed so that no value is boxed.
-func seriesField(column *data.Field, rows []int) *data.Field {
-	if column.Nullable() {
-		field := data.NewFieldFromFieldType(column.Type(), len(rows))
-		for i, row := range rows {
-			field.Set(i, column.At(row))
-		}
-		return field
-	}
-	switch column.Type() {
+// seriesField returns a field of column's type holding its values at rows. A series is
+// non-nullable when its own rows have no nulls or NaNs, even if column is nullable. Copies are
+// typed so that no value is boxed.
+func seriesField(column *data.Field, rows []int, scratch *any) *data.Field {
+	switch column.Type().NonNullableType() {
 	case data.FieldTypeInt8:
-		return gather[int8](column, rows)
+		return gather[int8](column, rows, scratch)
 	case data.FieldTypeInt16:
-		return gather[int16](column, rows)
+		return gather[int16](column, rows, scratch)
 	case data.FieldTypeInt32:
-		return gather[int32](column, rows)
+		return gather[int32](column, rows, scratch)
 	case data.FieldTypeInt64:
-		return gather[int64](column, rows)
+		return gather[int64](column, rows, scratch)
 	case data.FieldTypeUint8:
-		return gather[uint8](column, rows)
+		return gather[uint8](column, rows, scratch)
 	case data.FieldTypeUint16:
-		return gather[uint16](column, rows)
+		return gather[uint16](column, rows, scratch)
 	case data.FieldTypeUint32:
-		return gather[uint32](column, rows)
+		return gather[uint32](column, rows, scratch)
 	case data.FieldTypeUint64:
-		return gather[uint64](column, rows)
+		return gather[uint64](column, rows, scratch)
 	case data.FieldTypeFloat32:
-		return gather[float32](column, rows)
+		return gather[float32](column, rows, scratch)
 	case data.FieldTypeFloat64:
-		return gather[float64](column, rows)
+		return gather[float64](column, rows, scratch)
 	case data.FieldTypeString:
-		return gather[string](column, rows)
-	default:
-		// Value columns are numeric or string, so this is not reached.
-		field := data.NewFieldFromFieldType(column.Type().NullableType(), len(rows))
-		for i, row := range rows {
-			field.Set(i, column.PointerAt(row))
-		}
-		return field
+		return gather[string](column, rows, scratch)
+	default: // bool, the only other value type
+		return gather[bool](column, rows, scratch)
 	}
 }
 
-func gather[T any](column *data.Field, rows []int) *data.Field {
-	values := make([]T, len(rows))
-	for i, row := range rows {
-		values[i] = *column.PointerAt(row).(*T)
+// gather copies column's values at rows. The result is nullable only if a value is null or NaN.
+func gather[T any](column *data.Field, rows []int, scratch *any) *data.Field {
+	at := column.PointerAt
+	if column.Nullable() {
+		at = column.At
 	}
+	ptr := func(row int) *T { return at(row).(*T) }
+	values, _ := (*scratch).([]T)
+	if cap(values) < len(rows) {
+		values = make([]T, len(rows))
+		*scratch = values
+	}
+	values = values[:len(rows)]
+	for i, row := range rows {
+		p := ptr(row)
+		if p == nil || isNaN(*p) {
+			return gatherNullable(column.Type(), rows, ptr)
+		}
+		values[i] = *p
+	}
+	// NewField copies values, so the next series can overwrite the scratch slice.
 	return data.NewField("", nil, values)
+}
+
+func gatherNullable[T any](t data.FieldType, rows []int, ptr func(int) *T) *data.Field {
+	field := data.NewFieldFromFieldType(t.NullableType(), len(rows))
+	for i, row := range rows {
+		field.Set(i, ptr(row))
+	}
+	return field
+}
+
+func isNaN[T any](v T) bool {
+	switch f := any(v).(type) {
+	case float64:
+		return f != f
+	case float32:
+		return f != f
+	}
+	return false
 }
 
 // prefixSeriesNames puts each frame's name before the series names set on its fields. Grafana does

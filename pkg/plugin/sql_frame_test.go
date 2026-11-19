@@ -249,16 +249,6 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 	}
 }
 
-func isNaN(v any) bool {
-	switch f := v.(type) {
-	case float64:
-		return math.IsNaN(f)
-	case float32:
-		return f != f
-	}
-	return false
-}
-
 func equalValues(got, want []any) bool {
 	if len(got) != len(want) {
 		return false
@@ -418,7 +408,7 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		typ                    data.FieldType
 	}{
 		{"avg", "a", "avg a", []any{at(0), at(2)}, []any{1.0, nil}, data.FieldTypeNullableFloat64},
-		{"avg", "b", "avg b", []any{at(0), at(1)}, []any{4.0, 2.0}, data.FieldTypeNullableFloat64},
+		{"avg", "b", "avg b", []any{at(0), at(1)}, []any{4.0, 2.0}, data.FieldTypeFloat64},
 		{"max", "a", "max a", []any{at(0), at(2)}, []any{int64(10), int64(30)}, data.FieldTypeInt64},
 		{"max", "b", "max b", []any{at(0), at(1)}, []any{int64(40), int64(20)}, data.FieldTypeInt64},
 	}
@@ -468,6 +458,44 @@ func TestShapeSQLFrameKeepsValueTypes(t *testing.T) {
 			}
 			if !equalValues(fieldValues(got), fieldValues(column)) {
 				t.Errorf("values = %v, want %v", fieldValues(got), fieldValues(column))
+			}
+		})
+	}
+}
+
+func TestShapeSQLFrameDecidesNullabilityPerSeries(t *testing.T) {
+	at := func(s int) time.Time { return time.Unix(1700000000+int64(s), 0).UTC() }
+	nan := math.NaN()
+	for _, tc := range []struct {
+		name   string
+		values any
+		want   map[string]data.FieldType
+	}{
+		{"null in one series", []*float64{new(1.0), nil, new(3.0), new(4.0)},
+			map[string]data.FieldType{"a": data.FieldTypeNullableFloat64, "b": data.FieldTypeFloat64}},
+		{"nan in one series", []*float64{new(1.0), new(nan), new(3.0), new(4.0)},
+			map[string]data.FieldType{"a": data.FieldTypeNullableFloat64, "b": data.FieldTypeFloat64}},
+		{"nan in one float32 series", []*float32{new(float32(1)), new(float32(nan)), new(float32(3)), new(float32(4))},
+			map[string]data.FieldType{"a": data.FieldTypeNullableFloat32, "b": data.FieldTypeFloat32}},
+		{"null in one bool series", []*bool{new(true), nil, new(false), new(true)},
+			map[string]data.FieldType{"a": data.FieldTypeNullableBool, "b": data.FieldTypeBool}},
+		{"no nulls", []*int64{new(int64(1)), new(int64(2)), new(int64(3)), new(int64(4))},
+			map[string]data.FieldType{"a": data.FieldTypeInt64, "b": data.FieldTypeInt64}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames, err := shapeSQLFrame(data.NewFrame("A",
+				data.NewField("time", nil, []time.Time{at(0), at(1), at(2), at(3)}),
+				data.NewField("channel", nil, []string{"a", "a", "b", "b"}),
+				data.NewField("value", nil, tc.values),
+			))
+			if err != nil || len(frames) != len(tc.want) {
+				t.Fatalf("shapeSQLFrame() = %d frames, %v; want %d", len(frames), err, len(tc.want))
+			}
+			for _, f := range frames {
+				value := f.Fields[1]
+				if got, want := value.Type(), tc.want[value.Labels["channel"]]; got != want {
+					t.Errorf("series %s type = %s, want %s", value.Labels["channel"], got, want)
+				}
 			}
 		})
 	}
