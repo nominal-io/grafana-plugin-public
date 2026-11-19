@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -103,9 +104,11 @@ func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, 
 }
 
 // columnValues converts one Arrow column, split across record batches, to the values of a Grafana
-// field: a []T, or a []*T with nil for nulls when the column is nullable.
+// field: a []T, or a []*T with nil for nulls when the column is nullable or holds NaN. Grafana's
+// SQL expressions read NaN as NULL and fail when they write that NULL to a column the input marked
+// non-nullable, so a float column with NaN is returned as nullable.
 func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error) {
-	n := field.Nullable
+	n := field.Nullable || slices.ContainsFunc(chunks, hasNaN)
 	switch t := field.Type.(type) {
 	case *arrow.NullType:
 		// NULL arrays have no validity bitmap, and every value is null.
@@ -154,6 +157,16 @@ func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error
 		// Lists and other types without a Grafana field type.
 		return column(chunks, rows, n, arrow.Array.ValueStr)
 	}
+}
+
+func hasNaN(chunk arrow.Array) bool {
+	switch a := chunk.(type) {
+	case *array.Float64:
+		return slices.ContainsFunc(a.Float64Values(), math.IsNaN)
+	case *array.Float32:
+		return slices.ContainsFunc(a.Float32Values(), func(v float32) bool { return v != v })
+	}
+	return false
 }
 
 // column reads chunks, which must be arrays of type A, through value.
