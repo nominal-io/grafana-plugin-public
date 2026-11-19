@@ -146,7 +146,7 @@ describe('applyTemplateVariables', () => {
 describe('event queries', () => {
   it('expands a multi-value asset variable into assetRids', () => {
     const ds = createDataSource();
-    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: string) =>
+    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: unknown) =>
       v === '${asset}' && format === 'csv' ? 'ri.a.1, ri.a.2,' : v
     );
 
