@@ -12,7 +12,7 @@ import {
   LoadingState,
   toDataFrame,
 } from '@grafana/data';
-import { getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
+import { config, getTemplateSrv, getBackendSrv, type VariableInterpolation } from '@grafana/runtime';
 import { lastValueFrom, of } from 'rxjs';
 
 const mockBackendQuery = jest.fn();
@@ -30,7 +30,7 @@ jest.mock('@grafana/runtime', () => ({
   getDataSourceSrv: () => ({ getInstanceSettings: (ref: { uid: string }) => ({ uid: ref.uid }) }),
   getTemplateSrv: jest.fn(),
   getBackendSrv: jest.fn(),
-  config: { appSubUrl: '/grafana' },
+  config: { appSubUrl: '/grafana', bootData: { user: { authenticatedBy: 'password' } } },
 }));
 
 type TemplateScopedVars = Record<string, { value?: unknown } | undefined>;
@@ -96,6 +96,27 @@ describe('signed-out OAuth queries', () => {
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith(signInLink);
     expect(response.data[0].meta.notices[0].link).toBe(signInLink);
+  });
+
+  it('redirects again only after a query has succeeded in the tab', async () => {
+    await query(CoreApp.Dashboard);
+    await query(CoreApp.Dashboard);
+    expect(assign).toHaveBeenCalledTimes(1);
+
+    await query(CoreApp.Dashboard, { data: [] });
+    await query(CoreApp.Dashboard);
+    expect(assign).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not redirect an image render', async () => {
+    config.bootData.user.authenticatedBy = 'render';
+    try {
+      const response = await query(CoreApp.Dashboard);
+      expect(assign).not.toHaveBeenCalled();
+      expect(response.data[0].meta.notices[0].link).toBe(signInLink);
+    } finally {
+      config.bootData.user.authenticatedBy = 'password';
+    }
   });
 
   it('only links to sign-in from Explore, the panel editor and dashboard settings', async () => {
@@ -198,7 +219,7 @@ describe('applyTemplateVariables', () => {
 describe('event queries', () => {
   it('expands a multi-value asset variable into assetRids', () => {
     const ds = createDataSource();
-    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: string) =>
+    mockTemplateSrv.replace.mockImplementation((v: string, _s?: unknown, format?: unknown) =>
       v === '${asset}' && format === 'csv' ? 'ri.a.1, ri.a.2,' : v
     );
 

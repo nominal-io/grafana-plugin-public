@@ -21,18 +21,22 @@ import { AnnotationEditor } from './components/AnnotationEditor';
 import resourceRoutes from './resourceRoutes.json';
 
 const SIGN_IN_REDIRECT_KEY = 'nominal-sign-in-redirect';
-const SIGN_IN_REDIRECT_INTERVAL_MS = 5 * 60 * 1000;
 
 function shouldRedirectToLogin(request: DataQueryRequest<NominalQuery>): boolean {
   const params = new URLSearchParams(window.location.search);
   if (request.app !== CoreApp.Dashboard || params.has('editPanel') || params.has('editview')) {
     return false;
   }
+  // An embedded panel can't show the sign-in page, and an image render can't sign in.
+  if (window.self !== window.top || config.bootData.user.authenticatedBy === 'render') {
+    return false;
+  }
+  // Redirects once per tab, and again only after a query has succeeded there.
   try {
-    if (Date.now() - Number(window.sessionStorage.getItem(SIGN_IN_REDIRECT_KEY)) < SIGN_IN_REDIRECT_INTERVAL_MS) {
+    if (window.sessionStorage.getItem(SIGN_IN_REDIRECT_KEY)) {
       return false;
     }
-    window.sessionStorage.setItem(SIGN_IN_REDIRECT_KEY, String(Date.now()));
+    window.sessionStorage.setItem(SIGN_IN_REDIRECT_KEY, 'true');
     return true;
   } catch {
     return false;
@@ -323,6 +327,11 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
   private withSignInLink(request: DataQueryRequest<NominalQuery>, response: DataQueryResponse): DataQueryResponse {
     const signedOut = (response.errors ?? []).filter((error) => error.status === 401);
     if (signedOut.length === 0) {
+      if (!response.errors?.length) {
+        try {
+          window.sessionStorage.removeItem(SIGN_IN_REDIRECT_KEY);
+        } catch {}
+      }
       return response;
     }
     const returnTo = window.location.pathname + window.location.search;

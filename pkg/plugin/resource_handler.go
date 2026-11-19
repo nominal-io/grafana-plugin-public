@@ -105,7 +105,7 @@ func (d *Datasource) loadResourceSettings(ctx context.Context, sender backend.Ca
 		return nil, false, jsonErrorResponse(sender, http.StatusInternalServerError, "Failed to load settings")
 	}
 	if err := d.applyOAuthCredential(ctx, config); err != nil {
-		return nil, false, jsonErrorResponse(sender, http.StatusUnauthorized, err.Error())
+		return nil, false, jsonErrorResponse(sender, credentialErrorStatus(err), err.Error())
 	}
 	return config, true, nil
 }

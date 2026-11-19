@@ -225,7 +225,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	}
 	if err := d.applyOAuthCredential(ctx, config); err != nil {
 		for _, q := range req.Queries {
-			response.Responses[q.RefID] = backend.ErrDataResponseWithSource(backend.StatusUnauthorized, backend.ErrorSourceDownstream, err.Error())
+			response.Responses[q.RefID] = backend.ErrDataResponseWithSource(backend.Status(credentialErrorStatus(err)), backend.ErrorSourceDownstream, err.Error())
 		}
 		return response, nil
 	}

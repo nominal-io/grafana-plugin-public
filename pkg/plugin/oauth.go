@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -27,7 +28,23 @@ import (
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 )
 
-var errSignInRequired = errors.New("sign in to Nominal to query this data source")
+var (
+	errSignInRequired = errors.New("sign in to Nominal to query this data source")
+	errNoGrafanaUser  = errors.New("a Grafana login is required to query this data source")
+	errRefreshFailed  = errors.New("could not refresh the Nominal sign-in, try again")
+)
+
+// credentialErrorStatus is the HTTP status for a failure of applyOAuthCredential. Only 401 tells the panel that
+// signing in to Nominal will help.
+func credentialErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errSignInRequired):
+		return http.StatusUnauthorized
+	case errors.Is(err, errNoGrafanaUser):
+		return http.StatusForbidden
+	}
+	return http.StatusBadGateway
+}
 
 type oauthSession struct {
 	mu           sync.Mutex
@@ -170,7 +187,7 @@ func (d *Datasource) applyOAuthCredential(ctx context.Context, config *models.Pl
 func (d *Datasource) getAccessToken(ctx context.Context, config *models.PluginSettings) (string, error) {
 	user := oauthUser(ctx)
 	if user == "" {
-		return "", errSignInRequired
+		return "", errNoGrafanaUser
 	}
 	session := d.oauthSessions.getSession(user)
 	if session == nil {
@@ -198,8 +215,9 @@ func (d *Datasource) getAccessToken(ctx context.Context, config *models.PluginSe
 		var authErr *nominalAuthError
 		if errors.As(err, &authErr) && authErr.isInvalidGrant() {
 			d.oauthSessions.deleteSession(user)
+			return "", errSignInRequired
 		}
-		return "", errSignInRequired
+		return "", errRefreshFailed
 	}
 	session.updateAccessToken(tokens)
 	return session.accessToken, nil
@@ -362,6 +380,17 @@ func isGrafanaPath(returnTo string) bool {
 		!strings.ContainsFunc(returnTo, unicode.IsControl)
 }
 
+func callbackErrorResponse(sender backend.CallResourceResponseSender, status int, message, returnTo string) error {
+	if returnTo == "" {
+		return textResponse(sender, status, message)
+	}
+	return sender.Send(&backend.CallResourceResponse{
+		Status:  status,
+		Headers: map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+		Body:    []byte(`<!doctype html><meta charset="utf-8"><p>` + html.EscapeString(message) + `</p><p><a href="` + html.EscapeString(returnTo) + `">Back to where you were</a></p>`),
+	})
+}
+
 func redirectResponse(sender backend.CallResourceResponseSender, location string) error {
 	return sender.Send(&backend.CallResourceResponse{Status: http.StatusFound, Headers: map[string][]string{"Location": {location}}})
 }
@@ -419,10 +448,10 @@ func (h *NominalResourceHandler) handleOAuthCallback(ctx context.Context, req *b
 		return textResponse(sender, http.StatusBadRequest, "This sign-in expired or was started by a different Grafana user. Close this window and try again.")
 	}
 	if oauthErr := params.Get("error"); oauthErr != "" {
-		return textResponse(sender, http.StatusBadRequest, "Nominal sign-in failed: "+oauthErr)
+		return callbackErrorResponse(sender, http.StatusBadRequest, "Nominal sign-in failed: "+oauthErr, pending.returnTo)
 	}
 	if params.Get("code") == "" {
-		return textResponse(sender, http.StatusBadRequest, "Nominal sign-in returned no authorization code")
+		return callbackErrorResponse(sender, http.StatusBadRequest, "Nominal sign-in returned no authorization code", pending.returnTo)
 	}
 	config, err := models.LoadPluginSettings(h.datasource.settings)
 	if err != nil {
@@ -437,7 +466,11 @@ func (h *NominalResourceHandler) handleOAuthCallback(ctx context.Context, req *b
 	})
 	if err != nil {
 		log.DefaultLogger.FromContext(ctx).Error("Nominal authorization code exchange failed", "error", err)
-		return textResponse(sender, http.StatusBadGateway, "Nominal sign-in failed while exchanging the authorization code. Close this window and try again.")
+		message := "Nominal sign-in failed while exchanging the authorization code."
+		if pending.returnTo == "" {
+			message += " Close this window and try again."
+		}
+		return callbackErrorResponse(sender, http.StatusBadGateway, message, pending.returnTo)
 	}
 	session := &oauthSession{}
 	session.updateAccessToken(tokens)
