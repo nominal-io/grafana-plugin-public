@@ -20,10 +20,8 @@ import (
 type NominalQueryExecution struct {
 	datasource *Datasource
 	config     *models.PluginSettings
-	fromAlert  bool // the request came from Grafana Alerting
-	// nonFiniteOK is set when Grafana accepts NaN and ±Inf in non-nullable fields, so they need
-	// not make a field nullable.
-	nonFiniteOK bool
+	fromAlert  bool        // the request came from Grafana Alerting
+	nulls      nullability // which value fields are sent nullable
 }
 
 func newNominalQueryExecution(datasource *Datasource, config *models.PluginSettings) *NominalQueryExecution {

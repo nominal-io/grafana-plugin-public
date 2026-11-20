@@ -80,10 +80,10 @@ func (s *AggregationSeries) appendValue(v float64, missing bool) {
 	}
 }
 
-// fieldValues returns the values for a frame field: the []float64 itself when none is missing, or
-// NaN or infinite unless nonFiniteOK, else []*float64 with nil for the missing ones.
-func (s *AggregationSeries) fieldValues(nonFiniteOK bool) any {
-	if s.missing == nil && (nonFiniteOK || !slices.ContainsFunc(s.Values, nonFinite[float64])) {
+// fieldValues returns the values for a frame field: the []float64 itself unless nulls requires a
+// nullable field, else []*float64 with nil for the missing values.
+func (s *AggregationSeries) fieldValues(nulls nullability) any {
+	if nulls != forExpressions && s.missing == nil && (nulls == nullOnly || !slices.ContainsFunc(s.Values, nonFinite[float64])) {
 		return s.Values
 	}
 	ptrs := make([]*float64, len(s.Values))

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	"github.com/grafana/grafana-plugin-sdk-go/backend/useragent"
 	"github.com/grafana/grafana-plugin-sdk-go/data"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	datasourceapi "github.com/nominal-io/nominal-api-go/datasource/api"
@@ -1603,6 +1604,58 @@ func TestQueryDataFiltersToRangeOnlyForAlerts(t *testing.T) {
 			}
 			if got := strings.Contains(string(mustMarshal(mockService.lastBatchRequest)), `"timeRangeFilter"`); got != fromAlert {
 				t.Errorf("request has a time range filter: %v, want %v", got, fromAlert)
+			}
+		})
+	}
+}
+
+func TestQueryDataNullabilityFollowsGrafanaRequest(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	timestamps := []int64{from.Add(time.Second).UnixNano(), from.Add(2 * time.Second).UnixNano()}
+	result := computeapi.NewComputeNodeResponseFromArrowBucketedNumeric(computeapi.ArrowPlot{ArrowBinary: createTestArrowBucketedNumeric(timestamps, []float64{1, 2}, nil)})
+	mockService := &mockComputeService{}
+	mockService.batchComputeResponse.Results = []computeapi.ComputeWithUnitsResult{{ComputeResult: computeapi.NewComputeNodeResultFromSuccess(result)}}
+	ds := withCatalog(&Datasource{settings: testDatasourceSettings(), computeService: mockService})
+	qm := NominalQueryModel{AssetRid: "ri.nominal.asset.1", Channel: "temp", DataScopeName: "ds1", ChannelDataType: ChannelDataTypeNumeric}
+	query := backend.DataQuery{RefID: "A", JSON: mustMarshal(qm), TimeRange: backend.TimeRange{From: from, To: from.Add(time.Minute)}, MaxDataPoints: 10000}
+
+	for _, tc := range []struct {
+		name         string
+		version      string
+		fromAlert    bool
+		fromExpr     bool
+		wantNullable bool
+	}{
+		{"dashboard", "12.4.15", false, false, false},
+		{"alerting", "12.4.15", true, false, true},
+		{"expression", "12.4.15", false, true, true},
+		{"expression on a 13.4 build", "13.4.0-43210257101", false, true, true},
+		{"alerting on 13.4", "13.4.0", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := newQueryRequest([]backend.DataQuery{query})
+			ua, err := useragent.New(tc.version, "linux", "amd64")
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.PluginContext.UserAgent = ua
+			req.Headers = map[string]string{}
+			if tc.fromAlert {
+				req.Headers[backend.FromAlertHeaderName] = "true"
+			}
+			if tc.fromExpr {
+				req.SetHTTPHeader(fromExpressionHeader, "true")
+			}
+			resp, err := ds.QueryData(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := resp.Responses["A"]
+			if a.Error != nil || len(a.Frames) != 1 {
+				t.Fatalf("got %d frames and error %v, want 1 frame", len(a.Frames), a.Error)
+			}
+			if got := a.Frames[0].Fields[1].Nullable(); got != tc.wantNullable {
+				t.Errorf("value field nullable = %v, want %v", got, tc.wantNullable)
 			}
 		})
 	}

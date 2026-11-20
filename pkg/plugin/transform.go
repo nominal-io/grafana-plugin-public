@@ -70,14 +70,15 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					}
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
-						valueField := data.NewField("value", nil, agg.fieldValues(e.nonFiniteOK))
+						valueField := data.NewField("value", nil, agg.fieldValues(e.nulls))
 						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, agg.TimePoints),
 							valueField,
 						)
 					} else {
-						valueField := data.NewField("value", nil, []float64{})
+						// An empty field of the type a series would get for this request.
+						valueField := data.NewField("value", nil, new(AggregationSeries).fieldValues(e.nulls))
 						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, []time.Time{}),

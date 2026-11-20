@@ -35,10 +35,10 @@ func isText(f arrow.Field) bool {
 // sqlLogFrame reads rows into log entries. Labels come from every column except the time and
 // body, then from the entries of map columns. Without a timestamp or string column it returns the
 // result as a table, with a notice.
-func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nonFiniteOK bool) (*data.Frame, error) {
+func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nulls nullability) (*data.Frame, error) {
 	timeIndex, bodyIndex := sqlLogColumns(fields)
 	if timeIndex < 0 || bodyIndex < 0 {
-		frame, err := tableFrame(name, fields, batches, rows, nonFiniteOK)
+		frame, err := tableFrame(name, fields, batches, rows, nulls)
 		if err != nil {
 			return nil, err
 		}
