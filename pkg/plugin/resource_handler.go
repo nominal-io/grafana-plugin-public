@@ -38,6 +38,8 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleEventLabels(ctx, req, sender)
 	case "oauth/start":
 		return h.handleOAuthStart(ctx, req, sender)
+	case "oauth/login":
+		return h.handleOAuthLogin(ctx, req, sender)
 	case "oauth/callback":
 		return h.handleOAuthCallback(ctx, req, sender)
 	case "oauth/status":
@@ -103,7 +105,7 @@ func (d *Datasource) loadResourceSettings(ctx context.Context, sender backend.Ca
 		return nil, false, jsonErrorResponse(sender, http.StatusInternalServerError, "Failed to load settings")
 	}
 	if err := d.applyOAuthCredential(ctx, config); err != nil {
-		return nil, false, jsonErrorResponse(sender, http.StatusUnauthorized, err.Error())
+		return nil, false, jsonErrorResponse(sender, credentialErrorStatus(err), err.Error())
 	}
 	return config, true, nil
 }

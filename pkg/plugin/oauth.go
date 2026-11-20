@@ -13,12 +13,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
@@ -26,7 +28,23 @@ import (
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 )
 
-var errSignInRequired = errors.New("sign in to Nominal to query this data source")
+var (
+	errSignInRequired = errors.New("sign in to Nominal to query this data source")
+	errNoGrafanaUser  = errors.New("a Grafana login is required to query this data source")
+	errRefreshFailed  = errors.New("could not refresh the Nominal sign-in, try again")
+)
+
+// credentialErrorStatus is the HTTP status for a failure of applyOAuthCredential. Only 401 tells the panel that
+// signing in to Nominal will help.
+func credentialErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errSignInRequired):
+		return http.StatusUnauthorized
+	case errors.Is(err, errNoGrafanaUser):
+		return http.StatusForbidden
+	}
+	return http.StatusBadGateway
+}
 
 type oauthSession struct {
 	mu           sync.Mutex
@@ -48,6 +66,8 @@ type oauthPendingLogin struct {
 	redirectURI string
 	user        string
 	expiry      time.Time
+	// returnTo is the browser URL to redirect to after the OAuth handshake.
+	returnTo string
 }
 
 // sessionStore holds one data source instance's sign-ins. Grafana rebuilds the instance on a settings
@@ -167,7 +187,7 @@ func (d *Datasource) applyOAuthCredential(ctx context.Context, config *models.Pl
 func (d *Datasource) getAccessToken(ctx context.Context, config *models.PluginSettings) (string, error) {
 	user := oauthUser(ctx)
 	if user == "" {
-		return "", errSignInRequired
+		return "", errNoGrafanaUser
 	}
 	session := d.oauthSessions.getSession(user)
 	if session == nil {
@@ -195,8 +215,9 @@ func (d *Datasource) getAccessToken(ctx context.Context, config *models.PluginSe
 		var authErr *nominalAuthError
 		if errors.As(err, &authErr) && authErr.isInvalidGrant() {
 			d.oauthSessions.deleteSession(user)
+			return "", errSignInRequired
 		}
-		return "", errSignInRequired
+		return "", errRefreshFailed
 	}
 	session.updateAccessToken(tokens)
 	return session.accessToken, nil
@@ -322,27 +343,75 @@ func textResponse(sender backend.CallResourceResponseSender, status int, message
 	})
 }
 
-// handleOAuthStart builds the /oauth/v1/authorize URL and params for the UI to open.
+// handleOAuthStart builds the /oauth/v1/authorize URL for the UI to open in a popup.
 func (h *NominalResourceHandler) handleOAuthStart(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	if ok, err := requirePost(req, sender); !ok {
 		return err
 	}
+	authorizeURL, status, err := h.beginOAuthSignIn(ctx, "")
+	if err != nil {
+		return jsonErrorResponse(sender, status, err.Error())
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, map[string]string{"authorizeUrl": authorizeURL})
+}
+
+// handleOAuthLogin is a GET version of handleOAuthStart for panels: a panel notice can only link to a URL, so
+// this redirects the browser to Nominal sign-in instead of returning the URL, and back to returnTo once signed in.
+func (h *NominalResourceHandler) handleOAuthLogin(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if req.Method != http.MethodGet {
+		return textResponse(sender, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+	var returnTo string
+	if parsed, err := url.Parse(req.URL); err == nil {
+		returnTo = parsed.Query().Get("returnTo")
+	}
+	if !isGrafanaPath(returnTo) {
+		return textResponse(sender, http.StatusBadRequest, "returnTo must be a Grafana path")
+	}
+	authorizeURL, status, err := h.beginOAuthSignIn(ctx, returnTo)
+	if err != nil {
+		return textResponse(sender, status, err.Error())
+	}
+	return redirectResponse(sender, authorizeURL)
+}
+
+func isGrafanaPath(returnTo string) bool {
+	return strings.HasPrefix(returnTo, "/") && !strings.HasPrefix(returnTo, "//") && !strings.HasPrefix(returnTo, "/\\") &&
+		!strings.ContainsFunc(returnTo, unicode.IsControl)
+}
+
+func callbackErrorResponse(sender backend.CallResourceResponseSender, status int, message, returnTo string) error {
+	if returnTo == "" {
+		return textResponse(sender, status, message)
+	}
+	return sender.Send(&backend.CallResourceResponse{
+		Status:  status,
+		Headers: map[string][]string{"Content-Type": {"text/html; charset=utf-8"}},
+		Body:    []byte(`<!doctype html><meta charset="utf-8"><p>` + html.EscapeString(message) + `</p><p><a href="` + html.EscapeString(returnTo) + `">Back to where you were</a></p>`),
+	})
+}
+
+func redirectResponse(sender backend.CallResourceResponseSender, location string) error {
+	return sender.Send(&backend.CallResourceResponse{Status: http.StatusFound, Headers: map[string][]string{"Location": {location}}})
+}
+
+func (h *NominalResourceHandler) beginOAuthSignIn(ctx context.Context, returnTo string) (string, int, error) {
 	config, err := models.LoadPluginSettings(h.datasource.settings)
 	if err != nil || !config.UsesOAuth() || config.OAuthClientID == "" {
-		return jsonErrorResponse(sender, http.StatusBadRequest, "OAuth sign-in is not configured for this data source")
+		return "", http.StatusBadRequest, errors.New("OAuth sign-in is not configured for this data source")
 	}
 	origin, err := oauthOrigin(config)
 	if err != nil {
-		return jsonErrorResponse(sender, http.StatusBadRequest, err.Error())
+		return "", http.StatusBadRequest, err
 	}
 	user := oauthUser(ctx)
 	if user == "" {
-		return jsonErrorResponse(sender, http.StatusUnauthorized, "No signed-in Grafana user")
+		return "", http.StatusUnauthorized, errors.New("No signed-in Grafana user")
 	}
 	redirectURI, err := buildRedirectURI(ctx, h.datasource.settings.UID)
 	if err != nil {
 		log.DefaultLogger.FromContext(ctx).Error("Could not build OAuth redirect URI", "error", err)
-		return jsonErrorResponse(sender, http.StatusInternalServerError, "Could not build the sign-in redirect URI")
+		return "", http.StatusInternalServerError, errors.New("Could not build the sign-in redirect URI")
 	}
 
 	state, verifier := randomURLToken(), randomURLToken()
@@ -352,16 +421,16 @@ func (h *NominalResourceHandler) handleOAuthStart(ctx context.Context, req *back
 		redirectURI: redirectURI,
 		user:        user,
 		expiry:      time.Now().Add(10 * time.Minute),
+		returnTo:    returnTo,
 	})
-	authorizeURL := origin + "/oauth/v1/authorize?" + url.Values{
+	return origin + "/oauth/v1/authorize?" + url.Values{
 		"client_id":             {config.OAuthClientID},
 		"redirect_uri":          {redirectURI},
 		"response_type":         {"code"},
 		"state":                 {state},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challenge[:])},
 		"code_challenge_method": {"S256"},
-	}.Encode()
-	return jsonMarshalResponse(sender, http.StatusOK, map[string]string{"authorizeUrl": authorizeURL})
+	}.Encode(), http.StatusOK, nil
 }
 
 // handleOAuthCallback handles the redirect back from Nominal after the user signs in to the IdP.
@@ -379,10 +448,10 @@ func (h *NominalResourceHandler) handleOAuthCallback(ctx context.Context, req *b
 		return textResponse(sender, http.StatusBadRequest, "This sign-in expired or was started by a different Grafana user. Close this window and try again.")
 	}
 	if oauthErr := params.Get("error"); oauthErr != "" {
-		return textResponse(sender, http.StatusBadRequest, "Nominal sign-in failed: "+oauthErr)
+		return callbackErrorResponse(sender, http.StatusBadRequest, "Nominal sign-in failed: "+oauthErr, pending.returnTo)
 	}
 	if params.Get("code") == "" {
-		return textResponse(sender, http.StatusBadRequest, "Nominal sign-in returned no authorization code")
+		return callbackErrorResponse(sender, http.StatusBadRequest, "Nominal sign-in returned no authorization code", pending.returnTo)
 	}
 	config, err := models.LoadPluginSettings(h.datasource.settings)
 	if err != nil {
@@ -397,11 +466,18 @@ func (h *NominalResourceHandler) handleOAuthCallback(ctx context.Context, req *b
 	})
 	if err != nil {
 		log.DefaultLogger.FromContext(ctx).Error("Nominal authorization code exchange failed", "error", err)
-		return textResponse(sender, http.StatusBadGateway, "Nominal sign-in failed while exchanging the authorization code. Close this window and try again.")
+		message := "Nominal sign-in failed while exchanging the authorization code."
+		if pending.returnTo == "" {
+			message += " Close this window and try again."
+		}
+		return callbackErrorResponse(sender, http.StatusBadGateway, message, pending.returnTo)
 	}
 	session := &oauthSession{}
 	session.updateAccessToken(tokens)
 	h.datasource.oauthSessions.putSession(user, session)
+	if pending.returnTo != "" {
+		return redirectResponse(sender, pending.returnTo)
+	}
 	return textResponse(sender, http.StatusOK, "Signed in to Nominal. You can close this window.")
 }
 

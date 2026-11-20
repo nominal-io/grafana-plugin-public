@@ -124,6 +124,88 @@ func oauthCallback(t *testing.T, ctx context.Context, ds *Datasource, query url.
 	})
 }
 
+func TestOAuthLoginRedirectsBackToTheGrafanaPath(t *testing.T) {
+	auth := &fakeNominalAuth{respond: func(url.Values) (int, string) {
+		return http.StatusOK, `{"access_token":"alice-nominal-token","refresh_token":"r1","expires_in":3600}`
+	}}
+	srv := auth.start(t)
+	ds := newOAuthTestDatasource("oauth-login", srv.URL, srv.Client())
+	alice := oauthTestContext("alice")
+	returnTo := "/d/abc/flight-test?orgId=1&var-asset=a"
+
+	resp := callResourceWithContext(t, alice, ds, &backend.CallResourceRequest{
+		Path: "oauth/login", Method: http.MethodGet, URL: "oauth/login?" + url.Values{"returnTo": {returnTo}}.Encode(),
+	})
+	if resp.Status != http.StatusFound {
+		t.Fatalf("oauth/login returned %d: %s", resp.Status, resp.Body)
+	}
+	authorizeURL, err := url.Parse(resp.Headers["Location"][0])
+	if err != nil || authorizeURL.Scheme+"://"+authorizeURL.Host+authorizeURL.Path != srv.URL+"/oauth/v1/authorize" {
+		t.Fatalf("oauth/login redirected to %q", resp.Headers["Location"])
+	}
+
+	resp = oauthCallback(t, alice, ds, url.Values{"code": {"code-1"}, "state": {authorizeURL.Query().Get("state")}})
+	if resp.Status != http.StatusFound || resp.Headers["Location"][0] != returnTo {
+		t.Fatalf("callback returned %d %v, want a redirect to %q", resp.Status, resp.Headers["Location"], returnTo)
+	}
+	if ds.oauthSessions.getSession(oauthUser(alice)) == nil {
+		t.Fatal("alice should be signed in")
+	}
+}
+
+func TestOAuthCallbackFailureLinksBackToReturnTo(t *testing.T) {
+	auth := &fakeNominalAuth{respond: func(url.Values) (int, string) { return http.StatusBadRequest, `{"error":"invalid_grant"}` }}
+	srv := auth.start(t)
+	ds := newOAuthTestDatasource("oauth-callback-failure", srv.URL, srv.Client())
+	alice := oauthTestContext("alice")
+	returnTo := "/d/abc/flight-test?orgId=1&var-asset=a"
+
+	for name, query := range map[string]url.Values{
+		"identity provider error": {"error": {"access_denied"}},
+		"failed code exchange":    {"code": {"code-1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := callResourceWithContext(t, alice, ds, &backend.CallResourceRequest{
+				Path: "oauth/login", Method: http.MethodGet, URL: "oauth/login?" + url.Values{"returnTo": {returnTo}}.Encode(),
+			})
+			authorizeURL, err := url.Parse(resp.Headers["Location"][0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			query.Set("state", authorizeURL.Query().Get("state"))
+
+			resp = oauthCallback(t, alice, ds, query)
+			if resp.Status < 400 || resp.Headers["Content-Type"][0] != "text/html; charset=utf-8" {
+				t.Fatalf("callback returned %d %v, want an HTML error", resp.Status, resp.Headers["Content-Type"])
+			}
+			if want := `href="/d/abc/flight-test?orgId=1&amp;var-asset=a"`; !strings.Contains(string(resp.Body), want) {
+				t.Fatalf("error page %q does not contain %q", resp.Body, want)
+			}
+			if strings.Contains(string(resp.Body), "Close this window") {
+				t.Fatalf("error page %q tells the user to close a window that is not a popup", resp.Body)
+			}
+		})
+	}
+
+	authorizeURL := startOAuthSignIn(t, alice, ds)
+	resp := oauthCallback(t, alice, ds, url.Values{"error": {"access_denied"}, "state": {authorizeURL.Query().Get("state")}})
+	if resp.Status != http.StatusBadRequest || strings.Contains(string(resp.Body), "href") {
+		t.Fatalf("popup callback returned %d %q, want a plain error without a link", resp.Status, resp.Body)
+	}
+}
+
+func TestOAuthLoginRejectsReturnToOutsideGrafana(t *testing.T) {
+	ds := newOAuthTestDatasource("oauth-login-reject", "https://unused.test", http.DefaultClient)
+	for _, returnTo := range []string{"", "d/abc", "https://evil.test/d/abc", "//evil.test/d/abc", "/\\evil.test/d/abc", "/d/abc\r\nSet-Cookie: x=1"} {
+		resp := callResourceWithContext(t, oauthTestContext("alice"), ds, &backend.CallResourceRequest{
+			Path: "oauth/login", Method: http.MethodGet, URL: "oauth/login?" + url.Values{"returnTo": {returnTo}}.Encode(),
+		})
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("returnTo %q returned %d, want 400", returnTo, resp.Status)
+		}
+	}
+}
+
 func TestOAuthSignInQueriesAsTheSignedInUser(t *testing.T) {
 	auth := &fakeNominalAuth{respond: func(url.Values) (int, string) {
 		return http.StatusOK, `{"access_token":"alice-nominal-token","refresh_token":"r1","expires_in":3600}`
@@ -235,8 +317,9 @@ func TestOAuthRefreshKeepsTheSessionWhenNominalAuthIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ds.applyOAuthCredential(ctx, config); err != errSignInRequired {
-		t.Fatalf("failed refresh should require sign-in, got %v", err)
+	err = ds.applyOAuthCredential(ctx, config)
+	if err != errRefreshFailed || credentialErrorStatus(err) != http.StatusBadGateway {
+		t.Fatalf("a refresh Nominal auth could not answer should be a 502, got %v", err)
 	}
 	if ds.oauthSessions.getSession(oauthUser(ctx)) != session || session.refreshToken != "r1" {
 		t.Fatal("a transient refresh failure must keep the session")
@@ -276,6 +359,20 @@ func TestOAuthModeNeverSendsASavedAPIKey(t *testing.T) {
 	}
 	if config.Secrets.AuthToken != "" {
 		t.Fatalf("OAuth mode must not load the saved API key, got %q", config.Secrets.AuthToken)
+	}
+}
+
+func TestOAuthQueryWithoutGrafanaUserIsForbidden(t *testing.T) {
+	ds := newOAuthTestDatasource("oauth-no-user", "https://unused.test", http.DefaultClient)
+	resp, err := ds.QueryData(context.Background(), &backend.QueryDataRequest{
+		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &ds.settings},
+		Queries:       []backend.DataQuery{{RefID: "A"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Responses["A"]; got.Status != backend.StatusForbidden || !strings.Contains(got.Error.Error(), "Grafana login") {
+		t.Fatalf("expected a Grafana login error, got %d %v", got.Status, got.Error)
 	}
 }
 
