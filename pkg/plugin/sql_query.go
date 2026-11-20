@@ -102,7 +102,7 @@ func (e *NominalQueryExecution) runSQLQuery(ctx context.Context, refID, sql stri
 	if err != nil {
 		return nil, err
 	}
-	return frameFromArrowStream(&sqlStreamReader{stream: stream, cancel: cancel}, refID, sqlRowLimit(ctx), format)
+	return frameFromArrowStream(&sqlStreamReader{stream: stream, cancel: cancel}, refID, sqlRowLimit(ctx), format, e.nonFiniteOK)
 }
 
 // sqlRowLimit returns the row limit Grafana applies to its own SQL data sources.

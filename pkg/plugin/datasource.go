@@ -232,6 +232,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 	execution := newNominalQueryExecution(d, config)
 	execution.fromAlert = req.Headers[backend.FromAlertHeaderName] == "true"
+	execution.nonFiniteOK = req.PluginContext.UserAgent != nil && grafanaAcceptsNonFinite(req.PluginContext.UserAgent.GrafanaVersion())
 	return execution.Execute(ctx, req.Queries), nil
 }
 

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -22,7 +23,7 @@ import (
 // format. When the whole stream fits, it also reads r to EOF, so a stream that fails after its last
 // batch reports that error. Once decoding succeeds it closes r before building frames, which can
 // take a while for a large result.
-func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format sqlutil.FormatQueryOption) (data.Frames, error) {
+func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format sqlutil.FormatQueryOption, nonFiniteOK bool) (data.Frames, error) {
 	reader, err := ipc.NewReader(r)
 	if errors.Is(err, io.EOF) {
 		return nil, errors.New("SQL response was empty")
@@ -64,9 +65,9 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 
 	var frame *data.Frame
 	if format == sqlutil.FormatOptionLogs {
-		frame, err = sqlLogFrame(name, fields, batches, int(rows))
+		frame, err = sqlLogFrame(name, fields, batches, int(rows), nonFiniteOK)
 	} else {
-		frame, err = tableFrame(name, fields, batches, int(rows))
+		frame, err = tableFrame(name, fields, batches, int(rows), nonFiniteOK)
 	}
 	if err != nil {
 		return nil, err
@@ -80,13 +81,13 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 	if format == sqlutil.FormatOptionTable || format == sqlutil.FormatOptionLogs {
 		return data.Frames{frame}, nil
 	}
-	return shapeSQLFrame(frame)
+	return shapeSQLFrame(frame, nonFiniteOK)
 }
 
 // tableFrame converts every column of batches to a field of a frame that prefers a table. It
 // converts columns itself because data.FromArrowRecord rejects nested types such as the
 // map<string,string> tags column and assumes nanosecond timestamps.
-func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int) (*data.Frame, error) {
+func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nonFiniteOK bool) (*data.Frame, error) {
 	frame := data.NewFrame(name)
 	frame.Meta = &data.FrameMeta{PreferredVisualization: data.VisTypeTable}
 	chunks := make([]arrow.Array, len(batches))
@@ -94,7 +95,7 @@ func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, 
 		for b, batch := range batches {
 			chunks[b] = batch.Column(i)
 		}
-		values, err := columnValues(field, chunks, rows)
+		values, err := columnValues(field, chunks, rows, nonFiniteOK)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
 		}
@@ -104,12 +105,11 @@ func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, 
 }
 
 // columnValues converts one Arrow column, split across record batches, to the values of a Grafana
-// field: a []*T with nil for nulls when the column has nulls or NaNs, else a []T. Grafana decodes
-// a nullable field with one allocation per value, so a column without either is sent non-nullable
-// whatever its Arrow type allows. Grafana's SQL expressions read NaN as NULL and fail when they
-// write a NULL to a non-nullable column, so NaN makes a column nullable even when its type is not.
-func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error) {
-	n := slices.ContainsFunc(chunks, hasNullOrNaN)
+// field: a []*T with nil for nulls when the column has nulls, or NaNs or infinities unless
+// nonFiniteOK, else a []T. Grafana decodes a nullable field with one allocation per value, so a
+// column without any is sent non-nullable whatever its Arrow type allows.
+func columnValues(field arrow.Field, chunks []arrow.Array, rows int, nonFiniteOK bool) (any, error) {
+	n := slices.ContainsFunc(chunks, func(c arrow.Array) bool { return c.NullN() > 0 || !nonFiniteOK && hasNonFinite(c) })
 	switch t := field.Type.(type) {
 	case *arrow.NullType:
 		// NULL arrays have no validity bitmap, and every value is null.
@@ -160,14 +160,34 @@ func columnValues(field arrow.Field, chunks []arrow.Array, rows int) (any, error
 	}
 }
 
-func hasNullOrNaN(chunk arrow.Array) bool {
+func hasNonFinite(chunk arrow.Array) bool {
 	switch a := chunk.(type) {
 	case *array.Float64:
-		return a.NullN() > 0 || slices.ContainsFunc(a.Float64Values(), math.IsNaN)
+		return slices.ContainsFunc(a.Float64Values(), nonFinite[float64])
 	case *array.Float32:
-		return a.NullN() > 0 || slices.ContainsFunc(a.Float32Values(), func(v float32) bool { return v != v })
+		return slices.ContainsFunc(a.Float32Values(), nonFinite[float32])
 	}
-	return chunk.NullN() > 0
+	return false
+}
+
+// nonFinite reports whether v is NaN or ±Inf.
+func nonFinite[F float32 | float64](v F) bool {
+	return v != v || math.IsInf(float64(v), 0)
+}
+
+// grafanaAcceptsNonFinite reports whether Grafana at version accepts NaN and ±Inf in a
+// non-nullable field. Its SQL expressions read both as NULL, and before 13.4.0 fail when they
+// write that NULL to a non-nullable column. Builds made before the 13.4.0 release report 13.4.0
+// with a "-" suffix and may predate the fix, so they do not count. Security releases, such as
+// 13.4.0+security-01, do.
+func grafanaAcceptsNonFinite(version string) bool {
+	var major, minor, patch int
+	var suffix string
+	if n, _ := fmt.Sscanf(version, "%d.%d.%d%s", &major, &minor, &patch, &suffix); n < 3 {
+		return false
+	}
+	c := cmp.Or(cmp.Compare(major, 13), cmp.Compare(minor, 4), cmp.Compare(patch, 0))
+	return c > 0 || c == 0 && (suffix == "" || strings.HasPrefix(suffix, "+"))
 }
 
 // column reads chunks, which must be arrays of type A, through value.
@@ -241,7 +261,7 @@ func appendMapToken(buf []byte, s string) []byte {
 // by time, where the result's string and bool columns are the labels. A result without a numeric
 // column uses its string or bool column named value instead. A result without a timestamp and a
 // value column is returned as it came, with a notice.
-func shapeSQLFrame(frame *data.Frame) (data.Frames, error) {
+func shapeSQLFrame(frame *data.Frame, nonFiniteOK bool) (data.Frames, error) {
 	schema := frame.TimeSeriesSchema()
 	var values []int
 	var skipped []string
@@ -296,7 +316,7 @@ func shapeSQLFrame(frame *data.Frame) (data.Frames, error) {
 	if err != nil {
 		return nil, err
 	}
-	return splitSeries(frame, schema.TimeIndex, factors, values, times, timeOrder(times)), nil
+	return splitSeries(frame, schema.TimeIndex, factors, values, times, timeOrder(times), nonFiniteOK), nil
 }
 
 // nullTimeError is a fault in the query, so sqlErrorResponse returns it as a bad request rather
@@ -343,7 +363,7 @@ func timeOrder(times []time.Time) []int {
 // splitSeries returns one frame per value column and label set, ordered by column and then labels,
 // visiting rows in order when it is not nil. Value fields point at frame's values, so it allocates
 // per series rather than per row.
-func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int) data.Frames {
+func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int, nonFiniteOK bool) data.Frames {
 	labelValues := make([]string, len(factors))
 	seriesIDs := make(map[string]int)
 	var seriesLabels []data.Labels
@@ -391,7 +411,7 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 		for _, id := range ids {
 			rows := seriesRows[id]
 			seriesTimes := make([]time.Time, len(rows))
-			field := seriesField(column, rows, &scratch)
+			field := seriesField(column, rows, nonFiniteOK, &scratch)
 			field.Name, field.Labels = column.Name, seriesLabels[id]
 			name := seriesNames[id]
 			if len(values) > 1 {
@@ -418,39 +438,40 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 }
 
 // seriesField returns a field of column's type holding its values at rows. A series is
-// non-nullable when its own rows have no nulls or NaNs, even if column is nullable. Copies are
-// typed so that no value is boxed.
-func seriesField(column *data.Field, rows []int, scratch *any) *data.Field {
+// non-nullable when its own rows have no nulls, and no NaNs or infinities unless nonFiniteOK, even
+// if column is nullable. Copies are typed so that no value is boxed.
+func seriesField(column *data.Field, rows []int, nonFiniteOK bool, scratch *any) *data.Field {
 	switch column.Type().NonNullableType() {
 	case data.FieldTypeInt8:
-		return gather[int8](column, rows, scratch)
+		return gather[int8](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeInt16:
-		return gather[int16](column, rows, scratch)
+		return gather[int16](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeInt32:
-		return gather[int32](column, rows, scratch)
+		return gather[int32](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeInt64:
-		return gather[int64](column, rows, scratch)
+		return gather[int64](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeUint8:
-		return gather[uint8](column, rows, scratch)
+		return gather[uint8](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeUint16:
-		return gather[uint16](column, rows, scratch)
+		return gather[uint16](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeUint32:
-		return gather[uint32](column, rows, scratch)
+		return gather[uint32](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeUint64:
-		return gather[uint64](column, rows, scratch)
+		return gather[uint64](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeFloat32:
-		return gather[float32](column, rows, scratch)
+		return gather[float32](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeFloat64:
-		return gather[float64](column, rows, scratch)
+		return gather[float64](column, rows, nonFiniteOK, scratch)
 	case data.FieldTypeString:
-		return gather[string](column, rows, scratch)
+		return gather[string](column, rows, nonFiniteOK, scratch)
 	default: // bool, the only other value type
-		return gather[bool](column, rows, scratch)
+		return gather[bool](column, rows, nonFiniteOK, scratch)
 	}
 }
 
-// gather copies column's values at rows. The result is nullable only if a value is null or NaN.
-func gather[T any](column *data.Field, rows []int, scratch *any) *data.Field {
+// gather copies column's values at rows. The result is nullable only if a value is null, or NaN or
+// infinite unless nonFiniteOK.
+func gather[T any](column *data.Field, rows []int, nonFiniteOK bool, scratch *any) *data.Field {
 	at := column.PointerAt
 	if column.Nullable() {
 		at = column.At
@@ -464,7 +485,7 @@ func gather[T any](column *data.Field, rows []int, scratch *any) *data.Field {
 	values = values[:len(rows)]
 	for i, row := range rows {
 		p := ptr(row)
-		if p == nil || isNaN(*p) {
+		if p == nil || !nonFiniteOK && nonFiniteValue(*p) {
 			return gatherNullable(column.Type(), rows, ptr)
 		}
 		values[i] = *p
@@ -481,12 +502,12 @@ func gatherNullable[T any](t data.FieldType, rows []int, ptr func(int) *T) *data
 	return field
 }
 
-func isNaN[T any](v T) bool {
+func nonFiniteValue[T any](v T) bool {
 	switch f := any(v).(type) {
 	case float64:
-		return f != f
+		return nonFinite(f)
 	case float32:
-		return f != f
+		return nonFinite(f)
 	}
 	return false
 }

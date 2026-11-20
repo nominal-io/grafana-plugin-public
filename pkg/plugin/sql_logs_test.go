@@ -53,7 +53,7 @@ func logStream(t *testing.T, columns ...testLogColumn) []byte {
 // shapedLogFrame decodes stream in Logs format.
 func shapedLogFrame(t *testing.T, stream []byte) *data.Frame {
 	t.Helper()
-	frames, err := frameFromArrowStream(io.NopCloser(bytes.NewReader(stream)), "A", testRowLimit, sqlutil.FormatOptionLogs)
+	frames, err := frameFromArrowStream(io.NopCloser(bytes.NewReader(stream)), "A", testRowLimit, sqlutil.FormatOptionLogs, false)
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("frameFromArrowStream() = %d frames, %v; want 1 frame", len(frames), err)
 	}

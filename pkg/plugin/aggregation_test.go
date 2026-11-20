@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -1327,22 +1328,31 @@ func TestAggregationSeriesFieldValues(t *testing.T) {
 
 	// A dense batch after a sparse one must keep missing aligned with Values.
 	s := extract(sparse, dense)
-	ptrs, ok := s.fieldValues().([]*float64)
+	ptrs, ok := s.fieldValues(false).([]*float64)
 	if !ok || len(ptrs) != 4 || ptrs[0] == nil || ptrs[1] != nil || *ptrs[2] != 3 || *ptrs[3] != 4 {
-		t.Errorf("sparse then dense fieldValues() = %v, want [1 nil 3 4]", s.fieldValues())
+		t.Errorf("sparse then dense fieldValues() = %v, want [1 nil 3 4]", s.fieldValues(false))
 	}
 	s.TimePoints = make([]time.Time, 4)
 	s.dropMissingBuckets()
 	if got := s.Values; len(got) != 3 || got[0] != 1 || got[1] != 3 || got[2] != 4 {
 		t.Errorf("after dropMissingBuckets Values = %v, want [1 3 4]", got)
 	}
-	if got, ok := s.fieldValues().([]float64); !ok || len(got) != 3 {
-		t.Errorf("fieldValues() after dropMissingBuckets = %T, want []float64", s.fieldValues())
+	if got, ok := s.fieldValues(false).([]float64); !ok || len(got) != 3 {
+		t.Errorf("fieldValues() after dropMissingBuckets = %T, want []float64", s.fieldValues(false))
 	}
 
 	// A dense column is returned as is.
 	s = extract(dense)
-	if got, ok := s.fieldValues().([]float64); !ok || len(got) != 2 {
-		t.Errorf("dense fieldValues() = %T, want []float64", s.fieldValues())
+	if got, ok := s.fieldValues(false).([]float64); !ok || len(got) != 2 {
+		t.Errorf("dense fieldValues() = %T, want []float64", s.fieldValues(false))
+	}
+
+	// NaN and ±Inf keep the field nullable, with the values unchanged.
+	for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		s = AggregationSeries{Values: []float64{1, v}}
+		ptrs, ok := s.fieldValues(false).([]*float64)
+		if !ok || len(ptrs) != 2 || *ptrs[0] != 1 || ptrs[1] == nil || math.Float64bits(*ptrs[1]) != math.Float64bits(v) {
+			t.Errorf("fieldValues() with %v = %v, want []*float64 [1 %v]", v, s.fieldValues(false), v)
+		}
 	}
 }

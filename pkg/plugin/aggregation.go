@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"strings"
 	"time"
@@ -81,11 +80,10 @@ func (s *AggregationSeries) appendValue(v float64, missing bool) {
 	}
 }
 
-// fieldValues returns the values for a frame field: the []float64 itself when none is missing or
-// NaN, else []*float64 with nil for the missing ones. NaN keeps the field nullable for the reason
-// given on columnValues.
-func (s *AggregationSeries) fieldValues() any {
-	if s.missing == nil && !slices.ContainsFunc(s.Values, math.IsNaN) {
+// fieldValues returns the values for a frame field: the []float64 itself when none is missing, or
+// NaN or infinite unless nonFiniteOK, else []*float64 with nil for the missing ones.
+func (s *AggregationSeries) fieldValues(nonFiniteOK bool) any {
+	if s.missing == nil && (nonFiniteOK || !slices.ContainsFunc(s.Values, nonFinite[float64])) {
 		return s.Values
 	}
 	ptrs := make([]*float64, len(s.Values))

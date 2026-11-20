@@ -79,7 +79,7 @@ func fieldValues(field *data.Field) []any {
 
 // decodeTable decodes r as a table result, which is always one frame.
 func decodeTable(r io.Reader, rowLimit int64) (*data.Frame, error) {
-	frames, err := frameFromArrowStream(io.NopCloser(r), "A", rowLimit, sqlutil.FormatOptionTable)
+	frames, err := frameFromArrowStream(io.NopCloser(r), "A", rowLimit, sqlutil.FormatOptionTable, false)
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +134,20 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float32, `["NaN", 2]`) },
 			wantType: data.FieldTypeNullableFloat32,
 			want:     []any{float32(math.NaN()), float32(2)},
+		},
+		{
+			name:     "float with +Inf",
+			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float64},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float64, `[1.5, "+Inf"]`) },
+			wantType: data.FieldTypeNullableFloat64,
+			want:     []any{1.5, math.Inf(1)},
+		},
+		{
+			name:     "float32 with -Inf",
+			field:    arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float32},
+			column:   func(t *testing.T) arrow.Array { return arrowArray(t, arrow.PrimitiveTypes.Float32, `["-Inf", 2]`) },
+			wantType: data.FieldTypeNullableFloat32,
+			want:     []any{float32(math.Inf(-1)), float32(2)},
 		},
 		{
 			name:     "nullable float",
@@ -247,6 +261,16 @@ func TestFrameFromArrowStreamColumnTypes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func isNaN(v any) bool {
+	switch f := v.(type) {
+	case float64:
+		return math.IsNaN(f)
+	case float32:
+		return f != f
+	}
+	return false
 }
 
 func equalValues(got, want []any) bool {
@@ -397,7 +421,7 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		data.NewField("max", nil, []int64{20, 10, 30, 40}),
 	)
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame)
+	frames, err := shapeSQLFrame(frame, false)
 	if err != nil {
 		t.Fatalf("shapeSQLFrame() error = %v", err)
 	}
@@ -448,7 +472,7 @@ func TestShapeSQLFrameKeepsValueTypes(t *testing.T) {
 	} {
 		column := data.NewField("value", nil, values)
 		t.Run(column.Type().String(), func(t *testing.T) {
-			frames, err := shapeSQLFrame(data.NewFrame("A", data.NewField("time", nil, at), column))
+			frames, err := shapeSQLFrame(data.NewFrame("A", data.NewField("time", nil, at), column), false)
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 			}
@@ -477,6 +501,8 @@ func TestShapeSQLFrameDecidesNullabilityPerSeries(t *testing.T) {
 			map[string]data.FieldType{"a": data.FieldTypeNullableFloat64, "b": data.FieldTypeFloat64}},
 		{"nan in one float32 series", []*float32{new(float32(1)), new(float32(nan)), new(float32(3)), new(float32(4))},
 			map[string]data.FieldType{"a": data.FieldTypeNullableFloat32, "b": data.FieldTypeFloat32}},
+		{"inf in one series", []*float64{new(1.0), new(math.Inf(1)), new(3.0), new(4.0)},
+			map[string]data.FieldType{"a": data.FieldTypeNullableFloat64, "b": data.FieldTypeFloat64}},
 		{"null in one bool series", []*bool{new(true), nil, new(false), new(true)},
 			map[string]data.FieldType{"a": data.FieldTypeNullableBool, "b": data.FieldTypeBool}},
 		{"no nulls", []*int64{new(int64(1)), new(int64(2)), new(int64(3)), new(int64(4))},
@@ -487,7 +513,7 @@ func TestShapeSQLFrameDecidesNullabilityPerSeries(t *testing.T) {
 				data.NewField("time", nil, []time.Time{at(0), at(1), at(2), at(3)}),
 				data.NewField("channel", nil, []string{"a", "a", "b", "b"}),
 				data.NewField("value", nil, tc.values),
-			))
+			), false)
 			if err != nil || len(frames) != len(tc.want) {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want %d", len(frames), err, len(tc.want))
 			}
@@ -517,7 +543,7 @@ func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
 	} {
 		fields := []*data.Field{data.NewField("time", nil, []time.Time{time.Unix(1700000000, 0).UTC()})}
 		fields = append(append(fields, tc.labels...), data.NewField(tc.column, nil, []float64{1}))
-		frames, err := shapeSQLFrame(data.NewFrame("A", fields...))
+		frames, err := shapeSQLFrame(data.NewFrame("A", fields...), false)
 		if err != nil || len(frames) != 1 {
 			t.Fatalf("%s with %d labels: shapeSQLFrame() = %d frames, %v; want 1", tc.column, len(tc.labels), len(frames), err)
 		}
@@ -561,7 +587,7 @@ func TestShapeSQLFramePicksValueColumn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", append([]*data.Field{data.NewField("time", nil, []time.Time{ts, ts})}, tc.fields...)...)
-			frames, err := shapeSQLFrame(frame)
+			frames, err := shapeSQLFrame(frame, false)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -589,7 +615,7 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("value", nil, []float64{2, 1, 3}))
-			frames, err := shapeSQLFrame(frame)
+			frames, err := shapeSQLFrame(frame, false)
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1 frame", len(frames), err)
 			}
@@ -605,7 +631,7 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 
 func TestShapeSQLFrameWithoutTimeSeriesColumns(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{time.Unix(0, 0)}), data.NewField("channel", nil, []string{"a"}))
-	frames, err := shapeSQLFrame(frame)
+	frames, err := shapeSQLFrame(frame, false)
 	if err != nil || len(frames) != 1 || frames[0] != frame {
 		t.Fatalf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 	}
@@ -618,7 +644,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	t.Run("with a numeric column", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}), data.NewField("value", nil, []float64{1}))
-		frames, err := shapeSQLFrame(frame)
+		frames, err := shapeSQLFrame(frame, false)
 		if err != nil || len(frames) != 1 || frames[0].Fields[1].Name != "value" {
 			t.Fatalf("shapeSQLFrame() = %v, %v; want one value series", frames, err)
 		}
@@ -631,7 +657,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	})
 	t.Run("without one", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}))
-		frames, err := shapeSQLFrame(frame)
+		frames, err := shapeSQLFrame(frame, false)
 		if err != nil || len(frames) != 1 || frames[0] != frame {
 			t.Errorf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 		}
@@ -641,7 +667,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("min", nil, []float64{1}), data.NewField("max", nil, []float64{2}))
-	frames, err := shapeSQLFrame(frame)
+	frames, err := shapeSQLFrame(frame, false)
 	if err != nil || len(frames) != 2 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
 	}
@@ -656,7 +682,7 @@ func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 func TestShapeSQLFrameReturnsNoDataForEmptyTimeSeries(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame)
+	frames, err := shapeSQLFrame(frame, false)
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 	}
@@ -698,7 +724,7 @@ func TestShapeSQLFrameTreatsNullLabelsAsEmpty(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			frames, err := shapeSQLFrame(tc.frame)
+			frames, err := shapeSQLFrame(tc.frame, false)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -766,8 +792,65 @@ func BenchmarkShapeSQLFrame(b *testing.B) {
 	frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("channel", nil, names), data.NewField("value", nil, values))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := shapeSQLFrame(frame); err != nil {
+		if _, err := shapeSQLFrame(frame, false); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestGrafanaAcceptsNonFinite(t *testing.T) {
+	for version, want := range map[string]bool{
+		"13.4.0":                 true,
+		"13.4.1":                 true,
+		"13.10.0":                true,
+		"14.0.0":                 true,
+		"13.5.0-43210257101":     true,
+		"13.4.0-43210257101":     false,
+		"13.4.0-pre":             false,
+		"13.4.0-beta1":           false,
+		"13.4.0+security-01":     true,
+		"13.4.1+security-02":     true,
+		"13.3.1+security-01":     false,
+		"13.4.0-123+security-01": false,
+		"13.3.1":                 false,
+		"12.4.15":                false,
+		"0.0.0":                  false,
+		"13.4":                   false,
+		"":                       false,
+	} {
+		if got := grafanaAcceptsNonFinite(version); got != want {
+			t.Errorf("grafanaAcceptsNonFinite(%q) = %v, want %v", version, got, want)
+		}
+	}
+}
+
+func TestNonFiniteOKLeavesOnlyNullsNullable(t *testing.T) {
+	inf := math.Inf(1)
+	column, err := columnValues(arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Float64},
+		[]arrow.Array{arrowArray(t, arrow.PrimitiveTypes.Float64, `["NaN", "-Inf", 1]`)}, 3, true)
+	if _, ok := column.([]float64); err != nil || !ok {
+		t.Errorf("columnValues() = %T, %v; want []float64", column, err)
+	}
+
+	at := time.Unix(1700000000, 0).UTC()
+	frames, err := shapeSQLFrame(data.NewFrame("A",
+		data.NewField("time", nil, []time.Time{at, at, at, at}),
+		data.NewField("channel", nil, []string{"a", "a", "b", "b"}),
+		data.NewField("value", nil, []*float64{new(1.0), nil, new(inf), new(4.0)}),
+	), true)
+	if err != nil || len(frames) != 2 {
+		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
+	}
+	for _, f := range frames {
+		value := f.Fields[1]
+		want := map[string]data.FieldType{"a": data.FieldTypeNullableFloat64, "b": data.FieldTypeFloat64}[value.Labels["channel"]]
+		if value.Type() != want {
+			t.Errorf("series %s type = %s, want %s", value.Labels["channel"], value.Type(), want)
+		}
+	}
+
+	s := AggregationSeries{Values: []float64{math.NaN(), inf}}
+	if got, ok := s.fieldValues(true).([]float64); !ok || len(got) != 2 {
+		t.Errorf("fieldValues(true) = %T, want []float64", s.fieldValues(true))
 	}
 }

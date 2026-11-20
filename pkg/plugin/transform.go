@@ -70,7 +70,7 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 					}
 					frame.Name = displayName
 					if len(agg.TimePoints) > 0 && len(agg.Values) > 0 {
-						valueField := data.NewField("value", nil, agg.fieldValues())
+						valueField := data.NewField("value", nil, agg.fieldValues(e.nonFiniteOK))
 						valueField.Config = fieldConfigForNumeric(&qm, displayName, agg.CarriesChannelUnit)
 						frame.Fields = append(frame.Fields,
 							data.NewField("time", nil, agg.TimePoints),
