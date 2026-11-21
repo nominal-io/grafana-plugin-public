@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -421,7 +422,7 @@ func TestShapeSQLFrameSplitsSeries(t *testing.T) {
 		data.NewField("max", nil, []int64{20, 10, 30, 40}),
 	)
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+	frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 	if err != nil {
 		t.Fatalf("shapeSQLFrame() error = %v", err)
 	}
@@ -472,7 +473,7 @@ func TestShapeSQLFrameKeepsValueTypes(t *testing.T) {
 	} {
 		column := data.NewField("value", nil, values)
 		t.Run(column.Type().String(), func(t *testing.T) {
-			frames, err := shapeSQLFrame(data.NewFrame("A", data.NewField("time", nil, at), column), nullOrNonFinite)
+			frames, err := shapeSQLFrame(data.NewFrame("A", data.NewField("time", nil, at), column), nil, nullOrNonFinite)
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 			}
@@ -513,7 +514,7 @@ func TestShapeSQLFrameDecidesNullabilityPerSeries(t *testing.T) {
 				data.NewField("time", nil, []time.Time{at(0), at(1), at(2), at(3)}),
 				data.NewField("channel", nil, []string{"a", "a", "b", "b"}),
 				data.NewField("value", nil, tc.values),
-			), nullOrNonFinite)
+			), []any{nil, nil, tc.values}, nullOrNonFinite)
 			if err != nil || len(frames) != len(tc.want) {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want %d", len(frames), err, len(tc.want))
 			}
@@ -543,7 +544,7 @@ func TestShapeSQLFrameNamesSeriesByLabels(t *testing.T) {
 	} {
 		fields := []*data.Field{data.NewField("time", nil, []time.Time{time.Unix(1700000000, 0).UTC()})}
 		fields = append(append(fields, tc.labels...), data.NewField(tc.column, nil, []float64{1}))
-		frames, err := shapeSQLFrame(data.NewFrame("A", fields...), nullOrNonFinite)
+		frames, err := shapeSQLFrame(data.NewFrame("A", fields...), nil, nullOrNonFinite)
 		if err != nil || len(frames) != 1 {
 			t.Fatalf("%s with %d labels: shapeSQLFrame() = %d frames, %v; want 1", tc.column, len(tc.labels), len(frames), err)
 		}
@@ -587,7 +588,7 @@ func TestShapeSQLFramePicksValueColumn(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", append([]*data.Field{data.NewField("time", nil, []time.Time{ts, ts})}, tc.fields...)...)
-			frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+			frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -615,7 +616,7 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("value", nil, []float64{2, 1, 3}))
-			frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+			frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 			if err != nil || len(frames) != 1 {
 				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1 frame", len(frames), err)
 			}
@@ -631,7 +632,7 @@ func TestShapeSQLFrameSortsByTime(t *testing.T) {
 
 func TestShapeSQLFrameWithoutTimeSeriesColumns(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{time.Unix(0, 0)}), data.NewField("channel", nil, []string{"a"}))
-	frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+	frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 	if err != nil || len(frames) != 1 || frames[0] != frame {
 		t.Fatalf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 	}
@@ -644,7 +645,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	t.Run("with a numeric column", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}), data.NewField("value", nil, []float64{1}))
-		frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+		frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 		if err != nil || len(frames) != 1 || frames[0].Fields[1].Name != "value" {
 			t.Fatalf("shapeSQLFrame() = %v, %v; want one value series", frames, err)
 		}
@@ -657,7 +658,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 	})
 	t.Run("without one", func(t *testing.T) {
 		frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("first_ts", nil, []time.Time{ts}))
-		frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+		frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 		if err != nil || len(frames) != 1 || frames[0] != frame {
 			t.Errorf("shapeSQLFrame() = %v, %v; want the input frame", frames, err)
 		}
@@ -667,7 +668,7 @@ func TestShapeSQLFrameLeavesOutColumnsThatAreNotNumbers(t *testing.T) {
 func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 	ts := time.Unix(1700000000, 0).UTC()
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{ts}), data.NewField("min", nil, []float64{1}), data.NewField("max", nil, []float64{2}))
-	frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+	frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 	if err != nil || len(frames) != 2 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
 	}
@@ -682,7 +683,7 @@ func TestShapeSQLFrameGivesValueColumnsUniqueLabels(t *testing.T) {
 func TestShapeSQLFrameReturnsNoDataForEmptyTimeSeries(t *testing.T) {
 	frame := data.NewFrame("A", data.NewField("time", nil, []time.Time{}), data.NewField("channel", nil, []string{}), data.NewField("value", nil, []float64{}))
 	frame.Meta = &data.FrameMeta{ExecutedQueryString: "SELECT ..."}
-	frames, err := shapeSQLFrame(frame, nullOrNonFinite)
+	frames, err := shapeSQLFrame(frame, nil, nullOrNonFinite)
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 	}
@@ -724,7 +725,7 @@ func TestShapeSQLFrameTreatsNullLabelsAsEmpty(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			frames, err := shapeSQLFrame(tc.frame, nullOrNonFinite)
+			frames, err := shapeSQLFrame(tc.frame, nil, nullOrNonFinite)
 			if err != nil {
 				t.Fatalf("shapeSQLFrame() error = %v", err)
 			}
@@ -792,9 +793,70 @@ func BenchmarkShapeSQLFrame(b *testing.B) {
 	frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("channel", nil, names), data.NewField("value", nil, values))
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := shapeSQLFrame(frame, nullOrNonFinite); err != nil {
+		if _, err := shapeSQLFrame(frame, []any{times, names, values}, nullOrNonFinite); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func BenchmarkShapeSQLFrameSingle(b *testing.B) {
+	const rows = 1_000_000
+	times := make([]time.Time, rows)
+	values := make([]float64, rows)
+	for i := range rows {
+		times[i] = time.Unix(1700000000, int64(i)*1000).UTC()
+		values[i] = float64(i)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		// The table frame is built per iteration, as in a query, because shaping may keep its fields.
+		frame := data.NewFrame("A", data.NewField("time", nil, times), data.NewField("value", nil, values))
+		if _, err := shapeSQLFrame(frame, []any{times, values}, nullOrNonFinite); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestWholeSeriesKeepsColumns(t *testing.T) {
+	t0 := time.Unix(1700000000, 0).UTC()
+	sorted, unsorted := []time.Time{t0, t0.Add(time.Second)}, []time.Time{t0.Add(time.Second), t0}
+	nan := []float64{1, math.NaN()}
+	for name, tc := range map[string]struct {
+		times    []time.Time
+		values   []float64
+		nulls    nullability
+		kept     bool
+		wantType data.FieldType
+	}{
+		"sorted":                  {sorted, []float64{1, 2}, nullOrNonFinite, true, data.FieldTypeFloat64},
+		"unsorted":                {unsorted, []float64{1, 2}, nullOrNonFinite, false, data.FieldTypeFloat64},
+		"NaN before 13.4":         {sorted, nan, nullOrNonFinite, false, data.FieldTypeNullableFloat64},
+		"NaN from 13.4":           {sorted, nan, nullOnly, true, data.FieldTypeFloat64},
+		"expressions before 13.4": {sorted, []float64{1, 2}, forExpressions, false, data.FieldTypeNullableFloat64},
+	} {
+		t.Run(name, func(t *testing.T) {
+			timeColumn, a, b := data.NewField("time", nil, tc.times), data.NewField("a", nil, tc.values), data.NewField("b", nil, tc.values)
+			frames, err := shapeSQLFrame(data.NewFrame("A", timeColumn, a, b), []any{tc.times, tc.values, tc.values}, tc.nulls)
+			if err != nil || len(frames) != 2 {
+				t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
+			}
+			for i, column := range []*data.Field{a, b} {
+				value := frames[i].Fields[1]
+				if value.Type() != tc.wantType || (value == column) != tc.kept {
+					t.Errorf("series %d: type %s, kept %v; want %s, %v", i, value.Type(), value == column, tc.wantType, tc.kept)
+				}
+				if got := value.Labels["column"]; got != column.Name {
+					t.Errorf("series %d: column label = %q, want %q", i, got, column.Name)
+				}
+			}
+			// The time column is sorted whenever a value column is kept, but only one frame takes it.
+			if got := frames[0].Fields[0] == timeColumn; got != (tc.times[0] == t0) {
+				t.Errorf("first frame kept the time column = %v", got)
+			}
+			if frames[1].Fields[0] == timeColumn || !frames[1].Fields[0].At(0).(time.Time).Equal(t0) {
+				t.Errorf("second frame must hold its own sorted time field")
+			}
+		})
 	}
 }
 
@@ -860,7 +922,7 @@ func TestForExpressionsNullability(t *testing.T) {
 	frames, err := shapeSQLFrame(data.NewFrame("A",
 		data.NewField("time", nil, []time.Time{at, at}),
 		data.NewField("value", nil, []float64{1, 2}),
-	), forExpressions)
+	), nil, forExpressions)
 	if err != nil || len(frames) != 1 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 1", len(frames), err)
 	}
@@ -882,7 +944,7 @@ func TestNullOnlyLeavesOnlyNullsNullable(t *testing.T) {
 		data.NewField("time", nil, []time.Time{at, at, at, at}),
 		data.NewField("channel", nil, []string{"a", "a", "b", "b"}),
 		data.NewField("value", nil, []*float64{new(1.0), nil, new(inf), new(4.0)}),
-	), nullOnly)
+	), nil, nullOnly)
 	if err != nil || len(frames) != 2 {
 		t.Fatalf("shapeSQLFrame() = %d frames, %v; want 2", len(frames), err)
 	}
@@ -897,5 +959,51 @@ func TestNullOnlyLeavesOnlyNullsNullable(t *testing.T) {
 	s := AggregationSeries{Values: []float64{math.NaN(), inf}}
 	if got, ok := s.fieldValues(nullOnly).([]float64); !ok || len(got) != 2 {
 		t.Errorf("fieldValues(nullOnly) = %T, want []float64", s.fieldValues(nullOnly))
+	}
+}
+
+// A stream shaped from its decoded columns must match shaping the table frame alone.
+func TestShapeFromColumnsMatchesFrame(t *testing.T) {
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "ts", Type: &arrow.TimestampType{Unit: arrow.Nanosecond}},
+		{Name: "channel", Type: arrow.BinaryTypes.String},
+		{Name: "ok", Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
+		{Name: "value", Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: "count", Type: arrow.PrimitiveTypes.Int32},
+	}, nil)
+	row := 0
+	stream := sqlArrowStream(t, schema, 3, func(rb *array.RecordBuilder) {
+		for range 8 {
+			rb.Field(0).(*array.TimestampBuilder).Append(arrow.Timestamp(1700000000000000000 + int64(row*7%24)))
+			rb.Field(1).(*array.StringBuilder).Append(fmt.Sprintf("channel_%d", row%3))
+			rb.Field(2).(*array.BooleanBuilder).Append(row%2 == 0)
+			switch value := rb.Field(3).(*array.Float64Builder); row % 5 {
+			case 0:
+				value.AppendNull()
+			case 1:
+				value.Append(math.NaN())
+			default:
+				value.Append(float64(row))
+			}
+			rb.Field(4).(*array.Int32Builder).Append(int32(row))
+			row++
+		}
+	})
+	for _, nulls := range []nullability{nullOrNonFinite, nullOnly, forExpressions} {
+		decode := func(format sqlutil.FormatQueryOption) data.Frames {
+			frames, err := frameFromArrowStream(io.NopCloser(bytes.NewReader(stream)), "A", testRowLimit, format, nulls)
+			if err != nil {
+				t.Fatalf("frameFromArrowStream() error = %v", err)
+			}
+			return frames
+		}
+		want, err := shapeSQLFrame(decode(sqlutil.FormatOptionTable)[0], nil, nulls)
+		if err != nil {
+			t.Fatalf("shapeSQLFrame() error = %v", err)
+		}
+		wantJSON, _ := json.Marshal(want)
+		if gotJSON, err := json.Marshal(decode(sqlutil.FormatOptionTimeSeries)); err != nil || string(gotJSON) != string(wantJSON) {
+			t.Errorf("nullability %d: frames = %s, %v; want %s", nulls, gotJSON, err, wantJSON)
+		}
 	}
 }

@@ -38,7 +38,7 @@ func isText(f arrow.Field) bool {
 func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nulls nullability) (*data.Frame, error) {
 	timeIndex, bodyIndex := sqlLogColumns(fields)
 	if timeIndex < 0 || bodyIndex < 0 {
-		frame, err := tableFrame(name, fields, batches, rows, nulls)
+		frame, _, err := tableFrame(name, fields, batches, rows, nulls)
 		if err != nil {
 			return nil, err
 		}

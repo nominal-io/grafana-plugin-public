@@ -64,10 +64,11 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 	_ = r.Close()
 
 	var frame *data.Frame
+	var columns []any
 	if format == sqlutil.FormatOptionLogs {
 		frame, err = sqlLogFrame(name, fields, batches, int(rows), nulls)
 	} else {
-		frame, err = tableFrame(name, fields, batches, int(rows), nulls)
+		frame, columns, err = tableFrame(name, fields, batches, int(rows), nulls)
 	}
 	if err != nil {
 		return nil, err
@@ -81,15 +82,17 @@ func frameFromArrowStream(r io.ReadCloser, name string, rowLimit int64, format s
 	if format == sqlutil.FormatOptionTable || format == sqlutil.FormatOptionLogs {
 		return data.Frames{frame}, nil
 	}
-	return shapeSQLFrame(frame, nulls)
+	return shapeSQLFrame(frame, columns, nulls)
 }
 
 // tableFrame converts every column of batches to a field of a frame that prefers a table. It
 // converts columns itself because data.FromArrowRecord rejects nested types such as the
-// map<string,string> tags column and assumes nanosecond timestamps.
-func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nulls nullability) (*data.Frame, error) {
+// map<string,string> tags column and assumes nanosecond timestamps. It also returns the slice each
+// field was copied from, a []T or []*T, which is cheaper to read than the field.
+func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, rows int, nulls nullability) (*data.Frame, []any, error) {
 	frame := data.NewFrame(name)
 	frame.Meta = &data.FrameMeta{PreferredVisualization: data.VisTypeTable}
+	columns := make([]any, len(fields))
 	chunks := make([]arrow.Array, len(batches))
 	for i, field := range fields {
 		for b, batch := range batches {
@@ -97,11 +100,12 @@ func tableFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch, 
 		}
 		values, err := columnValues(field, chunks, rows, nulls)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
+			return nil, nil, fmt.Errorf("failed to read column %q: %w", field.Name, err)
 		}
+		columns[i] = values
 		frame.Fields = append(frame.Fields, data.NewField(field.Name, nil, values))
 	}
-	return frame, nil
+	return frame, columns, nil
 }
 
 // columnValues converts one Arrow column, split across record batches, to the values of a Grafana
@@ -290,8 +294,13 @@ func appendMapToken(buf []byte, s string) []byte {
 // shapeSQLFrame splits a time series result into one frame per numeric column and label set, sorted
 // by time, where the result's string and bool columns are the labels. A result without a numeric
 // column uses its string or bool column named value instead. A result without a timestamp and a
-// value column is returned as it came, with a notice.
-func shapeSQLFrame(frame *data.Frame, nulls nullability) (data.Frames, error) {
+// value column is returned as it came, with a notice. columns is nil or holds, for each field, nil
+// or a slice with the field's values. Those slices are only read, and a nullable series may point
+// into them.
+func shapeSQLFrame(frame *data.Frame, columns []any, nulls nullability) (data.Frames, error) {
+	if columns == nil {
+		columns = make([]any, len(frame.Fields))
+	}
 	schema := frame.TimeSeriesSchema()
 	var values []int
 	var skipped []string
@@ -342,11 +351,14 @@ func shapeSQLFrame(frame *data.Frame, nulls nullability) (data.Frames, error) {
 		empty.Meta = frame.Meta
 		return data.Frames{empty}, nil
 	}
-	times, err := fieldTimes(frame.Fields[schema.TimeIndex])
-	if err != nil {
-		return nil, err
+	times, ok := columns[schema.TimeIndex].([]time.Time)
+	if !ok {
+		var err error
+		if times, err = fieldTimes(frame.Fields[schema.TimeIndex]); err != nil {
+			return nil, err
+		}
 	}
-	return splitSeries(frame, schema.TimeIndex, factors, values, times, timeOrder(times), nulls), nil
+	return splitSeries(frame, columns, schema.TimeIndex, factors, values, times, nulls), nil
 }
 
 // nullTimeError is a fault in the query, so sqlErrorResponse returns it as a bad request rather
@@ -391,9 +403,9 @@ func timeOrder(times []time.Time) []int {
 }
 
 // splitSeries returns one frame per value column and label set, ordered by column and then labels,
-// visiting rows in order when it is not nil. Value fields point at frame's values, so it allocates
-// per series rather than per row.
-func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times []time.Time, order []int, nulls nullability) data.Frames {
+// with rows sorted by time. It allocates per series rather than per row.
+func splitSeries(frame *data.Frame, columns []any, timeIndex int, factors, values []int, times []time.Time, nulls nullability) data.Frames {
+	order := timeOrder(times)
 	labelValues := make([]string, len(factors))
 	seriesIDs := make(map[string]int)
 	var seriesLabels []data.Labels
@@ -421,7 +433,11 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 			seriesIDs[string(key)] = id
 			seriesLabels = append(seriesLabels, labels)
 			seriesNames = append(seriesNames, strings.Join(labelValues, " "))
-			seriesRows = append(seriesRows, nil)
+			var rows []int
+			if len(factors) == 0 {
+				rows = make([]int, 0, len(times)) // Every row joins this one series.
+			}
+			seriesRows = append(seriesRows, rows)
 		}
 		seriesRows[id] = append(seriesRows[id], row)
 	}
@@ -433,15 +449,17 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 	}
 	slices.SortFunc(ids, func(a, b int) int { return strings.Compare(labelKeys[a], labelKeys[b]) })
 
-	timeName := frame.Fields[timeIndex].Name
+	timeColumn := frame.Fields[timeIndex]
+	var seriesTimes []time.Time // Reused, because NewField copies it.
 	var frames data.Frames
 	for _, index := range values {
 		column := frame.Fields[index]
-		var scratch any // Holds a typed slice for this column's series.
+		gather := seriesGatherer(column, columns[index], nulls)
 		for _, id := range ids {
 			rows := seriesRows[id]
-			seriesTimes := make([]time.Time, len(rows))
-			field := seriesField(column, rows, nulls, &scratch)
+			// A series that holds every row in its original order can keep frame's fields.
+			whole := order == nil && len(rows) == len(times)
+			field := gather(rows, whole)
 			field.Name, field.Labels = column.Name, seriesLabels[id]
 			name := seriesNames[id]
 			if len(values) > 1 {
@@ -456,10 +474,16 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 			if name = strings.TrimSpace(name); name != "" {
 				field.Config = &data.FieldConfig{DisplayNameFromDS: name}
 			}
-			for i, row := range rows {
-				seriesTimes[i] = times[row]
+			timeField := timeColumn
+			// Only the first frame keeps the time column, so that no two frames share a field.
+			if !whole || timeColumn.Nullable() || index != values[0] {
+				seriesTimes = slices.Grow(seriesTimes[:0], len(rows))
+				for _, row := range rows {
+					seriesTimes = append(seriesTimes, times[row])
+				}
+				timeField = data.NewField(timeColumn.Name, nil, seriesTimes)
 			}
-			series := data.NewFrame(frame.Name, data.NewField(timeName, nil, seriesTimes), field)
+			series := data.NewFrame(frame.Name, timeField, field)
 			series.Meta = frame.Meta
 			frames = append(frames, series)
 		}
@@ -467,63 +491,75 @@ func splitSeries(frame *data.Frame, timeIndex int, factors, values []int, times 
 	return frames
 }
 
-// seriesField returns a field of column's type holding its values at rows, nullable as nulls
-// decides from the series' own rows rather than the column's. Copies are typed so that no value
-// is boxed.
-func seriesField(column *data.Field, rows []int, nulls nullability, scratch *any) *data.Field {
+// seriesGatherer returns a function that copies column's values at rows into a field of its type,
+// nullable as nulls decides from those rows rather than from the column. When rows is whole,
+// meaning every row in order, it returns column itself if that needs no change. original is nil
+// or the slice column was copied from, which is cheaper to read. Copies are typed so that no
+// value is boxed.
+func seriesGatherer(column *data.Field, original any, nulls nullability) func(rows []int, whole bool) *data.Field {
 	switch column.Type().NonNullableType() {
 	case data.FieldTypeInt8:
-		return gather[int8](column, rows, nulls, scratch)
+		return gatherer[int8](column, original, nulls)
 	case data.FieldTypeInt16:
-		return gather[int16](column, rows, nulls, scratch)
+		return gatherer[int16](column, original, nulls)
 	case data.FieldTypeInt32:
-		return gather[int32](column, rows, nulls, scratch)
+		return gatherer[int32](column, original, nulls)
 	case data.FieldTypeInt64:
-		return gather[int64](column, rows, nulls, scratch)
+		return gatherer[int64](column, original, nulls)
 	case data.FieldTypeUint8:
-		return gather[uint8](column, rows, nulls, scratch)
+		return gatherer[uint8](column, original, nulls)
 	case data.FieldTypeUint16:
-		return gather[uint16](column, rows, nulls, scratch)
+		return gatherer[uint16](column, original, nulls)
 	case data.FieldTypeUint32:
-		return gather[uint32](column, rows, nulls, scratch)
+		return gatherer[uint32](column, original, nulls)
 	case data.FieldTypeUint64:
-		return gather[uint64](column, rows, nulls, scratch)
+		return gatherer[uint64](column, original, nulls)
 	case data.FieldTypeFloat32:
-		return gather[float32](column, rows, nulls, scratch)
+		return gatherer[float32](column, original, nulls)
 	case data.FieldTypeFloat64:
-		return gather[float64](column, rows, nulls, scratch)
+		return gatherer[float64](column, original, nulls)
 	case data.FieldTypeString:
-		return gather[string](column, rows, nulls, scratch)
+		return gatherer[string](column, original, nulls)
 	default: // bool, the only other value type
-		return gather[bool](column, rows, nulls, scratch)
+		return gatherer[bool](column, original, nulls)
 	}
 }
 
-// gather copies column's values at rows into a field that is nullable when nulls says so.
-func gather[T any](column *data.Field, rows []int, nulls nullability, scratch *any) *data.Field {
-	at := column.PointerAt
-	if column.Nullable() {
-		at = column.At
+func gatherer[T any](column *data.Field, original any, nulls nullability) func(rows []int, whole bool) *data.Field {
+	var ptr func(row int) *T
+	switch o := original.(type) {
+	case []T:
+		ptr = func(row int) *T { return &o[row] }
+	case []*T:
+		ptr = func(row int) *T { return o[row] }
+	default:
+		at := column.PointerAt
+		if column.Nullable() {
+			at = column.At
+		}
+		ptr = func(row int) *T { return at(row).(*T) }
 	}
-	ptr := func(row int) *T { return at(row).(*T) }
-	if nulls == forExpressions {
-		return gatherNullable(column.Type(), rows, ptr)
-	}
-	values, _ := (*scratch).([]T)
-	if cap(values) < len(rows) {
-		values = make([]T, len(rows))
-		*scratch = values
-	}
-	values = values[:len(rows)]
-	for i, row := range rows {
-		p := ptr(row)
-		if p == nil || nulls != nullOnly && nonFiniteValue(*p) {
+	var scratch []T // Reused across series, because NewField copies it.
+	return func(rows []int, whole bool) *data.Field {
+		if nulls == forExpressions {
 			return gatherNullable(column.Type(), rows, ptr)
 		}
-		values[i] = *p
+		if whole && !column.Nullable() && (nulls == nullOnly || !slices.ContainsFunc(rows, func(row int) bool { return nonFiniteValue(*ptr(row)) })) {
+			return column
+		}
+		if cap(scratch) < len(rows) {
+			scratch = make([]T, len(rows))
+		}
+		values := scratch[:len(rows)]
+		for i, row := range rows {
+			p := ptr(row)
+			if p == nil || nulls != nullOnly && nonFiniteValue(*p) {
+				return gatherNullable(column.Type(), rows, ptr)
+			}
+			values[i] = *p
+		}
+		return data.NewField("", nil, values)
 	}
-	// NewField copies values, so the next series can overwrite the scratch slice.
-	return data.NewField("", nil, values)
 }
 
 func gatherNullable[T any](t data.FieldType, rows []int, ptr func(int) *T) *data.Field {
