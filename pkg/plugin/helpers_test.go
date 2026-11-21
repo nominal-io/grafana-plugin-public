@@ -17,6 +17,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
+	sdklog "github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/nominal-io/nominal-api-go/api/rids"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
@@ -810,4 +811,22 @@ func createMockLogPointResult(message string, args map[string]string) computeapi
 	return computeapi.ComputeWithUnitsResult{
 		ComputeResult: computeResult,
 	}
+}
+
+// errorCountingLogger counts Error calls and discards everything else.
+type errorCountingLogger struct {
+	sdklog.Logger
+	errors atomic.Int32
+}
+
+func (l *errorCountingLogger) Error(string, ...any) { l.errors.Add(1) }
+
+// countErrorLogs installs an errorCountingLogger as the default logger for the test.
+func countErrorLogs(t *testing.T) *errorCountingLogger {
+	t.Helper()
+	logger := &errorCountingLogger{Logger: sdklog.NewNullLogger()}
+	previous := sdklog.DefaultLogger
+	sdklog.DefaultLogger = logger
+	t.Cleanup(func() { sdklog.DefaultLogger = previous })
+	return logger
 }

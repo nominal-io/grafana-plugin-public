@@ -14,6 +14,7 @@ import (
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	authapi "github.com/nominal-io/nominal-api-go/authentication/api"
 	computeapi1 "github.com/nominal-io/nominal-api-go/scout/compute/api1"
+	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
 	"github.com/palantir/pkg/uuid"
@@ -524,5 +525,47 @@ func TestAsyncKillFlushCarriesIdentity(t *testing.T) {
 	mu.Unlock()
 	if !strings.HasPrefix(got, "nominal-grafana/9.9.9-test") {
 		t.Errorf("kill flush UA = %q, want prefix %q", got, "nominal-grafana/9.9.9-test")
+	}
+}
+
+// A request that Grafana cancels, such as a dropdown search replaced by a newer one,
+// is not logged as an error. One that fails on its own still is.
+func TestCancelledResourceRequestIsNotLoggedAsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	conjureClient, err := conjurehttpclient.NewClient(conjurehttpclient.WithBaseURLs([]string{srv.URL}), conjurehttpclient.WithMaxRetries(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		path      string
+		body      string
+		cancelled bool
+		wantLogs  int32
+	}{
+		{"cancelled channel search", "channels", `{"dataSourceRids":["ri.catalog.main.dataset.a"]}`, true, 0},
+		{"cancelled asset search", "search-assets", `{"query":{"type":"searchText","searchText":""}}`, true, 0},
+		{"failed channel search", "channels", `{"dataSourceRids":["ri.catalog.main.dataset.a"]}`, false, 1},
+		{"failed asset search", "search-assets", `{"query":{"type":"searchText","searchText":""}}`, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := countErrorLogs(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			if tc.cancelled {
+				cancel()
+			} else {
+				defer cancel()
+			}
+			ds := newTestDatasource(srv.URL, &mockAuthService{}, datasourceservice.NewDataSourceServiceClient(conjureClient))
+			err := ds.CallResource(ctx, &backend.CallResourceRequest{Path: tc.path, Method: http.MethodPost, Body: []byte(tc.body)},
+				backend.CallResourceResponseSenderFunc(func(*backend.CallResourceResponse) error { return nil }))
+			if err != nil || logger.errors.Load() != tc.wantLogs {
+				t.Errorf("CallResource error = %v, error logs = %d; want nil and %d", err, logger.errors.Load(), tc.wantLogs)
+			}
+		})
 	}
 }
