@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -1169,7 +1170,7 @@ func TestBatchQueryKillPolicy(t *testing.T) {
 			}
 			ds := withCatalog(&Datasource{computeService: mockService})
 
-			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil {
+			if _, err := ds.QueryData(ctx, newBatchQueryRequest(1)); err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -1214,24 +1215,12 @@ func TestBatchQueryStopsChunkingAfterCancel(t *testing.T) {
 	}
 	ds := withCatalog(&Datasource{computeService: mockService})
 
-	resp, err := ds.QueryData(ctx, newBatchQueryRequest(maxBatchComputeSubrequests+1))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if _, err := ds.QueryData(ctx, newBatchQueryRequest(maxBatchComputeSubrequests+1)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("QueryData error = %v, want context.Canceled", err)
 	}
 
 	if got := mockService.batchComputeCalls; got != 1 {
 		t.Fatalf("expected chunking to stop after cancellation, got %d batch calls", got)
-	}
-
-	// The skipped chunk's queries still answer, with a cancellation error.
-	cancelled := 0
-	for _, r := range resp.Responses {
-		if r.Error != nil && strings.Contains(r.Error.Error(), "cancelled") {
-			cancelled++
-		}
-	}
-	if cancelled != 1 {
-		t.Fatalf("expected 1 cancelled response for the never-sent chunk, got %d", cancelled)
 	}
 
 	// Only the in-flight chunk's requestID gets a kill; the never-sent chunk

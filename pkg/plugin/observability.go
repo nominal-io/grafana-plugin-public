@@ -157,11 +157,17 @@ func extractErrorDetails(err error) errorDetails {
 // logErrorWithConjureFields logs at error level with structured Conjure error
 // taxonomy (instance ID, code, name) appended. extra is the caller's existing
 // key/value fields, applied after the standard "error" + Conjure fields.
+// A cancelled request logs at debug level: Grafana cancels a request when a newer
+// one replaces it, such as a dropdown search, and nothing reads the reply.
 func logErrorWithConjureFields(msg string, err error, extra ...any) {
 	fields := make([]any, 0, len(extra)+2+6)
 	fields = append(fields, "error", err)
 	fields = append(fields, errorFieldsFromConjure(err)...)
 	fields = append(fields, extra...)
+	if errors.Is(err, context.Canceled) {
+		log.DefaultLogger.Debug(msg, fields...)
+		return
+	}
 	log.DefaultLogger.Error(msg, fields...)
 }
 
