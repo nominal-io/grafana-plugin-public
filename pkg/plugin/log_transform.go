@@ -103,8 +103,10 @@ var emptyLogLabels = json.RawMessage("{}")
 
 type logLabelEncoder struct {
 	defaultLabels json.RawMessage
-	keys          []string
+	labels        []logLabel
 }
+
+type logLabel struct{ key, value string }
 
 func newLogLabelEncoder(channel string) logLabelEncoder {
 	return logLabelEncoder{defaultLabels: defaultLogLabelsForChannel(channel)}
@@ -113,39 +115,48 @@ func newLogLabelEncoder(channel string) logLabelEncoder {
 // encode writes args as a JSON object with sorted keys, then nominal.channel when the
 // encoder has a channel and args lack it, so labels keep a stable order across rows.
 func (e *logLabelEncoder) encode(args map[string]string) json.RawMessage {
+	e.labels = e.labels[:0]
+	for k, v := range args {
+		e.labels = append(e.labels, logLabel{k, v})
+	}
+	return e.encodeLabels(e.labels)
+}
+
+// encodeLabels is encode for labels that may repeat a key, where the first one wins. It sorts
+// labels in place.
+func (e *logLabelEncoder) encodeLabels(labels []logLabel) json.RawMessage {
 	defaults := e.defaultLabels
 	if len(defaults) == 0 {
 		defaults = emptyLogLabels
 	}
-	if len(args) == 0 {
+	if len(labels) == 0 {
 		// Returns the shared defaults slice; callers must treat it as read-only.
 		return defaults
 	}
+	slices.SortStableFunc(labels, func(a, b logLabel) int { return strings.Compare(a.key, b.key) })
+	labels = slices.CompactFunc(labels, func(a, b logLabel) bool { return a.key == b.key })
 	// Defaults longer than "{}" carry the nominal.channel key.
-	_, exists := args[nominalChannelLabel]
-	injectChannel := len(defaults) > len(emptyLogLabels) && !exists
+	injectChannel := len(defaults) > len(emptyLogLabels) &&
+		!slices.ContainsFunc(labels, func(l logLabel) bool { return l.key == nominalChannelLabel })
 
 	size := 2
 	if injectChannel {
 		size += len(defaults)
 	}
-	e.keys = e.keys[:0]
-	for k, v := range args {
-		e.keys = append(e.keys, k)
-		size += len(k) + len(v) + 6
+	for _, l := range labels {
+		size += len(l.key) + len(l.value) + 6
 	}
-	slices.Sort(e.keys)
 
 	labelsJSON := make([]byte, 0, size)
 	labelsJSON = append(labelsJSON, '{')
-	for i, k := range e.keys {
+	for i, l := range labels {
 		if i > 0 {
 			labelsJSON = append(labelsJSON, ',')
 		}
 		// AppendQuote only errors on invalid UTF-8, which it replaces with U+FFFD.
-		labelsJSON, _ = jsontext.AppendQuote(labelsJSON, k)
+		labelsJSON, _ = jsontext.AppendQuote(labelsJSON, l.key)
 		labelsJSON = append(labelsJSON, ':')
-		labelsJSON, _ = jsontext.AppendQuote(labelsJSON, args[k])
+		labelsJSON, _ = jsontext.AppendQuote(labelsJSON, l.value)
 	}
 	if injectChannel {
 		// defaults is {"nominal.channel":"..."}; drop its '{' and keep its '}'.

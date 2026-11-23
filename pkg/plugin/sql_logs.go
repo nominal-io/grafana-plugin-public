@@ -64,12 +64,7 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 	}
 	lines := newLogLines(rows)
 	enc := newLogLabelEncoder("")
-	labels := map[string]string{}
-	addLabel := func(k, v string) {
-		if _, ok := labels[k]; !ok {
-			labels[k] = v
-		}
-	}
+	var labels []logLabel
 	for _, batch := range batches {
 		times := batch.Column(timeIndex)
 		timeAt := timeReader(times)
@@ -78,10 +73,10 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 			if times.IsNull(i) {
 				return nil, &nullTimeError{column: fields[timeIndex].Name}
 			}
-			clear(labels)
+			labels = labels[:0]
 			for _, c := range labelColumns {
 				if col := batch.Column(c); !col.IsNull(i) {
-					addLabel(fields[c].Name, col.ValueStr(i))
+					labels = append(labels, logLabel{fields[c].Name, col.ValueStr(i)})
 				}
 			}
 			// An entry of the args map uses its key as the label name. Entries of other maps, and an args
@@ -103,10 +98,10 @@ func sqlLogFrame(name string, fields []arrow.Field, batches []arrow.RecordBatch,
 					if !plain || columnLabels[key] {
 						key = fields[c].Name + "." + key
 					}
-					addLabel(key, items.ValueStr(j))
+					labels = append(labels, logLabel{key, items.ValueStr(j)})
 				}
 			}
-			encoded := enc.encode(labels)
+			encoded := enc.encodeLabels(labels)
 
 			var body string
 			if !bodies.IsNull(i) {

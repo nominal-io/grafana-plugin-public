@@ -227,3 +227,45 @@ func TestSQLLogsShape(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkSQLLogFrame reads 100k log rows whose labels repeat across rows, or with unique set,
+// differ on every row.
+func BenchmarkSQLLogFrame(b *testing.B) {
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: "ts", Type: testTimestampType},
+		{Name: "message", Type: arrow.BinaryTypes.String},
+		{Name: "host", Type: arrow.BinaryTypes.String},
+		{Name: "level", Type: arrow.BinaryTypes.String},
+		{Name: "args", Type: arrow.MapOf(arrow.BinaryTypes.String, arrow.BinaryTypes.String)},
+	}, nil)
+	for _, unique := range []bool{false, true} {
+		b.Run("unique="+strconv.FormatBool(unique), func(b *testing.B) {
+			row := 0
+			stream := sqlArrowStream(b, schema, 2, func(rb *array.RecordBuilder) {
+				args := rb.Field(4).(*array.MapBuilder)
+				keys, items := args.KeyBuilder().(*array.StringBuilder), args.ItemBuilder().(*array.StringBuilder)
+				for range 50_000 {
+					n := strconv.Itoa(row)
+					rb.Field(0).(*array.TimestampBuilder).Append(arrow.Timestamp(1_700_000_000_000_000 - int64(row)*1000))
+					rb.Field(1).(*array.StringBuilder).Append("GET /api/v1/items/" + n)
+					rb.Field(2).(*array.StringBuilder).Append("host-" + strconv.Itoa(row%5))
+					rb.Field(3).(*array.StringBuilder).Append([]string{"debug", "info", "warn", "error"}[row%4])
+					args.Append(true)
+					keys.AppendValues([]string{"thread", "user", "status"}, nil)
+					items.AppendValues([]string{strconv.Itoa(row % 8), "user-" + strconv.Itoa(row%50), strconv.Itoa(200 + row%3)}, nil)
+					if unique {
+						keys.Append("request")
+						items.Append("req-" + n)
+					}
+					row++
+				}
+			})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := frameFromArrowStream(io.NopCloser(bytes.NewReader(stream)), "A", testRowLimit, sqlutil.FormatOptionLogs); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
