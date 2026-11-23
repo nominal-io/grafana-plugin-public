@@ -821,6 +821,9 @@ type errorCountingLogger struct {
 
 func (l *errorCountingLogger) Error(string, ...any) { l.errors.Add(1) }
 
+// FromContext keeps counting: the SDK request logger logs through the context logger.
+func (l *errorCountingLogger) FromContext(context.Context) sdklog.Logger { return l }
+
 // countErrorLogs installs an errorCountingLogger as the default logger for the test.
 func countErrorLogs(t *testing.T) *errorCountingLogger {
 	t.Helper()

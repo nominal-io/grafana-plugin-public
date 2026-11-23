@@ -232,7 +232,14 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 
 	execution := newNominalQueryExecution(d, config)
 	execution.fromAlert = req.Headers[backend.FromAlertHeaderName] == "true"
-	return execution.Execute(ctx, req.Queries), nil
+	response = execution.Execute(ctx, req.Queries)
+	// Grafana discards the reply to a query it cancelled, such as one a dashboard refresh
+	// replaced. Returning the cancellation lets the SDK log the request as cancelled
+	// instead of logging each query's error response as a failure.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, ctx.Err()
+	}
+	return response, nil
 }
 
 // CheckHealth handles health checks sent from Grafana to the plugin.

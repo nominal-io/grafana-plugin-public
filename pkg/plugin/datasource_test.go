@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -109,4 +110,50 @@ func TestKillDeliverySurvivesDispose(t *testing.T) {
 	// requests, and those are exactly the kills this exists to deliver.
 	ds.enqueueKill(uuid.NewUUID(), target)
 	waitForCondition(t, 2*time.Second, func() bool { return len(mockService.killCallsSnapshot()) == 2 })
+}
+
+// queryHandler serves only QueryData, so a test can run it behind SDK middlewares.
+type queryHandler struct {
+	backend.BaseHandler
+	ds *Datasource
+}
+
+func (h queryHandler) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
+	return h.ds.QueryData(ctx, req)
+}
+
+// Grafana cancels a query when a dashboard refresh replaces it and discards the reply, so the
+// SDK request logger records it as cancelled instead of logging failed queries.
+func TestCancelledQueryIsNotLoggedAsError(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		cancelled  bool
+		wantErrors bool
+	}{
+		{"cancelled query", true, false},
+		{"failed query", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := countErrorLogs(t)
+			ds := newTestDatasource("https://api.test", &mockAuthService{}, nil)
+			ds.computeService = &mockComputeService{batchComputeError: errors.New("compute failed")}
+			handler, err := backend.HandlerFromMiddlewares(queryHandler{ds: ds}, backend.NewLoggerMiddleware(logger, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancelled {
+				cancel()
+			}
+			query := NominalQueryModel{AssetRid: "ri.scout.main.asset.a", DataScopeName: "default", Channel: "temp", ChannelDataType: "numeric"}
+			_, _ = handler.QueryData(ctx, &backend.QueryDataRequest{
+				PluginContext: backend.PluginContext{DataSourceInstanceSettings: &ds.settings},
+				Queries:       []backend.DataQuery{{RefID: "A", JSON: mustMarshal(query), TimeRange: backend.TimeRange{From: time.Unix(0, 0), To: time.Unix(3600, 0)}}},
+			})
+			if got := logger.errors.Load() > 0; got != tc.wantErrors {
+				t.Errorf("logged errors = %v, want %v (%d error logs)", got, tc.wantErrors, logger.errors.Load())
+			}
+		})
+	}
 }
