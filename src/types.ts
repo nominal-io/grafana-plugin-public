@@ -7,7 +7,8 @@ export const QUERY_TYPE_SQL = 'sql' as const;
 export const QUERY_TYPE_EVENTS = 'events' as const;
 
 export interface NominalQuery extends DataQuery {
-  // Asset information
+  // A query reads from a dataset or an asset, not both. A dataset has no data scope.
+  datasetRid?: string;
   assetRid?: string;
   channel?: string;
   dataScopeName?: string;
@@ -33,6 +34,11 @@ export interface NominalQuery extends DataQuery {
   queryText?: string;
   constant?: number;
 }
+
+export const isDatasetQuery = (q?: Partial<NominalQuery>) => Boolean(q?.datasetRid?.trim());
+
+export const isCompleteComputeQuery = (q?: Partial<NominalQuery>) =>
+  Boolean(q?.channel?.trim() && (isDatasetQuery(q) || (q?.assetRid?.trim() && q?.dataScopeName?.trim())));
 
 // Aggregation enum values matching the API. Keep in sync with Go constants in pkg/plugin/aggregation.go.
 export const AggregationType = {

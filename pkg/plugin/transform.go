@@ -139,6 +139,19 @@ func (e *NominalQueryExecution) transformBatchResult(result computeapi.ComputeWi
 				errMsg += ". Hint: The channel type in this query doesn't match what the API expects. " +
 					"Re-select the channel from the dropdown to update its type."
 			}
+			// A channel kept across an asset or dataset change may not exist in the new source.
+			// A dataset that does not exist, or that the user cannot read, returns this same error.
+			if strings.Contains(errType, "UnableToResolve") {
+				errMsg = fmt.Sprintf("Channel %q not found in data scope %q (%s)", qm.Channel, qm.DataScopeName, errType)
+				if qm.DatasetRid != "" {
+					errMsg = fmt.Sprintf("Channel %q or dataset %s not found (%s)", qm.Channel, qm.DatasetRid, errType)
+				}
+			}
+			// An asset without the data scope returns this, for example after a $scope variable
+			// outlives a change of asset.
+			if strings.Contains(errType, "SelectSeriesResolvedNoChannels") && qm.DatasetRid == "" {
+				errMsg = fmt.Sprintf("No data for channel %q in data scope %q. Check the data scope and time range. (%s)", qm.Channel, qm.DataScopeName, errType)
+			}
 
 			response = backend.ErrDataResponse(
 				backend.StatusInternal,

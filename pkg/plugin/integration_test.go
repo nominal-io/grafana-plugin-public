@@ -175,15 +175,11 @@ func TestLiveNominalQueries(t *testing.T) {
 	settings := liveNominalSettings(t)
 	target := createLiveNominalQueryTarget(t, settings)
 	ds := liveNominalDatasource(t, settings)
-	t.Run("Numeric", func(t *testing.T) {
-		source := NominalQueryModel{AssetRid: target.assetRid, DataScopeName: target.dataScopeName}
-		testLiveNominalNumeric(t, settings, ds, target, source, liveNominalChannelName)
-	})
-	t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target) })
-	t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target) })
-	t.Run("Logs", func(t *testing.T) {
-		testLiveNominalLogs(t, settings, ds, NominalQueryModel{AssetRid: target.assetRid, DataScopeName: target.dataScopeName})
-	})
+	asset := NominalQueryModel{AssetRid: target.assetRid, DataScopeName: target.dataScopeName}
+	t.Run("Numeric", func(t *testing.T) { testLiveNominalNumeric(t, settings, ds, target, asset, liveNominalChannelName) })
+	t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target, asset) })
+	t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target, asset) })
+	t.Run("Logs", func(t *testing.T) { testLiveNominalLogs(t, settings, ds, asset) })
 	t.Run("SQL", func(t *testing.T) { testLiveNominalSQL(t, settings, ds, target) })
 	t.Run("SQLLogs", func(t *testing.T) { testLiveNominalSQLLogs(t, settings, ds, target) })
 	t.Run("DataScopeSelection", func(t *testing.T) {
@@ -196,6 +192,14 @@ func TestLiveNominalQueries(t *testing.T) {
 				testLiveNominalNumeric(t, settings, ds, target, source, tc.column)
 			})
 		}
+	})
+	// The asset's primary data scope is target's dataset, so reading the dataset directly gives the same values.
+	t.Run("Dataset", func(t *testing.T) {
+		dataset := NominalQueryModel{DatasetRid: target.datasetRid}
+		t.Run("Numeric", func(t *testing.T) { testLiveNominalNumeric(t, settings, ds, target, dataset, liveNominalChannelName) })
+		t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target, dataset) })
+		t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target, dataset) })
+		t.Run("Logs", func(t *testing.T) { testLiveNominalLogs(t, settings, ds, dataset) })
 	})
 }
 
@@ -287,11 +291,10 @@ func testLiveNominalNumeric(t *testing.T, settings backend.DataSourceInstanceSet
 	assertLiveNominalNumericResponse(t, response, target.channel, expected)
 }
 
-func testLiveNominalLTTB(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
-	query := NominalQueryModel{
-		AssetRid: target.assetRid, Channel: target.channel, DataScopeName: target.dataScopeName,
-		ChannelDataType: ChannelDataTypeNumeric, Aggregations: []string{AggLTTB},
-	}
+func testLiveNominalLTTB(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget, source NominalQueryModel) {
+	query := source
+	query.Channel, query.ChannelDataType = target.channel, ChannelDataTypeNumeric
+	query.Aggregations = []string{AggLTTB}
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
 		Queries: []backend.DataQuery{{
@@ -333,12 +336,10 @@ func testLiveNominalLTTB(t *testing.T, settings backend.DataSourceInstanceSettin
 	}
 }
 
-func testLiveNominalString(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget) {
+func testLiveNominalString(t *testing.T, settings backend.DataSourceInstanceSettings, ds *Datasource, target liveNominalQueryTarget, source NominalQueryModel) {
 	// 20 buckets over 11 minutes are 33 s wide, so each one-per-minute sample has its own bucket.
-	query := NominalQueryModel{
-		AssetRid: target.assetRid, Channel: "state", DataScopeName: target.dataScopeName,
-		ChannelDataType: ChannelDataTypeString,
-	}
+	query := source
+	query.Channel, query.ChannelDataType = "state", ChannelDataTypeString
 	request := &backend.QueryDataRequest{
 		PluginContext: backend.PluginContext{DataSourceInstanceSettings: &settings},
 		Queries: []backend.DataQuery{{

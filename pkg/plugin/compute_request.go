@@ -79,8 +79,8 @@ func enumBucketCount(timeRange backend.TimeRange, n int) int {
 // series shape and its summarization strategy, so adding a new channel kind is a single
 // case here rather than coordinated edits across separate series/summarization helpers.
 func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange backend.TimeRange) (computeapi1.SummarizeSeries, backend.TimeRange) {
-	// A bare select is grouped by ASSET_RID and DATA_SCOPE; selectTags([]) collapses the
-	// result to a single series.
+	// A bare select can come back grouped by tags (ASSET_RID and DATA_SCOPE for an asset);
+	// selectTags([]) collapses the result to a single series.
 	selectSeries := computeapi1.SelectSeries{
 		Name:    new(computeapi.NewStringConstantFromLiteral(qm.Channel)),
 		Dataset: new(buildDataset(qm)),
@@ -160,12 +160,18 @@ func (e *NominalQueryExecution) buildSeriesPlan(qm NominalQueryModel, timeRange 
 	}
 }
 
-// buildDataset selects the asset's series restricted to one data scope.
+// buildDataset selects a saved dataset directly, or an asset's series restricted to
+// one data scope.
 //
 // The scope predicate belongs on the Dataset: outside selectTags([]) the server
 // rejects it, and without it an asset with several scopes merges every scope into
 // one series.
 func buildDataset(qm NominalQueryModel) computeapi1.Dataset {
+	if qm.DatasetRid != "" {
+		return computeapi1.NewDatasetFromSaved(computeapi.SavedDataset{
+			Rid: computeapi.NewStringConstantFromLiteral(qm.DatasetRid),
+		})
+	}
 	asset := computeapi1.NewDatasetFromAsset(computeapi.Asset{
 		Rid: computeapi.NewStringConstantFromVariable(assetRidVariableName),
 	})
@@ -180,8 +186,9 @@ func buildDataset(qm NominalQueryModel) computeapi1.Dataset {
 
 // buildComputeContext creates the context with variables for the compute request.
 func (e *NominalQueryExecution) buildComputeContext(qm NominalQueryModel) computeapi1.Context {
-	variables := map[computeapi.VariableName]computeapi1.VariableValue{
-		assetRidVariableName: computeapi1.NewVariableValueFromString(qm.AssetRid),
+	variables := map[computeapi.VariableName]computeapi1.VariableValue{}
+	if qm.AssetRid != "" {
+		variables[assetRidVariableName] = computeapi1.NewVariableValueFromString(qm.AssetRid)
 	}
 
 	if qm.TemplateVariables != nil {

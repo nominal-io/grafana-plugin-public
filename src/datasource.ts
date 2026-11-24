@@ -14,7 +14,7 @@ import {
 import { map, Observable } from 'rxjs';
 import { DataSourceWithBackend, getDataSourceSrv, getTemplateSrv, getBackendSrv, config, type VariableInterpolation } from '@grafana/runtime';
 
-import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, QUERY_TYPE_EVENTS, annotationMode } from './types';
+import { NominalQuery, NominalDataSourceOptions, DEFAULT_QUERY, QUERY_TYPE_SQL, QUERY_TYPE_EVENTS, annotationMode, isCompleteComputeQuery } from './types';
 import { sqlInterpolateVariable } from './utils/sqlInterpolation';
 import { NominalVariableSupport } from './variables';
 import { AnnotationEditor } from './components/AnnotationEditor';
@@ -82,7 +82,7 @@ interface Run {
 interface PageQuery extends NominalQuery {
   scrollId?: string;
   scrollNewer?: boolean;
-  templateSources?: { assetRid?: string };
+  templateSources?: { assetRid?: string; datasetRid?: string };
 }
 
 const runs = new Map<string, Run>();
@@ -97,7 +97,7 @@ const widen = (a: Edges, b: Edges): Edges => ({
 });
 // A run's scroll pages repeat its query.
 const querySignature = (q: NominalQuery) =>
-  JSON.stringify([q.queryType, q.rawSql, q.assetRid, q.dataScopeName, q.channel, q.channelDataType]);
+  JSON.stringify([q.queryType, q.rawSql, q.datasetRid, q.assetRid, q.dataScopeName, q.channel, q.channelDataType]);
 
 // continuesFrom returns the line a query's scroll page continues from, or undefined for Grafana's range.
 function continuesFrom(run: Run, q: QueryRun, newer: boolean, bound: number): Edge | undefined {
@@ -248,7 +248,8 @@ function withTemplateSources(query: NominalQuery): PageQuery {
     return query;
   }
   const assetRid = source(query.assetRid);
-  return assetRid ? { ...query, templateSources: { assetRid } } : query;
+  const datasetRid = source(query.datasetRid);
+  return assetRid || datasetRid ? { ...query, templateSources: { assetRid, datasetRid } } : query;
 }
 
 export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataSourceOptions> {
@@ -491,6 +492,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       ...query,
       queryText: getTemplateSrv().replace(query.queryText || '', scopedVars),
       assetRid: getTemplateSrv().replace(query.assetRid || '', scopedVars),
+      datasetRid: getTemplateSrv().replace(query.datasetRid || '', scopedVars),
       channel: getTemplateSrv().replace(query.channel || '', scopedVars),
       dataScopeName: getTemplateSrv().replace(query.dataScopeName || '', scopedVars),
     };
@@ -509,14 +511,7 @@ export class DataSource extends DataSourceWithBackend<NominalQuery, NominalDataS
       return !!query.assetRid?.trim();
     }
 
-    const queryText = query.queryText?.trim();
-    const assetRid = query.assetRid?.trim();
-    const channel = query.channel?.trim();
-    const dataScopeName = query.dataScopeName?.trim();
-
-    // Allow queries with either legacy queryText or new Nominal parameters.
-    // All three fields (assetRid, channel, dataScopeName) are required for a valid Nominal query.
-    return !!(queryText || (assetRid && channel && dataScopeName));
+    return !!query.queryText?.trim() || isCompleteComputeQuery(query);
   }
 
   /**
