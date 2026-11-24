@@ -8,7 +8,7 @@ import { useAssetSelection } from './useAssetSelection';
 
 const publish = jest.fn();
 jest.mock('@grafana/runtime', () => ({
-  getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v })),
+  getTemplateSrv: jest.fn(() => ({ replace: (v: string) => v, getVariables: () => [] })),
   getAppEvents: jest.fn(() => ({ publish })),
 }));
 
@@ -219,6 +219,19 @@ describe('useAssetSelection', () => {
 
     expect(publish).not.toHaveBeenCalled();
     expect(mockFetchAssetByRid).not.toHaveBeenCalled();
+  });
+
+  it('loader suppresses alert for a search superseded by a $ search', async () => {
+    const first = deferred<Asset[]>();
+    mockSearchAssets.mockReturnValueOnce(first.promise);
+    const { result } = renderHook(() => useAssetSelection(args()));
+
+    const firstOptions = result.current.assetOptions('first');
+    await result.current.assetOptions('$');
+    first.reject(new Error('first failed'));
+    await expect(firstOptions).resolves.toEqual([]);
+
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it('loader alerts when latest request fails', async () => {
