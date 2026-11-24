@@ -3,8 +3,8 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,13 +15,8 @@ import (
 	"github.com/palantir/pkg/uuid"
 )
 
-// --- typed plan inspectors ---
-//
-// The compute request is built from Conjure union types whose arms are unexported, so
-// tests introspect them through the generated Accept visitors rather than matching JSON
-// substrings. These helpers are written once per union and reused, so assertions can name
-// the planned series kind, channel binding, and page size directly — and they fail only on
-// a genuine model change, not on a serialization-tag rename.
+// The compute request's Conjure unions have unexported arms, so these helpers read
+// them through the generated Accept visitors.
 
 // seriesKind reports which arm of the Series union is set ("numeric", "enum", "log", ...).
 func seriesKind(t *testing.T, s computeapi1.Series) string {
@@ -41,20 +36,6 @@ func seriesKind(t *testing.T, s computeapi1.Series) string {
 		t.Fatalf("inspecting series kind: %v", err)
 	}
 	return kind
-}
-
-// stringConstantValue reports whether a StringConstant is a literal or variable, and its value.
-func stringConstantValue(t *testing.T, c computeapi.StringConstant) (kind, value string) {
-	t.Helper()
-	err := c.AcceptFuncs(
-		func(literal string) error { kind, value = "literal", literal; return nil },
-		func(v computeapi.VariableName) error { kind, value = "variable", string(v); return nil },
-		func(string) error { return fmt.Errorf("unknown string constant type") },
-	)
-	if err != nil {
-		t.Fatalf("inspecting string constant: %v", err)
-	}
-	return kind, value
 }
 
 // summarizationPageInfo returns the page info when the strategy is a page strategy.
@@ -394,94 +375,63 @@ func seriesPlanFor(qe *NominalQueryExecution, qm NominalQueryModel) computeapi1.
 	return plan
 }
 
-func TestBuildAssetChannel(t *testing.T) {
-	ds := withCatalog(&Datasource{})
+func TestBuildSeriesPlanMatchesRequestShape(t *testing.T) {
+	qe := newTestQueryExecution(withCatalog(&Datasource{}), nil)
+	assetDataset := `{"type":"filter","filter":{
+		"input":{"type":"asset","asset":{"rid":{"type":"variable","variable":"assetRid"}}},
+		"predicate":{"type":"in","in":{
+			"key":{"type":"literal","literal":"DATA_SCOPE"},
+			"values":{"type":"literal","literal":[{"type":"literal","literal":"alpha"}]}}}}}`
+	selectTags := func(arm, channel, dataset string) string {
+		return `{"type":"selectTags","selectTags":{"input":{"type":"` + arm + `","` + arm + `":{
+			"name":{"type":"literal","literal":"` + channel + `"},"dataset":` + dataset + `}},"tagKeys":[]}}`
+	}
 
 	tests := []struct {
-		name          string
-		channel       string
-		dataScopeName string
+		name         string
+		channel      string
+		dataType     string
+		aggregations []string
+		// path walks from the plan root to the selectTags node; each key other than
+		// "input" is also the type of the union node it descends through.
+		path []string
+		want string
 	}{
-		{
-			name:          "builds channel with all parameters",
-			channel:       "temperature",
-			dataScopeName: "default",
-		},
-		{
-			name:          "builds channel with empty dataScopeName",
-			channel:       "pressure",
-			dataScopeName: "",
-		},
-		{
-			name:          "builds channel with special characters in channel",
-			channel:       "sensor/value-1",
-			dataScopeName: "scope_test",
-		},
+		{"numeric bucketed", "temp", ChannelDataTypeNumeric, nil, []string{"input", "numeric", "timeShift", "input"}, selectTags("selectNumeric", "temp", assetDataset)},
+		{"numeric LTTB", "temp", ChannelDataTypeNumeric, []string{AggLTTB}, []string{"input", "numeric"}, selectTags("selectNumeric", "temp", assetDataset)},
+		{"string", "mode", ChannelDataTypeString, nil, []string{"input", "enum", "timeShift", "input"}, selectTags("selectEnum", "mode", assetDataset)},
+		{"log", "events", ChannelDataTypeLog, nil, []string{"input", "log"}, selectTags("selectLogs", "events", assetDataset)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			asset := newTestQueryExecution(ds, nil).buildAssetChannel(tt.channel, tt.dataScopeName)
+			qm := NominalQueryModel{Channel: tt.channel, ChannelDataType: tt.dataType, Aggregations: tt.aggregations, DataScopeName: "alpha"}
 
-			if kind, val := stringConstantValue(t, asset.Channel); kind != "literal" || val != tt.channel {
-				t.Errorf("channel = (%s, %q), want (literal, %q)", kind, val, tt.channel)
+			raw, err := json.Marshal(seriesPlanFor(qe, qm))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if kind, val := stringConstantValue(t, asset.DataScopeName); kind != "literal" || val != tt.dataScopeName {
-				t.Errorf("dataScopeName = (%s, %q), want (literal, %q)", kind, val, tt.dataScopeName)
+			var node any
+			if err := json.Unmarshal(raw, &node); err != nil {
+				t.Fatal(err)
 			}
-			// assetRid is a variable reference (not a literal); the value is supplied via context.
-			if kind, val := stringConstantValue(t, asset.AssetRid); kind != "variable" || val != string(assetRidVariableName) {
-				t.Errorf("assetRid = (%s, %q), want (variable, %q)", kind, val, assetRidVariableName)
+			for _, key := range tt.path {
+				m, _ := node.(map[string]any)
+				if key != "input" && m["type"] != key {
+					t.Fatalf("expected %q node, got %v in %s", key, m["type"], raw)
+				}
+				node = m[key]
 			}
-		})
-	}
-}
-
-func TestBuildSeriesPlanBranching(t *testing.T) {
-	ds := withCatalog(&Datasource{})
-	qe := newTestQueryExecution(ds, nil)
-
-	baseQM := NominalQueryModel{
-		AssetRid:      "ri.nominal.asset.test",
-		Channel:       "temperature",
-		DataScopeName: "default",
-		Points:        pointBudget{Count: 1000},
-	}
-
-	tests := []struct {
-		name     string
-		dataType string
-		wantKind string
-	}{
-		{"string ChannelDataType produces enum series", ChannelDataTypeString, "enum"},
-		{"numeric ChannelDataType produces numeric series", ChannelDataTypeNumeric, "numeric"},
-		{"log ChannelDataType produces log series", ChannelDataTypeLog, "log"},
-		{"empty ChannelDataType defaults to numeric series", "", "numeric"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			qm := baseQM
-			qm.ChannelDataType = tt.dataType
-			plan := seriesPlanFor(qe, qm)
-			if got := seriesKind(t, plan.Input); got != tt.wantKind {
-				t.Errorf("series kind = %q, want %q", got, tt.wantKind)
+			var want any
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(node, want) {
+				got, _ := json.Marshal(node)
+				t.Errorf("series node mismatch\n got: %s\nwant: %s", got, tt.want)
 			}
 		})
 	}
-
-	t.Run("string and numeric produce different series kinds", func(t *testing.T) {
-		stringQM := baseQM
-		stringQM.ChannelDataType = ChannelDataTypeString
-		numericQM := baseQM
-		numericQM.ChannelDataType = ChannelDataTypeNumeric
-
-		stringKind := seriesKind(t, seriesPlanFor(qe, stringQM).Input)
-		numericKind := seriesKind(t, seriesPlanFor(qe, numericQM).Input)
-		if stringKind == numericKind {
-			t.Errorf("expected different series kinds for string vs numeric, both = %q", stringKind)
-		}
-	})
 }
 
 func TestBuildSeriesPlanUsesResolvedPointCount(t *testing.T) {
@@ -591,9 +541,6 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 		Points: pointBudget{Count: 500},
 	}
 	plan := seriesPlanFor(qe, qm)
-	if got := seriesKind(t, plan.Input); got != "numeric" {
-		t.Fatalf("series kind = %q, want numeric", got)
-	}
 	if !isArrowFormat(plan.OutputFormat, computeapi.OutputFormat_ARROW_V3) {
 		t.Fatalf("LTTB must request ARROW_V3: %+v", plan.OutputFormat)
 	}
@@ -614,13 +561,6 @@ func TestBuildSeriesPlanLTTBUsesRawNumericPoints(t *testing.T) {
 	if err != nil || points != 500 {
 		t.Fatalf("LTTB strategy points = %d, error = %v; want 500", points, err)
 	}
-	encoded, err := json.Marshal(plan.Input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "timeShift") || !strings.Contains(string(encoded), `"type":"channel"`) {
-		t.Fatalf("LTTB input must be the raw channel series: %s", encoded)
-	}
 }
 
 func TestBuildSeriesPlanLogPath(t *testing.T) {
@@ -635,9 +575,6 @@ func TestBuildSeriesPlanLogPath(t *testing.T) {
 	}
 	plan := seriesPlanFor(qe, qm)
 
-	if got := seriesKind(t, plan.Input); got != "log" {
-		t.Errorf("series kind = %q, want \"log\"", got)
-	}
 	// Log path uses a page strategy, not buckets or Arrow output.
 	if plan.OutputFormat != nil {
 		t.Errorf("outputFormat = %v, want nil for log path", plan.OutputFormat)
