@@ -463,6 +463,11 @@ func (c *NominalCatalog) FetchAssetsForVariable(ctx context.Context, config *mod
 	return allResults, nil
 }
 
+func ridHasType(value, ridType string) bool {
+	parsed, err := rid.ParseRID(value)
+	return err == nil && parsed.Type == ridType
+}
+
 // InferChannelMetadata verifies (or backfills) channel metadata — both data type
 // and unit symbol — against the actual ChannelMetadata returned by SearchChannels.
 func (c *NominalCatalog) InferChannelMetadata(ctx context.Context, config *models.PluginSettings, qm *NominalQueryModel) {

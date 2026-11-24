@@ -23,6 +23,8 @@ type NominalQueryModel struct {
 	Channel         string `json:"channel"`
 	DataScopeName   string `json:"dataScopeName"`
 	ChannelDataType string `json:"channelDataType"`
+	// TemplateSources holds each templated RID field's text before interpolation so errors can name the variable.
+	TemplateSources templateSources `json:"templateSources"`
 
 	// Event annotation filters. Empty EventTypes and EventLabels match all events.
 	AssetRids   []string `json:"assetRids,omitempty"`
@@ -73,6 +75,43 @@ const queryTypeSQL = "sql"
 
 // queryTypeEvents marks a query that searches events for annotations.
 const queryTypeEvents = "events"
+
+type templateSources struct {
+	AssetRid string `json:"assetRid,omitempty"`
+}
+
+// templateVariable matches a variable reference that interpolation left in place.
+var templateVariable = regexp.MustCompile(`\$\{?(\w+)`)
+
+// ridFieldError explains a templated RID field that did not resolve to a RID
+// of the wanted type. raw is the field's text before interpolation, empty for a
+// literal and for queries that reach the backend without it, such as expression
+// panels. Without raw, only a leftover variable or several values are reported.
+func ridFieldError(label, ridType, noun, value, raw string) error {
+	if unresolved := templateVariable.FindStringSubmatch(value); unresolved != nil {
+		return fmt.Errorf("No variable named `$%s`.", unresolved[1]) //nolint:staticcheck // user-facing message
+	}
+	// A RID never contains a comma or a pipe, so either one separates the values of a
+	// multi-value variable, in the default {a,b} format or in csv, pipe, json, and similar.
+	if separators := strings.Count(value, ",") + strings.Count(value, "|"); separators > 0 {
+		field := label
+		if raw != "" {
+			field += " `" + raw + "`"
+		}
+		return fmt.Errorf("%s has %d values. The %s field needs one %s.", field, separators+1, label, ridType) //nolint:staticcheck // user-facing message
+	}
+	if raw == "" {
+		return nil
+	}
+	switch {
+	case value == "":
+		return fmt.Errorf("%s is `%s`, currently empty. Check that variable.", label, raw) //nolint:staticcheck // user-facing message
+	case ridHasType(value, ridType):
+		return nil
+	default:
+		return fmt.Errorf("%s is `%s`, currently `%s`. That is not %s. Check that variable.", label, raw, value, noun) //nolint:staticcheck // user-facing message
+	}
+}
 
 type preparedQueryKind int
 
@@ -244,6 +283,10 @@ func (e *NominalQueryExecution) applyTemplateVariables(qm *NominalQueryModel) {
 
 // validateQuery validates query parameters similar to pure-ts implementation
 func (e *NominalQueryExecution) validateQuery(qm NominalQueryModel) error {
+	if err := ridFieldError("Asset", "asset", "an asset RID", qm.AssetRid, qm.TemplateSources.AssetRid); err != nil {
+		return err
+	}
+
 	// Check if we have either Nominal-specific fields or legacy fields
 	hasNominalQuery := qm.AssetRid != "" && qm.Channel != ""
 	hasLegacyQuery := qm.QueryText != ""

@@ -1,5 +1,5 @@
 import { DataSource } from './datasource';
-import { NominalDataSourceOptions } from './types';
+import { NominalDataSourceOptions, NominalQuery } from './types';
 import {
   CoreApp,
   DataFrame,
@@ -244,6 +244,27 @@ describe('event queries', () => {
     expect(ds.filterQuery({ refId: 'A', queryType: 'events' })).toBe(false);
     expect(ds.filterQuery({ refId: 'A', queryType: 'events', assetRid: ' ' })).toBe(false);
     expect(ds.filterQuery({ refId: 'A', queryType: 'events', assetRid: 'ri.a.1' })).toBe(true);
+  });
+});
+
+describe('template sources', () => {
+  const sent = (target: NominalQuery) => {
+    mockBackendQuery.mockReturnValue(of({ data: [] }));
+    createDataSource().query({ targets: [target], range: { from: dateTime(0), to: dateTime(10), raw: { from: '', to: '' } }, requestId: 'SQR1' } as unknown as DataQueryRequest<any>);
+    return mockBackendQuery.mock.calls.at(-1)[0].targets[0].templateSources;
+  };
+
+  it.each([
+    ['$asset', { assetRid: '$asset' }],
+    ['${myvar}', { assetRid: '${myvar}' }],
+    ['ri.scout.main.asset.$id', { assetRid: 'ri.scout.main.asset.$id' }],
+    ['ri.scout.main.asset.1', undefined],
+  ])('sends the variable behind %s', (assetRid, want) => {
+    expect(sent({ refId: 'A', assetRid })).toEqual(want);
+  });
+
+  it('leaves SQL queries alone', () => {
+    expect(sent({ refId: 'A', queryType: 'sql', rawSql: 'SELECT 1', assetRid: '$asset' })).toBeUndefined();
   });
 });
 

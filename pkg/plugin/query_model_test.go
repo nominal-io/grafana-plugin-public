@@ -484,3 +484,40 @@ func TestLogChannelSkipsAggregationValidation(t *testing.T) {
 		t.Errorf("expected FrameTypeLogLines, got %v", response.Frames[0].Meta)
 	}
 }
+
+func TestValidateQueryComputeSource(t *testing.T) {
+	const asset = "ri.scout.main.asset.1"
+	assetSrc := templateSources{AssetRid: "$asset"}
+	tests := []struct {
+		name    string
+		qm      NominalQueryModel
+		wantErr string // substring; "" means valid
+	}{
+		{"asset only", NominalQueryModel{AssetRid: asset, Channel: "c", DataScopeName: "s"}, ""},
+		{"templated asset resolves to a non-RID", NominalQueryModel{AssetRid: "*", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "Check that variable."},
+		{"templated asset resolves empty", NominalQueryModel{AssetRid: "", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "Asset is `$asset`, currently empty. Check that variable."},
+		{"templated asset unknown variable", NominalQueryModel{AssetRid: "$asset", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "No variable named `$asset`."},
+		{"templated asset names the variable that did not resolve", NominalQueryModel{AssetRid: asset + "${b}", Channel: "c", DataScopeName: "s", TemplateSources: templateSources{AssetRid: "${a}${b}"}}, "No variable named `$b`."},
+		{"templated asset multi-value", NominalQueryModel{AssetRid: "{" + asset + ",ri.scout.main.asset.2}", Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, "Asset `$asset` has 2 values. The Asset field needs one asset."},
+		{"templated asset multi-value in csv format", NominalQueryModel{AssetRid: asset + ",ri.scout.main.asset.2", Channel: "c", DataScopeName: "s", TemplateSources: templateSources{AssetRid: "${asset:csv}"}}, "Asset `${asset:csv}` has 2 values."},
+		{"templated asset multi-value in pipe format", NominalQueryModel{AssetRid: asset + "|ri.scout.main.asset.2|ri.scout.main.asset.3", Channel: "c", DataScopeName: "s", TemplateSources: templateSources{AssetRid: "${asset:pipe}"}}, "Asset `${asset:pipe}` has 3 values."},
+		{"templated asset", NominalQueryModel{AssetRid: asset, Channel: "c", DataScopeName: "s", TemplateSources: assetSrc}, ""},
+		// Expression panels send the interpolated query without the variable's name.
+		{"unknown variable without its source", NominalQueryModel{AssetRid: "$asset", Channel: "c", DataScopeName: "s"}, "No variable named `$asset`."},
+		{"multi-value without its source", NominalQueryModel{AssetRid: "{" + asset + ",ri.scout.main.asset.2}", Channel: "c", DataScopeName: "s"}, "Asset has 2 values. The Asset field needs one asset."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := newTestQueryExecution(withCatalog(&Datasource{}), nil).validateQuery(tt.qm)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
