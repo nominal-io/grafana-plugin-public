@@ -285,7 +285,7 @@ With Backend Plugin (Go + TypeScript): The backend plugin uses `/resources/` end
 
 - Asset Search
 
-  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `search-assets`, `assets-by-rid` and `event-labels`, plus `oauth/start`, `oauth/callback`, `oauth/status` and `oauth/logout` for Nominal sign-in. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
+  The backend exposes a fixed set of resource endpoints: `channels`, `assets`, `datascopes`, `channelvariables`, `search-assets`, `assets-by-rid`, `datasets` (POST, dataset search), `datasets-by-rid` (POST, exact dataset lookup by RID) and `event-labels`, plus `oauth/start`, `oauth/callback`, `oauth/status` and `oauth/logout` for Nominal sign-in. Any other path returns 404. To call other Nominal APIs, use the API key directly against the Nominal base URL.
 
   ```sh
   curl -s -X POST "http://localhost:3000/api/datasources/uid/{UID}/resources/search-assets" \

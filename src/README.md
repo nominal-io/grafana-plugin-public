@@ -16,7 +16,7 @@ The Base URL, API key, and Workspace RID can all be copied from **Settings > API
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
 4. Create a Nominal API key and paste it in **API Key**.
-5. Recommended: set **Workspace RID**. It limits asset search to one workspace and selects the workspace SQL queries run in. Empty searches every workspace the key can access, and SQL uses the key's default workspace.
+5. Recommended: set **Workspace RID**. It limits asset and dataset search to one workspace and selects the workspace SQL queries run in. Empty searches every workspace the key can access, and SQL uses the key's default workspace.
 6. Select **Save & test**.
 
 Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key. With a Workspace RID set, it also confirms the key can see that workspace and shows its name.
@@ -30,6 +30,8 @@ Compute queries follow a three-step pattern:
 1. Search for an asset by name, or paste a Nominal resource identifier (RID).
 2. Pick a data scope from the asset.
 3. Pick a channel from the data scope.
+
+To query a dataset instead, set **Source** to **Dataset**. Search datasets (the list shows each dataset's start time when it has one), paste a dataset RID, or type `$` to use a dashboard variable. Then pick a channel; there is no asset or data scope. Switching **Source** changes nothing in the query until you pick an asset or a dataset, and picking one removes the other's fields. A kept channel is checked against the new source, which can fail if the new source has no channel of that name. Below the fields, the editor shows the dataset's data range and warns when the panel's time range does not overlap it. A dataset query does not split a channel by tag: if the dataset holds several tagged series of the channel, such as one per vehicle, it returns all of their points as one series.
 
 Queries can be used in any Grafana panel or in Explore.
 
@@ -160,7 +162,7 @@ Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to us
 
 - If **Save & test** fails, confirm that the Base URL includes the `/api` path and that the API key is valid.
 - If asset or channel search fails, confirm that the data source can reach Nominal and that the API key has access to the requested data.
-- If an expected asset is missing from search, check the **Workspace RID**: only assets in that workspace are listed. Assets from other workspaces that the API key can access still resolve if referenced directly by RID.
+- If an expected asset or dataset is missing from search, check the **Workspace RID**: only assets and datasets in that workspace are listed. Ones from other workspaces that the API key (or the signed-in Nominal user) can access still resolve when you paste their RID.
 
 ## Links
 

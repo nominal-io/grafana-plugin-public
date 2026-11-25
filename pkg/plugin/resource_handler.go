@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/grafana/grafana-plugin-sdk-go/backend/log"
 	"github.com/nominal-io/grafana-plugin-public/pkg/models"
 	"github.com/palantir/pkg/rid"
+	"google.golang.org/grpc/status"
 )
 
 type NominalResourceHandler struct {
@@ -36,6 +38,10 @@ func (h *NominalResourceHandler) Handle(ctx context.Context, req *backend.CallRe
 		return h.handleChannelVariables(ctx, req, sender)
 	case "event-labels":
 		return h.handleEventLabels(ctx, req, sender)
+	case "datasets":
+		return h.handleDatasets(ctx, req, sender)
+	case "datasets-by-rid":
+		return h.handleDatasetsByRid(ctx, req, sender)
 	case "oauth/start":
 		return h.handleOAuthStart(ctx, req, sender)
 	case "oauth/login":
@@ -157,6 +163,75 @@ func (h *NominalResourceHandler) handleAssetsByRid(ctx context.Context, req *bac
 		return err
 	}
 	return h.nominalPostResponse(ctx, sender, config, "/scout/v1/asset/multiple", rids)
+}
+
+func (h *NominalResourceHandler) handleDatasets(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var search struct {
+		SearchText string `json:"searchText"`
+	}
+	if ok, err := decodeResourceJSON(req.Body, sender, &search, "Failed to parse datasets request body"); !ok {
+		return err
+	}
+	config, ok, err := h.datasource.loadResourceSettings(ctx, sender, "datasets: failed to load settings")
+	if !ok {
+		return err
+	}
+	items, err := h.datasource.searchDatasets(ctx, config, search.SearchText)
+	if err != nil {
+		return grpcErrorResponse(ctx, sender, err, "datasets")
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, items)
+}
+
+func (h *NominalResourceHandler) handleDatasetsByRid(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	if ok, err := requirePost(req, sender); !ok {
+		return err
+	}
+	var body struct {
+		Rids []string `json:"rids"`
+	}
+	if ok, err := decodeResourceJSON(req.Body, sender, &body, "Failed to parse datasets-by-rid request body"); !ok {
+		return err
+	}
+	if len(body.Rids) == 0 {
+		return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid request body")
+	}
+	for _, r := range body.Rids {
+		if _, err := rid.ParseRID(r); err != nil {
+			return jsonErrorResponse(sender, http.StatusBadRequest, "Invalid dataset RID")
+		}
+	}
+	config, ok, err := h.datasource.loadResourceSettings(ctx, sender, "datasets-by-rid: failed to load settings")
+	if !ok {
+		return err
+	}
+	items, err := h.datasource.datasetsByRid(ctx, config, body.Rids)
+	if err != nil {
+		return grpcErrorResponse(ctx, sender, err, "datasets-by-rid")
+	}
+	return jsonMarshalResponse(sender, http.StatusOK, items)
+}
+
+// grpcErrorResponse logs a failed gRPC call and replies with the HTTP status for its code.
+func grpcErrorResponse(ctx context.Context, sender backend.CallResourceResponseSender, err error, route string) error {
+	if errors.Is(err, errNoDatasetService) {
+		return jsonErrorResponse(sender, http.StatusBadRequest, status.Convert(err).Message())
+	}
+	logError := log.DefaultLogger.Error
+	// Grafana cancels a dropdown search when a newer one starts, and nothing reads the reply.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		logError = log.DefaultLogger.Debug
+	}
+	logError("Nominal API request failed", "error", err, "route", route)
+	code := grafanaStatus(status.Code(err))
+	message := "Nominal API request failed"
+	if code == backend.StatusBadRequest {
+		message += ". Check the data source configuration."
+	}
+	return jsonErrorResponse(sender, int(code), message)
 }
 
 // nominalPostResponse POSTs body to a fixed upstream path under the datasource API

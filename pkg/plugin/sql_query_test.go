@@ -479,15 +479,18 @@ func TestSQLErrorResponse(t *testing.T) {
 }
 
 func TestExecuteSQLQueryReportsUnusableBaseURL(t *testing.T) {
-	_, sqlErr := dialSQL("http://example/api", "test")
-	if sqlErr == nil {
-		t.Fatal("dialSQL(http URL) error = nil, want an error")
+	instance, err := NewDatasource(context.Background(), backend.DataSourceInstanceSettings{JSONData: []byte(`{"baseUrl":"http://example/api"}`)})
+	if err != nil {
+		t.Fatalf("NewDatasource() error = %v", err)
 	}
+	ds := instance.(*Datasource)
 	workspace := sqlTestWorkspaceRid(t)
-	e := newNominalQueryExecution(&Datasource{workspaceRid: &workspace, sqlErr: sqlErr}, &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "k"}})
+	ds.workspaceRid = &workspace
+	e := newNominalQueryExecution(ds, &models.PluginSettings{Secrets: &models.SecretPluginSettings{AuthToken: "k"}})
 	response := executeTestSQLQuery(t, context.Background(), e, `{"queryType":"sql","rawSql":"SELECT 1"}`)
-	if response.Status != backend.StatusBadRequest || response.ErrorSource != backend.ErrorSourceDownstream || response.Error == nil || response.Error.Error() != sqlErr.Error() {
-		t.Errorf("executeSQLQuery() = %v, %q, %v; want %v, downstream, %q", response.Status, response.ErrorSource, response.Error, backend.StatusBadRequest, sqlErr)
+	const want = "SQL queries need an https Nominal API base URL"
+	if response.Status != backend.StatusBadRequest || response.ErrorSource != backend.ErrorSourceDownstream || response.Error == nil || response.Error.Error() != want {
+		t.Errorf("executeSQLQuery() = %v, %q, %v; want %v, downstream, %q", response.Status, response.ErrorSource, response.Error, backend.StatusBadRequest, want)
 	}
 }
 

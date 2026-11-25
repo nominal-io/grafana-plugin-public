@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NominalQuery } from '../../types';
-import { resolveDataSourceRids, searchChannels, type Asset } from '../../utils/api';
+import { searchChannels } from '../../utils/api';
 import { buildChannelOptions, channelsToOptions, getChannelSelectValue } from './queryBuilderOptions';
 import { changeSelectedChannelQuery, inferChannelDataTypeQuery } from './queryMutations';
 import { useResolutionSnapshot, type TemplateValueResolution } from './templateResolution';
@@ -10,23 +10,19 @@ import type { ChannelOption, ChannelOptionsLoader } from './queryBuilderTypes';
 interface UseChannelOptionsArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
-  selectedAsset: Asset | null;
+  dataSourceRids: string[];
   channelResolution: TemplateValueResolution;
-  dataScopeResolution: TemplateValueResolution;
   datasourceUrl: string;
+  hasUserInteracted: boolean;
   markInteracted: () => void;
 }
 
 export interface ChannelOptionsModel {
   channelOptions: ChannelOptionsLoader;
   channelSelectValue: ChannelOption | null;
+  /** The type the aggregation controls follow: one inferred for the current source and channel, else the saved one. */
+  channelDataType: string | undefined;
   selectChannel: (selection: ChannelOption) => void;
-}
-
-interface ChannelOptionsContext {
-  dataSourceRids: string[];
-  hasSelectedAsset: boolean;
-  key: string;
 }
 
 let nextChannelOptionsLoaderId = 0;
@@ -36,31 +32,13 @@ function createChannelOptionsBackendRequestId(): string {
   return `nominal-channel-options-${nextChannelOptionsLoaderId}`;
 }
 
-function getChannelOptionsContext({
-  datasourceUrl,
-  selectedAsset,
-  dataScopeName,
-}: {
-  datasourceUrl: string;
-  selectedAsset: Asset | null;
-  dataScopeName: string;
-}): ChannelOptionsContext {
-  const dataSourceRids = selectedAsset ? resolveDataSourceRids(selectedAsset, dataScopeName || undefined) : [];
-
-  return {
-    dataSourceRids,
-    hasSelectedAsset: selectedAsset !== null,
-    key: JSON.stringify([datasourceUrl, selectedAsset?.rid || '', dataScopeName, dataSourceRids]),
-  };
-}
-
 export function useChannelOptions({
   query,
   onChange,
-  selectedAsset,
+  dataSourceRids,
   channelResolution,
-  dataScopeResolution,
   datasourceUrl,
+  hasUserInteracted,
   markInteracted,
 }: UseChannelOptionsArgs): ChannelOptionsModel {
   const queryRef = useRef(query);
@@ -71,29 +49,24 @@ export function useChannelOptions({
   const channelOptionsRequestId = useRef(0);
   const channelOptionsBackendRequestId = useMemo(createChannelOptionsBackendRequestId, []);
 
-  const channelOptionsContext = useMemo(
-    () =>
-      getChannelOptionsContext({
-        datasourceUrl,
-        selectedAsset,
-        dataScopeName: dataScopeResolution.resolved,
-      }),
-    [dataScopeResolution.resolved, datasourceUrl, selectedAsset]
-  );
-  const channelOptionsContextKeyRef = useRef(channelOptionsContext.key);
-  channelOptionsContextKeyRef.current = channelOptionsContext.key;
+  const ridsKey = JSON.stringify(dataSourceRids);
+  const channelOptionsContextKey = JSON.stringify([datasourceUrl, dataSourceRids]);
+  const channelOptionsContextKeyRef = useRef(channelOptionsContextKey);
+  channelOptionsContextKeyRef.current = channelOptionsContextKey;
+  // The RID list the current channel's data type was set or inferred under.
+  const typeRidsKeyRef = useRef<string>(undefined);
+  // A type inferred without editing the query, for the source and channel in `key`.
+  const [inferredType, setInferredType] = useState<{ key: string; dataType: string }>();
+  const typeKey = JSON.stringify([ridsKey, channelResolution.resolved]);
 
   const channelResolutionSnapshot = useResolutionSnapshot(channelResolution);
 
   const channelOptions = useCallback<ChannelOptionsLoader>(
     async (searchText: string): Promise<ChannelOption[]> => {
       const requestId = ++channelOptionsRequestId.current;
-      const requestContextKey = channelOptionsContext.key;
-      if (!channelOptionsContext.hasSelectedAsset) {
-        return [];
-      }
+      const requestContextKey = channelOptionsContextKey;
       try {
-        const channels = await searchChannels(datasourceUrl, channelOptionsContext.dataSourceRids, searchText, {
+        const channels = await searchChannels(datasourceUrl, dataSourceRids, searchText, {
           requestId: channelOptionsBackendRequestId,
         });
         // Combobox discards superseded resolved async options before they reach the menu.
@@ -104,69 +77,73 @@ export function useChannelOptions({
           searchText,
         });
       } catch {
-        // Only the latest loader request may emit alerts; stale failures can belong to an old asset/scope/search.
+        // Only the latest loader request may emit alerts; stale failures can belong to an old source/search.
         if (
           isMountedRef.current &&
           channelOptionsRequestId.current === requestId &&
           channelOptionsContextKeyRef.current === requestContextKey
         ) {
-          notifyError(
-            'Unable to load Nominal channels',
-            'Check the selected asset, data scope, and data source configuration.'
-          );
+          notifyError('Unable to load Nominal channels', 'Check the selected source and data source configuration.');
         }
         return [];
       }
     },
-    [channelOptionsBackendRequestId, channelOptionsContext, channelResolutionSnapshot, datasourceUrl]
+    [channelOptionsBackendRequestId, channelOptionsContextKey, dataSourceRids, channelResolutionSnapshot, datasourceUrl]
   );
 
   // Infer channelDataType when the resolved channel changes (e.g. template variable).
   // The backend does its own inference, but the frontend needs the correct type to show
   // the right aggregation UI (numeric MultiSelect vs disabled "Mode" / "Logs (raw)").
   useEffect(() => {
-    if (!channelResolution.resolved || !channelResolution.isResolved || !selectedAsset) {
+    if (!channelResolution.resolved || !channelResolution.isResolved || dataSourceRids.length === 0) {
       return;
     }
-    // Skip if type was already set by direct dropdown selection (not a variable)
+    // A literal channel picked from the dropdown already has its type, as long as the
+    // sources are the ones it was picked under. Before any edit, a saved query adopts the
+    // first list it sees. A later list, such as one a dashboard variable switched to, is
+    // looked up but only shown, not written to the query; the backend checks the type at
+    // query time. After an edit, a new list may belong to a newly picked source.
     if (queryRef.current?.channelDataType && !channelResolution.hasTemplate) {
-      return;
-    }
-    const dataSourceRids = resolveDataSourceRids(selectedAsset, dataScopeResolution.resolved || undefined);
-    if (dataSourceRids.length === 0) {
-      return;
+      if (!hasUserInteracted) {
+        typeRidsKeyRef.current ??= ridsKey;
+      }
+      if (typeRidsKeyRef.current === ridsKey) {
+        return;
+      }
     }
 
     let cancelled = false;
+    const persist = channelResolution.hasTemplate || hasUserInteracted;
     searchChannels(datasourceUrl, dataSourceRids, channelResolution.resolved)
       .then((channels) => {
         if (cancelled) {
           return;
         }
-        const match = channels.find((ch) => ch.name === channelResolution.resolved);
-        if (match && match.dataType && match.dataType !== queryRef.current?.channelDataType) {
-          onChangeRef.current(inferChannelDataTypeQuery(queryRef.current, match.dataType));
+        typeRidsKeyRef.current = ridsKey;
+        const dataType = channels.find((ch) => ch.name === channelResolution.resolved)?.dataType;
+        if (!dataType) {
+          return;
+        }
+        setInferredType({ key: typeKey, dataType });
+        if (persist && dataType !== queryRef.current?.channelDataType) {
+          onChangeRef.current(inferChannelDataTypeQuery(queryRef.current, dataType));
         }
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-    // Intentionally depend on selectedAsset?.rid rather than the whole object to avoid
-    // redundant /channels calls when setSelectedAsset receives a logically identical asset.
+    // dataSourceRids is tracked through its key so a new array of the same RIDs
+    // does not trigger another /channels call. hasUserInteracted only matters when
+    // the RIDs change, so it is read here but not tracked. typeKey follows ridsKey and the
+    // resolved channel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    channelResolution.resolved,
-    channelResolution.isResolved,
-    channelResolution.hasTemplate,
-    selectedAsset?.rid,
-    dataScopeResolution.resolved,
-    datasourceUrl,
-  ]);
+  }, [channelResolution.resolved, channelResolution.isResolved, channelResolution.hasTemplate, ridsKey, datasourceUrl]);
 
   const selectChannel = useCallback(
     (selection: ChannelOption) => {
       markInteracted();
+      typeRidsKeyRef.current = ridsKey;
       // NOTE: channelDataType is captured at selection time from the dropdown option.
       // If channel is later overridden by a template variable that resolves to a
       // different channel, the stored channelDataType may be stale. The backend will
@@ -179,7 +156,7 @@ export function useChannelOptions({
         })
       );
     },
-    [markInteracted, onChange, query]
+    [markInteracted, onChange, query, ridsKey]
   );
 
   useEffect(() => {
@@ -190,18 +167,16 @@ export function useChannelOptions({
     };
   }, []);
 
+  const channelDataType = inferredType?.key === typeKey ? inferredType.dataType : query.channelDataType;
   const channelSelectValue = useMemo(
-    () =>
-      getChannelSelectValue({
-        channel: channelResolutionSnapshot,
-        channelDataType: query.channelDataType,
-      }),
-    [channelResolutionSnapshot, query.channelDataType]
+    () => getChannelSelectValue({ channel: channelResolutionSnapshot, channelDataType }),
+    [channelResolutionSnapshot, channelDataType]
   );
 
   return {
     channelOptions,
     channelSelectValue,
+    channelDataType,
     selectChannel,
   };
 }

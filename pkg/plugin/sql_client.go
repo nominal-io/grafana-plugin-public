@@ -2,39 +2,10 @@ package plugin
 
 import (
 	"context"
-	"errors"
-	"net/url"
 
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
-	"github.com/palantir/pkg/bearertoken"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
 )
-
-// sqlWindowSize is where grpc-go's flow-control tuning stops. Starting there instead of at 64 KiB
-// keeps the first large result on a new connection from waiting on window updates.
-const sqlWindowSize = 16 << 20
-
-// dialSQL connects to the SQL service on the host of the API base URL. gRPC dials a host rather
-// than a URL and defaults to port 443.
-func dialSQL(baseURL, userAgent string) (*grpc.ClientConn, error) {
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("SQL queries need an https Nominal API base URL")
-	}
-	return grpc.NewClient(parsed.Host,
-		grpc.WithTransportCredentials(credentials.NewTLS(nil)),
-		grpc.WithUserAgent(userAgent),
-		grpc.WithInitialWindowSize(sqlWindowSize),
-		grpc.WithInitialConnWindowSize(sqlWindowSize),
-	)
-}
-
-// withBearerToken attaches the API key to a SQL service call.
-func withBearerToken(ctx context.Context, token bearertoken.Token) context.Context {
-	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+string(token))
-}
 
 // sqlStreamReader reads the Arrow IPC chunks of a SQL response stream as one byte stream. After the
 // last chunk it returns io.EOF, or the stream's gRPC error if the query failed.

@@ -9,12 +9,19 @@ import {
   MultiCombobox,
   useStyles2,
 } from '@grafana/ui';
-import { CoreApp, type GrafanaTheme2, type QueryEditorProps } from '@grafana/data';
+import { CoreApp, dateTimeFormat, type GrafanaTheme2, type QueryEditorProps, type TimeRange } from '@grafana/data';
 import type { DataQuery } from '@grafana/schema';
 import type { DataSource } from '../datasource';
-import { QUERY_TYPE_COMPUTE, QUERY_TYPE_SQL, type NominalDataSourceOptions, type NominalQuery } from '../types';
-import { getSupportedScopeNames } from '../utils/api';
+import {
+  isDatasetQuery,
+  QUERY_TYPE_COMPUTE,
+  QUERY_TYPE_SQL,
+  type NominalDataSourceOptions,
+  type NominalQuery,
+} from '../types';
+import { getSupportedScopeNames, type Dataset } from '../utils/api';
 import { useNominalQueryBuilder } from './queryBuilder/useNominalQueryBuilder';
+import type { SourceMode } from './queryBuilder/queryBuilderTypes';
 import { toAggregationComboboxOptions, toChannelOption } from './queryBuilder/queryBuilderOptions';
 import { SqlQueryEditor } from './SqlQueryEditor';
 import { NominalSignIn } from './NominalSignIn';
@@ -99,6 +106,9 @@ const getStyles = (theme: GrafanaTheme2) => ({
     zIndex: theme.zIndex.tooltip,
     animation: `${fadeInOut} 2s ease-in-out`,
   }),
+  rangeWarning: css({
+    color: theme.colors.warning.text,
+  }),
   scopeCount: css({
     color: theme.colors.success.text,
     fontWeight: theme.typography.fontWeightMedium,
@@ -106,7 +116,65 @@ const getStyles = (theme: GrafanaTheme2) => ({
   }),
 });
 
-function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+function SourceSummary({
+  label,
+  name,
+  rid,
+  copied,
+  onCopy,
+  children,
+}: {
+  label: string;
+  name: string;
+  rid: string;
+  copied: boolean;
+  onCopy: (rid: string) => void;
+  children?: React.ReactNode;
+}) {
+  const styles = useStyles2(getStyles);
+  return (
+    <div className={styles.assetSummary}>
+      <span className={styles.summaryLabel}>{label}:</span>
+      <span className={styles.summaryPill}>{name}</span>
+      <span className={styles.summaryLabel}>RID:</span>
+      <span className={styles.ridWrapper}>
+        <span onClick={() => onCopy(rid)} title="Click to copy RID" className={styles.ridClickTarget}>
+          {rid}
+        </span>
+        {copied && <span className={styles.copiedMessage}>✓ Copied to clipboard</span>}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function DatasetDataRange({ dataset, range, timeZone }: { dataset: Dataset; range?: TimeRange; timeZone?: string }) {
+  const styles = useStyles2(getStyles);
+  const { startMs, endMs } = dataset;
+  if (startMs === undefined || endMs === undefined) {
+    return null;
+  }
+  const outside = range !== undefined && (range.to.valueOf() < startMs || range.from.valueOf() > endMs);
+  return (
+    <>
+      <span className={styles.summaryLabel}>Data:</span>
+      <span className={styles.summaryPill}>
+        {dateTimeFormat(startMs, { timeZone })} to {dateTimeFormat(endMs, { timeZone })}
+      </span>
+      {outside && <span className={styles.rangeWarning}>No data in the selected time range</span>}
+    </>
+  );
+}
+
+function BuilderQueryEditor({
+  query,
+  onChange,
+  onRunQuery,
+  datasource,
+  data,
+  range,
+  mode,
+}: Props & { mode: SourceMode }) {
   const styles = useStyles2(getStyles);
   // Grafana's Combobox can repeat a selection the query already holds. In Explore
   // each onChange re-renders synchronously, so the repeats loop until React aborts
@@ -126,6 +194,9 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onChange: onChangeIfChanged,
     onRunQuery,
     datasourceUrl: datasource.url,
+    mode,
+    timeZone: data?.request?.timezone,
+    scopedVars: data?.request?.scopedVars,
   });
 
   const aggregationOptions = React.useMemo(
@@ -138,24 +209,43 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       <div className={styles.editorBox(state.configComplete)}>
         <Stack gap={1} direction="column">
           <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-asset-scope-row">
-            {/* Asset Selection */}
-            <InlineField label="Asset" labelWidth={8}>
-              <Combobox
-                id="nominal-query-asset-picker"
-                value={state.assetSelectValue}
-                options={state.assetOptions}
-                onChange={(selection) => commands.selectAsset(selection.value)}
-                placeholder="Search assets or paste a RID..."
-                createCustomValue
-                isClearable={false}
-                width="auto"
-                minWidth={30}
-                maxWidth={100}
-                data-testid="asset-combobox"
-              />
-            </InlineField>
+            {mode === 'dataset' ? (
+              <InlineField label="Dataset" labelWidth={8} invalid={!!state.datasetError} error={state.datasetError}>
+                <Combobox
+                  key="dataset"
+                  id="nominal-query-dataset-picker"
+                  value={state.datasetSelectValue}
+                  options={state.datasetOptions}
+                  onChange={(selection) => commands.selectDataset(selection.value)}
+                  placeholder="Search datasets or paste a RID..."
+                  createCustomValue
+                  isClearable={false}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  data-testid="dataset-combobox"
+                />
+              </InlineField>
+            ) : (
+              <InlineField label="Asset" labelWidth={8} invalid={!!state.assetError} error={state.assetError}>
+                <Combobox
+                  key="asset"
+                  id="nominal-query-asset-picker"
+                  value={state.assetSelectValue}
+                  options={state.assetOptions}
+                  onChange={(selection) => commands.selectAsset(selection.value)}
+                  placeholder="Search assets or paste a RID..."
+                  createCustomValue
+                  isClearable={false}
+                  width="auto"
+                  minWidth={30}
+                  maxWidth={100}
+                  data-testid="asset-combobox"
+                />
+              </InlineField>
+            )}
 
-            {state.assetComplete && (
+            {mode === 'asset' && state.assetComplete && (
               <InlineField label="Data scope" labelWidth={12} loading={!state.selectedAsset && state.assetComplete}>
                 <Combobox
                   id="nominal-query-data-scope-picker"
@@ -174,8 +264,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             )}
           </Stack>
 
-          {/* Channel Selection - only show if asset is selected */}
-          {state.assetComplete && (
+          {state.sourceComplete && (
             <Stack gap={1} direction="row" wrap alignItems="center" data-testid="query-editor-channel-aggregation-row">
               {state.hasChannelSearch && (
                 <InlineField label="Channel" labelWidth={8}>
@@ -185,7 +274,7 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                   */}
                   <Combobox
                     id="nominal-query-channel-picker"
-                    key={`${state.resolvedAssetRid || 'no-asset'}-${state.resolvedDataScopeName}`}
+                    key={state.channelPickerKey}
                     value={state.channelSelectValue}
                     onChange={(selection) => commands.selectChannel(toChannelOption(selection))}
                     options={state.channelOptions}
@@ -224,33 +313,32 @@ function BuilderQueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
           )}
         </Stack>
 
-        {/* Asset info display - compact single line */}
-        {state.selectedAsset && (
-          <div className={styles.assetSummary}>
-            <span className={styles.summaryLabel}>Asset:</span>
-            <span className={styles.summaryPill}>
-              {state.selectedAsset.title}
-            </span>
-            <span className={styles.summaryLabel}>RID:</span>
-            <span className={styles.ridWrapper}>
-              <span
-                onClick={commands.copySelectedAssetRid}
-                title="Click to copy RID"
-                className={styles.ridClickTarget}
-              >
-                {state.selectedAsset.rid}
-              </span>
-              {state.showCopiedMessage && (
-                <span className={styles.copiedMessage}>
-                  ✓ Copied to clipboard
-                </span>
-              )}
-            </span>
+        {mode === 'asset' && state.selectedAsset && (
+          <SourceSummary
+            label="Asset"
+            name={state.selectedAsset.title}
+            rid={state.selectedAsset.rid}
+            copied={state.showCopiedMessage}
+            onCopy={commands.copyRid}
+          >
             <span className={styles.summaryLabel}>Data Scopes:</span>
-            <span className={styles.scopeCount}>
-              {getSupportedScopeNames(state.selectedAsset).length}
-            </span>
-          </div>
+            <span className={styles.scopeCount}>{getSupportedScopeNames(state.selectedAsset).length}</span>
+          </SourceSummary>
+        )}
+        {mode === 'dataset' && state.selectedDataset && (
+          <SourceSummary
+            label="Dataset"
+            name={state.selectedDataset.name}
+            rid={state.selectedDataset.rid}
+            copied={state.showCopiedMessage}
+            onCopy={commands.copyRid}
+          >
+            <DatasetDataRange
+              dataset={state.selectedDataset}
+              range={range ?? data?.timeRange}
+              timeZone={data?.request?.timezone}
+            />
+          </SourceSummary>
         )}
       </div>
     </div>
@@ -297,11 +385,22 @@ const ownedValues = (query: NominalQuery, api: QueryAPI) =>
 const removedFields = (fields: Partial<NominalQuery>, app?: CoreApp) =>
   app === CoreApp.UnifiedAlerting ? Object.fromEntries(Object.keys(fields).map((key) => [key, undefined])) : {};
 
-export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Props) {
+export function QueryEditor(props: Props) {
+  const { query, onChange, onRunQuery, app, datasource } = props;
   const activeAPI: QueryAPI = query.queryType === QUERY_TYPE_SQL ? QUERY_TYPE_SQL : QUERY_TYPE_COMPUTE;
   // Remounting the builder after sign-in reloads the asset, data scope and channel lookups that failed signed out.
   const { signIns } = useSyncExternalStore(datasource.subscribeOAuthState, datasource.getOAuthState);
   const inactiveAPI: QueryAPI = activeAPI === QUERY_TYPE_SQL ? QUERY_TYPE_COMPUTE : QUERY_TYPE_SQL;
+  // Switching the source writes nothing, so the choice is held until the query's source changes: by a pick, or
+  // because Explore replaced the query while the editor stayed mounted.
+  const source = JSON.stringify([query.datasetRid, query.assetRid, query.dataScopeName]);
+  const [held, setHeld] = React.useState<{ mode: SourceMode; source: string }>();
+  const mode = held?.source === source ? held.mode : isDatasetQuery(query) ? 'dataset' : 'asset';
+  React.useEffect(() => {
+    if (held && held.source !== source) {
+      setHeld(undefined);
+    }
+  }, [held, source]);
 
   // Fields of the API not in use, kept out of the saved query so a leftover such as assetRid '$asset' cannot
   // re-run a SQL panel, and restored on switching back. Explore can replace the query while the editor stays
@@ -322,7 +421,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
       const [clean, stale] = splitFields(current, ownedBy(inactiveAPI));
       const fields = Object.keys(stale).length > 0 ? stale : remembered();
       inactive.current = fields && { fields, sent: ownedValues(clean, activeAPI) };
-      onChange({ ...removedFields({ ...retired, ...stale }, app), ...clean });
+      // An edit can also leave out fields of the API in use, such as assetRid when a dataset is picked.
+      const dropped = Object.fromEntries(
+        Object.entries(latest.current).filter(([key]) => key in FIELD_API && !(key in clean))
+      );
+      onChange({ ...removedFields({ ...retired, ...dropped, ...stale }, app), ...clean });
     },
     [activeAPI, inactiveAPI, app, onChange, remembered]
   );
@@ -341,17 +444,41 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource, app }: Pr
   return (
     <Stack direction="column" gap={1}>
       <NominalSignIn datasource={datasource} onSignedIn={onRunQuery} />
-      <InlineField label="Query API" labelWidth="auto" tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source.">
-        <RadioButtonGroup
-          aria-label="Query API"
-          value={activeAPI}
-          options={[{ label: 'Compute', value: QUERY_TYPE_COMPUTE }, { label: 'SQL', value: QUERY_TYPE_SQL }]}
-          onChange={onQueryAPIChange}
-        />
-      </InlineField>
-      {activeAPI === QUERY_TYPE_SQL
-        ? <SqlQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} />
-        : <BuilderQueryEditor key={signIns} query={query} onChange={onEdit} onRunQuery={onRunQuery} datasource={datasource} />}
+      <Stack direction="row" gap={1} wrap>
+        <InlineField
+          label="Query API"
+          labelWidth="auto"
+          tooltip="Choose how this query reads Nominal data. Other queries can use either API on the same data source."
+        >
+          <RadioButtonGroup
+            aria-label="Query API"
+            value={activeAPI}
+            options={[
+              { label: 'Compute', value: QUERY_TYPE_COMPUTE },
+              { label: 'SQL', value: QUERY_TYPE_SQL },
+            ]}
+            onChange={onQueryAPIChange}
+          />
+        </InlineField>
+        {activeAPI === QUERY_TYPE_COMPUTE && (
+          <InlineField label="Source" labelWidth="auto">
+            <RadioButtonGroup
+              aria-label="Source"
+              value={mode}
+              options={[
+                { label: 'Asset', value: 'asset' },
+                { label: 'Dataset', value: 'dataset' },
+              ]}
+              onChange={(picked: SourceMode) => setHeld({ mode: picked, source })}
+            />
+          </InlineField>
+        )}
+      </Stack>
+      {activeAPI === QUERY_TYPE_SQL ? (
+        <SqlQueryEditor query={query} onChange={onEdit} onRunQuery={onRunQuery} />
+      ) : (
+        <BuilderQueryEditor key={signIns} {...props} onChange={onEdit} mode={mode} />
+      )}
     </Stack>
   );
 }

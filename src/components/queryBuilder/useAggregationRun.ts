@@ -11,6 +11,8 @@ interface UseAggregationRunArgs {
   query: NominalQuery;
   onChange: (query: NominalQuery) => void;
   onRunQuery: () => void;
+  /** The channel type to show controls for, which can differ from the saved channelDataType. */
+  channelDataType?: string;
 }
 
 export interface AggregationRunModel {
@@ -18,7 +20,12 @@ export interface AggregationRunModel {
   changeAggregations: (selected: Array<SelectableValue<string>>) => void;
 }
 
-export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregationRunArgs): AggregationRunModel {
+export function useAggregationRun({
+  query,
+  onChange,
+  onRunQuery,
+  channelDataType,
+}: UseAggregationRunArgs): AggregationRunModel {
   const queryRef = useRef(query);
   queryRef.current = query;
   const onRunQueryRef = useRef(onRunQuery);
@@ -63,7 +70,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
   );
 
   const aggregationState = useMemo<AggregationState>(() => {
-    if (query?.channelDataType === 'string') {
+    if (channelDataType === 'string') {
       return {
         kind: 'string',
         tooltip: 'String channels only support Mode (most frequent value per time bucket)',
@@ -71,7 +78,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
         options: NUMERIC_AGG_OPTIONS,
       };
     }
-    if (query?.channelDataType === 'log') {
+    if (channelDataType === 'log') {
       return {
         kind: 'log',
         tooltip: 'Log channels return raw entries without aggregation',
@@ -85,7 +92,7 @@ export function useAggregationRun({ query, onChange, onRunQuery }: UseAggregatio
       value: getAggregationValue(query?.aggregations),
       options: NUMERIC_AGG_OPTIONS,
     };
-  }, [query?.aggregations, query?.channelDataType]);
+  }, [query?.aggregations, channelDataType]);
 
   return { aggregationState, changeAggregations };
 }

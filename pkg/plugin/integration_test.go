@@ -61,6 +61,7 @@ const liveNominalCSV = `timestamp,relative_minutes,temperature,humidity,state
 
 type liveNominalQueryTarget struct {
 	datasetRid    string
+	datasetName   string
 	assetRid      string
 	channel       string
 	dataScopeName string
@@ -200,7 +201,33 @@ func TestLiveNominalQueries(t *testing.T) {
 		t.Run("LTTB", func(t *testing.T) { testLiveNominalLTTB(t, settings, ds, target, dataset) })
 		t.Run("String", func(t *testing.T) { testLiveNominalString(t, settings, ds, target, dataset) })
 		t.Run("Logs", func(t *testing.T) { testLiveNominalLogs(t, settings, ds, dataset) })
+		t.Run("Lookup", func(t *testing.T) { testLiveNominalDatasetLookup(t, ds, target) })
 	})
+}
+
+// testLiveNominalDatasetLookup finds target's dataset through the dataset picker's routes, by RID and
+// by name, with bounds that cover the CSV samples.
+func testLiveNominalDatasetLookup(t *testing.T, ds *Datasource, target liveNominalQueryTarget) {
+	timestamps, _ := liveNominalCSVSamples(t, liveNominalChannelName)
+	first, last := timestamps[0].UnixMilli(), timestamps[len(timestamps)-1].UnixMilli()
+	for _, req := range []*backend.CallResourceRequest{
+		{Path: "datasets-by-rid", Method: http.MethodPost, Body: []byte(`{"rids":["` + target.datasetRid + `"]}`)},
+		{Path: "datasets", Method: http.MethodPost, Body: []byte(`{"searchText":"` + target.datasetName + `"}`)},
+	} {
+		resp := callResourceAndCapture(t, ds, req)
+		var items []datasetItem
+		if err := json.Unmarshal(resp.Body, &items); resp.Status != http.StatusOK || err != nil {
+			t.Fatalf("%s: status %d, %v; body = %s", req.Path, resp.Status, err, resp.Body)
+		}
+		i := slices.IndexFunc(items, func(item datasetItem) bool { return item.Rid == target.datasetRid })
+		if i < 0 {
+			t.Fatalf("%s: %s not in %s", req.Path, target.datasetRid, resp.Body)
+		}
+		got := items[i]
+		if got.Name != target.datasetName || got.StartMs == nil || got.EndMs == nil || *got.StartMs > first || *got.EndMs < last {
+			t.Errorf("%s: got %s, want name %q and bounds covering [%d, %d]", req.Path, resp.Body, target.datasetName, first, last)
+		}
+	}
 }
 
 // testLiveNominalLogs reads the three lines writeLiveNominalLogs wrote, newest first, then scrolls on
@@ -635,6 +662,7 @@ func createLiveNominalQueryTarget(t *testing.T, settings backend.DataSourceInsta
 	from, to := liveNominalCSVTimeRange(t)
 	return liveNominalQueryTarget{
 		datasetRid:    dataset.Rid.String(),
+		datasetName:   name,
 		assetRid:      asset.Rid.String(),
 		channel:       liveNominalChannelName,
 		dataScopeName: liveNominalDataScopeName,

@@ -21,6 +21,7 @@ import (
 	datasourceservice "github.com/nominal-io/nominal-api-go/scout/datasource"
 	"github.com/nominal-io/nominal-api-go/scout/metadata"
 	workspaceapi "github.com/nominal-io/nominal-api-go/security/api/workspace"
+	datasetsv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/datasets/v1"
 	sqlv1 "github.com/nominal-io/nominal-api-protos-go/nominal/protos/sql/v1"
 	conjurehttpclient "github.com/palantir/conjure-go-runtime/v2/conjure-go-client/httpclient"
 	"github.com/palantir/pkg/bearertoken"
@@ -48,6 +49,9 @@ const maxBatchComputeSubrequests = 300
 
 // defaultAPIBaseURL is the fallback Nominal API base URL when none is configured.
 const defaultAPIBaseURL = "https://api.gov.nominal.io/api"
+
+// resourceRequestTimeout bounds each Nominal API call a resource route makes.
+const resourceRequestTimeout = 30 * time.Second
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
@@ -78,7 +82,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource HTTP client: %v", err)
 	}
-	resourceHTTPClient.Timeout = 30 * time.Second
+	resourceHTTPClient.Timeout = resourceRequestTimeout
 	resourceHTTPClient.Transport = newUserAgentTransport(resourceHTTPClient.Transport)
 
 	// Generated Conjure clients still require their own client type, so keep this
@@ -91,12 +95,14 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to create conjure HTTP client: %v", err)
 	}
 
-	// A base URL the SQL transport cannot use (for example plain http) must not break the
-	// Conjure-backed features, so the error is surfaced per SQL query instead.
+	// A base URL gRPC cannot use (for example plain http) must not break the Conjure-backed
+	// features, so SQL queries and dataset routes each report it when they are used.
 	userAgent := formatUserAgent(userAgentComponentsFromPluginContext(backend.PluginConfigFromContext(ctx)))
-	sqlConn, sqlErr := dialSQL(baseURL, userAgent)
-	if sqlErr != nil {
-		log.DefaultLogger.FromContext(ctx).Warn("SQL queries are unavailable for this data source", "error", sqlErr)
+	grpcConn, err := dialNominalGRPC(baseURL, userAgent)
+	var sqlErr error
+	if err != nil {
+		sqlErr = errors.New("SQL queries need an https Nominal API base URL")
+		log.DefaultLogger.FromContext(ctx).Warn("SQL queries and datasets are unavailable for this data source", "error", err)
 	}
 
 	ds := &Datasource{
@@ -112,11 +118,12 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		usesOAuth:           config.UsesOAuth(),
 		oauthSessions:       newSessionStore(),
 		defaultSQLWorkspace: newTTLCache[string](catalogCacheTTL),
-		sqlConn:             sqlConn,
+		grpcConn:            grpcConn,
 		sqlErr:              sqlErr,
 	}
-	if sqlConn != nil {
-		ds.sqlService = sqlv1.NewSqlServiceClient(sqlConn)
+	if grpcConn != nil {
+		ds.sqlService = sqlv1.NewSqlServiceClient(grpcConn)
+		ds.datasetService = datasetsv1.NewDatasetServiceClient(grpcConn)
 	}
 	ds.nominalCatalog = newNominalCatalog(ds.resourceHTTPClient, ds.datasourceService)
 	ds.templateVariableCatalog = newTemplateVariableCatalog(ds.nominalCatalog)
@@ -137,7 +144,9 @@ type Datasource struct {
 	workspaceRid *rids.WorkspaceRid
 	usesOAuth    bool
 	sqlService   sqlv1.SqlServiceClient
-	sqlConn      *grpc.ClientConn
+	// datasetService shares grpcConn, so it is nil exactly when sqlService is.
+	datasetService datasetsv1.DatasetServiceClient
+	grpcConn       *grpc.ClientConn
 	// sqlErr explains why sqlService is nil, for example a plain http base URL.
 	sqlErr error
 	// defaultSQLWorkspace caches the default workspace of the API key, or of each user in OAuth mode,
@@ -180,9 +189,9 @@ func (d *Datasource) Dispose() {
 	if d.resourceHTTPClient != nil {
 		d.resourceHTTPClient.CloseIdleConnections()
 	}
-	if d.sqlConn != nil {
+	if d.grpcConn != nil {
 		// Let SQL queries still running on this replaced instance finish.
-		time.AfterFunc(sqlServiceTimeLimit, func() { _ = d.sqlConn.Close() })
+		time.AfterFunc(sqlServiceTimeLimit, func() { _ = d.grpcConn.Close() })
 	}
 }
 
