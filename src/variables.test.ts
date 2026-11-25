@@ -219,7 +219,7 @@ describe('NominalVariableSupport.query', () => {
         );
       });
 
-      it.each(['assets($__searchFilter)', 'channels(ri.asset.1, , $__searchFilter)'])(
+      it.each(['assets($__searchFilter)', 'channels(ri.asset.1, , $__searchFilter)', 'datasets($__searchFilter)'])(
         'cancels the outdated %s search of a Scenes variable and marks it cancelled for Scenes',
         async (query) => {
           const { ds } = makeDataSource();

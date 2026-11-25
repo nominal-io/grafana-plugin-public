@@ -172,7 +172,7 @@ export function ConfigEditor(props: Props) {
         labelWidth={26}
         interactive
         tooltip={
-          'Recommended. Selects the SQL workspace and limits Compute asset and dataset search. SQL otherwise uses the API key’s default workspace. A pasted asset or dataset RID still resolves from any workspace the key can access.'
+          'Recommended. Selects the SQL workspace and limits Compute asset and dataset search, including datasets() variables. SQL otherwise uses the API key’s default workspace. A pasted asset or dataset RID still resolves from any workspace the key can access.'
         }
       >
         <Input

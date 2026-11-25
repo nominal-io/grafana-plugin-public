@@ -16,7 +16,7 @@ The Base URL, API key, and Workspace RID can all be copied from **Settings > API
 2. Add the **Nominal** data source.
 3. Set **Base URL** to your Nominal API endpoint, including the `/api` path.
 4. Create a Nominal API key and paste it in **API Key**.
-5. Recommended: set **Workspace RID**. It limits asset and dataset search to one workspace and selects the workspace SQL queries run in. Empty searches every workspace the key can access, and SQL uses the key's default workspace.
+5. Recommended: set **Workspace RID**. It limits asset and dataset search, including `datasets` variables, to one workspace and selects the workspace SQL queries run in. Empty searches every workspace the key can access, and SQL uses the key's default workspace.
 6. Select **Save & test**.
 
 Grafana stores the API key as an encrypted secret and uses it only from the backend plugin, so it's never exposed to the browser. The health check verifies that Grafana can reach Nominal and authenticate with the configured key. With a Workspace RID set, it also confirms the key can see that workspace and shows its name.
@@ -108,7 +108,7 @@ A log channel query loads the newest 1,000 lines in the time range, and scrollin
 
 ## Dashboards and template variables
 
-Nominal supports Grafana dashboard variables for assets, data scopes, and channels, so dashboards can be re-pointed at a different asset, data scope, or channel without editing every panel individually.
+Nominal supports Grafana dashboard variables for assets, datasets, data scopes, and channels, so dashboards can be re-pointed at a different asset, dataset, data scope, or channel without editing every panel individually.
 
 ### Where to define variable queries
 
@@ -126,20 +126,24 @@ Chain variables by referencing earlier ones with `${var}`. For example, define `
 - `assets` returns up to 500 assets from the workspace. Use it as the top variable in a smaller asset-driven dashboard built from scratch.
 - `assets($__searchFilter)` enables Grafana's dynamic dropdown search. Opening the dropdown loads unfiltered assets; typing in the dropdown re-runs the Nominal asset search with the typed text. Use this for large workspaces where the target asset might not be in the initially loaded result set.
 - `assets(engine)` returns assets whose name, description, labels, or properties contain `engine`, ignoring case. Use this to scope a dashboard to a fleet or family when your assets share a naming pattern - `assets(turbine)`, `assets(pack)`, `assets(vehicle)`.
+- `datasets` returns the workspace's datasets and `datasets(<search>)` the ones matching the search text, most recently ingested first. Archived datasets are left out. Each option shows the dataset's name and uses its RID as the value. The list stops at 500 datasets and is not paged, so use `datasets(<search>)` or `datasets($__searchFilter)` to narrow it.
 - `datascopes(${asset})` returns every data scope on the selected asset. Chain it directly under an `assets` variable so the data scope dropdown refreshes when the user picks a different asset. It does not take `$__searchFilter`: the dropdown already holds every scope on the asset, and typing filters them.
 - `channels(${asset})` returns up to 5,000 channel names across all supported data scopes on the selected asset, deduplicated by name. Use it when your asset has a single primary data scope or when panels pin a literal data scope.
 - `channels(${asset}, ${datascope})` returns channels filtered to the selected asset and data scope. This is the canonical pattern for production dashboards: pick an asset, pick its data scope, then pick a channel scoped to that pair.
 - `channels(${asset}, ${datascope}, $__searchFilter)` enables Grafana's dynamic dropdown search for channels in the selected data scope. Use it for assets with large channel catalogs.
 - `channels(${asset}, , $__searchFilter)` searches channels across all supported data scopes on the selected asset. The second argument is intentionally empty.
 - `channels(${asset}, $__searchFilter)` is a shortcut for unscoped dynamic channel search, equivalent to `channels(${asset}, , $__searchFilter)`.
+- `channels(${dataset})` returns the channels of the selected dataset. Chain it under a `datasets` variable named `dataset`. `channels(${dataset}, $__searchFilter)` adds dynamic dropdown search. A data scope argument is ignored, except that one naming a variable that does not exist returns an empty list, as it does for assets. `datascopes` of a dataset RID is empty.
 
 Asset search also accepts fixed text, such as `assets:engine`. Channel search takes only `$__searchFilter`; to narrow a channel list to fixed text, use the variable's **Regex** option. `assets()` is equivalent to `assets`, and `assets:$__searchFilter` is equivalent to `assets($__searchFilter)`.
 
-Search text matches as a case-insensitive substring, the same as search in the Nominal app. Separate words with spaces to require each one: `assets(turbine north)` returns assets that contain both `turbine` and `north`.
+Asset search text matches as a case-insensitive substring, the same as search in the Nominal app. Separate words with spaces to require each one: `assets(turbine north)` returns assets that contain both `turbine` and `north`.
+
+Dataset search also ignores case, but it matches differently. It matches whole words in a dataset's name, description, labels, or properties, ignoring common English word endings, so `datasets(engines)` also finds `engine`. Search text of three or more characters also matches inside a dataset's name or description and finds close spellings there, so `datasets(urbin)` finds `turbine`, and `datasets(turbine north)` can return a dataset named `turbine`.
 
 With Grafana Scenes enabled, Grafana also filters the returned options by name, so typing in an asset dropdown shows only assets whose names match. To list assets that match on description, labels, or properties, use fixed text such as `assets(engine)`.
 
-With Grafana Scenes enabled, an asset or channel search that is still in flight when you clear the search box can finish later and replace the unfiltered options, or show an error if it fails.
+With Grafana Scenes enabled, an asset, dataset, or channel search that is still in flight when you clear the search box can finish later and replace the unfiltered options, or show an error if it fails.
 Closing and reopening the dropdown after a search can also show the previous search results with an empty search box.
 
 In Grafana 12 with Scenes disabled, the variable editor saves a search marker for catalog and SQL queries that use `$__searchFilter`. For an existing variable, focus its query field, click outside it, then save the dashboard. When provisioning a variable query object, set its `target` field to `$__searchFilter` alongside the saved query text in `query`.
@@ -156,13 +160,13 @@ Choose **SQL** mode to fill a variable from Nominal SQL. Return one column to us
 
 **Single-asset deep-dive.** Three chained variables (`assets($__searchFilter)`, `datascopes(${asset})`, `channels(${asset}, ${datascope}, $__searchFilter)`) drive every panel. Switching the asset cascades through scopes and channels automatically. Use this when you want one reusable dashboard that works for any asset with the same data scope and channel schema, including assets and channels outside the initially loaded option lists.
 
-**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope}, $__searchFilter)` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset.
+**Per-channel panel repeat.** A multi-value channel variable (`channels(${asset}, ${datascope}, $__searchFilter)` set to multi-value) combined with Grafana's panel **Repeat options** clones one panel per selected channel. The dashboard grows or shrinks based on the number of channels selected. The same repeat trick works on a multi-value asset variable when you want one panel per asset. Chained `datascopes()` and `channels()` variables need a single asset, so give them their own single-value asset variable.
 
 ## Troubleshooting
 
 - If **Save & test** fails, confirm that the Base URL includes the `/api` path and that the API key is valid.
 - If asset or channel search fails, confirm that the data source can reach Nominal and that the API key has access to the requested data.
-- If an expected asset or dataset is missing from search, check the **Workspace RID**: only assets and datasets in that workspace are listed. Ones from other workspaces that the API key (or the signed-in Nominal user) can access still resolve when you paste their RID.
+- If an expected asset or dataset is missing from search, check the **Workspace RID**: only assets and datasets in that workspace are listed, in the query editor and in `datasets` variables. Ones from other workspaces that the API key (or the signed-in Nominal user) can access still resolve when you paste their RID.
 
 ## Links
 

@@ -348,6 +348,50 @@ describe('metricFindQuery routing', () => {
     );
   });
 
+  it.each([
+    ['datasets', ''],
+    ['datasets()', ''],
+    ['datasets( )', ''],
+    ['datasets(abc)', 'abc'],
+    ['datasets($var)', 'abc'],
+  ])('query %j searches datasets with text %j and maps them to variable values', async (query, searchText) => {
+    mockTemplateSrv.replace.mockImplementation((v: string) => (v === '$var' ? 'abc' : v));
+    mockBackendSrv.post.mockResolvedValue([{ rid: 'ri.dataset.1', name: 'Flight 1', startMs: 5 }]);
+    await expect(ds.metricFindQuery(query)).resolves.toEqual([{ text: 'Flight 1', value: 'ri.dataset.1' }]);
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/datasets'),
+      expect.objectContaining({ searchText, maxResults: 500 }),
+      expect.anything()
+    );
+  });
+
+  it('query "datasets($__searchFilter)" passes typed search text literally', async () => {
+    mockBackendSrv.post.mockResolvedValue([]);
+    await ds.metricFindQuery('datasets($__searchFilter)', { scopedVars: { __searchFilter: { text: '$team', value: '$team' } } });
+    expect(mockBackendSrv.post).toHaveBeenCalledWith(
+      expect.stringContaining('/datasets'),
+      expect.objectContaining({ searchText: '$team' }),
+      expect.anything()
+    );
+  });
+
+  it('returns no datasets without a request when the search text is unresolved', async () => {
+    await expect(ds.metricFindQuery('datasets($var)')).resolves.toEqual([]);
+    expect(mockBackendSrv.post).not.toHaveBeenCalled();
+  });
+
+  it('query "datasets(abc)" throws a user-safe error when the request fails', async () => {
+    mockBackendSrv.post.mockRejectedValue(new Error('secret backend detail'));
+    await expect(ds.metricFindQuery('datasets(abc)')).rejects.toThrow(
+      'Unable to load Nominal datasets for the variable query.'
+    );
+  });
+
+  it('query "datasets(abc)" shows the message of a request the plugin rejected', async () => {
+    mockBackendSrv.post.mockRejectedValue({ status: 400, data: { error: 'Datasets need an https Nominal API base URL' } });
+    await expect(ds.metricFindQuery('datasets(abc)')).rejects.toThrow('Datasets need an https Nominal API base URL');
+  });
+
   it('query "datascopes(ri.scout.main.asset.1)" calls datascopes endpoint', async () => {
     await ds.metricFindQuery('datascopes(ri.scout.main.asset.1)');
     expect(mockBackendSrv.post).toHaveBeenCalledWith(
@@ -505,6 +549,17 @@ describe('metricFindQuery unresolved variable short-circuits', () => {
     expect(result).toEqual([]);
     expect(mockBackendSrv.post).not.toHaveBeenCalled();
   });
+
+  it.each(['channels($dataset)', 'datascopes($dataset)'])(
+    '%s with a multi-value variable names the value count without a backend call',
+    async (query) => {
+      mockTemplateSrv.replace.mockImplementation((v: string) =>
+        v === '$dataset' ? '{ri.catalog.main.dataset.a,ri.catalog.main.dataset.b}' : v
+      );
+      await expect(ds.metricFindQuery(query)).rejects.toThrow('needs one asset or dataset, but its variable has 2 values.');
+      expect(mockBackendSrv.post).not.toHaveBeenCalled();
+    }
+  );
 
   it('channels with unresolved dataScopeName returns empty without backend call', async () => {
     mockTemplateSrv.replace.mockImplementation((v: string) => {
